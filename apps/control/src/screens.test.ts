@@ -27,9 +27,11 @@ describe("thread screens", () => {
 
   test("ports and the system line name one host", () => {
     expect(rfbPortFor(2)).toBe(5902)
-    expect(vncHost(5902)).toBe("computer:5902")
-    const line = vncSystemLine(5904)
-    expect(line).toContain("computer:5904")
+    expect(vncHost(5902)).toBe("computer::5902")
+    const line = vncSystemLine("ses_abc", 5904)
+    expect(line).toContain("computer::5904")
+    expect(line).toContain("ob-vnc --session ses_abc")
+    expect(line).toContain("ob-nav --session ses_abc")
     expect(line).toContain(capturePath(5904))
     expect(line).toContain("$OPEN_BOT_VNC")
     expect(line).toContain("![screen](open-bot://screen)")

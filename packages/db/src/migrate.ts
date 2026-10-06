@@ -41,6 +41,20 @@ function journalEntries(migrationsFolder: string) {
   return journal.entries
 }
 
+function ensureCronJobColumns(sqlite: Database) {
+  if (!tableNames(sqlite).has("cron_jobs")) return
+  const columns = columnNames(sqlite, "cron_jobs")
+  if (!columns.has("provider_id")) {
+    sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN provider_id TEXT")
+  }
+  if (!columns.has("model_id")) {
+    sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN model_id TEXT")
+  }
+  if (!columns.has("persona_id")) {
+    sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN persona_id TEXT")
+  }
+}
+
 function ensureCronNoticeTable(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS cron_notices (
@@ -121,6 +135,14 @@ function ensureLegacyColumns(sqlite: Database) {
       image_account_id: "TEXT",
       image_api_key: "TEXT",
       image_model: "TEXT",
+      system1_provider: "TEXT",
+      system1_endpoint: "TEXT",
+      system1_api_key: "TEXT",
+      system1_gateway_token: "TEXT",
+      system1_model: "TEXT",
+      system1_account_id: "TEXT",
+      system1_gateway_id: "TEXT",
+      system1_slug: "TEXT",
     }
     for (const [name, type] of Object.entries(add)) {
       if (!columns.has(name)) {
@@ -190,4 +212,5 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   ensurePersonaTables(sqlite)
   ensureThreadScreenTable(sqlite)
   ensureCronNoticeTable(sqlite)
+  ensureCronJobColumns(sqlite)
 }

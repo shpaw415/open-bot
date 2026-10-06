@@ -95,6 +95,17 @@ export type ImageProvider = {
   model: string
 }
 
+export type System1Provider = {
+  provider: string
+  endpoint: string
+  apiKey: string
+  gatewayToken: string
+  model: string
+  accountId: string
+  gatewayId: string
+  slug: string
+}
+
 export type VikingProvider = {
   baseURL: string
   apiKey: string
@@ -173,6 +184,9 @@ export type CronJob = {
   nextRunAt: number | null
   runCount: number
   lastError: string | null
+  providerId: string | null
+  modelId: string | null
+  personaId: string | null
 }
 
 export type CronNotice = {
@@ -240,6 +254,9 @@ function mapCronJob(
     nextRunAt: row.nextRunAt,
     runCount: row.runCount,
     lastError: row.lastError,
+    providerId: row.providerId,
+    modelId: row.modelId,
+    personaId: row.personaId,
   }
 }
 
@@ -449,6 +466,65 @@ export function openDatabase(path: string) {
           imageAccountId: null,
           imageApiKey: null,
           imageModel: null,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    getSystem1(userId: string): System1Provider | null {
+      const row = orm
+        .select({
+          provider: desktops.system1Provider,
+          endpoint: desktops.system1Endpoint,
+          apiKey: desktops.system1ApiKey,
+          gatewayToken: desktops.system1GatewayToken,
+          model: desktops.system1Model,
+          accountId: desktops.system1AccountId,
+          gatewayId: desktops.system1GatewayId,
+          slug: desktops.system1Slug,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      if (!row?.provider || !row.endpoint) return null
+      return {
+        provider: row.provider,
+        endpoint: row.endpoint,
+        apiKey: row.apiKey ?? "",
+        gatewayToken: row.gatewayToken ?? "",
+        model: row.model ?? "",
+        accountId: row.accountId ?? "",
+        gatewayId: row.gatewayId ?? "",
+        slug: row.slug ?? "",
+      }
+    },
+    setSystem1(userId: string, value: System1Provider) {
+      orm
+        .update(desktops)
+        .set({
+          system1Provider: value.provider,
+          system1Endpoint: value.endpoint,
+          system1ApiKey: value.apiKey,
+          system1GatewayToken: value.gatewayToken,
+          system1Model: value.model,
+          system1AccountId: value.accountId,
+          system1GatewayId: value.gatewayId,
+          system1Slug: value.slug,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    clearSystem1(userId: string) {
+      orm
+        .update(desktops)
+        .set({
+          system1Provider: null,
+          system1Endpoint: null,
+          system1ApiKey: null,
+          system1GatewayToken: null,
+          system1Model: null,
+          system1AccountId: null,
+          system1GatewayId: null,
+          system1Slug: null,
         })
         .where(eq(desktops.userId, userId))
         .run()
@@ -694,6 +770,9 @@ export function openDatabase(path: string) {
         message?: string
         enabled?: boolean
         nextRunAt?: number | null
+        providerId?: string | null
+        modelId?: string | null
+        personaId?: string | null
       },
     ) {
       const job = this.cronJobById(id, userId)
@@ -706,6 +785,14 @@ export function openDatabase(path: string) {
           enabled: changes.enabled ?? job.enabled,
           nextRunAt:
             changes.nextRunAt !== undefined ? changes.nextRunAt : job.nextRunAt,
+          providerId:
+            changes.providerId !== undefined
+              ? changes.providerId
+              : job.providerId,
+          modelId:
+            changes.modelId !== undefined ? changes.modelId : job.modelId,
+          personaId:
+            changes.personaId !== undefined ? changes.personaId : job.personaId,
         })
         .where(eq(cronJobs.id, id))
         .run()

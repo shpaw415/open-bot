@@ -5,8 +5,9 @@ import { openDatabase } from "@open-bot/db"
 import { startCronScheduler } from "./cron"
 import { desktopPhase, stopDesktop } from "./docker"
 import { aiConfigPath, bindHosts, dataDir, idleMinutes, port } from "./env"
+import { EventHub } from "./events"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
-import { createServer } from "./server"
+import { createServer, eventTarget } from "./server"
 
 const loaded = await import(pathToFileURL(aiConfigPath).href)
 if (!loaded.default) {
@@ -48,9 +49,10 @@ if (db.userCount() === 0) {
   }
 }
 
+const hub = new EventHub((userId) => eventTarget(db, userId))
 const servers = bindHosts.flatMap((host) => {
   try {
-    const server = createServer(db, ai, host)
+    const server = createServer(db, ai, host, hub)
     console.log(`open-bot listening on http://${host}:${server.port ?? port}`)
     return [server]
   } catch (error) {
@@ -64,7 +66,7 @@ if (servers.length === 0) {
   throw new Error("open-bot failed to bind any address")
 }
 
-startCronScheduler(db)
+startCronScheduler(db, hub)
 
 setInterval(() => {
   void (async () => {

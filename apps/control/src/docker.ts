@@ -1,9 +1,14 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   type Desktop,
   type ImageProvider,
+  type System1Provider,
   type VikingProvider,
   vikingProviderReady,
 } from "@open-bot/db"
+import { manualPackages } from "./apt-snapshot"
 import {
   computerImage,
   controlName,
@@ -74,6 +79,48 @@ async function ensureNetwork(network: string) {
 async function ensureVolume(name: string) {
   const exists = await sh(["docker", "volume", "inspect", name])
   if (exists.code !== 0) await docker(["volume", "create", name])
+}
+
+async function captureAptSnapshot(container: string, homeVolume: string) {
+  const exists = await sh(["docker", "inspect", container])
+  if (exists.code !== 0) return
+  const dir = mkdtempSync(join(tmpdir(), "ob-apt-"))
+  try {
+    const copied = await sh([
+      "docker",
+      "cp",
+      `${container}:/var/lib/apt/extended_states`,
+      join(dir, "extended_states"),
+    ])
+    if (copied.code !== 0) return
+    const names = manualPackages(
+      readFileSync(join(dir, "extended_states"), "utf8"),
+    )
+    if (names.length === 0) return
+    const written = await sh(
+      [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--entrypoint",
+        "sh",
+        "-v",
+        `${homeVolume}:/home/agent`,
+        opencodeImage,
+        "-c",
+        "mkdir -p /home/agent/.open-bot && cat > /home/agent/.open-bot/apt-manual-snapshot",
+      ],
+      `${names.join("\n")}\n`,
+    )
+    if (written.code !== 0) {
+      console.error(
+        written.stderr.trim() || "could not snapshot installed packages",
+      )
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 export async function imageReady(image: string) {
@@ -188,11 +235,12 @@ export async function startDesktop(
   desktop: Desktop,
   viking: VikingProvider | null,
   image: ImageProvider | null = null,
+  system1: System1Provider | null = null,
 ) {
   const existing = starting.get(userId)
   if (existing) return existing
   startErrors.delete(userId)
-  const job = startDesktopInner(userId, desktop, viking, image)
+  const job = startDesktopInner(userId, desktop, viking, image, system1)
     .catch((error: unknown) => {
       startErrors.set(
         userId,
@@ -210,6 +258,7 @@ async function startDesktopInner(
   desktop: Desktop,
   viking: VikingProvider | null,
   image: ImageProvider | null,
+  system1: System1Provider | null,
 ) {
   const n = names(userId)
   if (
@@ -245,6 +294,7 @@ async function startDesktopInner(
   }
   await ensureNetwork(n.network)
   await ensureVolume(n.home)
+  await ensureVolume(n.usrLocal)
   await ensureVolume(n.vikingData)
   await ensureVolume(n.x11)
   const base = llmBase(n.network)
@@ -293,6 +343,7 @@ async function startDesktopInner(
   let createdOpencode = false
   if (!(await isRunning(n.opencode))) {
     createdOpencode = true
+    await captureAptSnapshot(n.opencode, n.home)
     await sh(["docker", "rm", "-f", n.opencode])
     await runDetached([
       "--name",
@@ -311,6 +362,10 @@ async function startDesktopInner(
       "2",
       "--shm-size",
       "1g",
+      "--security-opt",
+      "apparmor=unconfined",
+      "--cap-add",
+      "SYS_ADMIN",
       "-e",
       "HOME=/home/agent",
       "-e",
@@ -338,6 +393,8 @@ async function startDesktopInner(
       "-e",
       `OPEN_BOT_MODEL=${desktop.selectedModel ?? ""}`,
       "-v",
+      `${n.usrLocal}:/usr/local`,
+      "-v",
       `${n.home}:/home/agent`,
       "-v",
       `${n.x11}:/tmp/.X11-unix`,
@@ -345,9 +402,16 @@ async function startDesktopInner(
     ])
   }
   const auth = `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`
-  await waitHttp(n.opencode, n.network, 4096, "/global/health", {
-    authorization: auth,
-  })
+  await waitHttp(
+    n.opencode,
+    n.network,
+    4096,
+    "/global/health",
+    {
+      authorization: auth,
+    },
+    600000,
+  )
   if (createdOpencode) {
     try {
       await syncImageAuth(
@@ -364,6 +428,12 @@ async function startDesktopInner(
     } catch (error) {
       const message = error instanceof Error ? error.message : ""
       if (!message.includes("missing cf-ai setup")) throw error
+    }
+    try {
+      await syncSystem1(userId, system1)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing system1 setup")) throw error
     }
   }
 
@@ -408,6 +478,7 @@ export async function destroyDesktop(userId: string) {
     "rm",
     "-f",
     n.home,
+    n.usrLocal,
     n.vikingData,
     n.x11,
   ])
@@ -555,6 +626,49 @@ export async function syncImageAuth(
       )
     }
     throw new Error(detail || "could not write image auth")
+  }
+  return true
+}
+
+export async function syncSystem1(
+  userId: string,
+  value: System1Provider | null,
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const payload = JSON.stringify(
+    value
+      ? {
+          provider: value.provider,
+          endpoint: value.endpoint,
+          model: value.model,
+          apiKey: value.apiKey,
+          gatewayToken: value.gatewayToken,
+        }
+      : {},
+  )
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-system1.sh",
+    ],
+    payload,
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing system1 setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write system1 config")
   }
   return true
 }

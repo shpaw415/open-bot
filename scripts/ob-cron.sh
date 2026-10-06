@@ -9,20 +9,28 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-cron add --name NAME --message TEXT (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601)
+  ob-cron add --name NAME --message TEXT (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601) [--model PROVIDER/MODEL] [--persona ID]
   ob-cron list
+  ob-cron models
+  ob-cron set ID [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
   ob-cron remove ID
   ob-cron run ID
 
-Schedules (exactly one):
+Schedules (exactly one on add):
   --every SECONDS   recurring interval, minimum 60
   --cron "EXPR"     5-field UTC cron expression, e.g. "0 9 * * 1-5"
   --at ISO8601      one-shot run, e.g. 2026-12-01T09:00:00Z
 
+Run options:
+  --model PROVIDER/MODEL   model for the temporary run. Omit to use the desktop default.
+  --persona ID             personality that runs the job. Omit for Assistant. Does not change the result thread.
+
 Examples:
-  ob-cron add --name standup --message "Summarize git log since yesterday" --cron "0 13 * * 1-5"
+  ob-cron add --name standup --message "Summarize git log since yesterday" --cron "0 13 * * 1-5" --model grok/grok-4.5 --persona designer
   ob-cron add --name snapshot --message "Back up workspace notes" --every 3600
-  ob-cron add --name reminder --message "Check the build output" --at 2026-11-30T15:00:00Z
+  ob-cron models
+  ob-cron set 3f2b... --model grok/grok-4.5
+  ob-cron set 3f2b... --clear-model --persona assistant
   ob-cron list
   ob-cron remove 3f2b...
 EOF
@@ -52,6 +60,16 @@ urlencode() {
   printf '%s' "$1" | jq -sRr @uri
 }
 
+split_model() {
+  model="$1"
+  provider=${model%%/*}
+  modelid=${model#*/}
+  if [ -z "$provider" ] || [ -z "$modelid" ] || [ "$provider" = "$model" ]; then
+    echo "ob-cron: --model must be provider/model" >&2
+    exit 2
+  fi
+}
+
 [ $# -ge 1 ] || { usage; exit 2; }
 cmd="$1"
 shift
@@ -63,6 +81,8 @@ case "$cmd" in
     every=""
     cron=""
     at=""
+    model=""
+    persona=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --name)
@@ -80,6 +100,12 @@ case "$cmd" in
         --at)
           [ $# -ge 2 ] || { usage; exit 2; }
           at="$2"; shift 2 ;;
+        --model)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          model="$2"; shift 2 ;;
+        --persona)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          persona="$2"; shift 2 ;;
         *)
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
@@ -107,12 +133,24 @@ case "$cmd" in
       echo "ob-cron: pass exactly one of --every, --cron, --at" >&2
       exit 2
     }
+    provider_json="null"
+    model_json="null"
+    persona_json="null"
+    if [ -n "$model" ]; then
+      split_model "$model"
+      provider_json=$(jq -Rn --arg v "$provider" '$v')
+      model_json=$(jq -Rn --arg v "$modelid" '$v')
+    fi
+    if [ -n "$persona" ]; then
+      persona_json=$(jq -Rn --arg v "$persona" '$v')
+    fi
     body=$(jq -n --arg name "$name" --arg message "$message" --arg kind "$kind" \
       --argjson every "$every_json" --argjson cron "$cron_json" --argjson at "$at_json" \
-      '{name: $name, message: $message, kind: $kind, everySeconds: $every, cronExpr: $cron, atMs: $at}')
+      --argjson provider "$provider_json" --argjson model "$model_json" --argjson persona "$persona_json" \
+      '{name: $name, message: $message, kind: $kind, everySeconds: $every, cronExpr: $cron, atMs: $at, providerID: $provider, modelID: $model, personaId: $persona}')
     out=$(request POST /api/cron "$body")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id, name, kind, cronExpr, everySeconds, atMs, nextRunAt, enabled}'
+    printf '%s' "$out" | jq '{id, name, kind, cronExpr, everySeconds, atMs, nextRunAt, enabled, providerId, modelId, personaId}'
     ;;
   list)
     out=$(request GET /api/cron)
@@ -122,7 +160,78 @@ case "$cmd" in
         if .kind == "cron" then (.cronExpr // "")
         elif .kind == "every" then "every \(.everySeconds)s"
         else "at \((.atMs / 1000 | strftime("%Y-%m-%dT%H:%M:%SZ")) // "")"
-        end)\(if .enabled then "" else " (disabled)" end) runs=\(.runCount)"'
+        end)\(if .providerId and .modelId then " model=\(.providerId)/\(.modelId)" else "" end)\(if .personaId then " persona=\(.personaId)" else "" end)\(if .enabled then "" else " (disabled)" end) runs=\(.runCount)"'
+    ;;
+  models)
+    out=$(request GET /api/cron/models)
+    fail_on_error "$out"
+    printf '%s' "$out" | jq -r '.models[] | "\(.providerID)/\(.modelID)\(if .name then "  \(.name)" else "" end)"'
+    ;;
+  set)
+    [ $# -ge 2 ] || { usage; exit 2; }
+    id="$1"
+    shift
+    model=""
+    clear_model=0
+    persona=""
+    clear_persona=0
+    name=""
+    message=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --model)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          model="$2"; shift 2 ;;
+        --clear-model)
+          clear_model=1; shift ;;
+        --persona)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          persona="$2"; shift 2 ;;
+        --clear-persona)
+          clear_persona=1; shift ;;
+        --name)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          name="$2"; shift 2 ;;
+        --message)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          message="$2"; shift 2 ;;
+        *)
+          echo "unknown option: $1" >&2; usage; exit 2 ;;
+      esac
+    done
+    if [ -n "$model" ] && [ "$clear_model" -eq 1 ]; then
+      echo "ob-cron: pass only one of --model or --clear-model" >&2
+      exit 2
+    fi
+    if [ -n "$persona" ] && [ "$clear_persona" -eq 1 ]; then
+      echo "ob-cron: pass only one of --persona or --clear-persona" >&2
+      exit 2
+    fi
+    if [ -z "$model" ] && [ "$clear_model" -eq 0 ] && [ -z "$persona" ] && [ "$clear_persona" -eq 0 ] && [ -z "$name" ] && [ -z "$message" ]; then
+      usage
+      exit 2
+    fi
+    body='{}'
+    if [ -n "$name" ]; then
+      body=$(printf '%s' "$body" | jq --arg name "$name" '. + {name: $name}')
+    fi
+    if [ -n "$message" ]; then
+      body=$(printf '%s' "$body" | jq --arg message "$message" '. + {message: $message}')
+    fi
+    if [ "$clear_model" -eq 1 ]; then
+      body=$(printf '%s' "$body" | jq '. + {providerID: null, modelID: null}')
+    elif [ -n "$model" ]; then
+      split_model "$model"
+      body=$(printf '%s' "$body" | jq --arg p "$provider" --arg m "$modelid" '. + {providerID: $p, modelID: $m}')
+    fi
+    if [ "$clear_persona" -eq 1 ] || [ "$persona" = "assistant" ]; then
+      body=$(printf '%s' "$body" | jq '. + {personaId: null}')
+    elif [ -n "$persona" ]; then
+      body=$(printf '%s' "$body" | jq --arg id "$persona" '. + {personaId: $id}')
+    fi
+    out=$(request PATCH "/api/cron/$(urlencode "$id")" "$body")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{id, name, providerId, modelId, personaId, enabled}'
     ;;
   remove)
     [ $# -eq 1 ] || { usage; exit 2; }

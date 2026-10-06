@@ -193,8 +193,12 @@ describe("drizzle migrations", () => {
       nextRunAt: 2,
       runCount: 0,
       lastError: null,
+      providerId: "grok",
+      modelId: "grok-4.5",
+      personaId: "designer",
     })
     expect(db.cronJobs("a")).toHaveLength(1)
+    expect(db.cronJobById("j1", "a")?.modelId).toBe("grok-4.5")
     openDatabase(path)
   })
 })
@@ -367,6 +371,38 @@ describe("usage ledger", () => {
     db.clearImageProvider("a")
     expect(db.getImageProvider("a")).toBeNull()
   })
+
+  test("stores a per-desktop system1 provider and clears it", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "t",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    expect(db.getSystem1("a")).toBeNull()
+    db.setSystem1("a", {
+      provider: "laya",
+      endpoint: "http://laya.example:8000/v1/systemone",
+      apiKey: "",
+      gatewayToken: "",
+      model: "",
+      accountId: "",
+      gatewayId: "",
+      slug: "",
+    })
+    expect(db.getSystem1("a")?.endpoint).toBe(
+      "http://laya.example:8000/v1/systemone",
+    )
+    db.clearSystem1("a")
+    expect(db.getSystem1("a")).toBeNull()
+  })
 })
 
 describe("cron store", () => {
@@ -388,6 +424,9 @@ describe("cron store", () => {
       nextRunAt: 2000,
       runCount: 0,
       lastError: null,
+      providerId: null,
+      modelId: null,
+      personaId: null,
       ...partial,
     }
   }
@@ -421,6 +460,21 @@ describe("cron store", () => {
     const renamed = db.updateCronJob("j1", "a", { name: "renamed" })
     expect(renamed?.name).toBe("renamed")
     expect(renamed?.enabled).toBe(false)
+    const assigned = db.updateCronJob("j1", "a", {
+      providerId: "grok",
+      modelId: "grok-4.5",
+      personaId: "designer",
+    })
+    expect(assigned?.providerId).toBe("grok")
+    expect(assigned?.personaId).toBe("designer")
+    const cleared = db.updateCronJob("j1", "a", {
+      providerId: null,
+      modelId: null,
+      personaId: null,
+    })
+    expect(cleared?.modelId).toBeNull()
+    expect(cleared?.personaId).toBeNull()
+    expect(cleared?.name).toBe("renamed")
 
     expect(db.deleteCronJob("j1", "b")).toBe(false)
     expect(db.deleteCronJob("j1", "a")).toBe(true)

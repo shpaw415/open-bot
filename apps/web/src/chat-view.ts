@@ -68,6 +68,22 @@ export type VisibleMessage = ChatMessage & {
   sentAt: number | null
 }
 
+export type SendStatus = "sending" | "sent" | "failed"
+
+export type SendReceipt = {
+  id: string
+  text: string
+  status: SendStatus
+  sentAt: number
+  baseline: number
+}
+
+export type TranscriptEntry = {
+  message: VisibleMessage
+  mark: SendStatus | null
+  pendingId: string | null
+}
+
 export function splitScreenHandoff(text: string): {
   text: string
   handoff: boolean
@@ -209,6 +225,79 @@ function sameBurst(prevAt: number | null, nextAt: number | null): boolean {
   return nextAt - prevAt < BUBBLE_GAP_MS
 }
 
+export function userMessageCount(messages: ChatMessage[]): number {
+  return messages.reduce(
+    (count, message) => (message.info?.role === "user" ? count + 1 : count),
+    0,
+  )
+}
+
+function receiptBubbleIndex(
+  messages: ChatMessage[],
+  shown: VisibleMessage[],
+  receipt: SendReceipt,
+): number | null {
+  let seen = 0
+  let target: ChatMessage | null = null
+  for (const message of messages) {
+    if (message.info?.role !== "user") continue
+    if (seen === receipt.baseline) {
+      target = message
+      break
+    }
+    seen++
+  }
+  if (!target || visibleText(target).trim() !== receipt.text.trim()) return null
+  const index = shown.findIndex(
+    (bubble) => bubble.info === target.info && bubble.parts === target.parts,
+  )
+  return index === -1 ? null : index
+}
+
+export function transcriptBubbles(
+  messages: ChatMessage[],
+  receipts: SendReceipt[],
+): TranscriptEntry[] {
+  const shown = threadBubbles(messages)
+  const marks = new Map<number, SendStatus>()
+  const pending: SendReceipt[] = []
+  for (const receipt of receipts) {
+    const index = receiptBubbleIndex(messages, shown, receipt)
+    if (index != null) {
+      marks.set(index, receipt.status === "failed" ? "sent" : receipt.status)
+      continue
+    }
+    if (
+      receipt.status === "sent" &&
+      messages.length === 0 &&
+      receipt.baseline > 0
+    ) {
+      continue
+    }
+    pending.push(receipt)
+  }
+  const out: TranscriptEntry[] = shown.map((message, index) => ({
+    message,
+    mark: marks.get(index) ?? null,
+    pendingId: null,
+  }))
+  for (const receipt of pending) {
+    const [bubble] = threadBubbles([
+      {
+        info: { role: "user", time: { created: receipt.sentAt } },
+        parts: [{ type: "text", text: receipt.text }],
+      },
+    ])
+    if (!bubble) continue
+    out.push({
+      message: bubble,
+      mark: receipt.status,
+      pendingId: receipt.id,
+    })
+  }
+  return out
+}
+
 export function threadBubbles(messages: ChatMessage[]): VisibleMessage[] {
   const out: VisibleMessage[] = []
   const burstAt = new Map<VisibleMessage, number | null>()
@@ -292,4 +381,27 @@ export function modelActivity(input: {
 
 export function samePayload(prev: string, next: unknown): boolean {
   return prev === JSON.stringify(next)
+}
+
+export type StreamEvent = { type?: string; properties?: unknown }
+
+/** True when an opencode stream event carries data for the given session. */
+export function eventTouchesSession(
+  event: StreamEvent,
+  sessionId: string,
+): boolean {
+  if (!sessionId) return false
+  const props = event.properties
+  if (!props || typeof props !== "object") return false
+  const record = props as {
+    sessionID?: unknown
+    info?: { id?: unknown; sessionID?: unknown }
+    part?: { sessionID?: unknown }
+  }
+  return [
+    record.sessionID,
+    record.info?.id,
+    record.info?.sessionID,
+    record.part?.sessionID,
+  ].some((id) => typeof id === "string" && id === sessionId)
 }

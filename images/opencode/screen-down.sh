@@ -32,10 +32,14 @@ if [ -d "$run_dir" ]; then
 fi
 profile=/home/agent/.config/chromium-threads/$session
 pkill -f "user-data-dir=$profile" 2>/dev/null || true
+if [ -x /opt/open-bot/sync-chromium.sh ]; then
+  /opt/open-bot/sync-chromium.sh push "$session" || true
+fi
 if [ -n "$display" ]; then
   pkill -f "Xvfb :$display " 2>/dev/null || true
   rm -f "/tmp/.X11-unix/X$display"
 fi
+rm -f "/home/agent/.open-bot/vnc/$session"
 if [ "$purge" -eq 1 ]; then
   rm -rf "$profile"
 fi

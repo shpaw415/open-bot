@@ -2,11 +2,14 @@ import { describe, expect, test } from "bun:test"
 import {
   type ChatMessage,
   chatImageUrl,
+  eventTouchesSession,
   modelActivity,
   nearBottom,
   samePayload,
   splitScreenHandoff,
   threadBubbles,
+  transcriptBubbles,
+  userMessageCount,
   visibleMessages,
   visibleText,
   workspaceImagePath,
@@ -320,6 +323,120 @@ describe("model activity", () => {
   })
 })
 
+describe("send receipts", () => {
+  const prior: ChatMessage = {
+    info: { role: "user", time: { created: 1 } },
+    parts: [{ type: "text", text: "earlier" }],
+  }
+
+  test("shows the outgoing text immediately with a sending mark", () => {
+    const bubbles = transcriptBubbles(
+      [prior],
+      [
+        {
+          id: "r1",
+          text: "hello",
+          status: "sending",
+          sentAt: 50,
+          baseline: userMessageCount([prior]),
+        },
+      ],
+    )
+    expect(bubbles.map((item) => item.message.text)).toEqual([
+      "earlier",
+      "hello",
+    ])
+    expect(bubbles[1]?.mark).toBe("sending")
+    expect(bubbles[1]?.pendingId).toBe("r1")
+  })
+
+  test("keeps a check on the optimistic bubble until the server copy arrives", () => {
+    const bubbles = transcriptBubbles(
+      [],
+      [
+        {
+          id: "r1",
+          text: "hello",
+          status: "sent",
+          sentAt: 50,
+          baseline: 0,
+        },
+      ],
+    )
+    expect(bubbles).toHaveLength(1)
+    expect(bubbles[0]?.mark).toBe("sent")
+  })
+
+  test("moves the check onto the accepted server message and drops the duplicate", () => {
+    const messages: ChatMessage[] = [
+      prior,
+      {
+        info: { role: "user", time: { created: 60 } },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    ]
+    const bubbles = transcriptBubbles(messages, [
+      {
+        id: "r1",
+        text: "hello",
+        status: "sent",
+        sentAt: 50,
+        baseline: 1,
+      },
+    ])
+    expect(bubbles.map((item) => item.message.text)).toEqual([
+      "earlier",
+      "hello",
+    ])
+    expect(bubbles[1]?.mark).toBe("sent")
+    expect(bubbles[1]?.pendingId).toBeNull()
+  })
+
+  test("does not mark an older copy of the same text", () => {
+    const messages: ChatMessage[] = [
+      {
+        info: { role: "user", time: { created: 1 } },
+        parts: [{ type: "text", text: "hello" }],
+      },
+      {
+        info: { role: "assistant", time: { created: 2 } },
+        parts: [{ type: "text", text: "ok" }],
+      },
+    ]
+    const bubbles = transcriptBubbles(messages, [
+      {
+        id: "r1",
+        text: "hello",
+        status: "sending",
+        sentAt: 50,
+        baseline: 1,
+      },
+    ])
+    expect(bubbles.map((item) => [item.message.text, item.mark])).toEqual([
+      ["hello", null],
+      ["ok", null],
+      ["hello", "sending"],
+    ])
+  })
+
+  test("does not flash a sent bubble while a loaded thread is cleared", () => {
+    expect(
+      transcriptBubbles(
+        [],
+        [
+          {
+            id: "r1",
+            text: "hello",
+            status: "sent",
+            sentAt: 50,
+            baseline: 2,
+          },
+        ],
+      ),
+    ).toEqual([])
+  })
+})
+
 describe("scroll stick", () => {
   test("treats the bottom as stuck and a scroll-up as free", () => {
     expect(nearBottom(1000, 960, 40)).toBe(true)
@@ -330,5 +447,57 @@ describe("scroll stick", () => {
     const body = [{ info: { role: "user" } }]
     expect(samePayload(JSON.stringify(body), body)).toBe(true)
     expect(samePayload(JSON.stringify(body), [])).toBe(false)
+  })
+})
+
+describe("event stream session matching", () => {
+  test("matches every opencode event payload shape", () => {
+    expect(
+      eventTouchesSession(
+        { type: "session.status", properties: { sessionID: "s1" } },
+        "s1",
+      ),
+    ).toBe(true)
+    expect(
+      eventTouchesSession(
+        { type: "session.updated", properties: { info: { id: "s1" } } },
+        "s1",
+      ),
+    ).toBe(true)
+    expect(
+      eventTouchesSession(
+        {
+          type: "message.updated",
+          properties: { info: { sessionID: "s1", role: "assistant" } },
+        },
+        "s1",
+      ),
+    ).toBe(true)
+    expect(
+      eventTouchesSession(
+        {
+          type: "message.part.updated",
+          properties: { part: { sessionID: "s1" } },
+        },
+        "s1",
+      ),
+    ).toBe(true)
+  })
+
+  test("ignores other sessions and malformed payloads", () => {
+    expect(
+      eventTouchesSession(
+        { type: "message.updated", properties: { sessionID: "s2" } },
+        "s1",
+      ),
+    ).toBe(false)
+    expect(eventTouchesSession({ type: "cron.changed" }, "s1")).toBe(false)
+    expect(
+      eventTouchesSession(
+        { type: "message.updated", properties: { sessionID: 42 } },
+        "s1",
+      ),
+    ).toBe(false)
+    expect(eventTouchesSession({ type: "message.updated" }, "s1")).toBe(false)
   })
 })

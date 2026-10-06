@@ -17,8 +17,20 @@ Add a job (exactly one of `--every`, `--cron`, `--at`):
 
 ```sh
 ob-cron add --name "daily-report" --message "Write today's report from the workspace notes" --cron "0 13 * * *"
-ob-cron add --name "hourly-check" --message "Check the log and summarize changes" --every 3600
+ob-cron add --name "hourly-check" --message "Check the log and summarize changes" --every 3600 --model grok/grok-4.5 --persona designer
 ob-cron add --name "one-shot" --message "Review the PR and leave notes" --at 2026-12-01T15:00:00Z
+```
+
+Optional run choice:
+
+- `--model PROVIDER/MODEL` selects the model for the temporary session. Omit it to use the desktop default. List connected models with `ob-cron models`.
+- `--persona ID` selects the personality that runs the job. Omit it, or pass `assistant`, for Assistant. List ids with `ob-persona list`. This does not change the result thread.
+
+Change a job later:
+
+```sh
+ob-cron set JOB_ID --model grok/grok-4.5 --persona designer
+ob-cron set JOB_ID --clear-model --clear-persona
 ```
 
 Remove or fire now:
@@ -33,5 +45,6 @@ Rules:
 - Cron expressions are 5-field UTC (`minute hour day-of-month month day-of-week`), so `0 13 * * 1-5` is weekdays at 13:00 UTC.
 - `--every` is seconds, minimum 60.
 - The message is the full prompt delivered at fire time; make it self-contained.
+- The chosen model and personality apply only to the temporary run. The result is still copied into the job thread.
 - When a message starts with `[cron: name]`, do the work in that temporary session and end with what you did and found. Do not create another thread. The result is copied to the job thread, you are not asked to post it, and the temporary session is deleted. The user is notified when the result lands, and the notice clears once they open the thread.
 - Do not use system crontab, `at`, or background loops for scheduling — only `ob-cron`.

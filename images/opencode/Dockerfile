@@ -1,8 +1,8 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl jq libatomic1 procps unzip \
-    xvfb openbox chromium \
+    bash ca-certificates curl jq libatomic1 procps sudo unzip \
+    xvfb openbox chromium sqlite3 \
     python3 python3-pip python3-venv \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \
@@ -23,6 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python3 -m venv /opt/vncdotool \
     && /opt/vncdotool/bin/pip install --no-cache-dir vncdotool \
     && ln -sf /opt/vncdotool/bin/vncdo /usr/local/bin/vncdo
+
+RUN arch=$(dpkg --print-architecture) \
+ && if [ "$arch" = "amd64" ]; then \
+      apt-get update \
+      && curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+      && apt-get install -y /tmp/chrome.deb \
+      && rm -f /tmp/chrome.deb \
+      && chmod 4755 /opt/google/chrome/chrome-sandbox \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 RUN curl -fsSL https://opencode.ai/install | bash \
     && cp -a /root/.opencode /opt/opencode \
@@ -46,10 +56,25 @@ COPY scripts/ob-persona.sh /usr/local/bin/ob-persona
 COPY images/opencode/entrypoint.sh /opt/open-bot/entrypoint.sh
 COPY images/opencode/apply-model.sh /opt/open-bot/apply-model.sh
 COPY images/opencode/apply-image-auth.sh /opt/open-bot/apply-image-auth.sh
+COPY images/opencode/apply-system1.sh /opt/open-bot/apply-system1.sh
+COPY apps/control/src/nav /opt/open-bot/nav
 COPY images/opencode/screen-up.sh /opt/open-bot/screen-up.sh
 COPY images/opencode/screen-down.sh /opt/open-bot/screen-down.sh
 COPY images/opencode/screen-list.sh /opt/open-bot/screen-list.sh
-RUN chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /usr/local/bin/ob-cron /usr/local/bin/ob-persona \
+COPY images/opencode/sync-chromium.sh /opt/open-bot/sync-chromium.sh
+COPY images/opencode/record-apt.sh /opt/open-bot/record-apt.sh
+COPY images/opencode/restore-apt.sh /opt/open-bot/restore-apt.sh
+COPY images/opencode/apt-persist.conf /etc/apt/apt.conf.d/99open-bot-persist
+COPY images/opencode/ob-vnc.sh /usr/local/bin/ob-vnc
+COPY images/opencode/ob-nav.sh /usr/local/bin/ob-nav
+COPY images/opencode/chromium-policy.json /etc/chromium/policies/managed/open-bot.json
+COPY images/opencode/chromium-policy.json /etc/opt/chrome/policies/managed/open-bot.json
+RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
+    && cp -a /usr/local /opt/image-usr-local \
+    && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
+    && chmod 440 /etc/sudoers.d/open-bot-agent \
+    && visudo -cf /etc/sudoers.d/open-bot-agent \
+    && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona \
     && touch /opt/open-bot/instance
 
 USER root

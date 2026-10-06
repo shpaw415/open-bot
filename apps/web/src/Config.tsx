@@ -10,6 +10,7 @@ import { api, type Me } from "./api"
 import { CustomSkills } from "./CustomSkills"
 import { ImageProvider } from "./ImageProvider"
 import { Personalities } from "./Personalities"
+import { System1 } from "./System1"
 import { VikingModels } from "./VikingModels"
 
 type Model = { providerID: string; modelID: string; name?: string }
@@ -150,6 +151,7 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
           </Stack>
         </Paper>
         <VikingModels endpoint="/api/viking" />
+        <System1 />
         <ImageProvider />
         <Personalities />
         <CustomSkills />

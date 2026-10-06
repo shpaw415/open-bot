@@ -1,5 +1,7 @@
 import type { CronJob, CronNotice, Db } from "@open-bot/db"
 import { desktopPhase, endpoint, startDesktop } from "./docker"
+import type { EventHub } from "./events"
+import { personaSystem, resolvePersona } from "./personas"
 import { ensureThreadScreen, stopThreadScreen } from "./screens"
 
 const MINUTE_MS = 60_000
@@ -154,6 +156,104 @@ export function nextRunMs(job: CronJob, fromMs = Date.now()): number | null {
 
 export function cronPrompt(job: Pick<CronJob, "name" | "message">): string {
   return `[cron: ${job.name}]\n${job.message}\n\n${PUBLISH_LINE}`
+}
+
+export function splitModelRef(
+  value: string,
+): { providerId: string; modelId: string } | { error: string } {
+  const trimmed = value.trim()
+  const split = trimmed.indexOf("/")
+  if (split <= 0) return { error: "model must be provider/model" }
+  const providerId = trimmed.slice(0, split).trim()
+  const modelId = trimmed.slice(split + 1).trim()
+  if (
+    !providerId ||
+    !modelId ||
+    /\s/.test(providerId) ||
+    /\s/.test(modelId) ||
+    providerId.length > 80 ||
+    modelId.length > 200
+  )
+    return { error: "model must be provider/model" }
+  return { providerId, modelId }
+}
+
+/** Model fields from a create/update body. Omitted means leave unchanged. */
+export function cronModelFields(
+  body: Record<string, unknown>,
+):
+  | { omitted: true }
+  | { providerId: string | null; modelId: string | null }
+  | { error: string } {
+  const pair =
+    "providerID" in body ||
+    "modelID" in body ||
+    "providerId" in body ||
+    "modelId" in body
+  const combined = "model" in body
+  if (!pair && !combined) return { omitted: true }
+  if (pair) {
+    const providerKey = "providerID" in body ? body.providerID : body.providerId
+    const modelKey = "modelID" in body ? body.modelID : body.modelId
+    if (
+      (providerKey === null || providerKey === "") &&
+      (modelKey === null || modelKey === "")
+    )
+      return { providerId: null, modelId: null }
+    const providerId = String(providerKey ?? "").trim()
+    const modelId = String(modelKey ?? "").trim()
+    if (
+      !providerId ||
+      !modelId ||
+      /\s/.test(providerId) ||
+      /\s/.test(modelId) ||
+      providerId.length > 80 ||
+      modelId.length > 200
+    )
+      return { error: "provider and model are both required" }
+    return { providerId, modelId }
+  }
+  if (body.model === null || String(body.model).trim() === "")
+    return { providerId: null, modelId: null }
+  return splitModelRef(String(body.model))
+}
+
+/** Personality from a create/update body. Empty or assistant stores null. */
+export function cronPersonaFields(
+  body: Record<string, unknown>,
+  exists: (id: string) => boolean,
+): { omitted: true } | { personaId: string | null } | { error: string } {
+  if (!("personaId" in body)) return { omitted: true }
+  const raw = body.personaId
+  if (raw === null || raw === undefined) return { personaId: null }
+  const id = String(raw).trim()
+  if (!id || id === "assistant") return { personaId: null }
+  if (id.length > 80 || !exists(id)) return { error: "personality not found" }
+  return { personaId: id }
+}
+
+export function cronRunBody(input: {
+  name: string
+  message: string
+  providerId: string | null
+  modelId: string | null
+  screenSystem: string
+  personaLine: string | null
+}) {
+  const system = [input.screenSystem, input.personaLine]
+    .filter((item): item is string => Boolean(item))
+    .join("\n\n")
+  const body: {
+    parts: { type: "text"; text: string }[]
+    system: string
+    model?: { providerID: string; modelID: string }
+  } = {
+    parts: [{ type: "text", text: cronPrompt(input) }],
+    system,
+  }
+  if (input.providerId && input.modelId)
+    body.model = { providerID: input.providerId, modelID: input.modelId }
+  return body
 }
 
 type PublishInput = {
@@ -377,6 +477,7 @@ async function settleCronNotice(
   db: Db,
   notice: CronNotice,
   opts: { force?: boolean; seenBusy?: boolean } = {},
+  hub?: EventHub,
 ): Promise<{ done: boolean; busy: boolean }> {
   if (notice.summary) return { done: true, busy: false }
   if (settling.has(notice.id)) return { done: false, busy: false }
@@ -434,6 +535,7 @@ async function settleCronNotice(
         desktop,
         db.getVikingProvider(current.userId),
         db.getImageProvider(current.userId),
+        db.getSystem1(current.userId),
       )
       desktopUp = true
       await readRun()
@@ -462,13 +564,14 @@ async function settleCronNotice(
       )
     }
     db.settleCronNotice(current.id, text)
+    hub?.emit(current.userId, { type: "cron.notices" })
     return { done: true, busy }
   } finally {
     settling.delete(notice.id)
   }
 }
 
-async function watchCronPublish(db: Db, noticeId: string) {
+async function watchCronPublish(db: Db, noticeId: string, hub?: EventHub) {
   try {
     const deadline = Date.now() + PUBLISH_TIMEOUT_MS
     let seenBusy = false
@@ -476,7 +579,7 @@ async function watchCronPublish(db: Db, noticeId: string) {
       const notice = db.cronNoticeById(noticeId)
       if (!notice || notice.summary) return
       try {
-        const settled = await settleCronNotice(db, notice, { seenBusy })
+        const settled = await settleCronNotice(db, notice, { seenBusy }, hub)
         if (settled.busy) seenBusy = true
         if (settled.done) return
       } catch {
@@ -487,16 +590,16 @@ async function watchCronPublish(db: Db, noticeId: string) {
     }
     const notice = db.cronNoticeById(noticeId)
     if (!notice || notice.summary) return
-    await settleCronNotice(db, notice, { force: true, seenBusy })
+    await settleCronNotice(db, notice, { force: true, seenBusy }, hub)
   } catch {
     return
   }
 }
 
-export async function settleCronNotices(db: Db) {
+export async function settleCronNotices(db: Db, hub?: EventHub) {
   for (const notice of db.pendingCronNotices()) {
     try {
-      await settleCronNotice(db, notice)
+      await settleCronNotice(db, notice, {}, hub)
     } catch {}
   }
 }
@@ -506,6 +609,7 @@ export async function fireCronJob(
   db: Db,
   job: CronJob,
   manual = false,
+  hub?: EventHub,
 ): Promise<string | null> {
   if (!manual) {
     db.setCronNextRun(job.id, job.kind === "at" ? null : nextRunMs(job))
@@ -521,6 +625,7 @@ export async function fireCronJob(
       desktop,
       db.getVikingProvider(job.userId),
       db.getImageProvider(job.userId),
+      db.getSystem1(job.userId),
     )
     db.touchDesktop(job.userId)
     const headers = {
@@ -543,15 +648,27 @@ export async function fireCronJob(
       sessionId,
     )
     const screen = await ensureThreadScreen(db, job.userId, runSessionId)
+    let personaLine: string | null = null
+    if (job.personaId) {
+      const persona = resolvePersona(db, job.userId, job.personaId)
+      if (!persona) throw new Error("personality not found")
+      personaLine = personaSystem(persona)
+    }
     const prompt = await opencodeJson(
       `${base}/session/${runSessionId}/prompt_async`,
       headers,
       {
         method: "POST",
-        body: JSON.stringify({
-          parts: [{ type: "text", text: cronPrompt(job) }],
-          system: screen.system,
-        }),
+        body: JSON.stringify(
+          cronRunBody({
+            name: job.name,
+            message: job.message,
+            providerId: job.providerId,
+            modelId: job.modelId,
+            screenSystem: screen.system,
+            personaLine,
+          }),
+        ),
       },
     )
     if (!prompt.ok) {
@@ -570,25 +687,26 @@ export async function fireCronJob(
       createdAt: Date.now(),
       viewedAt: null,
     })
-    void watchCronPublish(db, noticeId)
+    void watchCronPublish(db, noticeId, hub)
   } catch (caught) {
     error = caught instanceof Error ? caught.message : "cron run failed"
   }
   db.recordCronRun(job.id, error)
   if (!error && job.deleteAfterRun) db.deleteCronJob(job.id, job.userId)
+  hub?.emit(job.userId, { type: "cron.changed" })
   return error
 }
 
-export function startCronScheduler(db: Db) {
+export function startCronScheduler(db: Db, hub?: EventHub) {
   let sweeping = false
   return setInterval(() => {
     if (sweeping) return
     sweeping = true
     void (async () => {
       try {
-        await settleCronNotices(db)
+        await settleCronNotices(db, hub)
         for (const job of db.dueCronJobs(Date.now())) {
-          await fireCronJob(db, job)
+          await fireCronJob(db, job, false, hub)
         }
       } catch {
         // per-job errors are recorded on the job; keep the loop alive

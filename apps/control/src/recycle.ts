@@ -22,7 +22,13 @@ for (const userId of db.desktopUserIds()) {
   db.touchDesktop(userId)
   try {
     await stopDesktop(userId)
-    await startDesktop(userId, desktop, viking, db.getImageProvider(userId))
+    await startDesktop(
+      userId,
+      desktop,
+      viking,
+      db.getImageProvider(userId),
+      db.getSystem1(userId),
+    )
     db.touchDesktop(userId)
     restarted += 1
     console.log(`restarted ${names(userId).opencode}`)

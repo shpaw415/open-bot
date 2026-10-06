@@ -1,7 +1,26 @@
 #!/bin/sh
 set -eu
 export HOME=/home/agent
-mkdir -p /home/agent/workspace /home/agent/.config/opencode/skills /home/agent/.local/share/opencode /home/agent/.openviking /tmp/.X11-unix /home/agent/.config/chromium-threads
+mkdir -p /home/agent/workspace /home/agent/.config/opencode/skills /home/agent/.local/share/opencode /home/agent/.openviking /home/agent/.open-bot /tmp/.X11-unix /home/agent/.config/chromium /home/agent/.config/chromium-threads
+if [ -d /opt/image-usr-local ]; then
+  mkdir -p /usr/local
+  cp -a /opt/image-usr-local/. /usr/local/
+fi
+if [ -e /opt/google/chrome/chrome-sandbox ]; then
+  chown root:root /opt/google/chrome/chrome-sandbox
+  chmod 4755 /opt/google/chrome/chrome-sandbox
+fi
+idfile=/home/agent/.open-bot/machine-id
+if [ ! -s "$idfile" ]; then
+  if [ -s /etc/machine-id ]; then
+    cat /etc/machine-id >"$idfile"
+  else
+    tr -d '-' </proc/sys/kernel/random/uuid >"$idfile"
+  fi
+fi
+cp "$idfile" /etc/machine-id
+mkdir -p /var/lib/dbus
+cp "$idfile" /var/lib/dbus/machine-id
 cp /opt/open-bot/seed/AGENTS.md /home/agent/.config/opencode/AGENTS.md
 mkdir -p /home/agent/.config/opencode/skills/desktop
 cp /opt/open-bot/seed/skills/desktop/SKILL.md /home/agent/.config/opencode/skills/desktop/SKILL.md
@@ -24,6 +43,9 @@ cat > /home/agent/.openviking/ovcli.conf <<EOF
 EOF
 chown -R agent:agent /home/agent
 chmod 1777 /tmp/.X11-unix
+if ! /opt/open-bot/restore-apt.sh >>/home/agent/.open-bot/apt-restore.log 2>&1; then
+  echo "apt restore failed" >&2
+fi
 run() {
   su -s /bin/sh agent -c "export HOME=/home/agent; $1"
 }

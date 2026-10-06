@@ -25,21 +25,33 @@ import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Markdown, { defaultUrlTransform } from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { api, type DesktopStatus, type Me, waitForDesktop } from "./api"
+import {
+  api,
+  clientId,
+  type DesktopStatus,
+  type Me,
+  waitForDesktop,
+} from "./api"
 import {
   ACTIVITY_LABEL,
   type ChatMessage,
   chatImageUrl,
+  eventTouchesSession,
   modelActivity,
   nearBottom,
+  type SendReceipt,
+  type SendStatus,
   samePayload,
-  threadBubbles,
+  transcriptBubbles,
+  userMessageCount,
   visibleText,
 } from "./chat-view"
-import { useMobile } from "./hooks"
+import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
   AddIcon,
+  BlockIcon,
   ChatIcon,
+  CheckCircleIcon,
   ComputerIcon,
   DeleteIcon,
   EditIcon,
@@ -56,6 +68,12 @@ import {
 import type { PersonaInfo } from "./Personalities"
 
 const THREAD_KEY = "ob-thread"
+const BUILTIN_PERSONA_NAMES: Record<string, string> = {
+  assistant: "Assistant",
+  designer: "Designer",
+  "political-expert": "Political expert",
+  "software-designer": "Software designer",
+}
 
 type Model = { providerID: string; modelID: string; name?: string }
 type SessionInfo = {
@@ -81,6 +99,9 @@ type CronJobInfo = {
   nextRunAt: number | null
   runCount: number
   lastError: string | null
+  providerId: string | null
+  modelId: string | null
+  personaId: string | null
 }
 
 type CronNotice = {
@@ -94,6 +115,28 @@ type CronNotice = {
 
 type Phase = "starting" | "running" | "sleeping"
 type CronKind = "every" | "cron" | "at"
+type LocalReceipt = SendReceipt & { sessionId: string }
+
+function SendMark({ mark }: { mark: SendStatus }) {
+  const label =
+    mark === "sending" ? "Sending" : mark === "sent" ? "Sent" : "Not sent"
+  return (
+    <span
+      className={`ob-send-mark${mark === "sent" ? " ob-send-mark-sent" : ""}${mark === "failed" ? " ob-send-mark-failed" : ""}`}
+      role="img"
+      title={label}
+      aria-label={label}
+    >
+      {mark === "sending" ? (
+        <CircularProgress size={1} />
+      ) : mark === "sent" ? (
+        <CheckCircleIcon width={16} height={16} />
+      ) : (
+        <BlockIcon width={16} height={16} />
+      )}
+    </span>
+  )
+}
 
 function messageKey(message: ChatMessage, index: number): string {
   return `${index}:${message.info?.role ?? "m"}:${visibleText(message).slice(0, 48)}`
@@ -132,6 +175,27 @@ function formatWhen(ts: number | null): string {
   })
 }
 
+function cronModelValue(job: {
+  providerId: string | null
+  modelId: string | null
+}): string {
+  return job.providerId && job.modelId ? `${job.providerId}/${job.modelId}` : ""
+}
+
+function cronModelLabel(job: CronJobInfo, models: Model[]): string {
+  if (!job.providerId || !job.modelId) return "default model"
+  const match = models.find(
+    (item) =>
+      item.providerID === job.providerId && item.modelID === job.modelId,
+  )
+  return match?.name ?? `${job.providerId}/${job.modelId}`
+}
+
+function editingSchedule(jobs: CronJobInfo[], id: string): string {
+  const job = jobs.find((item) => item.id === id)
+  return job ? cronSchedule(job) : "as created"
+}
+
 function cronSchedule(job: CronJobInfo): string {
   if (job.kind === "cron") return job.cronExpr ?? ""
   if (job.kind === "every") {
@@ -155,6 +219,7 @@ export function Workspace({ me }: { me: Me }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
+  const [receipts, setReceipts] = useState<LocalReceipt[]>([])
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [sessionStatus, setSessionStatus] = useState<
@@ -198,6 +263,9 @@ export function Workspace({ me }: { me: Me }) {
   const [cronEvery, setCronEvery] = useState("3600")
   const [cronExpr, setCronExpr] = useState("0 9 * * *")
   const [cronAt, setCronAt] = useState("")
+  const [cronModel, setCronModel] = useState("")
+  const [cronPersona, setCronPersona] = useState("assistant")
+  const [cronEditId, setCronEditId] = useState<string | null>(null)
   const [notices, setNotices] = useState<CronNotice[]>([])
   const mobile = useMobile()
   const outputRef = useRef<HTMLDivElement>(null)
@@ -208,8 +276,16 @@ export function Workspace({ me }: { me: Me }) {
   const stoppingRef = useRef(false)
 
   const running = phase === "running"
+  const { live, subscribe } = useEventStream(running)
   const activeThread = sessions.find((item) => item.id === sessionId)
-  const shown = useMemo(() => threadBubbles(messages), [messages])
+  const shown = useMemo(
+    () =>
+      transcriptBubbles(
+        messages,
+        receipts.filter((item) => item.sessionId === sessionId),
+      ),
+    [messages, receipts, sessionId],
+  )
   const activity = modelActivity({
     phase: stopping ? "sleeping" : phase,
     sending,
@@ -369,43 +445,86 @@ export function Workspace({ me }: { me: Me }) {
     return () => clearInterval(timer)
   }, [running, models.length, modelsLoading, loadModels])
 
+  // event-driven refresh: the socket announces changes, we refetch lazily
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the refs reset when the thread or desktop changes
   useEffect(() => {
     messagesJsonRef.current = ""
     stickRef.current = true
+  }, [sessionId, running])
+
+  const tick = useCallback(async () => {
     if (!sessionId || !running) return
-    let cancelled = false
-    async function tick() {
-      try {
-        const messageRes = await fetch(
-          `/api/opencode/session/${sessionId}/message`,
-        )
-        const body = await messageRes.json()
-        if (cancelled) return
-        const next = Array.isArray(body) ? body : []
-        if (!samePayload(messagesJsonRef.current, next)) {
-          messagesJsonRef.current = JSON.stringify(next)
-          setMessages(next)
-        }
-      } catch {
-        return
+    try {
+      const messageRes = await fetch(
+        `/api/opencode/session/${sessionId}/message`,
+      )
+      const body = await messageRes.json()
+      const next = Array.isArray(body) ? body : []
+      if (!samePayload(messagesJsonRef.current, next)) {
+        messagesJsonRef.current = JSON.stringify(next)
+        setMessages(next)
       }
-      try {
-        const statusRes = await fetch("/api/opencode/session/status")
-        const status = await statusRes.json()
-        if (cancelled || !status || typeof status !== "object") return
-        setSessionStatus(status as Record<string, SessionStatus>)
-      } catch {
-        return
-      }
+    } catch {
+      return
     }
-    void tick()
-    const timer = setInterval(() => void tick(), 1000)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
+    try {
+      const statusRes = await fetch("/api/opencode/session/status")
+      const status = await statusRes.json()
+      if (!status || typeof status !== "object") return
+      setSessionStatus(status as Record<string, SessionStatus>)
+    } catch {
+      return
     }
   }, [sessionId, running])
 
+  // initial load plus catch-up whenever the stream comes back
+  // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
+  useEffect(() => {
+    void tick()
+  }, [tick, live])
+
+  const scheduleTick = useDebounced(() => void tick(), 150)
+
+  useEffect(() => {
+    if (!running) return
+    return subscribe((event) => {
+      const type = event.type ?? ""
+      if (type === "session.status") {
+        const props = event.properties as
+          | { sessionID?: unknown; status?: unknown }
+          | undefined
+        const id = typeof props?.sessionID === "string" ? props.sessionID : ""
+        if (
+          id &&
+          props?.status &&
+          typeof props.status === "object" &&
+          !Array.isArray(props.status)
+        ) {
+          setSessionStatus((prev) => ({
+            ...prev,
+            [id]: props.status as SessionStatus,
+          }))
+        }
+        return
+      }
+      if (type === "session.deleted" && eventTouchesSession(event, sessionId)) {
+        setSessionId("")
+        setMessages([])
+        localStorage.removeItem(THREAD_KEY)
+        return
+      }
+      if (
+        (type === "message.updated" ||
+          type === "message.removed" ||
+          type === "message.part.updated") &&
+        eventTouchesSession(event, sessionId)
+      ) {
+        scheduleTick()
+      }
+    })
+  }, [running, subscribe, sessionId, scheduleTick])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
   useEffect(() => {
     if (!running) {
       restoredRef.current = false
@@ -414,9 +533,23 @@ export function Workspace({ me }: { me: Me }) {
     }
     setSessionsLoading(true)
     void loadThreads()
-    const timer = setInterval(() => void loadThreads(), 5000)
-    return () => clearInterval(timer)
-  }, [running, loadThreads])
+  }, [running, loadThreads, live])
+
+  const scheduleThreads = useDebounced(() => void loadThreads(), 300)
+
+  useEffect(() => {
+    if (!running) return
+    return subscribe((event) => {
+      const type = event.type ?? ""
+      if (
+        type === "session.created" ||
+        type === "session.updated" ||
+        type === "session.deleted"
+      ) {
+        scheduleThreads()
+      }
+    })
+  }, [running, subscribe, scheduleThreads])
 
   useEffect(() => {
     if (!running || restoredRef.current || sessionsLoading) return
@@ -462,7 +595,7 @@ export function Workspace({ me }: { me: Me }) {
     }
   }, [tab, running, sessionId, desktopKey])
 
-  const needsScreen = shown.some((message) => message.handoff)
+  const needsScreen = shown.some((entry) => entry.message.handoff)
   useEffect(() => {
     if (tab === "desktop" || !running || !sessionId || !needsScreen) return
     let cancelled = false
@@ -499,15 +632,35 @@ export function Workspace({ me }: { me: Me }) {
     const el = outputRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-  }, [messages, tab])
+  }, [shown, tab])
 
   async function prompt(text: string) {
-    if (!text || sending || !running || stopping) return
+    if (!text || sending) return false
+    if (!running || stopping) {
+      setError(
+        stopping
+          ? "Desktop is stopping. Wait, then send again."
+          : "Desktop is not ready. Wait until it is running, then send again.",
+      )
+      return false
+    }
+    const receiptId = clientId()
+    let id = sessionId
+    setReceipts((prev) => [
+      ...prev,
+      {
+        id: receiptId,
+        sessionId: id,
+        text,
+        status: "sending",
+        sentAt: Date.now(),
+        baseline: userMessageCount(messages),
+      },
+    ])
     setError("")
     stickRef.current = true
     setSending(true)
     try {
-      let id = sessionId
       if (!id) {
         const created = await api<{ id: string }>("/api/opencode/session", {
           method: "POST",
@@ -516,6 +669,11 @@ export function Workspace({ me }: { me: Me }) {
         id = created.id
         setSessionId(id)
         localStorage.setItem(THREAD_KEY, id)
+        setReceipts((prev) =>
+          prev.map((item) =>
+            item.id === receiptId ? { ...item, sessionId: id } : item,
+          ),
+        )
         void loadThreads()
       }
       const split = model.indexOf("/")
@@ -528,9 +686,37 @@ export function Workspace({ me }: { me: Me }) {
           parts: [{ type: "text", text }],
         }),
       })
+      setReceipts((prev) =>
+        prev.map((item) =>
+          item.id === receiptId
+            ? { ...item, status: "sent", sessionId: id }
+            : item,
+        ),
+      )
+      const title = text
+        .split("\n")
+        .map((item) => item.trim())
+        .find(Boolean)
+      if (title) {
+        setSessions((prev) =>
+          prev.map((item) =>
+            item.id === id &&
+            (!item.title?.trim() || /^New session\b/i.test(item.title))
+              ? { ...item, title: title.slice(0, 80) }
+              : item,
+          ),
+        )
+      }
       setTimeout(() => void loadThreads(), 800)
+      return true
     } catch (caught) {
+      setReceipts((prev) =>
+        prev.map((item) =>
+          item.id === receiptId ? { ...item, status: "failed" } : item,
+        ),
+      )
       setError(caught instanceof Error ? caught.message : "send failed")
+      return false
     } finally {
       setSending(false)
     }
@@ -539,8 +725,24 @@ export function Workspace({ me }: { me: Me }) {
   async function send() {
     const text = draft.trim()
     if (!text) return
+    if (!running || stopping || sending) {
+      setError(
+        stopping
+          ? "Desktop is stopping. Wait, then send again."
+          : sending
+            ? "Still sending the previous message."
+            : "Desktop is not ready. Wait until it is running, then send again.",
+      )
+      return
+    }
     setDraft("")
-    await prompt(text)
+    try {
+      const accepted = await prompt(text)
+      if (!accepted) setDraft(text)
+    } catch (caught) {
+      setDraft(text)
+      setError(caught instanceof Error ? caught.message : "send failed")
+    }
   }
 
   function selectThread(id: string) {
@@ -578,7 +780,11 @@ export function Workspace({ me }: { me: Me }) {
 
   function personaName(id: string | undefined): string {
     if (!id || id === "assistant") return "Assistant"
-    return personas.find((item) => item.id === id)?.name ?? "Assistant"
+    return (
+      personas.find((item) => item.id === id)?.name ??
+      BUILTIN_PERSONA_NAMES[id] ??
+      id
+    )
   }
 
   async function newThread() {
@@ -664,12 +870,25 @@ export function Workspace({ me }: { me: Me }) {
     }
   }, [])
 
+  const scheduleCron = useDebounced(() => void loadCron(), 300)
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
   useEffect(() => {
     if (tab !== "cron") return
     void loadCron()
-    const timer = setInterval(() => void loadCron(), 10_000)
-    return () => clearInterval(timer)
-  }, [tab, loadCron])
+    void api<{ personas?: PersonaInfo[] }>("/api/personas")
+      .then((body) => {
+        if (body.personas?.length) setPersonas(body.personas)
+      })
+      .catch(() => {})
+  }, [tab, loadCron, live])
+
+  useEffect(() => {
+    if (tab !== "cron") return
+    return subscribe((event) => {
+      if (event.type === "cron.changed") scheduleCron()
+    })
+  }, [tab, subscribe, scheduleCron])
 
   const loadNotices = useCallback(async () => {
     try {
@@ -699,11 +918,30 @@ export function Workspace({ me }: { me: Me }) {
     [loadNotices],
   )
 
+  const scheduleNotices = useDebounced(() => void loadNotices(), 300)
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
   useEffect(() => {
     void loadNotices()
-    const timer = setInterval(() => void loadNotices(), 10_000)
+  }, [loadNotices, live])
+
+  useEffect(() => {
+    return subscribe((event) => {
+      if (event.type === "cron.notices") scheduleNotices()
+    })
+  }, [subscribe, scheduleNotices])
+
+  // slow safety net while the event stream is down
+  useEffect(() => {
+    if (!running || live) return
+    const timer = setInterval(() => {
+      void tick()
+      void loadThreads()
+      void loadNotices()
+      if (tab === "cron") void loadCron()
+    }, 30_000)
     return () => clearInterval(timer)
-  }, [loadNotices])
+  }, [running, live, tick, loadThreads, loadNotices, loadCron, tab])
 
   useEffect(() => {
     if (tab !== "chat" || !sessionId) return
@@ -733,32 +971,67 @@ export function Workspace({ me }: { me: Me }) {
     if (mobile) setThreadsOpen(false)
   }
 
-  async function addCronJob() {
+  function openCronForm(job?: CronJobInfo) {
+    setCronEditId(job?.id ?? null)
+    setCronName(job?.name ?? "")
+    setCronMessage(job?.message ?? "")
+    setCronKind(job?.kind ?? "every")
+    setCronEvery(String(job?.everySeconds ?? 3600))
+    setCronExpr(job?.cronExpr ?? "0 9 * * *")
+    setCronAt("")
+    setCronModel(job ? cronModelValue(job) : "")
+    setCronPersona(job?.personaId || "assistant")
+    setCronAddOpen(true)
+    void api<{ personas?: PersonaInfo[] }>("/api/personas")
+      .then((body) => setPersonas(body.personas ?? []))
+      .catch(() => {})
+  }
+
+  async function saveCronJob() {
     if (cronSaving) return
     setError("")
-    const body = {
+    const split = cronModel.indexOf("/")
+    const providerID = split > 0 ? cronModel.slice(0, split) : null
+    const modelID = split > 0 ? cronModel.slice(split + 1) : null
+    const personaId = cronPersona || "assistant"
+    const fields = {
       name: cronName.trim(),
       message: cronMessage.trim(),
-      kind: cronKind,
-      ...(cronKind === "every"
-        ? { everySeconds: Number(cronEvery) }
-        : cronKind === "cron"
-          ? { cronExpr: cronExpr.trim() }
-          : { atMs: new Date(cronAt).getTime() }),
+      providerID,
+      modelID,
+      personaId,
     }
     setCronSaving(true)
     try {
-      await api("/api/cron", { method: "POST", body: JSON.stringify(body) })
+      if (cronEditId) {
+        await api(`/api/cron/${cronEditId}`, {
+          method: "PATCH",
+          body: JSON.stringify(fields),
+        })
+      } else {
+        await api("/api/cron", {
+          method: "POST",
+          body: JSON.stringify({
+            ...fields,
+            kind: cronKind,
+            ...(cronKind === "every"
+              ? { everySeconds: Number(cronEvery) }
+              : cronKind === "cron"
+                ? { cronExpr: cronExpr.trim() }
+                : { atMs: new Date(cronAt).getTime() }),
+          }),
+        })
+      }
       setCronAddOpen(false)
-      setCronName("")
-      setCronMessage("")
-      setCronKind("every")
-      setCronEvery("3600")
-      setCronExpr("0 9 * * *")
-      setCronAt("")
       await loadCron()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "job create failed")
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : cronEditId
+            ? "job update failed"
+            : "job create failed",
+      )
     } finally {
       setCronSaving(false)
     }
@@ -889,191 +1162,199 @@ export function Workspace({ me }: { me: Me }) {
                 : `Cron${notices.length ? ` (${notices.length})` : ""}`}
           </Typography>
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
-            {stopping ? "stopping…" : phase === "starting" ? "starting…" : phase}
+            {stopping
+              ? "stopping…"
+              : phase === "starting"
+                ? "starting…"
+                : phase}
           </Chip>
           {phase === "starting" || stopping ? (
             <CircularProgress size={1.2} />
           ) : null}
         </Stack>
       ) : (
-      <Stack
-        direction="row"
-        spacing={1}
-        alignItems="center"
-        className="ob-workspace-bar"
-        sx={{
-          flexWrap: "nowrap",
-          overflow: "hidden",
-          minHeight: 40,
-        }}
-      >
-        <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
-          {stopping ? "stopping…" : phase === "starting" ? "starting…" : phase}
-        </Chip>
-        {phase === "starting" || stopping ? (
-          <CircularProgress size={1.2} />
-        ) : null}
-        {running ? (
-          mobile ? (
-            <ToolTip title={stopping ? "Stopping desktop…" : "Sleep desktop"}>
-              <IconButton
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          className="ob-workspace-bar"
+          sx={{
+            flexWrap: "nowrap",
+            overflow: "hidden",
+            minHeight: 40,
+          }}
+        >
+          <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
+            {stopping
+              ? "stopping…"
+              : phase === "starting"
+                ? "starting…"
+                : phase}
+          </Chip>
+          {phase === "starting" || stopping ? (
+            <CircularProgress size={1.2} />
+          ) : null}
+          {running ? (
+            mobile ? (
+              <ToolTip title={stopping ? "Stopping desktop…" : "Sleep desktop"}>
+                <IconButton
+                  size="small"
+                  aria-label="Sleep desktop"
+                  aria-busy={stopping}
+                  disabled={stopping}
+                  onClick={() => void sleep()}
+                >
+                  {stopping ? <CircularProgress size={1.2} /> : <PauseIcon />}
+                </IconButton>
+              </ToolTip>
+            ) : (
+              <Button
                 size="small"
-                aria-label="Sleep desktop"
-                aria-busy={stopping}
-                disabled={stopping}
+                variant="outlined"
+                startIcon={
+                  stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
+                }
                 onClick={() => void sleep()}
-              >
-                {stopping ? <CircularProgress size={1.2} /> : <PauseIcon />}
-              </IconButton>
-            </ToolTip>
-          ) : (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={
-                stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
-              }
-              onClick={() => void sleep()}
-              disabled={stopping}
-              aria-busy={stopping}
-              sx={{ flexShrink: 0 }}
-            >
-              {stopping ? "Stopping…" : "Sleep"}
-            </Button>
-          )
-        ) : mobile ? (
-          <ToolTip title="Start desktop">
-            <IconButton
-              size="small"
-              aria-label="Start desktop"
-              onClick={() => void start()}
-              disabled={phase === "starting"}
-            >
-              <PlayArrowIcon />
-            </IconButton>
-          </ToolTip>
-        ) : (
-          <Button
-            size="small"
-            variant="contained"
-            startIcon={<PlayArrowIcon />}
-            onClick={() => void start()}
-            disabled={phase === "starting"}
-            sx={{ flexShrink: 0 }}
-          >
-            Start
-          </Button>
-        )}
-        {tab === "chat" && running ? (
-          mobile ? (
-            <ToolTip title="New thread">
-              <IconButton
-                size="small"
-                aria-label="New thread"
-                disabled={actionBusy}
-                onClick={() => void newThread()}
-              >
-                <AddIcon />
-              </IconButton>
-            </ToolTip>
-          ) : (
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<AddIcon />}
-              disabled={actionBusy}
-              onClick={() => void newThread()}
-              sx={{ flexShrink: 0 }}
-            >
-              New thread
-            </Button>
-          )
-        ) : null}
-        {tab === "cron" ? (
-          mobile ? (
-            <ToolTip title="Add job">
-              <IconButton
-                size="small"
-                aria-label="Add job"
-                onClick={() => setCronAddOpen(true)}
-              >
-                <AddIcon />
-              </IconButton>
-            </ToolTip>
-          ) : (
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<AddIcon />}
-              onClick={() => setCronAddOpen(true)}
-              sx={{ flexShrink: 0 }}
-            >
-              Add job
-            </Button>
-          )
-        ) : null}
-        {modelsLoading && models.length === 0 ? (
-          <Skeleton width={mobile ? 120 : 160} height={32} />
-        ) : (
-          <Select
-            name="model"
-            label={running ? "Model" : "Model (start desktop)"}
-            value={model}
-            disabled={!running || models.length === 0}
-            className="ob-model-select"
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              maxWidth: mobile ? 160 : 240,
-            }}
-            onSelect={(value) => selectModel(value)}
-          >
-            {modelOptions}
-          </Select>
-        )}
-        {modelsError ? (
-          <ToolTip title={modelsError}>
-            <Chip
-              size="small"
-              color="error"
-              variant="outlined"
-              sx={{ flexShrink: 0 }}
-            >
-              model !
-            </Chip>
-          </ToolTip>
-        ) : null}
-        {running && !modelsLoading ? (
-          mobile ? null : (
-            <ToolTip title="Reload model list">
-              <IconButton
-                size="small"
-                aria-label="Reload model list"
-                onClick={() => void loadModels()}
+                disabled={stopping}
+                aria-busy={stopping}
                 sx={{ flexShrink: 0 }}
               >
-                <RefreshIcon />
+                {stopping ? "Stopping…" : "Sleep"}
+              </Button>
+            )
+          ) : mobile ? (
+            <ToolTip title="Start desktop">
+              <IconButton
+                size="small"
+                aria-label="Start desktop"
+                onClick={() => void start()}
+                disabled={phase === "starting"}
+              >
+                <PlayArrowIcon />
               </IconButton>
             </ToolTip>
-          )
-        ) : null}
-      </Stack>
+          ) : (
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={<PlayArrowIcon />}
+              onClick={() => void start()}
+              disabled={phase === "starting"}
+              sx={{ flexShrink: 0 }}
+            >
+              Start
+            </Button>
+          )}
+          {tab === "chat" && running ? (
+            mobile ? (
+              <ToolTip title="New thread">
+                <IconButton
+                  size="small"
+                  aria-label="New thread"
+                  disabled={actionBusy}
+                  onClick={() => void newThread()}
+                >
+                  <AddIcon />
+                </IconButton>
+              </ToolTip>
+            ) : (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<AddIcon />}
+                disabled={actionBusy}
+                onClick={() => void newThread()}
+                sx={{ flexShrink: 0 }}
+              >
+                New thread
+              </Button>
+            )
+          ) : null}
+          {tab === "cron" ? (
+            mobile ? (
+              <ToolTip title="Add job">
+                <IconButton
+                  size="small"
+                  aria-label="Add job"
+                  onClick={() => openCronForm()}
+                >
+                  <AddIcon />
+                </IconButton>
+              </ToolTip>
+            ) : (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<AddIcon />}
+                onClick={() => openCronForm()}
+                sx={{ flexShrink: 0 }}
+              >
+                Add job
+              </Button>
+            )
+          ) : null}
+          {modelsLoading && models.length === 0 ? (
+            <Skeleton width={mobile ? 120 : 160} height={32} />
+          ) : (
+            <Select
+              name="model"
+              label={running ? "Model" : "Model (start desktop)"}
+              value={model}
+              disabled={!running || models.length === 0}
+              className="ob-model-select"
+              sx={{
+                flex: 1,
+                minWidth: 0,
+                maxWidth: mobile ? 160 : 240,
+              }}
+              onSelect={(value) => selectModel(value)}
+            >
+              {modelOptions}
+            </Select>
+          )}
+          {modelsError ? (
+            <ToolTip title={modelsError}>
+              <Chip
+                size="small"
+                color="error"
+                variant="outlined"
+                sx={{ flexShrink: 0 }}
+              >
+                model !
+              </Chip>
+            </ToolTip>
+          ) : null}
+          {running && !modelsLoading ? (
+            mobile ? null : (
+              <ToolTip title="Reload model list">
+                <IconButton
+                  size="small"
+                  aria-label="Reload model list"
+                  onClick={() => void loadModels()}
+                  sx={{ flexShrink: 0 }}
+                >
+                  <RefreshIcon />
+                </IconButton>
+              </ToolTip>
+            )
+          ) : null}
+        </Stack>
       )}
 
       {mobile ? null : (
-      <Tabs value={tab} onChange={(_event, value) => setTab(String(value))}>
-        <Tab
-          label={`Chat${shown.length ? ` (${shown.length})` : ""}`}
-          value="chat"
-          icon={<ChatIcon />}
-        />
-        <Tab label="Desktop" value="desktop" icon={<ComputerIcon />} />
-        <Tab
-          label={`Cron${notices.length ? ` (${notices.length})` : ""}`}
-          value="cron"
-          icon={<ScheduleIcon />}
-        />
-      </Tabs>
+        <Tabs value={tab} onChange={(_event, value) => setTab(String(value))}>
+          <Tab
+            label={`Chat${shown.length ? ` (${shown.length})` : ""}`}
+            value="chat"
+            icon={<ChatIcon />}
+          />
+          <Tab label="Desktop" value="desktop" icon={<ComputerIcon />} />
+          <Tab
+            label={`Cron${notices.length ? ` (${notices.length})` : ""}`}
+            value="cron"
+            icon={<ScheduleIcon />}
+          />
+        </Tabs>
       )}
 
       {/* Chat */}
@@ -1347,11 +1628,13 @@ export function Workspace({ me }: { me: Me }) {
                   </Typography>
                 </Stack>
               ) : (
-                shown.map((message, index) => {
+                shown.map((entry, index) => {
+                  const message = entry.message
                   const role = message.info?.role ?? "message"
                   const mine = role === "user"
                   const lastHandoff = shown.reduce(
-                    (at, item, itemIndex) => (item.handoff ? itemIndex : at),
+                    (at, item, itemIndex) =>
+                      item.message.handoff ? itemIndex : at,
                     -1,
                   )
                   const liveScreen =
@@ -1360,7 +1643,7 @@ export function Workspace({ me }: { me: Me }) {
                     screen?.sessionId === sessionId
                   return (
                     <Box
-                      key={messageKey(message, index)}
+                      key={entry.pendingId ?? messageKey(message, index)}
                       title={mine ? "You" : "Agent"}
                       className={`ob-bubble ${mine ? "ob-bubble-user" : "ob-bubble-assistant"}`}
                       sx={{
@@ -1370,6 +1653,9 @@ export function Workspace({ me }: { me: Me }) {
                         borderColor: mine ? undefined : "divider",
                       }}
                     >
+                      {mine && entry.mark ? (
+                        <SendMark mark={entry.mark} />
+                      ) : null}
                       <div className="ob-md">
                         {message.text.trim() ? (
                           <Markdown
@@ -1631,6 +1917,16 @@ export function Workspace({ me }: { me: Me }) {
                     {job.name}
                   </Typography>
                   <Chip size="small" label={cronSchedule(job)} />
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={cronModelLabel(job, models)}
+                  />
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={personaName(job.personaId ?? undefined)}
+                  />
                   {notices.some((notice) => notice.jobId === job.id) ? (
                     <Chip size="small" color="primary" label="new result" />
                   ) : null}
@@ -1696,6 +1992,15 @@ export function Workspace({ me }: { me: Me }) {
                   <Button
                     size="small"
                     variant="text"
+                    startIcon={<EditIcon />}
+                    disabled={Boolean(cronBusyId)}
+                    onClick={() => openCronForm(job)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="text"
                     startIcon={<PlayArrowIcon />}
                     disabled={Boolean(cronBusyId)}
                     onClick={() => void runCronJob(job)}
@@ -1752,7 +2057,9 @@ export function Workspace({ me }: { me: Me }) {
           anchor="left"
           width={300}
         >
-          <Box sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}>
+          <Box
+            sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}
+          >
             <Typography variant="subtitle2">Views</Typography>
             <List dense disablePadding>
               <ListItemButton
@@ -1861,7 +2168,7 @@ export function Workspace({ me }: { me: Me }) {
               startIcon={<AddIcon />}
               onClick={() => {
                 goTab("cron")
-                setCronAddOpen(true)
+                openCronForm()
               }}
             >
               Add job
@@ -2014,7 +2321,9 @@ export function Workspace({ me }: { me: Me }) {
       </Dialog>
 
       <Dialog open={cronAddOpen} onClose={() => setCronAddOpen(false)}>
-        <DialogTitle>Add cron job</DialogTitle>
+        <DialogTitle>
+          {cronEditId ? "Edit cron job" : "Add cron job"}
+        </DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
             <TextField
@@ -2030,38 +2339,112 @@ export function Workspace({ me }: { me: Me }) {
               rows={3}
               onChange={(event) => setCronMessage(event.currentTarget.value)}
             />
-            <Select
-              name="schedule"
-              label="Schedule"
-              value={cronKind}
-              onSelect={(value) => setCronKind(value as CronKind)}
-            >
-              <option value="every">Interval</option>
-              <option value="cron">Cron expression (UTC)</option>
-              <option value="at">One time</option>
-            </Select>
-            {cronKind === "every" ? (
-              <TextField
-                label="Every (seconds, min 60)"
-                value={cronEvery}
-                inputMode="numeric"
-                onChange={(event) => setCronEvery(event.currentTarget.value)}
-              />
-            ) : cronKind === "cron" ? (
-              <TextField
-                label="Cron expression"
-                value={cronExpr}
-                placeholder="0 9 * * 1-5"
-                onChange={(event) => setCronExpr(event.currentTarget.value)}
-              />
+            {cronEditId ? (
+              <Typography variant="caption" color="textSecondary">
+                Schedule stays {editingSchedule(cronJobs, cronEditId)}.
+              </Typography>
             ) : (
-              <TextField
-                label="Run at"
-                value={cronAt}
-                type="datetime-local"
-                onChange={(event) => setCronAt(event.currentTarget.value)}
-              />
+              <>
+                <Select
+                  name="schedule"
+                  label="Schedule"
+                  value={cronKind}
+                  onSelect={(value) => setCronKind(value as CronKind)}
+                >
+                  <option value="every">Interval</option>
+                  <option value="cron">Cron expression (UTC)</option>
+                  <option value="at">One time</option>
+                </Select>
+                {cronKind === "every" ? (
+                  <TextField
+                    label="Every (seconds, min 60)"
+                    value={cronEvery}
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      setCronEvery(event.currentTarget.value)
+                    }
+                  />
+                ) : cronKind === "cron" ? (
+                  <TextField
+                    label="Cron expression"
+                    value={cronExpr}
+                    placeholder="0 9 * * 1-5"
+                    onChange={(event) => setCronExpr(event.currentTarget.value)}
+                  />
+                ) : (
+                  <TextField
+                    label="Run at"
+                    value={cronAt}
+                    type="datetime-local"
+                    onChange={(event) => setCronAt(event.currentTarget.value)}
+                  />
+                )}
+              </>
             )}
+            <Select
+              name="cron-model"
+              label="Model"
+              value={cronModel}
+              disabled={!running && models.length === 0 && !cronModel}
+              onSelect={setCronModel}
+            >
+              {[
+                <option key="default" value="">
+                  Desktop default
+                </option>,
+                ...(cronModel &&
+                !models.some(
+                  (item) => `${item.providerID}/${item.modelID}` === cronModel,
+                )
+                  ? [
+                      <option key={cronModel} value={cronModel}>
+                        {cronModel}
+                      </option>,
+                    ]
+                  : []),
+                ...modelOptions,
+              ]}
+            </Select>
+            <Select
+              name="cron-persona"
+              label="Personality"
+              value={cronPersona}
+              onSelect={setCronPersona}
+            >
+              {[
+                ...(personas.length
+                  ? personas
+                  : [
+                      {
+                        id: "assistant",
+                        name: "Assistant",
+                        instruction: "",
+                        builtin: true,
+                      },
+                    ]
+                ).map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                )),
+                ...(cronPersona &&
+                !personas.some((item) => item.id === cronPersona) &&
+                cronPersona !== "assistant"
+                  ? [
+                      <option key={cronPersona} value={cronPersona}>
+                        {personaName(cronPersona)}
+                      </option>,
+                    ]
+                  : []),
+              ]}
+            </Select>
+            <Typography variant="caption" color="textSecondary">
+              The model and personality run the temporary session. The result is
+              still posted to this job's thread.
+              {!running
+                ? " Start the desktop to choose a model other than the desktop default."
+                : ""}
+            </Typography>
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -2074,14 +2457,15 @@ export function Workspace({ me }: { me: Me }) {
               cronSaving ||
               !cronName.trim() ||
               !cronMessage.trim() ||
-              (cronKind === "every" && !(Number(cronEvery) >= 60)) ||
-              (cronKind === "cron" &&
-                cronExpr.trim().split(/\s+/).length !== 5) ||
-              (cronKind === "at" && !cronAt)
+              (!cronEditId &&
+                ((cronKind === "every" && !(Number(cronEvery) >= 60)) ||
+                  (cronKind === "cron" &&
+                    cronExpr.trim().split(/\s+/).length !== 5) ||
+                  (cronKind === "at" && !cronAt)))
             }
-            onClick={() => void addCronJob()}
+            onClick={() => void saveCronJob()}
           >
-            {cronSaving ? "…" : "Add"}
+            {cronSaving ? "…" : cronEditId ? "Save" : "Add"}
           </Button>
         </DialogActions>
       </Dialog>

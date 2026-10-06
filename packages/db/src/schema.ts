@@ -51,6 +51,14 @@ export const desktops = sqliteTable("desktops", {
   imageAccountId: text("image_account_id"),
   imageApiKey: text("image_api_key"),
   imageModel: text("image_model"),
+  system1Provider: text("system1_provider"),
+  system1Endpoint: text("system1_endpoint"),
+  system1ApiKey: text("system1_api_key"),
+  system1GatewayToken: text("system1_gateway_token"),
+  system1Model: text("system1_model"),
+  system1AccountId: text("system1_account_id"),
+  system1GatewayId: text("system1_gateway_id"),
+  system1Slug: text("system1_slug"),
 })
 
 export const usageEvents = sqliteTable(
@@ -135,6 +143,9 @@ export const cronJobs = sqliteTable(
     nextRunAt: integer("next_run_at"),
     runCount: integer("run_count").notNull().default(0),
     lastError: text("last_error"),
+    providerId: text("provider_id"),
+    modelId: text("model_id"),
+    personaId: text("persona_id"),
   },
   (table) => [index("cron_user_due").on(table.userId, table.nextRunAt)],
 )

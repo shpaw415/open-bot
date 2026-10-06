@@ -189,6 +189,24 @@ body,
   opacity: 0.72;
 }
 
+.ob-send-mark {
+  position: absolute;
+  left: -22px;
+  bottom: 6px;
+  display: flex;
+  width: 16px;
+  height: 16px;
+  color: #5f6b7a;
+}
+
+.ob-send-mark-sent {
+  color: #2e7d32;
+}
+
+.ob-send-mark-failed {
+  color: #c62828;
+}
+
 .ob-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -305,6 +323,18 @@ body,
 .MUI_dark .ob-bubble-assistant {
   background-color: #232a35;
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+.MUI_dark .ob-send-mark {
+  color: #c5cdd6;
+}
+
+.MUI_dark .ob-send-mark-sent {
+  color: #81c784;
+}
+
+.MUI_dark .ob-send-mark-failed {
+  color: #ef9a9a;
 }
 
 .MUI_dark .ob-md pre {

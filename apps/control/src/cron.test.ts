@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
+  cronModelFields,
+  cronPersonaFields,
   cronPrompt,
   cronResultMessage,
+  cronRunBody,
   nextCronTime,
   nextRunMs,
   parseCron,
@@ -204,6 +207,9 @@ describe("nextRunMs", () => {
           nextRunAt: null,
           runCount: 0,
           lastError: null,
+          providerId: null,
+          modelId: null,
+          personaId: null,
         },
         base,
       ),
@@ -230,9 +236,73 @@ describe("nextRunMs", () => {
           nextRunAt: null,
           runCount: 0,
           lastError: null,
+          providerId: null,
+          modelId: null,
+          personaId: null,
         },
         base,
       ),
     ).toBe(123_456)
+  })
+})
+
+describe("cron model and personality", () => {
+  test("parses a provider/model and clears an empty value", () => {
+    expect(cronModelFields({ model: "grok/grok-4.5" })).toEqual({
+      providerId: "grok",
+      modelId: "grok-4.5",
+    })
+    expect(cronModelFields({ model: "@cf/zai-org/glm-5.3" })).toEqual({
+      providerId: "@cf",
+      modelId: "zai-org/glm-5.3",
+    })
+    expect(cronModelFields({ model: "" })).toEqual({
+      providerId: null,
+      modelId: null,
+    })
+    expect(cronModelFields({})).toEqual({ omitted: true })
+    expect(cronModelFields({ providerID: "grok" })).toEqual({
+      error: "provider and model are both required",
+    })
+  })
+
+  test("rejects an unknown personality and stores assistant as unset", () => {
+    const exists = (id: string) => id === "designer"
+    expect(cronPersonaFields({ personaId: "designer" }, exists)).toEqual({
+      personaId: "designer",
+    })
+    expect(cronPersonaFields({ personaId: "assistant" }, exists)).toEqual({
+      personaId: null,
+    })
+    expect(cronPersonaFields({ personaId: "missing" }, exists)).toEqual({
+      error: "personality not found",
+    })
+    expect(cronPersonaFields({}, exists)).toEqual({ omitted: true })
+  })
+
+  test("puts the model and personality on the run, not the result text", () => {
+    const body = cronRunBody({
+      name: "daily",
+      message: "check the log",
+      providerId: "grok",
+      modelId: "grok-4.5",
+      screenSystem: "screen :1",
+      personaLine: "For this thread only, answer as Designer.",
+    })
+    expect(body.model).toEqual({ providerID: "grok", modelID: "grok-4.5" })
+    expect(body.system).toContain("screen :1")
+    expect(body.system).toContain("answer as Designer")
+    expect(body.parts[0]?.text.startsWith("[cron: daily]")).toBe(true)
+    expect(cronResultMessage("daily", "done")).not.toContain("grok-4.5")
+    const plain = cronRunBody({
+      name: "daily",
+      message: "check",
+      providerId: null,
+      modelId: null,
+      screenSystem: "screen",
+      personaLine: null,
+    })
+    expect(plain.model).toBeUndefined()
+    expect(plain.system).toBe("screen")
   })
 })

@@ -40,6 +40,7 @@ export function names(userId: string) {
     computer: `ob-pc-${key}`,
     viking: `ob-vk-${key}`,
     home: `ob-home-${key}`,
+    usrLocal: `ob-local-${key}`,
     vikingData: `ob-viking-${key}`,
     x11: `ob-x11-${key}`,
   }

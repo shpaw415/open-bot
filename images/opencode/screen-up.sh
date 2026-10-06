@@ -25,6 +25,12 @@ mkdir -p "$run_dir" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
 
 profile=/home/agent/.config/chromium-threads/$session
+port=$((5900 + display))
+cdp=$((9222 + display))
+mkdir -p /home/agent/.open-bot/vnc /home/agent/.open-bot/cdp
+echo "computer::$port" >/home/agent/.open-bot/vnc/$session
+echo "$cdp" >/home/agent/.open-bot/cdp/$session
+chown -R agent:agent /home/agent/.open-bot
 if [ -f "$run_dir/display" ] && [ "$(cat "$run_dir/display")" = "$display" ] && [ -f "$run_dir/xvfb.pid" ]; then
   pid=$(cat "$run_dir/xvfb.pid")
   if kill -0 "$pid" 2>/dev/null && [ -S "/tmp/.X11-unix/X$display" ] && pgrep -f "user-data-dir=$profile" >/dev/null 2>&1; then
@@ -42,9 +48,20 @@ done
 rm -f "/tmp/.X11-unix/X$display"
 
 mkdir -p "$profile" "/tmp/open-bot-runtime-$display"
+/opt/open-bot/sync-chromium.sh pull "$session"
 pkill -f "user-data-dir=$profile" 2>/dev/null || true
 rm -f "$profile/SingletonLock" "$profile/SingletonCookie" "$profile/SingletonSocket"
-chown -R agent:agent /home/agent/.config/chromium-threads "/tmp/open-bot-runtime-$display"
+chown -R agent:agent /home/agent/.config/chromium /home/agent/.config/chromium-threads "/tmp/open-bot-runtime-$display"
+prefs=$profile/Default/Preferences
+if [ -f "$prefs" ]; then
+  tmp=$(mktemp)
+  if jq '.profile.exit_type = "Normal" | .profile.exited_cleanly = true' "$prefs" >"$tmp"; then
+    mv "$tmp" "$prefs"
+    chown agent:agent "$prefs"
+  else
+    rm -f "$tmp"
+  fi
+fi
 
 start_group() {
   name=$1
@@ -69,6 +86,35 @@ while [ ! -S "/tmp/.X11-unix/X$display" ]; do
 done
 chmod 777 "/tmp/.X11-unix/X$display" || true
 start_group openbox openbox
-start_group chromium chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --window-size=1280,800 --user-data-dir="$profile" about:blank
+if [ -x /opt/google/chrome/google-chrome ]; then
+  start_group chromium /opt/google/chrome/google-chrome \
+    --disable-namespace-sandbox \
+    --disable-dev-shm-usage \
+    --disable-gpu \
+    --password-store=basic \
+    --hide-crash-restore-bubble \
+    --no-first-run \
+    --remote-debugging-port="$cdp" \
+    --remote-debugging-address=127.0.0.1 \
+    --remote-allow-origins=* \
+    --disable-search-engine-choice-screen \
+    --window-size=1280,800 \
+    --user-data-dir="$profile" \
+    about:blank
+else
+  start_group chromium chromium \
+    --no-sandbox \
+    --disable-dev-shm-usage \
+    --disable-gpu \
+    --password-store=basic \
+    --hide-crash-restore-bubble \
+    --no-first-run \
+    --remote-debugging-port="$cdp" \
+    --remote-debugging-address=127.0.0.1 \
+    --remote-allow-origins=* \
+    --window-size=1280,800 \
+    --user-data-dir="$profile" \
+    about:blank
+fi
 echo "$display" >"$run_dir/display"
 echo "ok $display"

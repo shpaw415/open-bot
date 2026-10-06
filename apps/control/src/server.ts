@@ -7,12 +7,19 @@ import {
   type CronScheduleKind,
   type Db,
   type ImageProvider,
+  type System1Provider,
   type User,
   type VikingProvider,
   vikingProviderReady,
 } from "@open-bot/db"
 import { handleAdmin } from "./admin"
-import { fireCronJob, nextRunMs, parseCron } from "./cron"
+import {
+  cronModelFields,
+  cronPersonaFields,
+  fireCronJob,
+  nextRunMs,
+  parseCron,
+} from "./cron"
 import {
   desktopPhase,
   endpoint,
@@ -24,8 +31,10 @@ import {
   startError,
   stopDesktop,
   syncImageAuth,
+  syncSystem1,
 } from "./docker"
 import { cookieSecure, names, webDist } from "./env"
+import type { EventHub, EventsSocketData, Upstream } from "./events"
 import { HttpError, httpErrorResponse } from "./http-error"
 import {
   imageAuthReady,
@@ -47,6 +56,14 @@ import {
   resolveRootSession,
   stopThreadScreen,
 } from "./screens"
+import {
+  system1EndpointError,
+  system1FieldError,
+  system1ProviderById,
+  system1ProviderPublic,
+  system1Providers,
+} from "./system1"
+import { isStockTitle, promptText, titleFromPrompt } from "./thread-title"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
 import {
   assertSkillInput,
@@ -74,7 +91,9 @@ type LoginSocket = {
   rows: number
 }
 
-type SocketData = ProxySocket | LoginSocket
+type EventsSocket = EventsSocketData
+
+type SocketData = ProxySocket | LoginSocket | EventsSocket
 
 type LoginSession = {
   id: string
@@ -135,6 +154,35 @@ async function readJson(req: Request) {
 function basic(password: string) {
   return {
     authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+  }
+}
+
+async function nameStockThread(
+  base: string,
+  auth: HeadersInit,
+  sessionId: string,
+  text: string,
+) {
+  const title = titleFromPrompt(text)
+  if (!title) return
+  try {
+    const current = await fetch(
+      `${base}/session/${encodeURIComponent(sessionId)}`,
+      { headers: auth, signal: AbortSignal.timeout(5000) },
+    )
+    if (!current.ok) return
+    const body = (await current.json().catch(() => null)) as {
+      title?: unknown
+    } | null
+    if (!isStockTitle(typeof body?.title === "string" ? body.title : "")) return
+    await fetch(`${base}/session/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { ...new Headers(auth), "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch {
+    // the prompt is already accepted; a stock title can be renamed later
   }
 }
 
@@ -220,6 +268,20 @@ async function createOpencodeSession(
   })
 }
 
+async function applySystem1(userId: string, value: System1Provider | null) {
+  try {
+    const applied = await syncSystem1(userId, value)
+    return { ok: true, applied }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "apply failed"
+    throw new HttpError(
+      502,
+      `Saved, but the desktop did not receive the provider: ${message}`,
+      "system1_apply",
+    )
+  }
+}
+
 async function applyImageAuth(userId: string, value: ImageProvider) {
   try {
     const applied = await syncImageAuth(userId, {
@@ -256,6 +318,7 @@ async function ensure(user: User, db: Db) {
     desktop,
     db.getVikingProvider(user.id),
     db.getImageProvider(user.id),
+    db.getSystem1(user.id),
   )
   db.touchDesktop(user.id)
   return desktop
@@ -302,7 +365,12 @@ async function staticFile(pathname: string) {
   }
 }
 
-export function createServer(db: Db, ai: AiConfig, hostname: string) {
+export function createServer(
+  db: Db,
+  ai: AiConfig,
+  hostname: string,
+  hub: EventHub,
+) {
   return Bun.serve<SocketData>({
     port: Number(process.env.PORT ?? 8787),
     hostname,
@@ -313,11 +381,18 @@ export function createServer(db: Db, ai: AiConfig, hostname: string) {
           return await handleLlm(req, url, ai, db)
         if (
           req.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+          url.pathname === "/api/events"
+        ) {
+          return await eventsUpgrade(req, db, server)
+        }
+        if (
+          req.headers.get("upgrade")?.toLowerCase() === "websocket" &&
           url.pathname.startsWith("/api/providers/login/")
         ) {
           return await loginTtyUpgrade(req, url, db, server)
         }
-        if (url.pathname.startsWith("/api/")) return await api(req, url, db)
+        if (url.pathname.startsWith("/api/"))
+          return await api(req, url, db, hub)
         if (url.pathname.startsWith("/desktop/"))
           return await desktopProxy(req, url, server, db)
         return await staticFile(url.pathname)
@@ -330,6 +405,10 @@ export function createServer(db: Db, ai: AiConfig, hostname: string) {
     },
     websocket: {
       open(ws) {
+        if (ws.data.kind === "events") {
+          hub.attach(ws, ws.data.userId)
+          return
+        }
         if (ws.data.kind === "login") {
           openLogin(ws)
           return
@@ -348,6 +427,7 @@ export function createServer(db: Db, ai: AiConfig, hostname: string) {
         upstream.addEventListener("close", () => ws.close())
       },
       message(ws, message) {
+        if (ws.data.kind === "events") return
         if (ws.data.kind === "login") {
           writeLogin(ws, message)
           return
@@ -360,6 +440,10 @@ export function createServer(db: Db, ai: AiConfig, hostname: string) {
         upstream.send(message)
       },
       close(ws) {
+        if (ws.data.kind === "events") {
+          hub.detach(ws)
+          return
+        }
         if (ws.data.kind === "login") {
           closeLogin(ws)
           return
@@ -370,7 +454,7 @@ export function createServer(db: Db, ai: AiConfig, hostname: string) {
   })
 }
 
-async function api(req: Request, url: URL, db: Db) {
+async function api(req: Request, url: URL, db: Db, hub: EventHub) {
   if (url.pathname === "/api/health") return json({ ok: true })
   if (url.pathname === "/api/auth/login" && req.method === "POST") {
     const body = await readJson(req)
@@ -423,7 +507,7 @@ async function api(req: Request, url: URL, db: Db) {
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
-      if (isCronPath) return handleCron(req, url, db, agent)
+      if (isCronPath) return handleCron(req, url, db, agent, hub)
     }
   }
   const user = userFrom(req, db)
@@ -433,7 +517,7 @@ async function api(req: Request, url: URL, db: Db) {
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
-  if (isCronPath) return handleCron(req, url, db, user)
+  if (isCronPath) return handleCron(req, url, db, user, hub)
   if (url.pathname === "/api/auth/credentials" && req.method === "POST") {
     if (!user.mustChangePassword)
       return json({ error: "credentials already set" }, 400)
@@ -503,6 +587,7 @@ async function api(req: Request, url: URL, db: Db) {
         desktop,
         db.getVikingProvider(user.id),
         db.getImageProvider(user.id),
+        db.getSystem1(user.id),
       ).catch(() => {})
       db.touchDesktop(user.id)
     }
@@ -611,6 +696,79 @@ async function api(req: Request, url: URL, db: Db) {
     }
     return json({ ok: true })
   }
+  if (url.pathname === "/api/system1" && req.method === "GET") {
+    const saved = db.getSystem1(user.id)
+    const selected =
+      system1ProviderById(saved?.provider ?? "") ?? system1Providers[0]
+    return json({
+      providers: system1ProviderPublic(),
+      provider: saved?.provider ?? selected?.id ?? "",
+      endpoint: saved?.endpoint ?? "",
+      model: saved?.model ?? selected?.defaultModel ?? "",
+      accountId: saved?.accountId ?? "",
+      gatewayId: saved?.gatewayId ?? "",
+      slug: saved?.slug ?? "jev",
+      hasKey: Boolean(saved?.apiKey),
+      hasGatewayToken: Boolean(saved?.gatewayToken),
+    })
+  }
+  if (url.pathname === "/api/system1" && req.method === "PUT") {
+    const body = await readJson(req)
+    const current = db.getSystem1(user.id)
+    const spec = system1ProviderById(String(body.provider ?? "").trim())
+    if (!spec) return json({ error: "unsupported provider" }, 400)
+    const endpoint = String(body.endpoint ?? "").trim()
+    const endpointError = system1EndpointError(spec.id, endpoint)
+    if (endpointError) return json({ error: endpointError }, 400)
+    const accountId = String(body.accountId ?? "").trim()
+    const gatewayId = String(body.gatewayId ?? "").trim()
+    const slug = String(body.slug ?? "").trim()
+    for (const [name, value] of [
+      ["account", accountId],
+      ["gateway", gatewayId],
+      ["slug", slug],
+    ] as const) {
+      const fieldError = system1FieldError(name, value)
+      if (fieldError) return json({ error: fieldError }, 400)
+    }
+    const typedKey = String(body.apiKey ?? "").trim()
+    const typedGateway = String(body.gatewayToken ?? "").trim()
+    const next: System1Provider = {
+      provider: spec.id,
+      endpoint,
+      apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
+      gatewayToken: spec.gatewayToken
+        ? typedGateway ||
+          (current?.provider === spec.id ? current.gatewayToken : "")
+        : "",
+      model: String(body.model ?? "").trim() || spec.defaultModel,
+      accountId,
+      gatewayId,
+      slug,
+    }
+    if (spec.keyRequired && !next.apiKey) {
+      return json({ error: "API key is required" }, 400)
+    }
+    db.setSystem1(user.id, next)
+    return json(await applySystem1(user.id, next))
+  }
+  if (url.pathname === "/api/system1" && req.method === "DELETE") {
+    db.clearSystem1(user.id)
+    try {
+      await syncSystem1(user.id, null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing system1 setup")) {
+        return json(
+          {
+            error: message || "removed, but the desktop still has the provider",
+          },
+          502,
+        )
+      }
+    }
+    return json({ ok: true })
+  }
   if (url.pathname === "/api/skills" && req.method === "GET") {
     const name = url.searchParams.get("name")?.trim() ?? ""
     if (name) {
@@ -712,40 +870,8 @@ async function api(req: Request, url: URL, db: Db) {
     }
     return json({ ok: true })
   }
-  if (url.pathname === "/api/models" && req.method === "GET") {
-    const desktop = await ensure(user, db)
-    const base = await endpoint(user.id, "opencode", 4096)
-    const headers = basic(desktop.opencodePassword)
-    const response = await fetch(`${base}/provider`, { headers })
-    if (!response.ok) {
-      throw new HttpError(
-        502,
-        `provider list failed (${response.status})`,
-        "provider_list_failed",
-      )
-    }
-    const body = (await response.json()) as {
-      all?: { id?: string; models?: Record<string, { name?: string }> }[]
-      connected?: unknown
-    }
-    const connected = Array.isArray(body.connected)
-      ? body.connected.filter((id): id is string => typeof id === "string")
-      : []
-    const connectedSet = new Set(connected)
-    const models: { providerID: string; modelID: string; name?: string }[] = []
-    for (const provider of body.all ?? []) {
-      if (!provider.id || !connectedSet.has(provider.id)) continue
-      for (const [modelID, info] of Object.entries(provider.models ?? {})) {
-        models.push({ providerID: provider.id, modelID, name: info?.name })
-      }
-    }
-    models.sort((a, b) =>
-      `${a.providerID}/${a.modelID}`.localeCompare(
-        `${b.providerID}/${b.modelID}`,
-      ),
-    )
-    return json({ models, connected })
-  }
+  if (url.pathname === "/api/models" && req.method === "GET")
+    return json(await connectedModels(user, db))
   if (url.pathname === "/api/workspace/image" && req.method === "GET") {
     const path = workspaceImagePath(url.searchParams.get("path") ?? "")
     if (!path) return json({ error: "not found" }, 404)
@@ -783,21 +909,6 @@ async function api(req: Request, url: URL, db: Db) {
     )
     if (prompted && req.method === "POST") {
       const promptedId = decodeURIComponent(prompted[1] ?? "")
-      const root = await resolveRootSession(base, auth, promptedId)
-      const screen = await ensureThreadScreen(db, user.id, root)
-      const line = [
-        personaSystem(
-          resolvePersona(
-            db,
-            user.id,
-            db.threadPersona(user.id, promptedId)?.personaId ?? ASSISTANT_ID,
-          ),
-        ),
-        screen.system,
-        IMAGE_REPLY,
-      ]
-        .filter((item): item is string => Boolean(item))
-        .join("\n\n")
       const parsed = (await req.json().catch(() => ({}))) as Record<
         string,
         unknown
@@ -806,6 +917,27 @@ async function api(req: Request, url: URL, db: Db) {
         parsed && typeof parsed === "object" && !Array.isArray(parsed)
           ? parsed
           : {}
+      const text = promptText(body)
+      const root = await resolveRootSession(base, auth, promptedId)
+      const screen = await Promise.race([
+        ensureThreadScreen(db, user.id, root).catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+      ])
+      const line = [
+        personaSystem(
+          resolvePersona(
+            db,
+            user.id,
+            db.threadPersona(user.id, promptedId)?.personaId ?? ASSISTANT_ID,
+          ),
+        ),
+        screen?.system ??
+          "This thread's screen is still starting. Do not guess a VNC port. Do not call vncdo.",
+        IMAGE_REPLY,
+      ]
+        .filter((item): item is string => Boolean(item))
+        .join("\n\n")
+      if (text) void nameStockThread(base, auth, promptedId, text)
       return proxy(
         req,
         base,
@@ -821,7 +953,49 @@ async function api(req: Request, url: URL, db: Db) {
 
 const CRON_LOOKAHEAD_MS = 4 * 366 * 24 * 60 * 60 * 1000
 
-async function handleCron(req: Request, url: URL, db: Db, user: User) {
+async function connectedModels(user: User, db: Db) {
+  const desktop = await ensure(user, db)
+  const base = await endpoint(user.id, "opencode", 4096)
+  const response = await fetch(`${base}/provider`, {
+    headers: basic(desktop.opencodePassword),
+  })
+  if (!response.ok) {
+    throw new HttpError(
+      502,
+      `provider list failed (${response.status})`,
+      "provider_list_failed",
+    )
+  }
+  const body = (await response.json()) as {
+    all?: { id?: string; models?: Record<string, { name?: string }> }[]
+    connected?: unknown
+  }
+  const connected = Array.isArray(body.connected)
+    ? body.connected.filter((id): id is string => typeof id === "string")
+    : []
+  const connectedSet = new Set(connected)
+  const models: { providerID: string; modelID: string; name?: string }[] = []
+  for (const provider of body.all ?? []) {
+    if (!provider.id || !connectedSet.has(provider.id)) continue
+    for (const [modelID, info] of Object.entries(provider.models ?? {})) {
+      models.push({ providerID: provider.id, modelID, name: info?.name })
+    }
+  }
+  models.sort((a, b) =>
+    `${a.providerID}/${a.modelID}`.localeCompare(
+      `${b.providerID}/${b.modelID}`,
+    ),
+  )
+  return { models, connected }
+}
+
+async function handleCron(
+  req: Request,
+  url: URL,
+  db: Db,
+  user: User,
+  hub: EventHub,
+) {
   const idMatch = url.pathname.match(/^\/api\/cron\/([^/]+)(\/run)?$/)
 
   if (url.pathname === "/api/cron/notices" && req.method === "GET")
@@ -834,8 +1008,12 @@ async function handleCron(req: Request, url: URL, db: Db, user: User) {
     if (id) db.viewCronNotice(id, user.id)
     else if (sessionId) db.viewCronNoticesBySession(user.id, sessionId)
     else return json({ error: "id or sessionId is required" }, 400)
+    hub.emit(user.id, { type: "cron.notices" })
     return json({ ok: true })
   }
+
+  if (url.pathname === "/api/cron/models" && req.method === "GET")
+    return json(await connectedModels(user, db))
 
   if (url.pathname === "/api/cron" && req.method === "GET")
     return json(db.cronJobs(user.id))
@@ -906,9 +1084,24 @@ async function handleCron(req: Request, url: URL, db: Db, user: User) {
       nextRunAt: null,
       runCount: 0,
       lastError: null,
+      providerId: null,
+      modelId: null,
+      personaId: null,
     }
+    const model = cronModelFields(body)
+    if ("error" in model) return json({ error: model.error }, 400)
+    if (!("omitted" in model)) {
+      job.providerId = model.providerId
+      job.modelId = model.modelId
+    }
+    const persona = cronPersonaFields(body, (id) =>
+      Boolean(resolvePersona(db, user.id, id)),
+    )
+    if ("error" in persona) return json({ error: persona.error }, 400)
+    if (!("omitted" in persona)) job.personaId = persona.personaId
     job.nextRunAt = nextRunMs(job)
     db.createCronJob(job)
+    hub.emit(user.id, { type: "cron.changed" })
     return json(job, 201)
   }
 
@@ -921,6 +1114,9 @@ async function handleCron(req: Request, url: URL, db: Db, user: User) {
       message?: string
       enabled?: boolean
       nextRunAt?: number | null
+      providerId?: string | null
+      modelId?: string | null
+      personaId?: string | null
     } = {}
     if (body.name !== undefined) {
       const name = String(body.name ?? "").trim()
@@ -937,7 +1133,20 @@ async function handleCron(req: Request, url: URL, db: Db, user: User) {
       changes.enabled = enabled
       if (enabled) changes.nextRunAt = nextRunMs(job)
     }
-    return json(db.updateCronJob(job.id, user.id, changes))
+    const model = cronModelFields(body)
+    if ("error" in model) return json({ error: model.error }, 400)
+    if (!("omitted" in model)) {
+      changes.providerId = model.providerId
+      changes.modelId = model.modelId
+    }
+    const persona = cronPersonaFields(body, (id) =>
+      Boolean(resolvePersona(db, user.id, id)),
+    )
+    if ("error" in persona) return json({ error: persona.error }, 400)
+    if (!("omitted" in persona)) changes.personaId = persona.personaId
+    const updated = db.updateCronJob(job.id, user.id, changes)
+    hub.emit(user.id, { type: "cron.changed" })
+    return json(updated)
   }
 
   if (idMatch && !idMatch[2] && req.method === "DELETE") {
@@ -946,13 +1155,14 @@ async function handleCron(req: Request, url: URL, db: Db, user: User) {
       user.id,
     )
     if (!removed) return json({ error: "job not found" }, 404)
+    hub.emit(user.id, { type: "cron.changed" })
     return json({ ok: true })
   }
 
   if (idMatch?.[2] === "/run" && req.method === "POST") {
     const job = db.cronJobById(decodeURIComponent(idMatch[1] ?? ""), user.id)
     if (!job) return json({ error: "job not found" }, 404)
-    const error = await fireCronJob(db, job, true)
+    const error = await fireCronJob(db, job, true, hub)
     if (error) return json({ ok: false, error }, 502)
     return json({ ok: true })
   }
@@ -962,6 +1172,36 @@ async function handleCron(req: Request, url: URL, db: Db, user: User) {
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+async function eventsUpgrade(
+  req: Request,
+  db: Db,
+  server: Bun.Server<SocketData>,
+): Promise<Response | undefined> {
+  const user = userFrom(req, db)
+  if (!user) return json({ error: "unauthorized" }, 401)
+  if (user.disabled) return json({ error: "account disabled" }, 403)
+  const ok = server.upgrade(req, {
+    data: { kind: "events", userId: user.id },
+  })
+  return ok ? undefined : new Response("upgrade failed", { status: 400 })
+}
+
+/** Best-effort upstream for the event hub; null while the desktop is not running. */
+export async function eventTarget(
+  db: Db,
+  userId: string,
+): Promise<Upstream | null> {
+  const desktop = db.desktop(userId)
+  if (!desktop) return null
+  if ((await desktopPhase(userId)) !== "running") return null
+  try {
+    const base = await endpoint(userId, "opencode", 4096)
+    return { base, auth: basic(desktop.opencodePassword).authorization }
+  } catch {
+    return null
+  }
 }
 
 async function loginTtyUpgrade(

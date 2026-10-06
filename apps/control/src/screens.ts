@@ -34,20 +34,24 @@ export function rfbPortFor(display: number) {
 }
 
 export function vncHost(port: number) {
-  return `computer:${port}`
+  return `computer::${port}`
 }
 
 export function capturePath(port: number) {
   return `/tmp/open-bot-${port}.png`
 }
 
-export function vncSystemLine(port: number) {
-  const host = vncHost(port)
+export function vncSystemLine(sessionId: string, port: number) {
   return [
-    `This thread's VNC is ${host}.`,
-    "Drive only that host with vncdo.",
-    `Capture to ${capturePath(port)}.`,
-    "Do not use any other display, port, or $OPEN_BOT_VNC.",
+    `This thread's screen id is ${sessionId}.`,
+    `Drive it only with ob-vnc --session ${sessionId}.`,
+    "Do not call vncdo. Do not pass a host or port.",
+    "Do not use 5900, computer:5900, computer::5900, or $OPEN_BOT_VNC.",
+    `A single colon is a display number. The vncdo address is ${vncHost(port)}, and ob-vnc already uses it.`,
+    `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}.`,
+    `For a page goal, run ob-nav --session ${sessionId} --goal "..." before clicking.`,
+    "If ob-nav is unconfigured, blocked, low_confidence, or errors, use ob-vnc.",
+    "If ob-nav needs the user, stop and end with ![screen](open-bot://screen).",
     "If the user must act on this screen, stop all input and end the reply with ![screen](open-bot://screen).",
     "The chat embeds this live screen. Do not click or type again until they say they are done on the screen.",
   ].join(" ")
@@ -121,7 +125,7 @@ function view(sessionId: string, display: number): ThreadScreenView {
     rfbPort: port,
     host: vncHost(port),
     path: vncViewPath(sessionId),
-    system: vncSystemLine(port),
+    system: vncSystemLine(sessionId, port),
   }
 }
 
