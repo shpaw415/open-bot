@@ -1,0 +1,137 @@
+import { describe, expect, test } from "bun:test"
+import { nextCronTime, nextRunMs, parseCron } from "./cron"
+
+const T = (iso: string) => Date.parse(iso)
+
+describe("cron expression parsing", () => {
+  test("rejects malformed expressions", () => {
+    expect(() => parseCron("* * * *")).toThrow(/5 fields/)
+    expect(() => parseCron("* * * * * *")).toThrow(/5 fields/)
+    expect(() => parseCron("60 * * * *")).toThrow(/minute/)
+    expect(() => parseCron("* 24 * * *")).toThrow(/hour/)
+    expect(() => parseCron("* * 0 * *")).toThrow(/day-of-month/)
+    expect(() => parseCron("* * * 13 *")).toThrow(/month/)
+    expect(() => parseCron("* * * * 8")).toThrow(/day-of-week/)
+    expect(() => parseCron("a * * * *")).toThrow(/minute/)
+    expect(() => parseCron("*/0 * * * *")).toThrow(/step/)
+    expect(() => parseCron("1-2-3 * * * *")).toThrow(/minute/)
+  })
+
+  test("accepts ranges, lists, steps, and sunday as 7", () => {
+    expect(() => parseCron("1,5,9 * * * *")).not.toThrow()
+    expect(() => parseCron("0 8-18 * * 1-5")).not.toThrow()
+    expect(() => parseCron("*/15 * * * *")).not.toThrow()
+    expect(() => parseCron("5/15 * * * *")).not.toThrow()
+    const fields = parseCron("* * * * 7")
+    expect(fields.dow.has(0)).toBe(true)
+    expect(fields.domStar).toBe(true)
+    expect(fields.dowStar).toBe(false)
+    const both = parseCron("0 0 1 * 1")
+    expect(both.domStar).toBe(false)
+    expect(both.dowStar).toBe(false)
+  })
+})
+
+describe("nextCronTime", () => {
+  test("every fifteen minutes lands on the next quarter", () => {
+    const from = T("2026-10-06T10:07:30Z")
+    expect(nextCronTime("*/15 * * * *", from)).toBe(T("2026-10-06T10:15:00Z"))
+  })
+
+  test("daily at 09:00 utc rolls to tomorrow when past", () => {
+    expect(nextCronTime("0 9 * * *", T("2026-10-06T08:59Z"))).toBe(
+      T("2026-10-06T09:00:00Z"),
+    )
+    expect(nextCronTime("0 9 * * *", T("2026-10-06T09:00Z"))).toBe(
+      T("2026-10-07T09:00:00Z"),
+    )
+  })
+
+  test("weekdays only skips the weekend", () => {
+    // 2026-10-09 is a Friday, 2026-10-10 a Saturday
+    expect(nextCronTime("0 12 * * 1-5", T("2026-10-09T13:00Z"))).toBe(
+      T("2026-10-12T12:00:00Z"),
+    )
+  })
+
+  test("month rollover finds the next monthly run", () => {
+    expect(nextCronTime("30 1 1 * *", T("2026-10-06T00:00Z"))).toBe(
+      T("2026-11-01T01:30:00Z"),
+    )
+  })
+
+  test("february 29 waits for a leap year", () => {
+    expect(nextCronTime("0 0 29 2 *", T("2026-10-06T00:00Z"))).toBe(
+      T("2028-02-29T00:00:00Z"),
+    )
+  })
+
+  test("dom and dow both restricted match as a union", () => {
+    // 1st of month or any Monday, at 00:00. 2026-10-06 is a Tuesday,
+    // 2026-10-07+8+9 are Wed-Fri, so first hit is Monday 2026-10-12
+    // unless the 1st (already past) counts. Next: Monday 12th.
+    expect(nextCronTime("0 0 1 * 1", T("2026-10-06T10:00Z"))).toBe(
+      T("2026-10-12T00:00:00Z"),
+    )
+  })
+
+  test("invalid expressions yield null instead of throwing", () => {
+    expect(nextCronTime("bogus", Date.now())).toBeNull()
+  })
+})
+
+describe("nextRunMs", () => {
+  const base = 1_000_000
+
+  test("every schedules from the reference time", () => {
+    expect(
+      nextRunMs(
+        {
+          id: "j",
+          userId: "u",
+          name: "n",
+          message: "m",
+          kind: "every",
+          cronExpr: null,
+          everySeconds: 90,
+          atMs: null,
+          enabled: true,
+          deleteAfterRun: false,
+          sessionId: null,
+          createdAt: 0,
+          lastRunAt: null,
+          nextRunAt: null,
+          runCount: 0,
+          lastError: null,
+        },
+        base,
+      ),
+    ).toBe(base + 90_000)
+  })
+
+  test("one-shot at returns its fixed time", () => {
+    expect(
+      nextRunMs(
+        {
+          id: "j",
+          userId: "u",
+          name: "n",
+          message: "m",
+          kind: "at",
+          cronExpr: null,
+          everySeconds: null,
+          atMs: 123_456,
+          enabled: true,
+          deleteAfterRun: true,
+          sessionId: null,
+          createdAt: 0,
+          lastRunAt: null,
+          nextRunAt: null,
+          runCount: 0,
+          lastError: null,
+        },
+        base,
+      ),
+    ).toBe(123_456)
+  })
+})

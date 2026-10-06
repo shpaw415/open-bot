@@ -1,0 +1,285 @@
+/* open-bot app shell: true app, not a website. Root fills the viewport,
+   content scrolls inside panels, desktop/code iframes stay full-bleed. */
+
+html,
+body,
+#root {
+  height: 100dvh;
+  margin: 0;
+  overscroll-behavior: none;
+}
+
+.ob-shell {
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ob-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ob-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.ob-chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 18px;
+}
+
+/* Messenger-style speech bubbles with a little comic tail.
+   Colors come from the sx bgcolor (primary.main / action.hover);
+   the tail reuses the same background so it follows the theme. */
+.ob-bubble {
+  position: relative;
+  max-width: min(620px, 78%);
+  padding: 10px 14px;
+  border-radius: 18px;
+  overflow-wrap: anywhere;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+
+/* Code-heavy answers get more room so <pre> blocks stay readable. */
+.ob-bubble:has(pre) {
+  max-width: min(680px, 92%);
+}
+
+.ob-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: 10px;
+  width: 12px;
+  height: 12px;
+  background-color: inherit;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+.ob-md {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.ob-md > :first-child {
+  margin-top: 0;
+}
+
+.ob-md > :last-child {
+  margin-bottom: 0;
+}
+
+.ob-md p,
+.ob-md ul,
+.ob-md ol,
+.ob-md pre,
+.ob-md blockquote {
+  margin: 0.4em 0;
+}
+
+.ob-md ul,
+.ob-md ol {
+  padding-left: 1.2em;
+}
+
+.ob-md a {
+  color: inherit;
+}
+
+.ob-md pre {
+  overflow: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.ob-bubble-user .ob-md pre {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.ob-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.ob-md img {
+  max-width: 100%;
+}
+
+.ob-md table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.ob-md th,
+.ob-md td {
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  padding: 4px 8px;
+}
+
+.ob-bubble-user {
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+  margin-right: 6px;
+}
+
+.ob-bubble-assistant {
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+  margin-left: 6px;
+}
+
+.ob-bubble-user::after {
+  right: -5px;
+}
+
+.ob-bubble-assistant::after {
+  left: -5px;
+}
+
+.ob-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ob-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #000;
+}
+
+.ob-code-pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+@media (max-width: 899px) {
+  .ob-chat-log {
+    padding: 8px 14px;
+  }
+  .ob-bubble {
+    max-width: 88%;
+  }
+  .ob-hide-mobile {
+    display: none;
+  }
+}
+
+@media (min-width: 900px) {
+  .ob-hide-desktop {
+    display: none;
+  }
+}
+
+.ob-providers {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ob-tty {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  background: #111;
+  overflow: hidden;
+}
+
+.ob-tty .xterm {
+  height: 100%;
+  padding: 4px;
+}
+
+.ob-cron-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+/* Workspace compact header: single-line bar, model selector sits
+   aside Sleep / New thread instead of pushing to a second row. */
+.ob-workspace-bar {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.ob-model-select {
+  min-width: 0;
+}
+
+.ob-model-select input {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 899px) {
+  .ob-workspace-bar {
+    gap: 6px;
+  }
+}
+
+/* Dark mode: code blocks need a light wash on the dark surface. */
+.MUI_dark .ob-md pre {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.MUI_dark .ob-code-pre {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* mui-lite hardcodes autofill text to black — unreadable on dark fields. */
+.MUI_dark input:-webkit-autofill,
+.MUI_dark input:-webkit-autofill:hover,
+.MUI_dark input:-webkit-autofill:focus,
+.MUI_dark input:-webkit-autofill:active {
+  /* biome-ignore lint/complexity/noImportantStyles: must beat mui-lite's own !important */
+  -webkit-text-fill-color: #fff !important;
+  caret-color: #fff;
+}
+
+/* Dark scrollbars to match the dark surface. */
+.MUI_dark ::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+
+.MUI_dark ::-webkit-scrollbar-thumb {
+  background: #555;
+}
+
+.MUI_dark ::-webkit-scrollbar-thumb:hover {
+  background: #777;
+}
+
+.MUI_dark * {
+  scrollbar-color: #555 #1e1e1e;
+}

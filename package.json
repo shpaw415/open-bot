@@ -1,0 +1,25 @@
+{
+  "name": "open-bot",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd apps/web build && bun run --cwd apps/control dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "typecheck": "bun run --cwd packages/ai typecheck && bun run --cwd packages/db typecheck && bun run --cwd apps/control typecheck && bun run --cwd apps/web typecheck",
+    "test": "bun test",
+    "check": "biome check --write .",
+    "images": "bash scripts/build-images.sh",
+    "db:generate": "bun run --cwd packages/db db:generate",
+    "setup": "bun scripts/setup.ts",
+    "update": "bash scripts/update.sh"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.4",
+    "@types/bun": "1.3.1",
+    "typescript": "5.9.2"
+  }
+}

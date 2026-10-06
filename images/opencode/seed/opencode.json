@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "autoupdate": false,
+  "plugin": ["@openviking/opencode-plugin"],
+  "instructions": ["/home/agent/.config/opencode/AGENTS.md"],
+  "agent": {
+    "build": {
+      "prompt": "You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions."
+    }
+  },
+  "permission": {
+    "*": "allow",
+    "external_directory": "allow",
+    "doom_loop": "allow",
+    "question": "deny"
+  }
+}

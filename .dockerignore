@@ -1,0 +1,9 @@
+config/ai.ts
+config/ai.ts.bak.*
+deploy/.env
+node_modules
+data
+.git
+dist
+*.sqlite
+*.sqlite-journal

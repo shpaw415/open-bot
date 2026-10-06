@@ -1,0 +1,23 @@
+services:
+  open-bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: open-bot
+    restart: unless-stopped
+    ports:
+      - "${PUBLISH_HOST:-100.96.0.3}:${PUBLISH_PORT:-8787}:8787"
+    environment:
+      OPEN_BOT_IN_DOCKER: "1"
+      CONTROL_CONTAINER: open-bot
+      DATA_DIR: /data
+      OPEN_BOT_AI_CONFIG: /app/config/ai.ts
+      BIND_HOST: "0.0.0.0"
+      PORT: "8787"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - open-bot-data:/data
+      - ../config/ai.ts:/app/config/ai.ts:ro
+
+volumes:
+  open-bot-data:

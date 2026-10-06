@@ -1,0 +1,514 @@
+import { Database } from "bun:sqlite"
+import { describe, expect, test } from "bun:test"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { type CronJob, openDatabase, type User } from "./index"
+
+function user(
+  partial: Partial<User> & Pick<User, "id" | "email" | "role">,
+): User {
+  return {
+    passwordHash: "hash",
+    createdAt: 1,
+    mustChangePassword: false,
+    disabled: false,
+    ...partial,
+  }
+}
+
+describe("drizzle migrations", () => {
+  test("opens a pre-drizzle database without recreating tables", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite")
+    const sqlite = new Database(path)
+    sqlite.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        must_change_password INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE invites (
+        code TEXT PRIMARY KEY,
+        email TEXT,
+        created_at INTEGER NOT NULL,
+        used_at INTEGER
+      );
+      CREATE TABLE desktops (
+        user_id TEXT PRIMARY KEY,
+        llm_token TEXT NOT NULL,
+        opencode_password TEXT NOT NULL,
+        viking_key TEXT NOT NULL,
+        selected_provider TEXT,
+        selected_model TEXT,
+        last_active_at INTEGER NOT NULL
+      );
+      CREATE TABLE usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE viking_provider (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        base_url TEXT NOT NULL,
+        api_key TEXT NOT NULL,
+        embed_model TEXT NOT NULL,
+        embed_dimension INTEGER NOT NULL,
+        vlm_model TEXT NOT NULL
+      );
+      CREATE TABLE cron_jobs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        message TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        cron_expr TEXT,
+        every_seconds INTEGER,
+        at_ms INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        delete_after_run INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT,
+        created_at INTEGER NOT NULL,
+        last_run_at INTEGER,
+        next_run_at INTEGER,
+        run_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+      );
+    `)
+    sqlite
+      .query(
+        "INSERT INTO users (id, email, password_hash, role, created_at, must_change_password) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run("a", "a@localhost", "hash", "admin", 1, 0)
+    sqlite.close()
+    const db = openDatabase(path)
+    expect(db.userById("a")?.disabled).toBe(false)
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "tok",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    db.setUserVikingProvider("a", {
+      baseURL: "https://own.test/v1",
+      apiKey: "k",
+      embedModel: "embed",
+      embedDimension: 8,
+      vlmModel: "vlm",
+    })
+    expect(db.getVikingProvider("a")?.baseURL).toBe("https://own.test/v1")
+    db.setImageProvider("a", {
+      provider: "cloudflare-workers-ai",
+      accountId: "acct",
+      apiKey: "secret",
+      model: "@cf/black-forest-labs/flux-2-klein-9b",
+    })
+    expect(db.getImageProvider("a")?.accountId).toBe("acct")
+  })
+
+  test("creates tables missing from older databases", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite")
+    const sqlite = new Database(path)
+    sqlite.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        must_change_password INTEGER NOT NULL DEFAULT 1,
+        disabled INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE invites (
+        code TEXT PRIMARY KEY,
+        email TEXT,
+        created_at INTEGER NOT NULL,
+        used_at INTEGER
+      );
+      CREATE TABLE desktops (
+        user_id TEXT PRIMARY KEY,
+        llm_token TEXT NOT NULL,
+        opencode_password TEXT NOT NULL,
+        viking_key TEXT NOT NULL,
+        selected_provider TEXT,
+        selected_model TEXT,
+        last_active_at INTEGER NOT NULL
+      );
+      CREATE TABLE usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE viking_provider (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        base_url TEXT NOT NULL,
+        api_key TEXT NOT NULL,
+        embed_model TEXT NOT NULL,
+        embed_dimension INTEGER NOT NULL,
+        vlm_model TEXT NOT NULL
+      );
+    `)
+    sqlite.close()
+    const db = openDatabase(path)
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createCronJob({
+      id: "j1",
+      userId: "a",
+      name: "job",
+      message: "do it",
+      kind: "every",
+      cronExpr: null,
+      everySeconds: 60,
+      atMs: null,
+      enabled: true,
+      deleteAfterRun: false,
+      sessionId: null,
+      createdAt: 1,
+      lastRunAt: null,
+      nextRunAt: 2,
+      runCount: 0,
+      lastError: null,
+    })
+    expect(db.cronJobs("a")).toHaveLength(1)
+    openDatabase(path)
+  })
+})
+
+describe("usage ledger", () => {
+  test("aggregates tokens by user, kind, and utc day", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "admin" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    const day = Math.floor(Date.now() / 86_400_000) * 86_400_000
+    db.recordUsage({
+      userId: "a",
+      createdAt: day + 1000,
+      kind: "chat",
+      promptTokens: 10,
+      completionTokens: 4,
+      totalTokens: 14,
+    })
+    db.recordUsage({
+      userId: "a",
+      createdAt: day + 2000,
+      kind: "embed",
+      promptTokens: 3,
+      completionTokens: 0,
+      totalTokens: 3,
+    })
+    db.recordUsage({
+      userId: "b",
+      createdAt: day - 86_400_000,
+      kind: "small",
+      promptTokens: 1,
+      completionTokens: 1,
+      totalTokens: 2,
+    })
+    const rows = db.usageGrouped(day)
+    expect(rows).toHaveLength(2)
+    expect(rows.find((row) => row.kind === "chat")?.totalTokens).toBe(14)
+    expect(db.usageGrouped(day, "b")).toHaveLength(0)
+    db.deleteUser("a")
+    expect(db.userById("a")).toBeNull()
+    expect(db.usageGrouped(0).every((row) => row.userId !== "a")).toBe(true)
+  })
+
+  test("migrates disabled and blocks invite revoke after use", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "admin" }))
+    expect(db.listUsers()[0]?.disabled).toBe(false)
+    db.setDisabled("a", true)
+    expect(db.enabledAdminCount()).toBe(0)
+    db.setRole("a", "user")
+    db.forcePasswordReset("a")
+    const next = db.userById("a")
+    expect(next?.role).toBe("user")
+    expect(next?.mustChangePassword).toBe(true)
+    expect(next?.disabled).toBe(true)
+    db.createInvite("code", null)
+    expect(db.revokeInvite("code")).toBe(true)
+    db.createInvite("used", null)
+    expect(db.takeInvite("used")?.code).toBe("used")
+    expect(db.revokeInvite("used")).toBe(false)
+  })
+
+  test("stores the OpenViking model provider", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    expect(db.getVikingProvider()).toBeNull()
+    db.setVikingProvider({
+      baseURL: "https://example.test/v1",
+      apiKey: "secret",
+      embedModel: "embed-up",
+      embedDimension: 1024,
+      vlmModel: "vlm-up",
+    })
+    expect(db.getVikingProvider()).toEqual({
+      baseURL: "https://example.test/v1",
+      apiKey: "secret",
+      embedModel: "embed-up",
+      embedDimension: 1024,
+      vlmModel: "vlm-up",
+    })
+  })
+
+  test("per-user OpenViking provider overrides the admin default", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "t",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    db.ensureDesktop({
+      userId: "b",
+      llmToken: "t",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    db.setVikingProvider({
+      baseURL: "https://default.test/v1",
+      apiKey: "default-key",
+      embedModel: "embed-default",
+      embedDimension: 1536,
+      vlmModel: "vlm-default",
+    })
+    expect(db.getVikingProvider("a")).toEqual({
+      baseURL: "https://default.test/v1",
+      apiKey: "default-key",
+      embedModel: "embed-default",
+      embedDimension: 1536,
+      vlmModel: "vlm-default",
+    })
+    db.setUserVikingProvider("a", {
+      baseURL: "https://own.test/v1",
+      apiKey: "own-key",
+      embedModel: "embed-own",
+      embedDimension: 768,
+      vlmModel: "vlm-own",
+    })
+    expect(db.getVikingProvider("a")).toEqual({
+      baseURL: "https://own.test/v1",
+      apiKey: "own-key",
+      embedModel: "embed-own",
+      embedDimension: 768,
+      vlmModel: "vlm-own",
+    })
+    expect(db.getVikingProvider("b")?.baseURL).toBe("https://default.test/v1")
+  })
+
+  test("stores a per-desktop image provider and clears it", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "t",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    expect(db.getImageProvider("a")).toBeNull()
+    db.setImageProvider("a", {
+      provider: "cloudflare-workers-ai",
+      accountId: "acct",
+      apiKey: "secret",
+      model: "@cf/black-forest-labs/flux-2-klein-9b",
+    })
+    expect(db.getImageProvider("a")).toEqual({
+      provider: "cloudflare-workers-ai",
+      accountId: "acct",
+      apiKey: "secret",
+      model: "@cf/black-forest-labs/flux-2-klein-9b",
+    })
+    db.clearImageProvider("a")
+    expect(db.getImageProvider("a")).toBeNull()
+  })
+})
+
+describe("cron store", () => {
+  function cron(
+    partial: Partial<CronJob> & Pick<CronJob, "id" | "userId">,
+  ): CronJob {
+    return {
+      name: "job",
+      message: "do it",
+      kind: "every",
+      cronExpr: null,
+      everySeconds: 3600,
+      atMs: null,
+      enabled: true,
+      deleteAfterRun: false,
+      sessionId: null,
+      createdAt: 1000,
+      lastRunAt: null,
+      nextRunAt: 2000,
+      runCount: 0,
+      lastError: null,
+      ...partial,
+    }
+  }
+
+  test("creates, lists, updates, and deletes jobs per user", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    db.createCronJob(cron({ id: "j1", userId: "a" }))
+    db.createCronJob(
+      cron({
+        id: "j2",
+        userId: "a",
+        name: "daily",
+        kind: "cron",
+        cronExpr: "0 9 * * *",
+        everySeconds: null,
+      }),
+    )
+    expect(db.cronJobs("a")).toHaveLength(2)
+    expect(db.cronJobs("b")).toHaveLength(0)
+    expect(db.cronJobById("j1", "b")).toBeNull()
+    const one = db.cronJobById("j1", "a")
+    expect(one?.kind).toBe("every")
+    expect(one?.everySeconds).toBe(3600)
+
+    const disabled = db.updateCronJob("j1", "a", { enabled: false })
+    expect(disabled?.enabled).toBe(false)
+    const renamed = db.updateCronJob("j1", "a", { name: "renamed" })
+    expect(renamed?.name).toBe("renamed")
+    expect(renamed?.enabled).toBe(false)
+
+    expect(db.deleteCronJob("j1", "b")).toBe(false)
+    expect(db.deleteCronJob("j1", "a")).toBe(true)
+    expect(db.cronJobs("a")).toHaveLength(1)
+  })
+
+  test("returns due jobs and records runs, sessions, and next runs", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createCronJob(cron({ id: "due", userId: "a", nextRunAt: 500 }))
+    db.createCronJob(cron({ id: "later", userId: "a", nextRunAt: 5000 }))
+    db.createCronJob(
+      cron({ id: "off", userId: "a", nextRunAt: 100, enabled: false }),
+    )
+    const due = db.dueCronJobs(1000)
+    expect(due.map((job) => job.id)).toEqual(["due"])
+
+    db.setCronNextRun("due", 9000)
+    expect(db.dueCronJobs(1000)).toHaveLength(0)
+
+    db.recordCronRun("due", null)
+    db.recordCronRun("due", "prompt failed (500)")
+    db.setCronSession("due", "ses_1")
+    const after = db.cronJobById("due", "a")
+    expect(after?.runCount).toBe(2)
+    expect(after?.lastError).toBe("prompt failed (500)")
+    expect(after?.sessionId).toBe("ses_1")
+    expect(after?.lastRunAt).toBeGreaterThan(0)
+  })
+
+  test("maps llm tokens to user ids and cleans up on delete", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "tok-1",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    expect(db.userIdByLlmToken("tok-1")).toBe("a")
+    expect(db.userIdByLlmToken("nope")).toBeNull()
+    db.createCronJob(cron({ id: "j1", userId: "a" }))
+    db.createPersona({
+      id: "p1",
+      userId: "a",
+      name: "Chef",
+      instruction: "cook",
+      createdAt: 1,
+    })
+    db.setThreadPersona("a", "ses", "p1")
+    db.deleteUser("a")
+    expect(db.cronJobs("a")).toHaveLength(0)
+    expect(db.personas("a")).toHaveLength(0)
+    expect(db.threadPersonas("a")).toHaveLength(0)
+  })
+})
+
+describe("personas", () => {
+  test("stores customs and clears thread assignments on delete", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createPersona({
+      id: "p1",
+      userId: "a",
+      name: "Chef",
+      instruction: "cook simply",
+      createdAt: 1,
+    })
+    db.setThreadPersona("a", "ses", "p1")
+    expect(db.threadPersona("a", "ses")?.personaId).toBe("p1")
+    db.setThreadPersona("a", "ses", "designer")
+    expect(db.threadPersona("a", "ses")?.personaId).toBe("designer")
+    db.setThreadPersona("a", "ses", "p1")
+    expect(
+      db.updatePersona("p1", "a", { name: "Cook", instruction: "shorter" })
+        ?.name,
+    ).toBe("Cook")
+    expect(db.deletePersona("p1", "a")).toBe(true)
+    expect(db.personaById("p1", "a")).toBeNull()
+    expect(db.threadPersona("a", "ses")).toBeNull()
+  })
+})
