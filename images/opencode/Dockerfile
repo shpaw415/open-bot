@@ -46,7 +46,10 @@ COPY scripts/ob-persona.sh /usr/local/bin/ob-persona
 COPY images/opencode/entrypoint.sh /opt/open-bot/entrypoint.sh
 COPY images/opencode/apply-model.sh /opt/open-bot/apply-model.sh
 COPY images/opencode/apply-image-auth.sh /opt/open-bot/apply-image-auth.sh
-RUN chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /usr/local/bin/ob-cron /usr/local/bin/ob-persona \
+COPY images/opencode/screen-up.sh /opt/open-bot/screen-up.sh
+COPY images/opencode/screen-down.sh /opt/open-bot/screen-down.sh
+COPY images/opencode/screen-list.sh /opt/open-bot/screen-list.sh
+RUN chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /usr/local/bin/ob-cron /usr/local/bin/ob-persona \
     && touch /opt/open-bot/instance
 
 USER root

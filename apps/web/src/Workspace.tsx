@@ -8,6 +8,7 @@ import Dialog, {
   DialogTitle,
 } from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
+import Drawer from "@shpaw415/mui-lite/Drawer"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
 import Menu from "@shpaw415/mui-lite/Menu"
@@ -22,12 +23,13 @@ import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import Markdown from "react-markdown"
+import Markdown, { defaultUrlTransform } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { api, type DesktopStatus, type Me, waitForDesktop } from "./api"
 import {
   ACTIVITY_LABEL,
   type ChatMessage,
+  chatImageUrl,
   modelActivity,
   nearBottom,
   samePayload,
@@ -38,12 +40,10 @@ import { useMobile } from "./hooks"
 import {
   AddIcon,
   ChatIcon,
-  CodeIcon,
   ComputerIcon,
-  ContentCopyIcon,
   DeleteIcon,
   EditIcon,
-  FolderIcon,
+  MenuIcon,
   MoreVertIcon,
   OpenInNewIcon,
   PauseIcon,
@@ -52,7 +52,6 @@ import {
   ScheduleIcon,
   SendIcon,
   StopIcon,
-  TerminalIcon,
 } from "./icons"
 import type { PersonaInfo } from "./Personalities"
 
@@ -84,11 +83,25 @@ type CronJobInfo = {
   lastError: string | null
 }
 
+type CronNotice = {
+  id: string
+  jobId: string
+  jobName: string
+  sessionId: string
+  summary: string | null
+  createdAt: number
+}
+
 type Phase = "starting" | "running" | "sleeping"
 type CronKind = "every" | "cron" | "at"
 
 function messageKey(message: ChatMessage, index: number): string {
   return `${index}:${message.info?.role ?? "m"}:${visibleText(message).slice(0, 48)}`
+}
+
+function chatUrl(url: string, key: string): string {
+  if (key === "src") return chatImageUrl(url)
+  return defaultUrlTransform(url)
 }
 
 function threadTime(session: SessionInfo): number {
@@ -148,6 +161,7 @@ export function Workspace({ me }: { me: Me }) {
     Record<string, SessionStatus>
   >({})
   const [threadsOpen, setThreadsOpen] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [personas, setPersonas] = useState<PersonaInfo[]>([])
   const [threadPersona, setThreadPersona] = useState<Record<string, string>>({})
   const [newThreadOpen, setNewThreadOpen] = useState(false)
@@ -165,13 +179,12 @@ export function Workspace({ me }: { me: Me }) {
       ? `${me.model.providerID}/${me.model.modelID}`
       : "",
   )
-  const [files, setFiles] = useState<string[]>([])
-  const [filesLoading, setFilesLoading] = useState(false)
-  const [selectedPath, setSelectedPath] = useState("")
-  const [file, setFile] = useState("")
-  const [fileLoading, setFileLoading] = useState(false)
   const [desktopKey, setDesktopKey] = useState(0)
-  const [explorerOpen, setExplorerOpen] = useState(false)
+  const [screen, setScreen] = useState<{
+    sessionId: string
+    path: string
+  } | null>(null)
+  const [screenError, setScreenError] = useState("")
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([])
   const [cronBusyId, setCronBusyId] = useState("")
   const [cronAddOpen, setCronAddOpen] = useState(false)
@@ -185,6 +198,7 @@ export function Workspace({ me }: { me: Me }) {
   const [cronEvery, setCronEvery] = useState("3600")
   const [cronExpr, setCronExpr] = useState("0 9 * * *")
   const [cronAt, setCronAt] = useState("")
+  const [notices, setNotices] = useState<CronNotice[]>([])
   const mobile = useMobile()
   const outputRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
@@ -239,7 +253,9 @@ export function Workspace({ me }: { me: Me }) {
       ])
       setSessions(
         (Array.isArray(list) ? (list as SessionInfo[]) : [])
-          .filter((item) => !item.parentID)
+          .filter(
+            (item) => !item.parentID && !item.title?.startsWith("cron-run:"),
+          )
           .sort((a, b) => threadTime(b) - threadTime(a)),
       )
       setSessionStatus(
@@ -411,6 +427,72 @@ export function Workspace({ me }: { me: Me }) {
     }
   }, [running, sessions, sessionsLoading, sessionId])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: desktopKey reloads the screen
+  useEffect(() => {
+    if (tab !== "desktop" || !running || !sessionId) return
+    let cancelled = false
+    const load = async (quiet: boolean) => {
+      if (!quiet) setScreenError("")
+      try {
+        const next = await api<{ sessionId: string; path: string }>(
+          "/api/desktop/screen",
+          {
+            method: "POST",
+            body: JSON.stringify({ sessionId }),
+          },
+        )
+        if (cancelled) return
+        setScreen(next)
+        setScreenError("")
+      } catch (caught) {
+        if (cancelled || quiet) return
+        setScreen(null)
+        setScreenError(
+          caught instanceof Error
+            ? caught.message
+            : "could not open the screen",
+        )
+      }
+    }
+    void load(false)
+    const timer = setInterval(() => void load(true), 15000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [tab, running, sessionId, desktopKey])
+
+  const needsScreen = shown.some((message) => message.handoff)
+  useEffect(() => {
+    if (tab === "desktop" || !running || !sessionId || !needsScreen) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const next = await api<{ sessionId: string; path: string }>(
+          "/api/desktop/screen",
+          {
+            method: "POST",
+            body: JSON.stringify({ sessionId }),
+          },
+        )
+        if (cancelled) return
+        setScreen(next)
+        setScreenError("")
+      } catch (caught) {
+        if (cancelled) return
+        setScreenError(
+          caught instanceof Error
+            ? caught.message
+            : "could not open the screen",
+        )
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [tab, running, sessionId, needsScreen])
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only when the transcript changes
   useEffect(() => {
     if (tab !== "chat" || !stickRef.current) return
@@ -419,8 +501,7 @@ export function Workspace({ me }: { me: Me }) {
     el.scrollTop = el.scrollHeight
   }, [messages, tab])
 
-  async function send() {
-    const text = draft.trim()
+  async function prompt(text: string) {
     if (!text || sending || !running || stopping) return
     setError("")
     stickRef.current = true
@@ -447,13 +528,19 @@ export function Workspace({ me }: { me: Me }) {
           parts: [{ type: "text", text }],
         }),
       })
-      setDraft("")
       setTimeout(() => void loadThreads(), 800)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "send failed")
     } finally {
       setSending(false)
     }
+  }
+
+  async function send() {
+    const text = draft.trim()
+    if (!text) return
+    setDraft("")
+    await prompt(text)
   }
 
   function selectThread(id: string) {
@@ -463,6 +550,30 @@ export function Workspace({ me }: { me: Me }) {
       localStorage.setItem(THREAD_KEY, id)
     }
     if (mobile) setThreadsOpen(false)
+    if (notices.some((notice) => notice.sessionId === id))
+      void markNoticesViewed({ sessionId: id })
+  }
+
+  function goTab(next: string) {
+    setTab(next)
+    setDrawerOpen(false)
+  }
+
+  function selectModel(value: string) {
+    setModel(value)
+    const split = value.indexOf("/")
+    const providerID = split > 0 ? value.slice(0, split) : ""
+    const modelID = split > 0 ? value.slice(split + 1) : ""
+    if (providerID && modelID) {
+      void api("/api/model", {
+        method: "PUT",
+        body: JSON.stringify({ providerID, modelID }),
+      }).catch((caught) =>
+        setError(
+          caught instanceof Error ? caught.message : "model save failed",
+        ),
+      )
+    }
   }
 
   function personaName(id: string | undefined): string {
@@ -518,6 +629,8 @@ export function Workspace({ me }: { me: Me }) {
     try {
       await api(`/api/opencode/session/${target.id}`, { method: "DELETE" })
       setDeleteTarget(null)
+      if (notices.some((notice) => notice.sessionId === target.id))
+        void markNoticesViewed({ sessionId: target.id })
       if (target.id === sessionId) {
         setSessionId("")
         setMessages([])
@@ -557,6 +670,68 @@ export function Workspace({ me }: { me: Me }) {
     const timer = setInterval(() => void loadCron(), 10_000)
     return () => clearInterval(timer)
   }, [tab, loadCron])
+
+  const loadNotices = useCallback(async () => {
+    try {
+      const body = await api<CronNotice[]>("/api/cron/notices")
+      setNotices(Array.isArray(body) ? body : [])
+    } catch {
+      return
+    }
+  }, [])
+
+  const markNoticesViewed = useCallback(
+    async (body: { id?: string; sessionId?: string }) => {
+      setNotices((current) =>
+        current.filter((notice) =>
+          body.id ? notice.id !== body.id : notice.sessionId !== body.sessionId,
+        ),
+      )
+      try {
+        await api("/api/cron/notices/view", {
+          method: "POST",
+          body: JSON.stringify(body),
+        })
+      } catch {
+        void loadNotices()
+      }
+    },
+    [loadNotices],
+  )
+
+  useEffect(() => {
+    void loadNotices()
+    const timer = setInterval(() => void loadNotices(), 10_000)
+    return () => clearInterval(timer)
+  }, [loadNotices])
+
+  useEffect(() => {
+    if (tab !== "chat" || !sessionId) return
+    if (!notices.some((notice) => notice.sessionId === sessionId)) return
+    void markNoticesViewed({ sessionId })
+  }, [tab, sessionId, notices, markNoticesViewed])
+
+  async function openNotice(notice: CronNotice) {
+    await markNoticesViewed({ id: notice.id })
+    if (phase !== "running") {
+      setError("")
+      setPhase("starting")
+      try {
+        await api("/api/desktop/start", { method: "POST" })
+        await waitForDesktop()
+        setPhase("running")
+      } catch (caught) {
+        setPhase("sleeping")
+        setError(caught instanceof Error ? caught.message : "start failed")
+        return
+      }
+    }
+    setSessionId(notice.sessionId)
+    setMessages([])
+    localStorage.setItem(THREAD_KEY, notice.sessionId)
+    setTab("chat")
+    if (mobile) setThreadsOpen(false)
+  }
 
   async function addCronJob() {
     if (cronSaving) return
@@ -640,49 +815,9 @@ export function Workspace({ me }: { me: Me }) {
     setMessages([])
     localStorage.setItem(THREAD_KEY, job.sessionId)
     setTab("chat")
+    if (notices.some((notice) => notice.sessionId === job.sessionId))
+      void markNoticesViewed({ sessionId: job.sessionId })
   }
-
-  async function loadFiles() {
-    if (!running) return
-    setFilesLoading(true)
-    try {
-      const body = (await fetch(
-        "/api/opencode/file?path=/home/agent/workspace",
-      ).then((res) => res.json())) as { path?: string; name?: string }[]
-      setFiles(
-        Array.isArray(body)
-          ? body.map((item) => item.path ?? item.name ?? "").filter(Boolean)
-          : [],
-      )
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "file list failed")
-    } finally {
-      setFilesLoading(false)
-    }
-  }
-
-  async function openFile(path: string) {
-    setSelectedPath(path)
-    setFileLoading(true)
-    if (mobile) setExplorerOpen(false)
-    try {
-      const body = (await fetch(
-        `/api/opencode/file/content?path=${encodeURIComponent(path)}`,
-      ).then((res) => res.json())) as { content?: string }
-      setFile(body.content ?? "")
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "file open failed")
-    } finally {
-      setFileLoading(false)
-    }
-  }
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load once per tab/phase, not on files change
-  useEffect(() => {
-    if (tab === "code" && running && files.length === 0 && !filesLoading) {
-      void loadFiles()
-    }
-  }, [tab, running])
 
   const phaseColor = stopping
     ? "warning"
@@ -694,15 +829,73 @@ export function Workspace({ me }: { me: Me }) {
 
   return (
     <Stack
-      sx={{ height: "100%", minHeight: 0, p: mobile ? 0.75 : 1 }}
-      spacing={0.75}
+      className="ob-workspace"
+      sx={{ height: "100%", minHeight: 0, p: mobile ? 0.5 : 1 }}
+      spacing={mobile ? 0.5 : 0.75}
     >
       {error ? (
         <Alert severity="error" onClose={() => setError("")}>
           {error}
         </Alert>
       ) : null}
+      {notices[0] ? (
+        <Alert
+          severity="info"
+          onClose={() => void markNoticesViewed({ id: notices[0]?.id })}
+        >
+          {notices.length > 1
+            ? `${notices.length} cron jobs published results. Latest: ${notices[0].jobName}. `
+            : `${notices[0].jobName} published results. `}
+          {notices[0].summary}{" "}
+          <Button size="small" onClick={() => void openNotice(notices[0])}>
+            Open thread
+          </Button>
+        </Alert>
+      ) : null}
 
+      {mobile ? (
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          className="ob-mobile-bar"
+          sx={{ minHeight: 40, flexShrink: 0 }}
+        >
+          <IconButton
+            size="small"
+            aria-label="Open workspace menu"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <MenuIcon />
+          </IconButton>
+          <Typography
+            variant="subtitle2"
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {tab === "chat"
+              ? activeThread
+                ? threadTitle(activeThread)
+                : sessionId
+                  ? "New thread"
+                  : "Chat"
+              : tab === "desktop"
+                ? "Desktop"
+                : `Cron${notices.length ? ` (${notices.length})` : ""}`}
+          </Typography>
+          <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
+            {stopping ? "stopping…" : phase === "starting" ? "starting…" : phase}
+          </Chip>
+          {phase === "starting" || stopping ? (
+            <CircularProgress size={1.2} />
+          ) : null}
+        </Stack>
+      ) : (
       <Stack
         direction="row"
         spacing={1}
@@ -833,24 +1026,7 @@ export function Workspace({ me }: { me: Me }) {
               minWidth: 0,
               maxWidth: mobile ? 160 : 240,
             }}
-            onSelect={(value) => {
-              setModel(value)
-              const split = value.indexOf("/")
-              const providerID = split > 0 ? value.slice(0, split) : ""
-              const modelID = split > 0 ? value.slice(split + 1) : ""
-              if (providerID && modelID) {
-                void api("/api/model", {
-                  method: "PUT",
-                  body: JSON.stringify({ providerID, modelID }),
-                }).catch((caught) =>
-                  setError(
-                    caught instanceof Error
-                      ? caught.message
-                      : "model save failed",
-                  ),
-                )
-              }
-            }}
+            onSelect={(value) => selectModel(value)}
           >
             {modelOptions}
           </Select>
@@ -868,19 +1044,23 @@ export function Workspace({ me }: { me: Me }) {
           </ToolTip>
         ) : null}
         {running && !modelsLoading ? (
-          <ToolTip title="Reload model list">
-            <IconButton
-              size="small"
-              aria-label="Reload model list"
-              onClick={() => void loadModels()}
-              sx={{ flexShrink: 0 }}
-            >
-              <RefreshIcon />
-            </IconButton>
-          </ToolTip>
+          mobile ? null : (
+            <ToolTip title="Reload model list">
+              <IconButton
+                size="small"
+                aria-label="Reload model list"
+                onClick={() => void loadModels()}
+                sx={{ flexShrink: 0 }}
+              >
+                <RefreshIcon />
+              </IconButton>
+            </ToolTip>
+          )
         ) : null}
       </Stack>
+      )}
 
+      {mobile ? null : (
       <Tabs value={tab} onChange={(_event, value) => setTab(String(value))}>
         <Tab
           label={`Chat${shown.length ? ` (${shown.length})` : ""}`}
@@ -888,9 +1068,13 @@ export function Workspace({ me }: { me: Me }) {
           icon={<ChatIcon />}
         />
         <Tab label="Desktop" value="desktop" icon={<ComputerIcon />} />
-        <Tab label="Code" value="code" icon={<CodeIcon />} />
-        <Tab label="Cron" value="cron" icon={<ScheduleIcon />} />
+        <Tab
+          label={`Cron${notices.length ? ` (${notices.length})` : ""}`}
+          value="cron"
+          icon={<ScheduleIcon />}
+        />
       </Tabs>
+      )}
 
       {/* Chat */}
       <Box
@@ -899,11 +1083,17 @@ export function Workspace({ me }: { me: Me }) {
           minHeight: 0,
           display: tab === "chat" ? "flex" : "none",
           flexDirection: "column",
-          gap: 1,
+          gap: mobile ? 0.5 : 1,
         }}
       >
         {running && mobile ? (
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            className="ob-threads-bar"
+            sx={{ px: 0.25 }}
+          >
             <Button
               size="small"
               variant="outlined"
@@ -1015,6 +1205,15 @@ export function Workspace({ me }: { me: Me }) {
                           />
                           {threadBusy(item.id) ? (
                             <CircularProgress size={1.2} sx={{ mr: 1 }} />
+                          ) : notices.some(
+                              (notice) => notice.sessionId === item.id,
+                            ) ? (
+                            <Chip
+                              size="small"
+                              color="primary"
+                              label="new"
+                              sx={{ mr: 1 }}
+                            />
                           ) : null}
                         </ListItemButton>
                         <IconButton
@@ -1051,7 +1250,7 @@ export function Workspace({ me }: { me: Me }) {
               flexDirection: "column",
             }}
           >
-            {sessionId ? (
+            {sessionId && !mobile ? (
               <Typography
                 variant="caption"
                 color="textSecondary"
@@ -1065,7 +1264,8 @@ export function Workspace({ me }: { me: Me }) {
                 direction="row"
                 spacing={1}
                 alignItems="center"
-                sx={{ px: 1.5, py: 0.75 }}
+                className="ob-status-row"
+                sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
               >
                 <CircularProgress size={1.2} />
                 <Typography variant="caption" color="textSecondary">
@@ -1077,11 +1277,14 @@ export function Workspace({ me }: { me: Me }) {
                 direction="row"
                 spacing={1}
                 alignItems="center"
-                sx={{ px: 1.5, py: 0.75 }}
+                className="ob-status-row"
+                sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
               >
-                <Typography variant="caption" color="textSecondary">
-                  Model
-                </Typography>
+                {mobile ? null : (
+                  <Typography variant="caption" color="textSecondary">
+                    Model
+                  </Typography>
+                )}
                 <Chip
                   size="small"
                   color={
@@ -1147,21 +1350,79 @@ export function Workspace({ me }: { me: Me }) {
                 shown.map((message, index) => {
                   const role = message.info?.role ?? "message"
                   const mine = role === "user"
+                  const lastHandoff = shown.reduce(
+                    (at, item, itemIndex) => (item.handoff ? itemIndex : at),
+                    -1,
+                  )
+                  const liveScreen =
+                    message.handoff &&
+                    index === lastHandoff &&
+                    screen?.sessionId === sessionId
                   return (
                     <Box
                       key={messageKey(message, index)}
                       title={mine ? "You" : "Agent"}
                       className={`ob-bubble ${mine ? "ob-bubble-user" : "ob-bubble-assistant"}`}
                       sx={{
-                        bgcolor: mine ? "primary.main" : "action.hover",
+                        bgcolor: mine ? "primary.main" : undefined,
                         color: mine ? "primary.contrastText" : "text.primary",
+                        border: mine ? "none" : "1px solid",
+                        borderColor: mine ? undefined : "divider",
                       }}
                     >
                       <div className="ob-md">
-                        <Markdown remarkPlugins={[remarkGfm]}>
-                          {message.text}
-                        </Markdown>
+                        {message.text.trim() ? (
+                          <Markdown
+                            remarkPlugins={[remarkGfm]}
+                            urlTransform={chatUrl}
+                            components={{
+                              img: ({ src, alt }) =>
+                                src ? <img src={src} alt={alt ?? ""} /> : null,
+                            }}
+                          >
+                            {message.text}
+                          </Markdown>
+                        ) : null}
+                        {message.images.map((src) => (
+                          <img key={src} src={src} alt="" />
+                        ))}
+                        {message.handoff ? (
+                          <div className="ob-screen">
+                            {liveScreen ? (
+                              <iframe
+                                title="thread screen"
+                                src={`/desktop/view/vnc.html?autoconnect=1&resize=scale&path=${encodeURIComponent(screen.path)}`}
+                              />
+                            ) : (
+                              <Typography variant="body2" color="textSecondary">
+                                {index === lastHandoff
+                                  ? screenError || "Opening this screen…"
+                                  : "Screen was shared in a later reply."}
+                              </Typography>
+                            )}
+                            {index === lastHandoff ? (
+                              <Button
+                                size="small"
+                                variant="contained"
+                                disabled={!running || sending || stopping}
+                                onClick={() =>
+                                  void prompt("Done on the screen.")
+                                }
+                              >
+                                Done
+                              </Button>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
+                      {message.sentAt ? (
+                        <time
+                          className="ob-bubble-time"
+                          dateTime={new Date(message.sentAt).toISOString()}
+                        >
+                          {formatWhen(message.sentAt)}
+                        </time>
+                      ) : null}
                     </Box>
                   )
                 })
@@ -1172,7 +1433,8 @@ export function Workspace({ me }: { me: Me }) {
               direction="row"
               spacing={1}
               alignItems="flex-end"
-              sx={{ p: 1 }}
+              className="ob-input-row"
+              sx={{ p: mobile ? 0.75 : 1 }}
             >
               <TextField
                 label="Message"
@@ -1188,14 +1450,30 @@ export function Workspace({ me }: { me: Me }) {
                 }}
                 sx={{ flex: 1 }}
               />
-              <Button
-                variant="contained"
-                startIcon={<SendIcon />}
-                onClick={() => void send()}
-                disabled={!running || sending || stopping || !draft.trim()}
-              >
-                {sending ? "…" : "Send"}
-              </Button>
+              {mobile ? (
+                <IconButton
+                  size="medium"
+                  aria-label="Send message"
+                  disabled={!running || sending || stopping || !draft.trim()}
+                  onClick={() => void send()}
+                  sx={{
+                    flexShrink: 0,
+                    bgcolor: "primary.main",
+                    color: "primary.contrastText",
+                  }}
+                >
+                  {sending ? "…" : <SendIcon />}
+                </IconButton>
+              ) : (
+                <Button
+                  variant="contained"
+                  startIcon={<SendIcon />}
+                  onClick={() => void send()}
+                  disabled={!running || sending || stopping || !draft.trim()}
+                >
+                  {sending ? "…" : "Send"}
+                </Button>
+              )}
             </Stack>
           </Paper>
         </Box>
@@ -1215,7 +1493,14 @@ export function Workspace({ me }: { me: Me }) {
           <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
             <Typography variant="subtitle1">Desktop is asleep</Typography>
             <Typography variant="body2" color="textSecondary">
-              Start the desktop to view VNC and terminal.
+              Start the desktop to view a thread screen.
+            </Typography>
+          </Paper>
+        ) : !sessionId ? (
+          <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
+            <Typography variant="subtitle1">No thread selected</Typography>
+            <Typography variant="body2" color="textSecondary">
+              Select a thread to open its screen.
             </Typography>
           </Paper>
         ) : (
@@ -1228,7 +1513,10 @@ export function Workspace({ me }: { me: Me }) {
               >
                 {stopping
                   ? "Stopping the desktop…"
-                  : "VNC session — kept alive when you switch tabs."}
+                  : `Screen for ${
+                      sessions.find((item) => item.id === sessionId)?.title ||
+                      "this thread"
+                    }. Switching threads switches screens.`}
               </Typography>
               <ToolTip title="Reload VNC">
                 <Button
@@ -1236,6 +1524,7 @@ export function Workspace({ me }: { me: Me }) {
                   variant="text"
                   startIcon={<RefreshIcon />}
                   onClick={() => setDesktopKey((key) => key + 1)}
+                  disabled={!screen || screen.sessionId !== sessionId}
                 >
                   Reload
                 </Button>
@@ -1245,226 +1534,40 @@ export function Workspace({ me }: { me: Me }) {
                   size="small"
                   variant="text"
                   startIcon={<OpenInNewIcon />}
-                  onClick={() =>
+                  disabled={!screen || screen.sessionId !== sessionId}
+                  onClick={() => {
+                    if (!screen || screen.sessionId !== sessionId) return
+                    const path = encodeURIComponent(screen.path)
                     window.open(
-                      "/desktop/view/vnc.html?autoconnect=1&resize=scale&path=desktop/view/websockify",
+                      `/desktop/view/vnc.html?autoconnect=1&resize=scale&path=${path}`,
                       "_blank",
                       "noopener",
                     )
-                  }
+                  }}
                 >
                   Pop out
                 </Button>
               </ToolTip>
             </Stack>
-            <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-              <iframe
-                key={desktopKey}
-                title="desktop"
-                src="/desktop/view/vnc.html?autoconnect=1&resize=scale&path=desktop/view/websockify"
-                className="ob-frame"
-              />
-            </Box>
-          </>
-        )}
-      </Box>
-
-      {/* Code */}
-      <Box
-        sx={{
-          flex: 1,
-          minHeight: 0,
-          display: tab === "code" ? "flex" : "none",
-          flexDirection: mobile ? "column" : "row",
-          gap: 1,
-        }}
-      >
-        {!running ? (
-          <Paper variant="outlined" sx={{ p: 3, textAlign: "center", flex: 1 }}>
-            <Typography variant="subtitle1">Desktop is asleep</Typography>
-            <Typography variant="body2" color="textSecondary">
-              Start the desktop to browse workspace files.
-            </Typography>
-          </Paper>
-        ) : (
-          <>
-            {mobile ? (
-              <Stack direction="row" spacing={1}>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<FolderIcon />}
-                  onClick={() => setExplorerOpen((open) => !open)}
-                >
-                  {explorerOpen ? "Hide files" : "Files"}
-                </Button>
-                <Button
-                  size="small"
-                  variant="text"
-                  startIcon={<RefreshIcon />}
-                  onClick={() => void loadFiles()}
-                >
-                  Refresh
-                </Button>
-                <Typography
-                  variant="caption"
-                  color="textSecondary"
-                  sx={{
-                    flex: 1,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    alignSelf: "center",
-                  }}
-                >
-                  {selectedPath || `${files.length} files`}
-                </Typography>
-              </Stack>
-            ) : null}
-            <Paper
-              variant="outlined"
-              sx={{
-                width: mobile ? "100%" : 280,
-                maxHeight: mobile ? (explorerOpen ? 220 : 0) : "100%",
-                overflow: mobile && !explorerOpen ? "hidden" : "auto",
-                display: mobile && !explorerOpen ? "none" : "flex",
-                flexDirection: "column",
-                minHeight: 0,
-              }}
-            >
-              {!mobile ? (
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  sx={{ p: 1 }}
-                >
-                  <Typography variant="subtitle2" sx={{ flex: 1 }}>
-                    Files
-                  </Typography>
-                  <Button
-                    size="small"
-                    variant="text"
-                    startIcon={<RefreshIcon />}
-                    onClick={() => void loadFiles()}
-                  >
-                    Refresh
-                  </Button>
-                </Stack>
-              ) : null}
-              <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-                {filesLoading ? (
-                  <Stack spacing={1} sx={{ p: 1 }}>
-                    <Skeleton height={28} />
-                    <Skeleton height={28} />
-                    <Skeleton height={28} />
-                  </Stack>
-                ) : files.length === 0 ? (
-                  <Typography
-                    variant="body2"
-                    color="textSecondary"
-                    sx={{ p: 1.5 }}
-                  >
-                    No files yet — press Refresh.
-                  </Typography>
-                ) : (
-                  <List dense disablePadding>
-                    {files.map((path) => (
-                      <ListItemButton
-                        key={path}
-                        selected={path === selectedPath}
-                        onClick={() => void openFile(path)}
-                      >
-                        <ListItemText
-                          primary={path}
-                          SlotProps={{
-                            primary: { noWrap: true } as never,
-                          }}
-                        />
-                      </ListItemButton>
-                    ))}
-                  </List>
-                )}
-              </Box>
-            </Paper>
-            <Stack sx={{ flex: 1, minWidth: 0, minHeight: 0 }} spacing={1}>
-              <Paper
-                variant="outlined"
-                sx={{
-                  flex: 1,
-                  minHeight: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                <Stack
-                  direction="row"
-                  alignItems="center"
-                  spacing={1}
-                  sx={{ px: 1.5, py: 0.5 }}
-                >
-                  <Typography
-                    variant="caption"
-                    color="textSecondary"
-                    sx={{
-                      flex: 1,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {selectedPath || "Select a file"}
-                  </Typography>
-                  {file ? (
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<ContentCopyIcon />}
-                      onClick={() => void navigator.clipboard?.writeText(file)}
-                    >
-                      Copy
-                    </Button>
-                  ) : null}
-                </Stack>
-                <Divider />
-                {fileLoading ? (
-                  <Stack spacing={1} sx={{ p: 1.5, flex: 1 }}>
-                    <Skeleton height={18} />
-                    <Skeleton height={18} width="80%" />
-                    <Skeleton height={18} width="60%" />
-                  </Stack>
-                ) : (
-                  <pre className="ob-code-pre">{file || "// empty"}</pre>
-                )}
-              </Paper>
-              <Paper
-                variant="outlined"
-                sx={{
-                  height: mobile ? 180 : 220,
-                  display: "flex",
-                  flexDirection: "column",
-                  minHeight: 0,
-                }}
-              >
-                <Stack
-                  direction="row"
-                  alignItems="center"
-                  spacing={0.5}
-                  sx={{ px: 1.5, py: 0.5 }}
-                >
-                  <TerminalIcon width={14} height={14} />
-                  <Typography variant="caption" color="textSecondary">
-                    Terminal
-                  </Typography>
-                </Stack>
-                <Divider />
+            {screen?.sessionId === sessionId ? (
+              <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
                 <iframe
-                  title="terminal"
-                  src="/desktop/term/"
+                  key={`${screen.sessionId}-${desktopKey}`}
+                  title="desktop"
+                  src={`/desktop/view/vnc.html?autoconnect=1&resize=scale&path=${encodeURIComponent(screen.path)}`}
                   className="ob-frame"
                 />
+              </Box>
+            ) : (
+              <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
+                <Typography variant="subtitle1">
+                  {screenError ? "Screen unavailable" : "Opening screen"}
+                </Typography>
+                <Typography variant="body2" color="textSecondary">
+                  {screenError || "Opening this thread's screen…"}
+                </Typography>
               </Paper>
-            </Stack>
+            )}
           </>
         )}
       </Box>
@@ -1481,8 +1584,8 @@ export function Workspace({ me }: { me: Me }) {
       >
         <Stack direction="row" spacing={1} alignItems="center">
           <Typography variant="caption" color="textSecondary" sx={{ flex: 1 }}>
-            Scheduled jobs run even when the desktop sleeps — they wake it, then
-            prompt the agent in a dedicated thread.
+            Each run works in a temporary session, posts the result to this
+            job's thread, then deletes that session.
           </Typography>
           <ToolTip title="Reload jobs">
             <IconButton
@@ -1528,6 +1631,9 @@ export function Workspace({ me }: { me: Me }) {
                     {job.name}
                   </Typography>
                   <Chip size="small" label={cronSchedule(job)} />
+                  {notices.some((notice) => notice.jobId === job.id) ? (
+                    <Chip size="small" color="primary" label="new result" />
+                  ) : null}
                   <Box sx={{ flex: 1 }} />
                   {cronBusyId === job.id ? (
                     <CircularProgress size={1.2} />
@@ -1596,12 +1702,20 @@ export function Workspace({ me }: { me: Me }) {
                   >
                     Run now
                   </Button>
-                  {job.sessionId && running ? (
+                  {job.sessionId &&
+                  (running ||
+                    notices.some((notice) => notice.jobId === job.id)) ? (
                     <Button
                       size="small"
                       variant="text"
                       startIcon={<ChatIcon />}
-                      onClick={() => openCronThread(job)}
+                      onClick={() => {
+                        const notice = notices.find(
+                          (item) => item.jobId === job.id,
+                        )
+                        if (notice) void openNotice(notice)
+                        else openCronThread(job)
+                      }}
                     >
                       Thread
                     </Button>
@@ -1629,6 +1743,132 @@ export function Workspace({ me }: { me: Me }) {
           )}
         </Box>
       </Box>
+
+      {mobile ? (
+        <Drawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          variant="temporary"
+          anchor="left"
+          width={300}
+        >
+          <Box sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}>
+            <Typography variant="subtitle2">Views</Typography>
+            <List dense disablePadding>
+              <ListItemButton
+                selected={tab === "chat"}
+                onClick={() => goTab("chat")}
+              >
+                <ChatIcon />
+                <ListItemText
+                  primary={`Chat${shown.length ? ` (${shown.length})` : ""}`}
+                />
+              </ListItemButton>
+              <ListItemButton
+                selected={tab === "desktop"}
+                onClick={() => goTab("desktop")}
+              >
+                <ComputerIcon />
+                <ListItemText primary="Desktop" />
+              </ListItemButton>
+              <ListItemButton
+                selected={tab === "cron"}
+                onClick={() => goTab("cron")}
+              >
+                <ScheduleIcon />
+                <ListItemText
+                  primary={`Cron${notices.length ? ` (${notices.length})` : ""}`}
+                />
+              </ListItemButton>
+            </List>
+            <Divider />
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="subtitle2" sx={{ flex: 1 }}>
+                Desktop
+              </Typography>
+              <Chip size="small" color={phaseColor}>
+                {stopping
+                  ? "stopping…"
+                  : phase === "starting"
+                    ? "starting…"
+                    : phase}
+              </Chip>
+            </Stack>
+            {running ? (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={
+                  stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
+                }
+                onClick={() => void sleep()}
+                disabled={stopping}
+                aria-busy={stopping}
+              >
+                {stopping ? "Stopping…" : "Sleep"}
+              </Button>
+            ) : (
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<PlayArrowIcon />}
+                onClick={() => void start()}
+                disabled={phase === "starting"}
+              >
+                Start
+              </Button>
+            )}
+            <Divider />
+            <Typography variant="subtitle2">Model</Typography>
+            {modelsLoading && models.length === 0 ? (
+              <Skeleton width="100%" height={40} />
+            ) : (
+              <Select
+                name="model-drawer"
+                label={running ? "Model" : "Model (start desktop)"}
+                value={model}
+                disabled={!running || models.length === 0}
+                sx={{ width: "100%" }}
+                onSelect={(value) => selectModel(value)}
+              >
+                {modelOptions}
+              </Select>
+            )}
+            {modelsError ? (
+              <Chip size="small" color="error" variant="outlined">
+                {modelsError}
+              </Chip>
+            ) : null}
+            <Divider />
+            {running ? (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<AddIcon />}
+                disabled={actionBusy}
+                onClick={() => {
+                  setNewPersonaId("assistant")
+                  setNewThreadOpen(true)
+                  setDrawerOpen(false)
+                }}
+              >
+                New thread
+              </Button>
+            ) : null}
+            <Button
+              size="small"
+              variant="text"
+              startIcon={<AddIcon />}
+              onClick={() => {
+                goTab("cron")
+                setCronAddOpen(true)
+              }}
+            >
+              Add job
+            </Button>
+          </Box>
+        </Drawer>
+      ) : null}
 
       <Menu
         open={Boolean(menuThread)}

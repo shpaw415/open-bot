@@ -54,8 +54,31 @@ body,
 }
 
 /* Code-heavy answers get more room so <pre> blocks stay readable. */
-.ob-bubble:has(pre) {
+.ob-bubble:has(pre),
+.ob-bubble:has(img) {
   max-width: min(680px, 92%);
+}
+
+.ob-bubble:has(.ob-screen) {
+  max-width: min(920px, 96%);
+  width: min(920px, 96%);
+}
+
+.ob-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 420px;
+  margin-top: 8px;
+}
+
+.ob-screen iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 12px;
+  background: #000;
 }
 
 .ob-bubble::after {
@@ -116,7 +139,10 @@ body,
 }
 
 .ob-md img {
+  display: block;
   max-width: 100%;
+  margin: 0.4em 0;
+  border-radius: 12px;
 }
 
 .ob-md table {
@@ -142,6 +168,8 @@ body,
   align-self: flex-start;
   border-bottom-left-radius: 4px;
   margin-left: 6px;
+  background-color: #eef1f4;
+  border-color: rgba(0, 0, 0, 0.08);
 }
 
 .ob-bubble-user::after {
@@ -150,6 +178,15 @@ body,
 
 .ob-bubble-assistant::after {
   left: -5px;
+}
+
+.ob-bubble-time {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-align: left;
+  opacity: 0.72;
 }
 
 .ob-mono {
@@ -180,13 +217,35 @@ body,
 
 @media (max-width: 899px) {
   .ob-chat-log {
-    padding: 8px 14px;
+    padding: 8px 10px;
+    gap: 8px;
   }
   .ob-bubble {
-    max-width: 88%;
+    max-width: 92%;
+    padding: 8px 12px;
   }
   .ob-hide-mobile {
     display: none;
+  }
+  /* Workspace discussion: strip chrome so the thread owns the screen.
+     Tabs, model picker, and desktop controls live in the drawer. */
+  .ob-workspace-bar {
+    gap: 6px;
+    min-height: 32px;
+  }
+  .ob-mobile-bar {
+    gap: 8px;
+    min-height: 40px;
+    flex-shrink: 0;
+  }
+  .ob-threads-bar {
+    min-height: 28px;
+  }
+  .ob-status-row {
+    min-height: 24px;
+  }
+  .ob-input-row {
+    gap: 8px;
   }
 }
 
@@ -242,13 +301,12 @@ body,
   white-space: nowrap;
 }
 
-@media (max-width: 899px) {
-  .ob-workspace-bar {
-    gap: 6px;
-  }
+/* Dark mode: code blocks need a light wash on the dark surface. */
+.MUI_dark .ob-bubble-assistant {
+  background-color: #232a35;
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
-/* Dark mode: code blocks need a light wash on the dark surface. */
 .MUI_dark .ob-md pre {
   background: rgba(255, 255, 255, 0.09);
 }

@@ -1,7 +1,108 @@
 import { describe, expect, test } from "bun:test"
-import { nextCronTime, nextRunMs, parseCron } from "./cron"
+import {
+  cronPrompt,
+  cronResultMessage,
+  nextCronTime,
+  nextRunMs,
+  parseCron,
+  publishDecision,
+  publishedSummary,
+} from "./cron"
 
 const T = (iso: string) => Date.parse(iso)
+
+describe("cron publish", () => {
+  const started = T("2026-10-06T10:00:00Z")
+
+  test("prompt runs in a temporary session and the result is copied", () => {
+    const text = cronPrompt({ name: "daily", message: "Check the log" })
+    expect(text).toContain("[cron: daily]")
+    expect(text).toContain("Check the log")
+    expect(text).toContain("temporary session")
+    expect(cronResultMessage("daily", "found 3")).toBe(
+      "[cron-result: daily]\n\nfound 3",
+    )
+  })
+
+  test("summary is the latest finished assistant reply after the fire", () => {
+    const messages = [
+      {
+        info: {
+          role: "assistant",
+          time: { created: started - 60_000, completed: started - 50_000 },
+        },
+        parts: [{ type: "text", text: "old result" }],
+      },
+      {
+        info: {
+          role: "assistant",
+          time: { created: started + 1_000, completed: started + 2_000 },
+        },
+        parts: [{ type: "text", text: "found 3 changes" }],
+      },
+    ]
+    expect(publishedSummary(messages, started)).toBe("found 3 changes")
+    expect(publishedSummary([{ info: { role: "user" } }], started)).toBeNull()
+  })
+
+  test("waits while the agent is busy and settles once a result exists", () => {
+    expect(
+      publishDecision({
+        now: started + 5_000,
+        startedAt: started,
+        desktopUp: true,
+        sessionMissing: false,
+        busy: true,
+        seenBusy: true,
+        summary: null,
+      }),
+    ).toBe("wait")
+    expect(
+      publishDecision({
+        now: started + 30_000,
+        startedAt: started,
+        desktopUp: true,
+        sessionMissing: false,
+        busy: false,
+        seenBusy: false,
+        summary: null,
+      }),
+    ).toBe("wait")
+    expect(
+      publishDecision({
+        now: started + 5_000,
+        startedAt: started,
+        desktopUp: true,
+        sessionMissing: false,
+        busy: true,
+        seenBusy: true,
+        summary: "done",
+      }),
+    ).toBe("settle")
+    expect(
+      publishDecision({
+        now: started + 30_000,
+        startedAt: started,
+        desktopUp: false,
+        sessionMissing: false,
+        busy: false,
+        seenBusy: false,
+        summary: null,
+      }),
+    ).toBe("wait")
+    expect(
+      publishDecision({
+        now: started + 21 * 60_000,
+        startedAt: started,
+        desktopUp: false,
+        sessionMissing: true,
+        busy: false,
+        seenBusy: false,
+        summary: null,
+      }),
+    ).toBe("settle")
+  })
+})
 
 describe("cron expression parsing", () => {
   test("rejects malformed expressions", () => {

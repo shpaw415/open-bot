@@ -18,6 +18,7 @@ export const controlName =
   process.env.CONTROL_CONTAINER ?? (inDocker ? hostname() : "")
 export const idleMinutes = Number(process.env.IDLE_MINUTES ?? 15)
 export const maxDesktops = Number(process.env.MAX_DESKTOPS ?? 4)
+export const maxThreadScreens = Number(process.env.MAX_THREAD_SCREENS ?? 3)
 export const opencodeImage =
   process.env.OPENCODE_IMAGE ?? "open-bot-opencode:local"
 export const computerImage =

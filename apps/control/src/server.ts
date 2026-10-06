@@ -42,6 +42,11 @@ import {
   personaSystem,
   resolvePersona,
 } from "./personas"
+import {
+  ensureThreadScreen,
+  resolveRootSession,
+  stopThreadScreen,
+} from "./screens"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
 import {
   assertSkillInput,
@@ -49,6 +54,11 @@ import {
   skillNameError,
 } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
+import {
+  IMAGE_REPLY,
+  workspaceImagePath,
+  workspaceImageResponse,
+} from "./workspace-image"
 
 type ProxySocket = {
   kind: "proxy"
@@ -502,6 +512,22 @@ async function api(req: Request, url: URL, db: Db) {
     await stopDesktop(user.id)
     return json({ phase: "sleeping" })
   }
+  if (url.pathname === "/api/desktop/screen" && req.method === "POST") {
+    const body = await readJson(req)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const root = await resolveRootSession(
+      base,
+      basic(desktop.opencodePassword),
+      String(body.sessionId ?? ""),
+    )
+    const screen = await ensureThreadScreen(db, user.id, root)
+    return json({
+      sessionId: screen.sessionId,
+      path: screen.path,
+      host: screen.host,
+    })
+  }
   if (url.pathname === "/api/viking" && req.method === "GET") {
     const saved = db.getVikingProvider(user.id)
     return json({
@@ -720,6 +746,22 @@ async function api(req: Request, url: URL, db: Db) {
     )
     return json({ models, connected })
   }
+  if (url.pathname === "/api/workspace/image" && req.method === "GET") {
+    const path = workspaceImagePath(url.searchParams.get("path") ?? "")
+    if (!path) return json({ error: "not found" }, 404)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const upstream = await fetch(
+      `${base}/file/content?path=${encodeURIComponent(path)}`,
+      { headers: basic(desktop.opencodePassword) },
+    )
+    if (!upstream.ok) return json({ error: "not found" }, 404)
+    const image = workspaceImageResponse(
+      await upstream.json().catch(() => null),
+    )
+    if (!image) return json({ error: "not found" }, 404)
+    return image
+  }
   if (url.pathname.startsWith("/api/opencode/")) {
     const desktop = await ensure(user, db)
     const base = await endpoint(user.id, "opencode", 4096)
@@ -728,40 +770,49 @@ async function api(req: Request, url: URL, db: Db) {
       return createOpencodeSession(req, base, auth, db, user.id)
     const deleted = url.pathname.match(/^\/api\/opencode\/session\/([^/]+)$/)
     if (deleted && req.method === "DELETE") {
+      const id = decodeURIComponent(deleted[1] ?? "")
       const res = await proxy(req, base, "/api/opencode", auth)
-      if (res.ok)
-        db.clearThreadPersona(user.id, decodeURIComponent(deleted[1] ?? ""))
+      if (res.ok) {
+        db.clearThreadPersona(user.id, id)
+        await stopThreadScreen(db, user.id, id)
+      }
       return res
     }
     const prompted = url.pathname.match(
       /^\/api\/opencode\/session\/([^/]+)\/(?:prompt_async|message)$/,
     )
     if (prompted && req.method === "POST") {
-      const line = personaSystem(
-        resolvePersona(
-          db,
-          user.id,
-          db.threadPersona(user.id, decodeURIComponent(prompted[1] ?? ""))
-            ?.personaId ?? ASSISTANT_ID,
+      const promptedId = decodeURIComponent(prompted[1] ?? "")
+      const root = await resolveRootSession(base, auth, promptedId)
+      const screen = await ensureThreadScreen(db, user.id, root)
+      const line = [
+        personaSystem(
+          resolvePersona(
+            db,
+            user.id,
+            db.threadPersona(user.id, promptedId)?.personaId ?? ASSISTANT_ID,
+          ),
         ),
+        screen.system,
+        IMAGE_REPLY,
+      ]
+        .filter((item): item is string => Boolean(item))
+        .join("\n\n")
+      const parsed = (await req.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >
+      const body =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed
+          : {}
+      return proxy(
+        req,
+        base,
+        "/api/opencode",
+        auth,
+        JSON.stringify({ ...body, system: mergeSystem(body.system, line) }),
       )
-      if (line) {
-        const parsed = (await req.json().catch(() => ({}))) as Record<
-          string,
-          unknown
-        >
-        const body =
-          parsed && typeof parsed === "object" && !Array.isArray(parsed)
-            ? parsed
-            : {}
-        return proxy(
-          req,
-          base,
-          "/api/opencode",
-          auth,
-          JSON.stringify({ ...body, system: mergeSystem(body.system, line) }),
-        )
-      }
     }
     return proxy(req, base, "/api/opencode", auth)
   }
@@ -772,6 +823,19 @@ const CRON_LOOKAHEAD_MS = 4 * 366 * 24 * 60 * 60 * 1000
 
 async function handleCron(req: Request, url: URL, db: Db, user: User) {
   const idMatch = url.pathname.match(/^\/api\/cron\/([^/]+)(\/run)?$/)
+
+  if (url.pathname === "/api/cron/notices" && req.method === "GET")
+    return json(db.unreadCronNotices(user.id))
+
+  if (url.pathname === "/api/cron/notices/view" && req.method === "POST") {
+    const body = await readJson(req)
+    const id = String(body.id ?? "").trim()
+    const sessionId = String(body.sessionId ?? "").trim()
+    if (id) db.viewCronNotice(id, user.id)
+    else if (sessionId) db.viewCronNoticesBySession(user.id, sessionId)
+    else return json({ error: "id or sessionId is required" }, 400)
+    return json({ ok: true })
+  }
 
   if (url.pathname === "/api/cron" && req.method === "GET")
     return json(db.cronJobs(user.id))

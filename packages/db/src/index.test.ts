@@ -453,6 +453,67 @@ describe("cron store", () => {
     expect(after?.lastRunAt).toBeGreaterThan(0)
   })
 
+  test("publishes unread notices and marks them viewed", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    db.createCronNotice({
+      id: "n1",
+      userId: "a",
+      jobId: "j1",
+      jobName: "daily",
+      sessionId: "ses",
+      runSessionId: "run",
+      summary: null,
+      createdAt: 1,
+      viewedAt: null,
+    })
+    expect(db.pendingCronNotices().map((notice) => notice.id)).toEqual(["n1"])
+    expect(db.unreadCronNotices("a")).toHaveLength(0)
+    expect(db.settleCronNotice("n1", "found 2 items")).toBe(true)
+    expect(db.pendingCronNotices()).toHaveLength(0)
+    expect(db.unreadCronNotices("a")[0]?.summary).toBe("found 2 items")
+    expect(db.unreadCronNotices("b")).toHaveLength(0)
+
+    db.createCronNotice({
+      id: "n2",
+      userId: "a",
+      jobId: "j1",
+      jobName: "daily",
+      sessionId: "ses",
+      runSessionId: "run2",
+      summary: null,
+      createdAt: 2,
+      viewedAt: null,
+    })
+    expect(db.settleCronNotice("n2", "found 2 items")).toBe(true)
+    expect(db.cronNoticeById("n2")).toBeNull()
+    expect(db.unreadCronNotices("a")).toHaveLength(1)
+
+    db.viewCronNoticesBySession("a", "ses")
+    expect(db.unreadCronNotices("a")).toHaveLength(0)
+
+    db.createCronNotice({
+      id: "n3",
+      userId: "a",
+      jobId: "j1",
+      jobName: "daily",
+      sessionId: "ses2",
+      runSessionId: null,
+      summary: "done",
+      createdAt: 3,
+      viewedAt: null,
+    })
+    db.viewCronNotice("n3", "b")
+    expect(db.unreadCronNotices("a")).toHaveLength(1)
+    db.viewCronNotice("n3", "a")
+    expect(db.unreadCronNotices("a")).toHaveLength(0)
+    db.deleteUser("a")
+    expect(db.cronNoticeById("n3")).toBeNull()
+  })
+
   test("maps llm tokens to user ids and cleans up on delete", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),

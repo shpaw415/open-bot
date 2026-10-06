@@ -41,6 +41,40 @@ function journalEntries(migrationsFolder: string) {
   return journal.entries
 }
 
+function ensureCronNoticeTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS cron_notices (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      job_name TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      run_session_id TEXT,
+      summary TEXT,
+      created_at INTEGER NOT NULL,
+      viewed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS cron_notices_user ON cron_notices (user_id, viewed_at);
+  `)
+  const columns = columnNames(sqlite, "cron_notices")
+  if (!columns.has("run_session_id")) {
+    sqlite.exec("ALTER TABLE cron_notices ADD COLUMN run_session_id TEXT")
+  }
+}
+
+function ensureThreadScreenTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS thread_screens (
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      display INTEGER NOT NULL,
+      rfb_port INTEGER NOT NULL,
+      last_active_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, session_id)
+    );
+  `)
+}
+
 function ensurePersonaTables(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS personas (
@@ -154,4 +188,6 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   migrate(drizzle(sqlite, { schema }), { migrationsFolder })
   ensureLegacyColumns(sqlite)
   ensurePersonaTables(sqlite)
+  ensureThreadScreenTable(sqlite)
+  ensureCronNoticeTable(sqlite)
 }

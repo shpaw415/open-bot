@@ -5,7 +5,7 @@ description: Schedule recurring or one-time tasks with ob-cron. Use when the use
 
 # Cron jobs
 
-Use the `ob-cron` CLI to manage scheduled jobs. Jobs live in the control plane: they survive desktop restarts and wake the desktop when they fire. Each firing sends the job's message to you in a dedicated thread.
+Use the `ob-cron` CLI to manage scheduled jobs. Jobs live in the control plane: they survive desktop restarts and wake the desktop when they fire. Each firing runs in a temporary session. The result is copied into the job's thread, then that temporary session is deleted. The job thread is reused until the user deletes it; the next run creates another and posts there.
 
 List jobs:
 
@@ -33,4 +33,5 @@ Rules:
 - Cron expressions are 5-field UTC (`minute hour day-of-month month day-of-week`), so `0 13 * * 1-5` is weekdays at 13:00 UTC.
 - `--every` is seconds, minimum 60.
 - The message is the full prompt delivered at fire time; make it self-contained.
+- When a message starts with `[cron: name]`, do the work in that temporary session and end with what you did and found. Do not create another thread. The result is copied to the job thread, you are not asked to post it, and the temporary session is deleted. The user is notified when the result lands, and the notice clears once they open the thread.
 - Do not use system crontab, `at`, or background loops for scheduling — only `ob-cron`.

@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 export HOME=/home/agent
-export DISPLAY=:1
-mkdir -p /home/agent/workspace /home/agent/.config/opencode/skills /home/agent/.local/share/opencode /home/agent/.openviking /tmp/.X11-unix
+mkdir -p /home/agent/workspace /home/agent/.config/opencode/skills /home/agent/.local/share/opencode /home/agent/.openviking /tmp/.X11-unix /home/agent/.config/chromium-threads
 cp /opt/open-bot/seed/AGENTS.md /home/agent/.config/opencode/AGENTS.md
 mkdir -p /home/agent/.config/opencode/skills/desktop
 cp /opt/open-bot/seed/skills/desktop/SKILL.md /home/agent/.config/opencode/skills/desktop/SKILL.md
@@ -26,18 +25,9 @@ EOF
 chown -R agent:agent /home/agent
 chmod 1777 /tmp/.X11-unix
 run() {
-  su -s /bin/sh agent -c "export HOME=/home/agent DISPLAY=:1; $1"
+  su -s /bin/sh agent -c "export HOME=/home/agent; $1"
 }
-run "Xvfb :1 -screen 0 1280x800x24 -ac -extension MIT-SHM" &
-sleep 0.5
-(while true; do chmod 777 /tmp/.X11-unix/X1 2>/dev/null || true; sleep 2; done) &
-run "openbox" &
-# Home is a volume and the container hostname is its id, so a recreated
-# desktop inherits SingletonLock from a dead host and Chromium refuses to start.
-rm -f /home/agent/.config/chromium/SingletonLock \
-  /home/agent/.config/chromium/SingletonCookie \
-  /home/agent/.config/chromium/SingletonSocket
-run "chromium --no-sandbox --disable-dev-shm-usage --disable-gpu --window-size=1280,800 --user-data-dir=/home/agent/.config/chromium about:blank" &
+(while true; do chmod 777 /tmp/.X11-unix/X* 2>/dev/null || true; sleep 2; done) &
 run "ttyd -p 7681 -W -b /desktop/term bash" &
 /opt/open-bot/apply-model.sh
 # models.dev sets Workers AI output limits equal to the context window, so

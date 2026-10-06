@@ -1,8 +1,15 @@
+const WORKSPACE = "/home/agent/workspace/"
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i
+const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp);base64,[a-z0-9+/]+={0,2}$/i
+
 export type ChatPart = {
   type?: string
   text?: string
   synthetic?: boolean
   ignored?: boolean
+  mime?: string
+  url?: string
+  filename?: string
 }
 
 export type ChatMessage = {
@@ -50,29 +57,203 @@ export function visibleText(message: ChatMessage): string {
     .join("\n\n")
 }
 
-export type VisibleMessage = ChatMessage & { text: string }
+const SCREEN_IMAGE = /!\[[^\]]*\]\(open-bot:\/\/screen\)/g
+const SCREEN_LINK = /\[[^\]]*\]\(open-bot:\/\/screen\)/g
+const SCREEN_LINE = /(^|\n)\s*open-bot:\/\/screen\s*(?=\n|$)/g
 
-export function visibleMessages(messages: ChatMessage[]): VisibleMessage[] {
-  const out: VisibleMessage[] = []
-  for (const message of messages) {
-    const text = visibleText(message)
-    if (!text.trim()) continue
-    out.push({ ...message, text })
+export type VisibleMessage = ChatMessage & {
+  text: string
+  images: string[]
+  handoff: boolean
+  sentAt: number | null
+}
+
+export function splitScreenHandoff(text: string): {
+  text: string
+  handoff: boolean
+} {
+  const handoff =
+    SCREEN_IMAGE.test(text) || SCREEN_LINK.test(text) || SCREEN_LINE.test(text)
+  SCREEN_IMAGE.lastIndex = 0
+  SCREEN_LINK.lastIndex = 0
+  SCREEN_LINE.lastIndex = 0
+  if (!handoff) return { text, handoff: false }
+  const stripped = text
+    .replace(SCREEN_IMAGE, "")
+    .replace(SCREEN_LINK, "")
+    .replace(SCREEN_LINE, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+  SCREEN_IMAGE.lastIndex = 0
+  SCREEN_LINK.lastIndex = 0
+  SCREEN_LINE.lastIndex = 0
+  return { text: stripped, handoff: true }
+}
+
+export function workspaceImagePath(raw: string): string | null {
+  let path = raw.trim()
+  if (!path || path.includes("\0") || path.includes("\\")) return null
+  if (path.startsWith("file://")) {
+    try {
+      const url = new URL(path)
+      if (url.protocol !== "file:") return null
+      path = decodeURIComponent(url.pathname)
+    } catch {
+      return null
+    }
+  } else {
+    if (path.includes("?") || path.includes("#")) return null
+    try {
+      path = decodeURIComponent(path)
+    } catch {
+      return null
+    }
+  }
+  if (!path.startsWith(WORKSPACE)) return null
+  const rest = path.slice(WORKSPACE.length)
+  if (!rest) return null
+  const segments = rest.split("/")
+  if (segments.some((seg) => seg === "" || seg === "." || seg === ".."))
+    return null
+  if (!IMAGE_EXT.test(rest)) return null
+  return `${WORKSPACE}${rest}`
+}
+
+export function workspaceImageSrc(path: string): string {
+  return `/api/workspace/image?path=${encodeURIComponent(path)}`
+}
+
+export function chatImageUrl(url: string): string {
+  const local = workspaceImagePath(url)
+  if (local) return workspaceImageSrc(local)
+  const trimmed = url.trim()
+  if (/^https:\/\//i.test(trimmed)) return trimmed
+  return ""
+}
+
+export function embedWorkspaceImages(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim()
+      const bare = trimmed.replace(/^`|`$/g, "")
+      const path = workspaceImagePath(bare)
+      if (!path || (trimmed !== path && trimmed !== `\`${path}\``)) return line
+      const name = path.slice(path.lastIndexOf("/") + 1)
+      return `![${name}](${path})`
+    })
+    .join("\n")
+}
+
+export function visibleImages(message: ChatMessage): string[] {
+  if (isCompaction(message)) return []
+  const out: string[] = []
+  for (const part of message.parts ?? []) {
+    if (part.synthetic || part.ignored || part.type !== "file" || !part.url)
+      continue
+    const data = safeDataImage(part.url, part.mime)
+    if (data) {
+      out.push(data)
+      continue
+    }
+    const path = workspaceImagePath(part.url)
+    if (path) out.push(workspaceImageSrc(path))
   }
   return out
 }
 
+function safeDataImage(url: string, mime?: string): string | null {
+  const compact = url.trim().replace(/\s/g, "")
+  const match = DATA_IMAGE.exec(compact)
+  if (!match || !mime) return null
+  if (`image/${match[1]?.toLowerCase()}` !== mime.toLowerCase()) return null
+  return compact
+}
+
+export function visibleMessages(messages: ChatMessage[]): VisibleMessage[] {
+  const out: VisibleMessage[] = []
+  for (const message of messages) {
+    const parsed = splitScreenHandoff(
+      embedWorkspaceImages(visibleText(message)),
+    )
+    const images = visibleImages(message)
+    if (!parsed.text.trim() && images.length === 0 && !parsed.handoff) continue
+    out.push({
+      ...message,
+      text: parsed.text,
+      images,
+      handoff: parsed.handoff,
+      sentAt: messageSentAt(message),
+    })
+  }
+  return out
+}
+
+export function cronResultBody(text: string): string | null {
+  if (!text.startsWith("[cron-result:")) return null
+  const split = text.indexOf("\n")
+  return (split === -1 ? "" : text.slice(split)).trim()
+}
+
+const BUBBLE_GAP_MS = 5 * 60_000
+
+function messageSentAt(message: ChatMessage): number | null {
+  const created = message.info?.time?.created
+  return typeof created === "number" && Number.isFinite(created)
+    ? created
+    : null
+}
+
+function sameBurst(prevAt: number | null, nextAt: number | null): boolean {
+  if (prevAt == null || nextAt == null) return true
+  return nextAt - prevAt < BUBBLE_GAP_MS
+}
+
 export function threadBubbles(messages: ChatMessage[]): VisibleMessage[] {
   const out: VisibleMessage[] = []
+  const burstAt = new Map<VisibleMessage, number | null>()
   for (const message of visibleMessages(messages)) {
+    const result = cronResultBody(message.text)
+    if (result !== null) {
+      const bubble: VisibleMessage = {
+        ...message,
+        info: { ...message.info, role: "assistant" },
+        text: result,
+        images: [...message.images],
+      }
+      burstAt.set(bubble, bubble.sentAt)
+      out.push(bubble)
+      continue
+    }
     const role = message.info?.role ?? "message"
     const prev = out[out.length - 1]
     const prevRole = prev?.info?.role ?? "message"
-    if (prev && role !== "user" && prevRole !== "user") {
-      prev.text = `${prev.text}\n\n${message.text}`
+    if (
+      prev &&
+      role !== "user" &&
+      prevRole !== "user" &&
+      sameBurst(burstAt.get(prev) ?? null, message.sentAt)
+    ) {
+      if (message.text.trim()) {
+        prev.text = prev.text.trim()
+          ? `${prev.text}\n\n${message.text}`
+          : message.text
+      }
+      prev.images = [...prev.images, ...message.images]
+      prev.handoff = prev.handoff || message.handoff
+      if (prev.sentAt == null && message.sentAt != null)
+        prev.sentAt = message.sentAt
+      if (message.sentAt != null) burstAt.set(prev, message.sentAt)
       continue
     }
-    out.push({ ...message, text: message.text })
+    const bubble: VisibleMessage = {
+      ...message,
+      text: message.text,
+      images: [...message.images],
+      handoff: message.handoff,
+    }
+    burstAt.set(bubble, bubble.sentAt)
+    out.push(bubble)
   }
   return out
 }

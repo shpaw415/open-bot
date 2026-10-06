@@ -19,11 +19,13 @@ import { drizzle } from "drizzle-orm/bun-sqlite"
 import { applyMigrations } from "./migrate"
 import {
   cronJobs,
+  cronNotices,
   desktops,
   invites,
   personas,
   sessions,
   threadPersonas,
+  threadScreens,
   usageEvents,
   users,
   vikingProvider,
@@ -144,6 +146,14 @@ export type ThreadPersona = {
   personaId: string
 }
 
+export type ThreadScreen = {
+  userId: string
+  sessionId: string
+  display: number
+  rfbPort: number
+  lastActiveAt: number
+}
+
 export type CronScheduleKind = "cron" | "every" | "at"
 
 export type CronJob = {
@@ -163,6 +173,18 @@ export type CronJob = {
   nextRunAt: number | null
   runCount: number
   lastError: string | null
+}
+
+export type CronNotice = {
+  id: string
+  userId: string
+  jobId: string
+  jobName: string
+  sessionId: string
+  runSessionId: string | null
+  summary: string | null
+  createdAt: number
+  viewedAt: number | null
 }
 
 const migrationsFolder = join(
@@ -221,6 +243,20 @@ function mapCronJob(
   }
 }
 
+function mapCronNotice(row: typeof cronNotices.$inferSelect): CronNotice {
+  return {
+    id: row.id,
+    userId: row.userId,
+    jobId: row.jobId,
+    jobName: row.jobName,
+    sessionId: row.sessionId,
+    runSessionId: row.runSessionId,
+    summary: row.summary,
+    createdAt: row.createdAt,
+    viewedAt: row.viewedAt,
+  }
+}
+
 export function openDatabase(path: string) {
   mkdirSync(dirname(path), { recursive: true })
   const sqlite = new Database(path)
@@ -235,8 +271,10 @@ export function openDatabase(path: string) {
       usageEvents,
       vikingProvider,
       cronJobs,
+      cronNotices,
       personas,
       threadPersonas,
+      threadScreens,
     },
   })
 
@@ -539,6 +577,52 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    upsertThreadScreen(row: ThreadScreen) {
+      orm
+        .insert(threadScreens)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [threadScreens.userId, threadScreens.sessionId],
+          set: {
+            display: row.display,
+            rfbPort: row.rfbPort,
+            lastActiveAt: row.lastActiveAt,
+          },
+        })
+        .run()
+    },
+    threadScreen(userId: string, sessionId: string) {
+      return (
+        orm
+          .select()
+          .from(threadScreens)
+          .where(
+            and(
+              eq(threadScreens.userId, userId),
+              eq(threadScreens.sessionId, sessionId),
+            ),
+          )
+          .get() ?? null
+      )
+    },
+    threadScreens(userId: string) {
+      return orm
+        .select()
+        .from(threadScreens)
+        .where(eq(threadScreens.userId, userId))
+        .all()
+    },
+    clearThreadScreen(userId: string, sessionId: string) {
+      orm
+        .delete(threadScreens)
+        .where(
+          and(
+            eq(threadScreens.userId, userId),
+            eq(threadScreens.sessionId, sessionId),
+          ),
+        )
+        .run()
+    },
     createCronJob(job: CronJob) {
       orm.insert(cronJobs).values(job).run()
     },
@@ -635,6 +719,101 @@ export function openDatabase(path: string) {
         .run()
       return true
     },
+    createCronNotice(notice: CronNotice) {
+      orm.insert(cronNotices).values(notice).run()
+    },
+    pendingCronNotices() {
+      return orm
+        .select()
+        .from(cronNotices)
+        .where(isNull(cronNotices.summary))
+        .all()
+        .map(mapCronNotice)
+    },
+    cronNoticeById(id: string) {
+      const row = orm
+        .select()
+        .from(cronNotices)
+        .where(eq(cronNotices.id, id))
+        .get()
+      return row ? mapCronNotice(row) : null
+    },
+    unreadCronNotices(userId: string) {
+      return orm
+        .select()
+        .from(cronNotices)
+        .where(
+          and(
+            eq(cronNotices.userId, userId),
+            isNotNull(cronNotices.summary),
+            isNull(cronNotices.viewedAt),
+          ),
+        )
+        .orderBy(desc(cronNotices.createdAt))
+        .all()
+        .map(mapCronNotice)
+    },
+    setCronNoticeSession(id: string, sessionId: string) {
+      orm
+        .update(cronNotices)
+        .set({ sessionId })
+        .where(eq(cronNotices.id, id))
+        .run()
+    },
+    settleCronNotice(id: string, summary: string) {
+      const notice = this.cronNoticeById(id)
+      if (!notice || notice.summary) return false
+      const duplicate = orm
+        .select()
+        .from(cronNotices)
+        .where(
+          and(
+            eq(cronNotices.userId, notice.userId),
+            eq(cronNotices.sessionId, notice.sessionId),
+            eq(cronNotices.summary, summary),
+            isNull(cronNotices.viewedAt),
+          ),
+        )
+        .get()
+      if (duplicate) {
+        orm.delete(cronNotices).where(eq(cronNotices.id, id)).run()
+        return true
+      }
+      orm
+        .update(cronNotices)
+        .set({ summary })
+        .where(eq(cronNotices.id, id))
+        .run()
+      return true
+    },
+    viewCronNotice(id: string, userId: string) {
+      orm
+        .update(cronNotices)
+        .set({ viewedAt: Date.now() })
+        .where(
+          and(
+            eq(cronNotices.id, id),
+            eq(cronNotices.userId, userId),
+            isNotNull(cronNotices.summary),
+            isNull(cronNotices.viewedAt),
+          ),
+        )
+        .run()
+    },
+    viewCronNoticesBySession(userId: string, sessionId: string) {
+      orm
+        .update(cronNotices)
+        .set({ viewedAt: Date.now() })
+        .where(
+          and(
+            eq(cronNotices.userId, userId),
+            eq(cronNotices.sessionId, sessionId),
+            isNotNull(cronNotices.summary),
+            isNull(cronNotices.viewedAt),
+          ),
+        )
+        .run()
+    },
     listUsers() {
       return orm
         .select({
@@ -693,8 +872,10 @@ export function openDatabase(path: string) {
         tx.delete(desktops).where(eq(desktops.userId, userId)).run()
         tx.delete(usageEvents).where(eq(usageEvents.userId, userId)).run()
         tx.delete(cronJobs).where(eq(cronJobs.userId, userId)).run()
+        tx.delete(cronNotices).where(eq(cronNotices.userId, userId)).run()
         tx.delete(personas).where(eq(personas.userId, userId)).run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
+        tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(users).where(eq(users.id, userId)).run()
       })
     },

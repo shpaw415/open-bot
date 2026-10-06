@@ -314,10 +314,6 @@ async function startDesktopInner(
       "-e",
       "HOME=/home/agent",
       "-e",
-      "DISPLAY=:1",
-      "-e",
-      "OPEN_BOT_VNC=computer:5900",
-      "-e",
       `OPEN_BOT_LLM_URL=${base}`,
       "-e",
       `OPEN_BOT_LLM_TOKEN=${desktop.llmToken}`,
@@ -561,6 +557,15 @@ export async function syncImageAuth(
     throw new Error(detail || "could not write image auth")
   }
   return true
+}
+
+export async function desktopExec(
+  userId: string,
+  role: "opencode" | "computer",
+  args: string[],
+) {
+  const n = names(userId)
+  return sh(["docker", "exec", n[role], ...args])
 }
 
 export async function opencodeExec(userId: string, args: string[]) {
