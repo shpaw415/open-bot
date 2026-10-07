@@ -1,5 +1,5 @@
-import type { CronJob, CronNotice, Db } from "@open-bot/db"
-import { desktopPhase, endpoint, startDesktop } from "./docker"
+import type { CronJob, CronNotice, CronRunKind, Db } from "@open-bot/db"
+import { desktopPhase, endpoint, opencodeScript, startDesktop } from "./docker"
 import type { EventHub } from "./events"
 import { personaSystem, resolvePersona } from "./personas"
 import { ensureThreadScreen, stopThreadScreen } from "./screens"
@@ -11,6 +11,10 @@ const PUBLISH_TIMEOUT_MS = 20 * 60 * 1000
 const PUBLISH_GRACE_MS = 8_000
 const PUBLISH_IDLE_MS = 20_000
 const SUMMARY_LIMIT = 500
+const SCRIPT_TIMEOUT_MS = 120_000
+const SCRIPT_OUTPUT_LIMIT = 12_000
+const SCRIPT_STORE_LIMIT = 16_000
+const MESSAGE_LIMIT = 4_000
 
 const PUBLISH_LINE =
   "Do this work in this temporary session. End with what you did and what you found. Do not create another thread. This session is deleted after the result is copied to the user's thread."
@@ -154,8 +158,137 @@ export function nextRunMs(job: CronJob, fromMs = Date.now()): number | null {
   return job.atMs
 }
 
-export function cronPrompt(job: Pick<CronJob, "name" | "message">): string {
-  return `[cron: ${job.name}]\n${job.message}\n\n${PUBLISH_LINE}`
+export function cronPrompt(
+  job: Pick<CronJob, "name" | "message"> & {
+    scriptOutput?: string
+    scriptExit?: number | null
+  },
+): string {
+  const script =
+    job.scriptOutput === undefined
+      ? ""
+      : `\n\nScript output (exit ${job.scriptExit ?? "unknown"}):\n${job.scriptOutput}`
+  return `[cron: ${job.name}]\n${job.message}${script}\n\n${PUBLISH_LINE}`
+}
+
+export function parseRunKind(value: unknown): CronRunKind | null {
+  if (value === "prompt" || value === "script" || value === "both") return value
+  return null
+}
+
+export function normalizeCronRun(input: {
+  runKind: CronRunKind
+  message: string
+  script: string | null
+}): { message: string; script: string | null } | { error: string } {
+  const message = input.message.trim().slice(0, MESSAGE_LIMIT)
+  const scriptRaw = input.script?.trim() ?? ""
+  if (scriptRaw.length > SCRIPT_STORE_LIMIT)
+    return { error: "script is too long" }
+  const script = scriptRaw || null
+  if (input.runKind !== "script" && !message)
+    return { error: "message is required" }
+  if (input.runKind !== "prompt" && !script)
+    return { error: "script is required" }
+  return { message, script }
+}
+
+export function joinScriptOutput(stdout: string, stderr: string): string {
+  const out = stdout.replace(/\s+$/, "")
+  const err = stderr.replace(/\s+$/, "")
+  if (out && err) return `${out}\n${err}`
+  return out || err
+}
+
+export function clipScriptOutput(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+  if (normalized.length <= SCRIPT_OUTPUT_LIMIT) return normalized
+  return `${normalized.slice(0, SCRIPT_OUTPUT_LIMIT - 1)}…`
+}
+
+const EXEC_FAILURE =
+  /Error response from daemon|No such container|Cannot connect to the Docker daemon|executable file not found|unable to start container|is not running/i
+
+export type ScriptRun = {
+  started: boolean
+  code: number | null
+  timedOut: boolean
+  output: string
+  error: string | null
+}
+
+export function interpretScriptRun(input: {
+  code: number | null
+  stdout: string
+  stderr: string
+  timedOut: boolean
+  spawnError: string | null
+}): ScriptRun {
+  const output = joinScriptOutput(input.stdout, input.stderr)
+  if (input.timedOut) {
+    return {
+      started: true,
+      code: input.code,
+      timedOut: true,
+      output,
+      error: "script timed out",
+    }
+  }
+  if (input.spawnError) {
+    return {
+      started: false,
+      code: input.code,
+      timedOut: input.timedOut,
+      output,
+      error: input.spawnError,
+    }
+  }
+  if (!input.timedOut && input.code !== 0 && EXEC_FAILURE.test(input.stderr)) {
+    return {
+      started: false,
+      code: input.code,
+      timedOut: false,
+      output,
+      error: input.stderr.trim() || "script failed to start",
+    }
+  }
+  return {
+    started: true,
+    code: input.code,
+    timedOut: input.timedOut,
+    output,
+    error: input.timedOut ? "script timed out" : null,
+  }
+}
+
+export function scriptBlocksAgent(ran: ScriptRun): string | null {
+  if (!ran.started) return ran.error ?? "script failed to start"
+  if (ran.timedOut) return "script timed out"
+  if (ran.code == null) return "script failed"
+  return null
+}
+
+export function scriptJobError(ran: ScriptRun): string | null {
+  const blocked = scriptBlocksAgent(ran)
+  if (blocked) return blocked
+  if (ran.code !== 0) return `script exited ${ran.code}`
+  return null
+}
+
+export function scriptThreadText(ran: ScriptRun): string {
+  const body = clipScriptOutput(ran.output)
+  if (!ran.started) {
+    const detail = ran.error ?? "The script could not run."
+    return body ? `${body}\n\n${detail}` : detail
+  }
+  if (ran.timedOut)
+    return body ? `${body}\n\nThe script timed out.` : "The script timed out."
+  if (!body) {
+    return ran.code === 0
+      ? "The script finished with no output."
+      : `The script exited ${ran.code ?? "unknown"} with no output.`
+  }
+  return body
 }
 
 export function splitModelRef(
@@ -239,6 +372,8 @@ export function cronRunBody(input: {
   modelId: string | null
   screenSystem: string
   personaLine: string | null
+  scriptOutput?: string
+  scriptExit?: number | null
 }) {
   const system = [input.screenSystem, input.personaLine]
     .filter((item): item is string => Boolean(item))
@@ -248,7 +383,17 @@ export function cronRunBody(input: {
     system: string
     model?: { providerID: string; modelID: string }
   } = {
-    parts: [{ type: "text", text: cronPrompt(input) }],
+    parts: [
+      {
+        type: "text",
+        text: cronPrompt({
+          name: input.name,
+          message: input.message,
+          scriptOutput: input.scriptOutput,
+          scriptExit: input.scriptExit,
+        }),
+      },
+    ],
     system,
   }
   if (input.providerId && input.modelId)
@@ -460,6 +605,30 @@ async function postCronResult(
   if (!posted.ok) throw new Error(`result post failed (${posted.status})`)
 }
 
+async function postDirectResult(
+  db: Db,
+  hub: EventHub | undefined,
+  job: CronJob,
+  base: string,
+  headers: Record<string, string>,
+  sessionId: string,
+  text: string,
+) {
+  await postCronResult(base, headers, sessionId, job.name, text)
+  db.createCronNotice({
+    id: crypto.randomUUID(),
+    userId: job.userId,
+    jobId: job.id,
+    jobName: job.name,
+    sessionId,
+    runSessionId: null,
+    summary: clip(text),
+    createdAt: Date.now(),
+    viewedAt: null,
+  })
+  hub?.emit(job.userId, { type: "cron.notices" })
+}
+
 async function deleteRunSession(
   db: Db,
   userId: string,
@@ -604,7 +773,7 @@ export async function settleCronNotices(db: Db, hub?: EventHub) {
   }
 }
 
-/** Deliver a job's prompt to the user's opencode agent; returns an error message or null. */
+/** Run a due job and publish into its thread. Returns an error message or null. */
 export async function fireCronJob(
   db: Db,
   job: CronJob,
@@ -641,53 +810,84 @@ export async function fireCronJob(
       job.name,
     )
     if (sessionId !== job.sessionId) db.setCronSession(job.id, sessionId)
-    const runSessionId = await createSession(
-      base,
-      headers,
-      `${CRON_RUN_TITLE} ${job.name}`,
-      sessionId,
-    )
-    const screen = await ensureThreadScreen(db, job.userId, runSessionId)
+    const runKind =
+      job.runKind === "script" || job.runKind === "both"
+        ? job.runKind
+        : "prompt"
     let personaLine: string | null = null
-    if (job.personaId) {
+    if (runKind !== "script" && job.personaId) {
       const persona = resolvePersona(db, job.userId, job.personaId)
       if (!persona) throw new Error("personality not found")
       personaLine = personaSystem(persona)
     }
-    const prompt = await opencodeJson(
-      `${base}/session/${runSessionId}/prompt_async`,
-      headers,
-      {
-        method: "POST",
-        body: JSON.stringify(
-          cronRunBody({
-            name: job.name,
-            message: job.message,
-            providerId: job.providerId,
-            modelId: job.modelId,
-            screenSystem: screen.system,
-            personaLine,
-          }),
-        ),
-      },
-    )
-    if (!prompt.ok) {
-      await deleteRunSession(db, job.userId, base, headers, runSessionId)
-      throw new Error(`prompt failed (${prompt.status})`)
+    let scriptOutput: string | undefined
+    let scriptExit: number | null | undefined
+    if (runKind !== "prompt") {
+      if (!job.script?.trim()) throw new Error("script is empty")
+      const ran = interpretScriptRun(
+        await opencodeScript(job.userId, job.script, SCRIPT_TIMEOUT_MS),
+      )
+      if (runKind === "script" || scriptBlocksAgent(ran)) {
+        await postDirectResult(
+          db,
+          hub,
+          job,
+          base,
+          headers,
+          sessionId,
+          scriptThreadText(ran),
+        )
+        error = scriptJobError(ran)
+      } else {
+        scriptOutput = clipScriptOutput(ran.output)
+        scriptExit = ran.code
+      }
     }
-    const noticeId = crypto.randomUUID()
-    db.createCronNotice({
-      id: noticeId,
-      userId: job.userId,
-      jobId: job.id,
-      jobName: job.name,
-      sessionId,
-      runSessionId,
-      summary: null,
-      createdAt: Date.now(),
-      viewedAt: null,
-    })
-    void watchCronPublish(db, noticeId, hub)
+    if (!error && runKind !== "script") {
+      const runSessionId = await createSession(
+        base,
+        headers,
+        `${CRON_RUN_TITLE} ${job.name}`,
+        sessionId,
+      )
+      const screen = await ensureThreadScreen(db, job.userId, runSessionId)
+      const prompt = await opencodeJson(
+        `${base}/session/${runSessionId}/prompt_async`,
+        headers,
+        {
+          method: "POST",
+          body: JSON.stringify(
+            cronRunBody({
+              name: job.name,
+              message: job.message,
+              providerId: job.providerId,
+              modelId: job.modelId,
+              screenSystem: screen.system,
+              personaLine,
+              scriptOutput,
+              scriptExit,
+            }),
+          ),
+        },
+      )
+      if (!prompt.ok) {
+        await deleteRunSession(db, job.userId, base, headers, runSessionId)
+        throw new Error(`prompt failed (${prompt.status})`)
+      }
+      const noticeId = crypto.randomUUID()
+      db.createCronNotice({
+        id: noticeId,
+        userId: job.userId,
+        jobId: job.id,
+        jobName: job.name,
+        sessionId,
+        runSessionId,
+        summary: null,
+        createdAt: Date.now(),
+        viewedAt: null,
+      })
+      void watchCronPublish(db, noticeId, hub)
+    }
   } catch (caught) {
     error = caught instanceof Error ? caught.message : "cron run failed"
   }

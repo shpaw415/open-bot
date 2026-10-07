@@ -72,13 +72,23 @@ body,
   margin-top: 8px;
 }
 
-.ob-screen iframe {
+.ob-screen iframe,
+.ob-takeover iframe {
   flex: 1;
   width: 100%;
   min-height: 0;
   border: 0;
   border-radius: 12px;
   background: #000;
+}
+
+.ob-takeover {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: min(420px, 46vh);
+  margin: 0 8px 8px;
+  flex-shrink: 0;
 }
 
 .ob-bubble::after {
@@ -233,6 +243,16 @@ body,
   line-height: 1.55;
 }
 
+/* Workspace slim header: single row on mobile and desktop.
+   Tabs, model picker, and desktop controls live in the drawer;
+   the threads panel stays permanent beside the chat. */
+.ob-mobile-bar,
+.ob-workspace-top {
+  gap: 8px;
+  min-height: 40px;
+  flex-shrink: 0;
+}
+
 @media (max-width: 899px) {
   .ob-chat-log {
     padding: 8px 10px;
@@ -251,11 +271,6 @@ body,
     gap: 6px;
     min-height: 32px;
   }
-  .ob-mobile-bar {
-    gap: 8px;
-    min-height: 40px;
-    flex-shrink: 0;
-  }
   .ob-threads-bar {
     min-height: 28px;
   }
@@ -265,6 +280,26 @@ body,
   .ob-input-row {
     gap: 8px;
   }
+}
+
+.ob-join-chip {
+  max-width: 14rem;
+}
+.ob-join-chip .MUI_Chip_Content {
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ob-join-thumb {
+  width: 28px;
+  height: 28px;
+  margin: 2px 0 2px 2px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.ob-join-chip-image .MUI_Chip_Content {
+  display: none;
 }
 
 @media (min-width: 900px) {
@@ -370,4 +405,59 @@ body,
 
 .MUI_dark * {
   scrollbar-color: #555 #1e1e1e;
+}
+
+@media (max-width: 899px) {
+  .MUI_Snackbar_Root.ob-reply-snack._bottom-center {
+    bottom: 72px;
+  }
+}
+
+.ob-thread-primary {
+  display: flex;
+  min-width: 0;
+}
+
+.ob-thread-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ob-thread-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ob-unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgb(var(--bg-primary-main, 25, 118, 210));
+  box-shadow: 0 0 0 0 rgba(var(--bg-primary-main, 25, 118, 210), 0.7);
+  animation: ob-unread-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ob-unread-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(var(--bg-primary-main, 25, 118, 210), 0.65);
+  }
+  70% {
+    transform: scale(1);
+    opacity: 1;
+    box-shadow: 0 0 0 6px rgba(var(--bg-primary-main, 25, 118, 210), 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-unread-dot {
+    animation: none;
+  }
 }

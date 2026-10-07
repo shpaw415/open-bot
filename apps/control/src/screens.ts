@@ -1,5 +1,5 @@
 import type { Db } from "@open-bot/db"
-import { desktopExec } from "./docker"
+import { desktopExec, opencodeExec } from "./docker"
 import { maxThreadScreens } from "./env"
 import { HttpError } from "./http-error"
 
@@ -41,20 +41,29 @@ export function capturePath(port: number) {
   return `/tmp/open-bot-${port}.png`
 }
 
+export function holdSystemLine() {
+  return "The user holds this screen. Do not click, type, or run ob-nav or ob-vnc until they say they are done on the screen."
+}
+
 export function vncSystemLine(sessionId: string, port: number) {
   return [
     `This thread's screen id is ${sessionId}.`,
     `Drive it only with ob-vnc --session ${sessionId}.`,
-    "Do not call vncdo. Do not pass a host or port.",
+    "Do not call vncdo. Do not run xclip or xsel. Paste with ob-vnc paste. Do not pass a host or port.",
     "Do not use 5900, computer:5900, computer::5900, or $OPEN_BOT_VNC.",
     `A single colon is a display number. The vncdo address is ${vncHost(port)}, and ob-vnc already uses it.`,
-    `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}.`,
+    `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}. Add 2 when text is hard to read. That restores the screen. Clicks stay in live-screen pixels.`,
     `For a page goal, run ob-nav --session ${sessionId} --goal "..." before clicking.`,
     "If ob-nav is unconfigured, blocked, low_confidence, or errors, use ob-vnc.",
     "If ob-nav needs the user, stop and end with ![screen](open-bot://screen).",
     "If the user must act on this screen, stop all input and end the reply with ![screen](open-bot://screen).",
     "The chat embeds this live screen. Do not click or type again until they say they are done on the screen.",
+    "If the user takes control, stop all input until they say they are done on the screen.",
   ].join(" ")
+}
+
+export function holdFile(sessionId: string) {
+  return `/home/agent/.open-bot/vnc/${sessionId}.hold`
 }
 
 export function vncViewPath(sessionId: string) {
@@ -248,6 +257,46 @@ async function ensureInner(
     lastActiveAt: Date.now(),
   })
   return view(sessionId, display)
+}
+
+export async function screenHeld(userId: string, sessionId: string) {
+  const id = screenSessionId(sessionId)
+  if (!id) return false
+  try {
+    const result = await opencodeExec(userId, ["test", "-f", holdFile(id)])
+    return result.code === 0
+  } catch {
+    return false
+  }
+}
+
+export async function setScreenHold(
+  userId: string,
+  sessionId: string,
+  held: boolean,
+) {
+  const id = screenSessionId(sessionId)
+  if (!id) throw new HttpError(400, "invalid thread id", "bad_session")
+  const file = holdFile(id)
+  const result = await opencodeExec(
+    userId,
+    held
+      ? [
+          "sh",
+          "-c",
+          'mkdir -p /home/agent/.open-bot/vnc && : > "$1"',
+          "sh",
+          file,
+        ]
+      : ["rm", "-f", file],
+  )
+  if (result.code !== 0) {
+    throw new HttpError(
+      502,
+      result.stderr.trim() || "could not update screen control",
+      "screen_hold",
+    )
+  }
 }
 
 export function ensureThreadScreen(db: Db, userId: string, sessionId: string) {

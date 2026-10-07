@@ -1,5 +1,6 @@
 import type { Db, Role, User } from "@open-bot/db"
 import { desktopPhase, destroyDesktop, stopDesktop } from "./docker"
+import { handleAdminImprovements } from "./improvements"
 import { randomToken } from "./passwords"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
 
@@ -122,6 +123,8 @@ export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
     if (!db.revokeInvite(code)) return json({ error: "invite not found" }, 404)
     return json({ ok: true })
   }
+  const improvement = await handleAdminImprovements(req, url, db)
+  if (improvement) return improvement
   const userMatch = url.pathname.match(
     /^\/api\/admin\/users\/([^/]+)(?:\/(disable|enable|reset-password))?$/,
   )

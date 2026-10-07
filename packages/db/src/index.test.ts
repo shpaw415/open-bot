@@ -196,6 +196,8 @@ describe("drizzle migrations", () => {
       providerId: "grok",
       modelId: "grok-4.5",
       personaId: "designer",
+      runKind: "prompt",
+      script: null,
     })
     expect(db.cronJobs("a")).toHaveLength(1)
     expect(db.cronJobById("j1", "a")?.modelId).toBe("grok-4.5")
@@ -427,6 +429,8 @@ describe("cron store", () => {
       providerId: null,
       modelId: null,
       personaId: null,
+      runKind: "prompt",
+      script: null,
       ...partial,
     }
   }
@@ -475,6 +479,14 @@ describe("cron store", () => {
     expect(cleared?.modelId).toBeNull()
     expect(cleared?.personaId).toBeNull()
     expect(cleared?.name).toBe("renamed")
+    expect(cleared?.runKind).toBe("prompt")
+    const scripted = db.updateCronJob("j1", "a", {
+      runKind: "both",
+      script: "date",
+    })
+    expect(scripted?.runKind).toBe("both")
+    expect(scripted?.script).toBe("date")
+    expect(scripted?.message).toBe("do it")
 
     expect(db.deleteCronJob("j1", "b")).toBe(false)
     expect(db.deleteCronJob("j1", "a")).toBe(true)

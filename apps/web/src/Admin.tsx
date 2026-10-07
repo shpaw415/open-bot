@@ -25,6 +25,7 @@ import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "./api"
 import { useMobile } from "./hooks"
+import { Improvements } from "./Improvements"
 import {
   BlockIcon,
   ContentCopyIcon,
@@ -460,6 +461,7 @@ export function Admin({ meId }: { meId: string }) {
             ))
           )}
         </Paper>
+        <Improvements />
       </Stack>
       <Menu
         open={Boolean(menuUser)}

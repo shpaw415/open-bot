@@ -1,6 +1,11 @@
 import { HttpError } from "./http-error"
 
-export const reservedSkillNames = new Set(["desktop", "cron", "cf-ai"])
+export const reservedSkillNames = new Set([
+  "desktop",
+  "cron",
+  "cf-ai",
+  "shortcut",
+])
 const skillNamePattern = /^[A-Za-z0-9_-]{1,64}$/
 const maxDescription = 1024
 const maxBody = 64 * 1024

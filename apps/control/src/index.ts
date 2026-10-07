@@ -8,6 +8,7 @@ import { aiConfigPath, bindHosts, dataDir, idleMinutes, port } from "./env"
 import { EventHub } from "./events"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
 import { createServer, eventTarget } from "./server"
+import { startStuckWatch } from "./stuck"
 
 const loaded = await import(pathToFileURL(aiConfigPath).href)
 if (!loaded.default) {
@@ -67,6 +68,7 @@ if (servers.length === 0) {
 }
 
 startCronScheduler(db, hub)
+startStuckWatch(db, hub)
 
 setInterval(() => {
   void (async () => {

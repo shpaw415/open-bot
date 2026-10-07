@@ -73,6 +73,7 @@ export type SendStatus = "sending" | "sent" | "failed"
 export type SendReceipt = {
   id: string
   text: string
+  files?: string[]
   status: SendStatus
   sentAt: number
   baseline: number
@@ -82,6 +83,32 @@ export type TranscriptEntry = {
   message: VisibleMessage
   mark: SendStatus | null
   pendingId: string | null
+}
+
+export function showLiveScreen(input: {
+  handoff: boolean
+  isLast: boolean
+  held: boolean
+  dismissed: boolean
+}): boolean {
+  return input.handoff && input.isLast && !input.held && !input.dismissed
+}
+
+export function handoffStamp(message: {
+  text: string
+  sentAt: number | null
+}): string {
+  return `${message.sentAt ?? 0}:${message.text.slice(0, 80)}`
+}
+
+export function vncFrameSrc(path: string, interactive: boolean): string {
+  const query = new URLSearchParams({
+    autoconnect: "1",
+    resize: "scale",
+    path,
+    view_only: interactive ? "0" : "1",
+  })
+  return `/desktop/view/vnc.html?${query}`
 }
 
 export function splitScreenHandoff(text: string): {
@@ -232,6 +259,30 @@ export function userMessageCount(messages: ChatMessage[]): number {
   )
 }
 
+export function receiptMatches(
+  message: ChatMessage,
+  receipt: SendReceipt,
+): boolean {
+  const got = visibleText(message).trim()
+  const want = receipt.text.trim()
+  const files = receipt.files ?? []
+  if (files.length === 0) return got === want
+  if (!got.includes("Joined file:")) return false
+  if (!want) return true
+  return got.startsWith(want)
+}
+
+function pendingParts(receipt: SendReceipt): ChatPart[] {
+  const text = [
+    receipt.text.trim(),
+    ...(receipt.files ?? []).map((name) => `Joined file: ${name}`),
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+  if (!text) return []
+  return [{ type: "text", text }]
+}
+
 function receiptBubbleIndex(
   messages: ChatMessage[],
   shown: VisibleMessage[],
@@ -247,7 +298,7 @@ function receiptBubbleIndex(
     }
     seen++
   }
-  if (!target || visibleText(target).trim() !== receipt.text.trim()) return null
+  if (!target || !receiptMatches(target, receipt)) return null
   const index = shown.findIndex(
     (bubble) => bubble.info === target.info && bubble.parts === target.parts,
   )
@@ -285,7 +336,7 @@ export function transcriptBubbles(
     const [bubble] = threadBubbles([
       {
         info: { role: "user", time: { created: receipt.sentAt } },
-        parts: [{ type: "text", text: receipt.text }],
+        parts: pendingParts(receipt),
       },
     ])
     if (!bubble) continue

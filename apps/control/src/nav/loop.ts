@@ -5,13 +5,17 @@ import {
   type Candidate,
   CONFIDENCE_MIN,
   type Decision,
+  goalUrl,
   goalValues,
   type HistoryEntry,
+  isBlankPage,
   MAX_STEPS,
   NONE_VALUE,
   pageKey,
+  pageNeedsUser,
   type Question,
   type Snapshot,
+  sameSite,
 } from "./action-space"
 
 export type NavStatus =
@@ -29,6 +33,7 @@ export type NavResult = {
   title: string
   detail: string
   field?: string
+  fallback?: "vnc"
 }
 
 export type Act =
@@ -42,6 +47,7 @@ export type Act =
 export type Driver = {
   probe(): Promise<Snapshot>
   act(action: Act): Promise<void>
+  navigate?(url: string): Promise<void>
 }
 
 export type Ask = (input: {
@@ -61,8 +67,17 @@ export async function runNav(opts: {
   const maxSteps = opts.maxSteps ?? MAX_STEPS
   const history: HistoryEntry[] = []
   let waits = 0
-  let snapshot = await opts.driver.probe()
+  const opened = await openGoal(
+    opts.driver,
+    opts.goal,
+    await opts.driver.probe(),
+  )
+  if ("status" in opened) return opened
+  let snapshot = opened
   for (let step = 1; step <= maxSteps; step += 1) {
+    if (!isBlankPage(snapshot.url) && pageNeedsUser(snapshot)) {
+      return result(snapshot, step, "needs_user", "the page needs the user")
+    }
     const space = buildActionSpace(snapshot, history)
     let decision: Decision
     try {
@@ -77,20 +92,34 @@ export async function runNav(opts: {
         step,
         "error",
         error instanceof Error ? error.message : "decision failed",
+        "vnc",
       )
     }
-    if (decision.needsUser >= CONFIDENCE_MIN) {
+    if (
+      decision.needsUser >= CONFIDENCE_MIN &&
+      !isBlankPage(snapshot.url) &&
+      pageNeedsUser(snapshot)
+    ) {
       return result(snapshot, step, "needs_user", "the page needs the user")
+    }
+    if (decision.needsUser >= CONFIDENCE_MIN && !isBlankPage(snapshot.url)) {
+      return result(
+        snapshot,
+        step,
+        "low_confidence",
+        "the page does not need the user",
+        "vnc",
+      )
     }
     if (
       decision.operation !== "BLOCKED" &&
       decision.operation !== "DONE" &&
       decision.confidence < CONFIDENCE_MIN
     ) {
-      return result(snapshot, step, "low_confidence", decision.operation)
+      return result(snapshot, step, "low_confidence", decision.operation, "vnc")
     }
     if (decision.operation === "BLOCKED") {
-      return result(snapshot, step, "blocked", "no offered move")
+      return result(snapshot, step, "blocked", "no offered move", "vnc")
     }
     if (decision.operation === "DONE") {
       return result(snapshot, step, "done", snapshot.title || snapshot.url)
@@ -98,7 +127,13 @@ export async function runNav(opts: {
     if (decision.operation === "WAIT") {
       waits += 1
       if (waits > 5) {
-        return result(snapshot, step, "blocked", "the page did not change")
+        return result(
+          snapshot,
+          step,
+          "blocked",
+          "the page did not change",
+          "vnc",
+        )
       }
       await opts.driver.act({ kind: "wait" })
       snapshot = await opts.driver.probe()
@@ -113,7 +148,7 @@ export async function runNav(opts: {
       decision.operation !== "SCROLL_DOWN" &&
       decision.operation !== "SCROLL_UP"
     ) {
-      return result(snapshot, step, "blocked", "missing target")
+      return result(snapshot, step, "blocked", "missing target", "vnc")
     }
     if (decision.operation === "TYPE_TEXT") {
       const text = typedValue(decision, values)
@@ -149,7 +184,41 @@ export async function runNav(opts: {
       pageChanged: pageKey(snapshot) !== before,
     })
   }
-  return result(snapshot, maxSteps, "blocked", "step cap")
+  return result(snapshot, maxSteps, "blocked", "step cap", "vnc")
+}
+
+async function openGoal(
+  driver: Driver,
+  goal: string,
+  snapshot: Snapshot,
+): Promise<Snapshot | NavResult> {
+  const target = goalUrl(goal)
+  if (isBlankPage(snapshot.url) && !target) {
+    return result(snapshot, 0, "blocked", "no url")
+  }
+  if (
+    !target ||
+    (!isBlankPage(snapshot.url) && sameSite(snapshot.url, target))
+  ) {
+    return snapshot
+  }
+  if (!driver.navigate) {
+    return result(snapshot, 0, "error", "cannot open url", "vnc")
+  }
+  await driver.navigate(target)
+  snapshot = await driver.probe()
+  for (
+    let attempt = 0;
+    attempt < 8 && (isBlankPage(snapshot.url) || !snapshot.text.trim());
+    attempt += 1
+  ) {
+    await driver.act({ kind: "wait" })
+    snapshot = await driver.probe()
+  }
+  if (isBlankPage(snapshot.url)) {
+    return result(snapshot, 0, "error", "page did not load", "vnc")
+  }
+  return snapshot
 }
 
 function typedValue(decision: Decision, values: string[]) {
@@ -181,6 +250,7 @@ function result(
   steps: number,
   status: NavStatus,
   detail: string,
+  fallback?: "vnc",
 ): NavResult {
   return {
     status,
@@ -188,5 +258,6 @@ function result(
     url: snapshot.url,
     title: snapshot.title,
     detail,
+    ...(fallback ? { fallback } : {}),
   }
 }

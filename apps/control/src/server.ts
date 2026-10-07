@@ -18,7 +18,9 @@ import {
   cronPersonaFields,
   fireCronJob,
   nextRunMs,
+  normalizeCronRun,
   parseCron,
+  parseRunKind,
 } from "./cron"
 import {
   desktopPhase,
@@ -32,8 +34,9 @@ import {
   stopDesktop,
   syncImageAuth,
   syncSystem1,
+  writeAgentUpload,
 } from "./docker"
-import { cookieSecure, names, webDist } from "./env"
+import { cookieSecure, devMode, names, webDist } from "./env"
 import type { EventHub, EventsSocketData, Upstream } from "./events"
 import { HttpError, httpErrorResponse } from "./http-error"
 import {
@@ -42,6 +45,8 @@ import {
   imageProviderPublic,
   imageProviders,
 } from "./image-providers"
+import { handleImprovementPost } from "./improvements"
+import { JOINED_REPLY, prepareJoinedPrompt } from "./join-file"
 import { handleLlm } from "./llm"
 import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords"
 import {
@@ -53,7 +58,10 @@ import {
 } from "./personas"
 import {
   ensureThreadScreen,
+  holdSystemLine,
   resolveRootSession,
+  screenHeld,
+  setScreenHold,
   stopThreadScreen,
 } from "./screens"
 import {
@@ -494,6 +502,12 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     db.ensureDesktop(freshDesktop(user.id))
     return sessionResponse(db, user)
   }
+  if (url.pathname === "/api/improvements") {
+    if (!devMode) return json({ error: "not found" }, 404)
+    const agent = userFromLlmToken(req, db)
+    if (!agent) return json({ error: "unauthorized" }, 401)
+    return handleImprovementPost(req, db, agent)
+  }
   const isCronPath =
     url.pathname === "/api/cron" || url.pathname.startsWith("/api/cron/")
   const isPersonaPath =
@@ -611,7 +625,51 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       sessionId: screen.sessionId,
       path: screen.path,
       host: screen.host,
+      held: await screenHeld(user.id, root),
     })
+  }
+  if (url.pathname === "/api/desktop/screen/hold" && req.method === "GET") {
+    if ((await desktopPhase(user.id)) !== "running") {
+      return json({ sessionId: "", held: false })
+    }
+    const desktop = db.desktop(user.id)
+    if (!desktop) return json({ sessionId: "", held: false })
+    const base = await endpoint(user.id, "opencode", 4096)
+    const root = await resolveRootSession(
+      base,
+      basic(desktop.opencodePassword),
+      url.searchParams.get("sessionId") ?? "",
+    )
+    return json({ sessionId: root, held: await screenHeld(user.id, root) })
+  }
+  if (url.pathname === "/api/desktop/screen/hold" && req.method === "POST") {
+    const body = await readJson(req)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const root = await resolveRootSession(
+      base,
+      basic(desktop.opencodePassword),
+      String(body.sessionId ?? ""),
+    )
+    const screen = await ensureThreadScreen(db, user.id, root)
+    await setScreenHold(user.id, root, true)
+    return json({
+      sessionId: screen.sessionId,
+      path: screen.path,
+      held: true,
+    })
+  }
+  if (url.pathname === "/api/desktop/screen/hold" && req.method === "DELETE") {
+    const body = await readJson(req)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const root = await resolveRootSession(
+      base,
+      basic(desktop.opencodePassword),
+      String(body.sessionId ?? ""),
+    )
+    await setScreenHold(user.id, root, false)
+    return json({ sessionId: root, held: false })
   }
   if (url.pathname === "/api/viking" && req.method === "GET") {
     const saved = db.getVikingProvider(user.id)
@@ -917,7 +975,12 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
         parsed && typeof parsed === "object" && !Array.isArray(parsed)
           ? parsed
           : {}
-      const text = promptText(body)
+      const prepared = prepareJoinedPrompt(body)
+      for (const upload of prepared.uploads)
+        await writeAgentUpload(user.id, upload.path, upload.bytes)
+      const outbound = prepared.body
+      const text =
+        promptText(body) || prepared.uploads[0]?.path.split("/").pop() || ""
       const root = await resolveRootSession(base, auth, promptedId)
       const screen = await Promise.race([
         ensureThreadScreen(db, user.id, root).catch(() => null),
@@ -933,6 +996,16 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
         ),
         screen?.system ??
           "This thread's screen is still starting. Do not guess a VNC port. Do not call vncdo.",
+        screen &&
+        (await Promise.race([
+          screenHeld(user.id, root),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), 2000),
+          ),
+        ]))
+          ? holdSystemLine()
+          : "",
+        prepared.uploads.length ? JOINED_REPLY : "",
         IMAGE_REPLY,
       ]
         .filter((item): item is string => Boolean(item))
@@ -943,7 +1016,10 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
         base,
         "/api/opencode",
         auth,
-        JSON.stringify({ ...body, system: mergeSystem(body.system, line) }),
+        JSON.stringify({
+          ...outbound,
+          system: mergeSystem(outbound.system, line),
+        }),
       )
     }
     return proxy(req, base, "/api/opencode", auth)
@@ -1021,9 +1097,7 @@ async function handleCron(
   if (url.pathname === "/api/cron" && req.method === "POST") {
     const body = await readJson(req)
     const name = String(body.name ?? "").trim()
-    const message = String(body.message ?? "").trim()
-    if (!name || !message)
-      return json({ error: "name and message are required" }, 400)
+    if (!name) return json({ error: "name is required" }, 400)
     const kind = body.kind as CronScheduleKind | undefined
     let cronExpr: string | null = null
     let everySeconds: number | null = null
@@ -1067,11 +1141,22 @@ async function handleCron(
     } else {
       return json({ error: "kind must be cron, every, or at" }, 400)
     }
+    const runKind =
+      body.runKind === undefined ? "prompt" : parseRunKind(body.runKind)
+    if (!runKind)
+      return json({ error: "runKind must be prompt, script, or both" }, 400)
+    const normalized = normalizeCronRun({
+      runKind,
+      message: String(body.message ?? ""),
+      script:
+        body.script == null || body.script === "" ? null : String(body.script),
+    })
+    if ("error" in normalized) return json({ error: normalized.error }, 400)
     const job: CronJob = {
       id: crypto.randomUUID(),
       userId: user.id,
       name: name.slice(0, 80),
-      message: message.slice(0, 4000),
+      message: normalized.message,
       kind,
       cronExpr,
       everySeconds,
@@ -1087,6 +1172,8 @@ async function handleCron(
       providerId: null,
       modelId: null,
       personaId: null,
+      runKind,
+      script: normalized.script,
     }
     const model = cronModelFields(body)
     if ("error" in model) return json({ error: model.error }, 400)
@@ -1117,16 +1204,36 @@ async function handleCron(
       providerId?: string | null
       modelId?: string | null
       personaId?: string | null
+      runKind?: CronJob["runKind"]
+      script?: string | null
     } = {}
     if (body.name !== undefined) {
       const name = String(body.name ?? "").trim()
       if (!name) return json({ error: "name cannot be empty" }, 400)
       changes.name = name.slice(0, 80)
     }
-    if (body.message !== undefined) {
-      const message = String(body.message ?? "").trim()
-      if (!message) return json({ error: "message cannot be empty" }, 400)
-      changes.message = message.slice(0, 4000)
+    if (
+      body.runKind !== undefined ||
+      body.message !== undefined ||
+      body.script !== undefined
+    ) {
+      const runKind =
+        body.runKind === undefined ? job.runKind : parseRunKind(body.runKind)
+      if (!runKind)
+        return json({ error: "runKind must be prompt, script, or both" }, 400)
+      const message =
+        body.message === undefined ? job.message : String(body.message ?? "")
+      const script =
+        body.script === undefined
+          ? job.script
+          : body.script == null
+            ? null
+            : String(body.script)
+      const normalized = normalizeCronRun({ runKind, message, script })
+      if ("error" in normalized) return json({ error: normalized.error }, 400)
+      changes.runKind = runKind
+      changes.message = normalized.message
+      changes.script = normalized.script
     }
     if (body.enabled !== undefined) {
       const enabled = Boolean(body.enabled)
@@ -1415,10 +1522,13 @@ async function desktopProxy(
     })
     return ok ? undefined : new Response("upgrade failed", { status: 400 })
   }
-  return proxy(
-    req,
-    base,
-    view ? "/desktop/view" : "",
-    view ? undefined : undefined,
-  )
+  const response = await proxy(req, base, view ? "/desktop/view" : "")
+  if (!view) return response
+  const headers = new Headers(response.headers)
+  headers.set("cache-control", "no-cache")
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
 }

@@ -9,6 +9,7 @@ services:
       - "${PUBLISH_HOST:-100.96.0.3}:${PUBLISH_PORT:-8787}:8787"
     environment:
       OPEN_BOT_IN_DOCKER: "1"
+      OPEN_BOT_DEV: ${OPEN_BOT_DEV:-0}
       CONTROL_CONTAINER: open-bot
       DATA_DIR: /data
       OPEN_BOT_AI_CONFIG: /app/config/ai.ts

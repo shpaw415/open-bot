@@ -6,13 +6,27 @@
   "instructions": ["/home/agent/.config/opencode/AGENTS.md"],
   "agent": {
     "build": {
-      "prompt": "You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions."
+      "prompt": "You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command does not finish, stop and say so.",
+      "steps": 8
     }
   },
   "permission": {
     "*": "allow",
     "external_directory": "allow",
     "doom_loop": "allow",
-    "question": "deny"
+    "question": "deny",
+    "bash": {
+      "*": "allow",
+      "*922*": "deny",
+      "*devtools*": "deny",
+      "*vncdo*": "deny",
+      "*google-chrome*": "deny",
+      "*chromium*": "deny",
+      "*websockify*": "deny",
+      "*Xvfb*": "deny",
+      "*x11vnc*": "deny",
+      "*xclip*": "deny",
+      "*xsel*": "deny"
+    }
   }
 }

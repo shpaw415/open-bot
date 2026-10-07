@@ -55,7 +55,61 @@ test("a low-confidence click is not performed", async () => {
   expect(acts).toEqual([])
 })
 
-test("a login page stops before a click", async () => {
+test("a blank page with a url opens it before a decision", async () => {
+  const opened: string[] = []
+  let current: Snapshot = {
+    ...page,
+    url: "about:blank",
+    title: "",
+    text: "",
+    elements: [],
+  }
+  const result = await runNav({
+    goal: "Open https://www.facebook.com/profile.php?id=1",
+    ask: async () => decision({ operation: "DONE" }),
+    driver: {
+      async probe() {
+        return current
+      },
+      async navigate(url) {
+        opened.push(url)
+        current = { ...page, url, text: "M2Tech" }
+      },
+      async act() {},
+    },
+  })
+  expect(opened).toEqual(["https://www.facebook.com/profile.php?id=1"])
+  expect(result.status).toBe("done")
+  expect(result.url).toBe("https://www.facebook.com/profile.php?id=1")
+})
+
+test("a blank page without a url does not click", async () => {
+  let asked = false
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked = true
+      return decision({ operation: "CLICK", target: "1" })
+    },
+    driver: {
+      async probe() {
+        return {
+          ...page,
+          url: "about:blank",
+          title: "",
+          text: "",
+          elements: [],
+        }
+      },
+      async act() {},
+    },
+  })
+  expect(result.status).toBe("blocked")
+  expect(result.detail).toBe("no url")
+  expect(asked).toBe(false)
+})
+
+test("a false user handoff falls back to legacy navigation", async () => {
   const acts: Act[] = []
   const result = await runNav({
     goal: "open the page",
@@ -63,8 +117,61 @@ test("a login page stops before a click", async () => {
       decision({ operation: "CLICK", target: "1", needsUser: 0.9 }),
     driver: driver(acts),
   })
-  expect(result.status).toBe("needs_user")
+  expect(result.status).toBe("low_confidence")
+  expect(result.fallback).toBe("vnc")
   expect(acts).toEqual([])
+})
+
+test("a password field stops without asking", async () => {
+  let asked = false
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked = true
+      return decision({ operation: "CLICK", target: "1" })
+    },
+    driver: {
+      async probe() {
+        return {
+          ...page,
+          url: "https://www.facebook.com/login",
+          elements: [
+            {
+              targetId: "1",
+              role: "input",
+              label: "Password",
+              value: "",
+              editable: true,
+              actionable: true,
+            },
+          ],
+        }
+      },
+      async act() {},
+    },
+  })
+  expect(result.status).toBe("needs_user")
+  expect(result.fallback).toBeUndefined()
+  expect(asked).toBe(false)
+})
+
+test("the same site is not opened again", async () => {
+  const opened: string[] = []
+  const result = await runNav({
+    goal: "Open https://example.test/search",
+    ask: async () => decision({ operation: "DONE" }),
+    driver: {
+      async probe() {
+        return page
+      },
+      async navigate(url) {
+        opened.push(url)
+      },
+      async act() {},
+    },
+  })
+  expect(opened).toEqual([])
+  expect(result.status).toBe("done")
 })
 
 test("typing requires a value already in the goal", async () => {

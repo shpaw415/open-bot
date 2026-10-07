@@ -15,6 +15,7 @@ import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { Admin } from "./Admin"
+import { AgentNotices, NoticeBell } from "./AgentNotices"
 import { api, type Me } from "./api"
 import { Config } from "./Config"
 import { useMobile } from "./hooks"
@@ -28,6 +29,7 @@ import {
   VpnKeyIcon,
 } from "./icons"
 import { Login, SetCredentials } from "./Login"
+import { openNotifiedThread, setNoticeFocus } from "./notify"
 import { Providers } from "./Providers"
 import { useThemeMode } from "./theme"
 import { Workspace } from "./Workspace"
@@ -58,6 +60,18 @@ export function App() {
     history.pushState({}, "", next)
     setPath(next)
   }, [])
+
+  const openReply = useCallback(
+    (sessionId: string) => {
+      openNotifiedThread(sessionId)
+      go("/")
+    },
+    [go],
+  )
+
+  useEffect(() => {
+    setNoticeFocus({ path })
+  }, [path])
 
   if (!ready) {
     return (
@@ -143,6 +157,7 @@ export function App() {
             >
               {me.email}
             </Typography>
+            <NoticeBell />
             <ToolTip title={mode === "dark" ? "Light mode" : "Dark mode"}>
               <IconButton
                 size="small"
@@ -198,6 +213,8 @@ export function App() {
           <Workspace me={me} />
         )}
       </Box>
+
+      <AgentNotices onOpen={openReply} />
 
       {mobile ? (
         <BottomNavigation

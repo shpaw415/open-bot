@@ -39,7 +39,7 @@ if [ -n "$display" ]; then
   pkill -f "Xvfb :$display " 2>/dev/null || true
   rm -f "/tmp/.X11-unix/X$display"
 fi
-rm -f "/home/agent/.open-bot/vnc/$session"
+rm -f "/home/agent/.open-bot/vnc/$session" "/home/agent/.open-bot/vnc/$session.hold"
 if [ "$purge" -eq 1 ]; then
   rm -rf "$profile"
 fi

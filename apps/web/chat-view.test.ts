@@ -3,15 +3,18 @@ import {
   type ChatMessage,
   chatImageUrl,
   eventTouchesSession,
+  handoffStamp,
   modelActivity,
   nearBottom,
   samePayload,
+  showLiveScreen,
   splitScreenHandoff,
   threadBubbles,
   transcriptBubbles,
   userMessageCount,
   visibleMessages,
   visibleText,
+  vncFrameSrc,
   workspaceImagePath,
 } from "./src/chat-view"
 
@@ -212,6 +215,40 @@ describe("visible text", () => {
     expect(bubbles[0]?.text).not.toContain("open-bot://screen")
   })
 
+  test("a takeover hides the bubble viewer until a newer handoff", () => {
+    expect(
+      showLiveScreen({
+        handoff: true,
+        isLast: true,
+        held: false,
+        dismissed: false,
+      }),
+    ).toBe(true)
+    expect(
+      showLiveScreen({
+        handoff: true,
+        isLast: true,
+        held: true,
+        dismissed: false,
+      }),
+    ).toBe(false)
+    expect(
+      showLiveScreen({
+        handoff: true,
+        isLast: true,
+        held: false,
+        dismissed: true,
+      }),
+    ).toBe(false)
+    expect(handoffStamp({ text: "Sign in.", sentAt: 5 })).toBe("5:Sign in.")
+    const src = vncFrameSrc("desktop/view/websockify?token=ses_abc", false)
+    expect(src).toContain("view_only=1")
+    expect(src).toContain("resize=scale")
+    expect(
+      vncFrameSrc("desktop/view/websockify?token=ses_abc", true),
+    ).toContain("view_only=0")
+  })
+
   test("turns a bare workspace image path into markdown and blocks other paths", () => {
     const messages: ChatMessage[] = [
       {
@@ -390,6 +427,83 @@ describe("send receipts", () => {
     ])
     expect(bubbles[1]?.mark).toBe("sent")
     expect(bubbles[1]?.pendingId).toBeNull()
+  })
+
+  test("shows a file-only send until the joined path arrives", () => {
+    const pending = transcriptBubbles(
+      [],
+      [
+        {
+          id: "r1",
+          text: "",
+          files: ["notes.xls"],
+          status: "sending",
+          sentAt: 50,
+          baseline: 0,
+        },
+      ],
+    )
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.message.text).toBe("Joined file: notes.xls")
+    expect(pending[0]?.mark).toBe("sending")
+    const accepted = transcriptBubbles(
+      [
+        {
+          info: { role: "user", time: { created: 60 } },
+          parts: [
+            {
+              type: "text",
+              text: "Joined file: /home/agent/workspace/uploads/abcd1234-notes.xls",
+            },
+          ],
+        },
+      ],
+      [
+        {
+          id: "r1",
+          text: "",
+          files: ["notes.xls"],
+          status: "sent",
+          sentAt: 50,
+          baseline: 0,
+        },
+      ],
+    )
+    expect(accepted).toHaveLength(1)
+    expect(accepted[0]?.pendingId).toBeNull()
+    expect(accepted[0]?.mark).toBe("sent")
+    expect(accepted[0]?.message.text).toContain("notes.xls")
+  })
+
+  test("marks a joined file on the user text without a duplicate", () => {
+    const bubbles = transcriptBubbles(
+      [
+        {
+          info: { role: "user", time: { created: 60 } },
+          parts: [
+            {
+              type: "text",
+              text: "look\n\nJoined file: /home/agent/workspace/uploads/abcd1234-cat.png",
+            },
+          ],
+        },
+      ],
+      [
+        {
+          id: "r1",
+          text: "look",
+          files: ["cat.png"],
+          status: "sent",
+          sentAt: 50,
+          baseline: 0,
+        },
+      ],
+    )
+    expect(bubbles.map((item) => item.message.text)).toEqual([
+      "look\n\nJoined file: /home/agent/workspace/uploads/abcd1234-cat.png",
+    ])
+    expect(bubbles[0]?.mark).toBe("sent")
+    expect(bubbles[0]?.pendingId).toBeNull()
   })
 
   test("does not mark an older copy of the same text", () => {

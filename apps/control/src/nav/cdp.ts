@@ -22,6 +22,18 @@ export async function connectCdp(port: number): Promise<CdpDriver> {
       const value = await evaluate(socket, PROBE)
       return normalize(value)
     },
+    async navigate(url: string) {
+      await socket.call("Page.navigate", { url })
+      const deadline = Date.now() + 8000
+      while (Date.now() < deadline) {
+        const href = await evaluate(socket, "location.href")
+        if (typeof href === "string" && href && !href.startsWith("about:")) {
+          await present(socket)
+          return
+        }
+        await Bun.sleep(250)
+      }
+    },
     async act(action) {
       await evaluate(socket, actionScript(action))
       await Bun.sleep(action.kind === "wait" ? 500 : 400)
@@ -70,6 +82,35 @@ function openSocket(url: string) {
         },
       })
     ws.onerror = () => reject(new Error("cdp connection failed"))
+  })
+}
+
+async function present(socket: CdpSocket) {
+  await socket.call("Page.bringToFront").catch(() => undefined)
+  const found = (await socket
+    .call("Browser.getWindowForTarget")
+    .catch(() => null)) as { windowId?: number } | null
+  const windowId = found?.windowId
+  if (!windowId) return
+  await socket.call("Browser.setWindowBounds", {
+    windowId,
+    bounds: {
+      left: 0,
+      top: 0,
+      width: 1919,
+      height: 1199,
+      windowState: "normal",
+    },
+  })
+  await socket.call("Browser.setWindowBounds", {
+    windowId,
+    bounds: {
+      left: 0,
+      top: 0,
+      width: 1920,
+      height: 1200,
+      windowState: "normal",
+    },
   })
 }
 

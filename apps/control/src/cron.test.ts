@@ -1,15 +1,21 @@
 import { describe, expect, test } from "bun:test"
 import {
+  clipScriptOutput,
   cronModelFields,
   cronPersonaFields,
   cronPrompt,
   cronResultMessage,
   cronRunBody,
+  interpretScriptRun,
   nextCronTime,
   nextRunMs,
+  normalizeCronRun,
   parseCron,
   publishDecision,
   publishedSummary,
+  scriptBlocksAgent,
+  scriptJobError,
+  scriptThreadText,
 } from "./cron"
 
 const T = (iso: string) => Date.parse(iso)
@@ -210,6 +216,8 @@ describe("nextRunMs", () => {
           providerId: null,
           modelId: null,
           personaId: null,
+          runKind: "prompt",
+          script: null,
         },
         base,
       ),
@@ -239,6 +247,8 @@ describe("nextRunMs", () => {
           providerId: null,
           modelId: null,
           personaId: null,
+          runKind: "prompt",
+          script: null,
         },
         base,
       ),
@@ -304,5 +314,105 @@ describe("cron model and personality", () => {
     })
     expect(plain.model).toBeUndefined()
     expect(plain.system).toBe("screen")
+  })
+
+  test("adds script output to the prompt and not the result marker", () => {
+    const text = cronPrompt({
+      name: "disk",
+      message: "Say if this is full",
+      scriptOutput: "use 80%",
+      scriptExit: 0,
+    })
+    expect(text).toContain("Say if this is full")
+    expect(text).toContain("Script output (exit 0):\nuse 80%")
+    expect(text.indexOf("Script output")).toBeGreaterThan(
+      text.indexOf("Say if this is full"),
+    )
+    const body = cronRunBody({
+      name: "disk",
+      message: "Say if this is full",
+      providerId: null,
+      modelId: null,
+      screenSystem: "screen",
+      personaLine: null,
+      scriptOutput: "use 80%",
+      scriptExit: 1,
+    })
+    expect(body.parts[0]?.text).toContain("exit 1")
+    expect(cronResultMessage("disk", "use 80%")).not.toContain("Script output")
+  })
+})
+
+describe("cron script runs", () => {
+  test("requires a message or a script for the chosen mode", () => {
+    expect(
+      normalizeCronRun({ runKind: "prompt", message: "  hi  ", script: null }),
+    ).toEqual({ message: "hi", script: null })
+    expect(
+      normalizeCronRun({ runKind: "script", message: "", script: " date " }),
+    ).toEqual({ message: "", script: "date" })
+    expect(
+      normalizeCronRun({
+        runKind: "both",
+        message: "summarize",
+        script: "df -h",
+      }),
+    ).toEqual({ message: "summarize", script: "df -h" })
+    expect(
+      normalizeCronRun({ runKind: "prompt", message: " ", script: "date" }),
+    ).toEqual({ error: "message is required" })
+    expect(
+      normalizeCronRun({ runKind: "both", message: "hi", script: "  " }),
+    ).toEqual({ error: "script is required" })
+    expect(
+      normalizeCronRun({ runKind: "script", message: "", script: "" }),
+    ).toEqual({ error: "script is required" })
+  })
+
+  test("posts script output and only blocks the agent on a failed start or timeout", () => {
+    const ok = interpretScriptRun({
+      code: 0,
+      stdout: "ok\n",
+      stderr: "",
+      timedOut: false,
+      spawnError: null,
+    })
+    expect(ok.output).toBe("ok")
+    expect(scriptJobError(ok)).toBeNull()
+    expect(scriptBlocksAgent(ok)).toBeNull()
+    expect(scriptThreadText(ok)).toBe("ok")
+
+    const failed = interpretScriptRun({
+      code: 2,
+      stdout: "partial",
+      stderr: "nope",
+      timedOut: false,
+      spawnError: null,
+    })
+    expect(failed.output).toBe("partial\nnope")
+    expect(scriptJobError(failed)).toBe("script exited 2")
+    expect(scriptBlocksAgent(failed)).toBeNull()
+    expect(scriptThreadText(failed)).toBe("partial\nnope")
+
+    const timedOut = interpretScriptRun({
+      code: null,
+      stdout: "partial",
+      stderr: "",
+      timedOut: true,
+      spawnError: null,
+    })
+    expect(scriptBlocksAgent(timedOut)).toBe("script timed out")
+    expect(scriptThreadText(timedOut)).toContain("The script timed out.")
+
+    const daemon = interpretScriptRun({
+      code: 1,
+      stdout: "",
+      stderr: "Error response from daemon: No such container",
+      timedOut: false,
+      spawnError: null,
+    })
+    expect(daemon.started).toBe(false)
+    expect(scriptBlocksAgent(daemon)).toContain("No such container")
+    expect(clipScriptOutput("x".repeat(12_001)).endsWith("…")).toBe(true)
   })
 })

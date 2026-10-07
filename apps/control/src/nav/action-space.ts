@@ -89,6 +89,44 @@ export function goalValues(goal: string, extra: string[] = []) {
   return found
 }
 
+export function goalUrl(goal: string) {
+  const match = goal.match(/https?:\/\/\S+/i)
+  return match ? match[0].replace(/[),.;]+$/, "") : ""
+}
+
+export function isBlankPage(url: string) {
+  const value = url.trim().toLowerCase()
+  return (
+    value === "" ||
+    value === "about:blank" ||
+    value.startsWith("about:blank#") ||
+    value.startsWith("chrome://newtab") ||
+    value.startsWith("chrome://new-tab-page")
+  )
+}
+
+export function sameSite(pageUrl: string, target: string) {
+  try {
+    return new URL(pageUrl).host === new URL(target).host
+  } catch {
+    return false
+  }
+}
+
+export function pageNeedsUser(snapshot: Snapshot) {
+  const url = snapshot.url.toLowerCase()
+  if (/\/login(\/|$|\?)/.test(url)) return true
+  if (
+    snapshot.elements.some(
+      (item) =>
+        item.role.toLowerCase() === "password" || /password/i.test(item.label),
+    )
+  ) {
+    return true
+  }
+  return /\bcaptcha\b|\brecaptcha\b/i.test(snapshot.text)
+}
+
 export function pageKey(snapshot: Snapshot) {
   return [
     snapshot.url,

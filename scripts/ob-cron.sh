@@ -9,10 +9,10 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-cron add --name NAME --message TEXT (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601) [--model PROVIDER/MODEL] [--persona ID]
+  ob-cron add --name NAME (--message TEXT | --script TEXT | both) (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601) [--model PROVIDER/MODEL] [--persona ID]
   ob-cron list
   ob-cron models
-  ob-cron set ID [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
+  ob-cron set ID [--run prompt|script|both] [--script TEXT | --clear-script] [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
   ob-cron remove ID
   ob-cron run ID
 
@@ -22,14 +22,18 @@ Schedules (exactly one on add):
   --at ISO8601      one-shot run, e.g. 2026-12-01T09:00:00Z
 
 Run options:
-  --model PROVIDER/MODEL   model for the temporary run. Omit to use the desktop default.
+  --message TEXT           prompt for the agent. Alone, the job is a prompt.
+  --script TEXT            shell command run as you in /home/agent/workspace. Alone, its output is posted to the thread.
+                           With --message, the output is added to the prompt and the agent's result is posted.
+  --model PROVIDER/MODEL   model for the temporary run. Omit to use the desktop default. Ignored for script-only jobs.
   --persona ID             personality that runs the job. Omit for Assistant. Does not change the result thread.
 
 Examples:
   ob-cron add --name standup --message "Summarize git log since yesterday" --cron "0 13 * * 1-5" --model grok/grok-4.5 --persona designer
-  ob-cron add --name snapshot --message "Back up workspace notes" --every 3600
+  ob-cron add --name disk --script "df -h" --every 3600
+  ob-cron add --name digest --script "git -C /home/agent/workspace log -1 --oneline" --message "Summarize this and say if anything needs attention" --cron "0 13 * * 1-5"
   ob-cron models
-  ob-cron set 3f2b... --model grok/grok-4.5
+  ob-cron set 3f2b... --run script --script "df -h"
   ob-cron set 3f2b... --clear-model --persona assistant
   ob-cron list
   ob-cron remove 3f2b...
@@ -78,6 +82,7 @@ case "$cmd" in
   add)
     name=""
     message=""
+    script=""
     every=""
     cron=""
     at=""
@@ -91,6 +96,9 @@ case "$cmd" in
         --message)
           [ $# -ge 2 ] || { usage; exit 2; }
           message="$2"; shift 2 ;;
+        --script)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          script="$2"; shift 2 ;;
         --every)
           [ $# -ge 2 ] || { usage; exit 2; }
           every="$2"; shift 2 ;;
@@ -110,7 +118,8 @@ case "$cmd" in
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
     done
-    [ -n "$name" ] && [ -n "$message" ] || { usage; exit 2; }
+    [ -n "$name" ] || { usage; exit 2; }
+    [ -n "$message" ] || [ -n "$script" ] || { usage; exit 2; }
     kind=""
     every_json="null"
     cron_json="null"
@@ -144,13 +153,24 @@ case "$cmd" in
     if [ -n "$persona" ]; then
       persona_json=$(jq -Rn --arg v "$persona" '$v')
     fi
-    body=$(jq -n --arg name "$name" --arg message "$message" --arg kind "$kind" \
+    run_kind="prompt"
+    script_json="null"
+    if [ -n "$script" ]; then
+      script_json=$(jq -Rn --arg v "$script" '$v')
+      if [ -n "$message" ]; then
+        run_kind="both"
+      else
+        run_kind="script"
+      fi
+    fi
+    body=$(jq -n --arg name "$name" --arg message "$message" --arg kind "$kind" --arg runKind "$run_kind" \
       --argjson every "$every_json" --argjson cron "$cron_json" --argjson at "$at_json" \
       --argjson provider "$provider_json" --argjson model "$model_json" --argjson persona "$persona_json" \
-      '{name: $name, message: $message, kind: $kind, everySeconds: $every, cronExpr: $cron, atMs: $at, providerID: $provider, modelID: $model, personaId: $persona}')
+      --argjson script "$script_json" \
+      '{name: $name, message: $message, kind: $kind, everySeconds: $every, cronExpr: $cron, atMs: $at, providerID: $provider, modelID: $model, personaId: $persona, runKind: $runKind, script: $script}')
     out=$(request POST /api/cron "$body")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id, name, kind, cronExpr, everySeconds, atMs, nextRunAt, enabled, providerId, modelId, personaId}'
+    printf '%s' "$out" | jq '{id, name, kind, runKind, cronExpr, everySeconds, atMs, nextRunAt, enabled, providerId, modelId, personaId}'
     ;;
   list)
     out=$(request GET /api/cron)
@@ -160,7 +180,7 @@ case "$cmd" in
         if .kind == "cron" then (.cronExpr // "")
         elif .kind == "every" then "every \(.everySeconds)s"
         else "at \((.atMs / 1000 | strftime("%Y-%m-%dT%H:%M:%SZ")) // "")"
-        end)\(if .providerId and .modelId then " model=\(.providerId)/\(.modelId)" else "" end)\(if .personaId then " persona=\(.personaId)" else "" end)\(if .enabled then "" else " (disabled)" end) runs=\(.runCount)"'
+        end)\(if .runKind == "script" or .runKind == "both" then " run=\(.runKind)" else "" end)\(if .providerId and .modelId then " model=\(.providerId)/\(.modelId)" else "" end)\(if .personaId then " persona=\(.personaId)" else "" end)\(if .enabled then "" else " (disabled)" end) runs=\(.runCount)"'
     ;;
   models)
     out=$(request GET /api/cron/models)
@@ -177,8 +197,19 @@ case "$cmd" in
     clear_persona=0
     name=""
     message=""
+    run=""
+    script=""
+    clear_script=0
     while [ $# -gt 0 ]; do
       case "$1" in
+        --run)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          run="$2"; shift 2 ;;
+        --script)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          script="$2"; shift 2 ;;
+        --clear-script)
+          clear_script=1; shift ;;
         --model)
           [ $# -ge 2 ] || { usage; exit 2; }
           model="$2"; shift 2 ;;
@@ -207,7 +238,15 @@ case "$cmd" in
       echo "ob-cron: pass only one of --persona or --clear-persona" >&2
       exit 2
     fi
-    if [ -z "$model" ] && [ "$clear_model" -eq 0 ] && [ -z "$persona" ] && [ "$clear_persona" -eq 0 ] && [ -z "$name" ] && [ -z "$message" ]; then
+    if [ -n "$script" ] && [ "$clear_script" -eq 1 ]; then
+      echo "ob-cron: pass only one of --script or --clear-script" >&2
+      exit 2
+    fi
+    if [ -n "$run" ] && [ "$run" != "prompt" ] && [ "$run" != "script" ] && [ "$run" != "both" ]; then
+      echo "ob-cron: --run must be prompt, script, or both" >&2
+      exit 2
+    fi
+    if [ -z "$model" ] && [ "$clear_model" -eq 0 ] && [ -z "$persona" ] && [ "$clear_persona" -eq 0 ] && [ -z "$name" ] && [ -z "$message" ] && [ -z "$run" ] && [ -z "$script" ] && [ "$clear_script" -eq 0 ]; then
       usage
       exit 2
     fi
@@ -217,6 +256,14 @@ case "$cmd" in
     fi
     if [ -n "$message" ]; then
       body=$(printf '%s' "$body" | jq --arg message "$message" '. + {message: $message}')
+    fi
+    if [ -n "$run" ]; then
+      body=$(printf '%s' "$body" | jq --arg runKind "$run" '. + {runKind: $runKind}')
+    fi
+    if [ "$clear_script" -eq 1 ]; then
+      body=$(printf '%s' "$body" | jq '. + {script: null}')
+    elif [ -n "$script" ]; then
+      body=$(printf '%s' "$body" | jq --arg script "$script" '. + {script: $script}')
     fi
     if [ "$clear_model" -eq 1 ]; then
       body=$(printf '%s' "$body" | jq '. + {providerID: null, modelID: null}')
@@ -231,7 +278,7 @@ case "$cmd" in
     fi
     out=$(request PATCH "/api/cron/$(urlencode "$id")" "$body")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id, name, providerId, modelId, personaId, enabled}'
+    printf '%s' "$out" | jq '{id, name, runKind, script, providerId, modelId, personaId, enabled}'
     ;;
   remove)
     [ $# -eq 1 ] || { usage; exit 2; }

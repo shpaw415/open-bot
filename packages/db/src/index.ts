@@ -21,6 +21,7 @@ import {
   cronJobs,
   cronNotices,
   desktops,
+  improvements,
   invites,
   personas,
   sessions,
@@ -143,6 +144,36 @@ export type Desktop = {
   lastActiveAt: number
 }
 
+export type ImprovementKind = "bug" | "friction" | "feature"
+export type ImprovementStatus = "open" | "done" | "wontfix"
+export type ImprovementSurface =
+  | "chat"
+  | "desktop"
+  | "nav"
+  | "cron"
+  | "persona"
+  | "config"
+  | "other"
+
+export type Improvement = {
+  id: string
+  userId: string
+  sessionId: string | null
+  kind: ImprovementKind
+  surface: ImprovementSurface
+  title: string
+  detail: string
+  fingerprint: string
+  hits: number
+  status: ImprovementStatus
+  note: string | null
+  createdAt: number
+  lastSeenAt: number
+  resolvedAt: number | null
+}
+
+export type ImprovementRow = Improvement & { email: string | null }
+
 export type Persona = {
   id: string
   userId: string
@@ -166,6 +197,7 @@ export type ThreadScreen = {
 }
 
 export type CronScheduleKind = "cron" | "every" | "at"
+export type CronRunKind = "prompt" | "script" | "both"
 
 export type CronJob = {
   id: string
@@ -187,6 +219,8 @@ export type CronJob = {
   providerId: string | null
   modelId: string | null
   personaId: string | null
+  runKind: CronRunKind
+  script: string | null
 }
 
 export type CronNotice = {
@@ -257,6 +291,11 @@ function mapCronJob(
     providerId: row.providerId,
     modelId: row.modelId,
     personaId: row.personaId,
+    runKind:
+      row.runKind === "script" || row.runKind === "both"
+        ? row.runKind
+        : "prompt",
+    script: row.script,
   }
 }
 
@@ -292,6 +331,7 @@ export function openDatabase(path: string) {
       personas,
       threadPersonas,
       threadScreens,
+      improvements,
     },
   })
 
@@ -773,6 +813,8 @@ export function openDatabase(path: string) {
         providerId?: string | null
         modelId?: string | null
         personaId?: string | null
+        runKind?: CronRunKind
+        script?: string | null
       },
     ) {
       const job = this.cronJobById(id, userId)
@@ -793,6 +835,8 @@ export function openDatabase(path: string) {
             changes.modelId !== undefined ? changes.modelId : job.modelId,
           personaId:
             changes.personaId !== undefined ? changes.personaId : job.personaId,
+          runKind: changes.runKind ?? job.runKind,
+          script: changes.script !== undefined ? changes.script : job.script,
         })
         .where(eq(cronJobs.id, id))
         .run()
@@ -963,6 +1007,7 @@ export function openDatabase(path: string) {
         tx.delete(personas).where(eq(personas.userId, userId)).run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
+        tx.delete(improvements).where(eq(improvements.userId, userId)).run()
         tx.delete(users).where(eq(users.id, userId)).run()
       })
     },
@@ -1023,6 +1068,98 @@ export function openDatabase(path: string) {
       if (!row) return false
       orm.delete(invites).where(eq(invites.code, code)).run()
       return true
+    },
+    improvementsSince(userId: string, since: number) {
+      const row = orm
+        .select({ n: count() })
+        .from(improvements)
+        .where(
+          and(
+            eq(improvements.userId, userId),
+            gte(improvements.createdAt, since),
+          ),
+        )
+        .get()
+      return Number(row?.n ?? 0)
+    },
+    openImprovementByFingerprint(fingerprint: string) {
+      return (
+        orm
+          .select()
+          .from(improvements)
+          .where(
+            and(
+              eq(improvements.fingerprint, fingerprint),
+              eq(improvements.status, "open"),
+            ),
+          )
+          .get() ?? null
+      )
+    },
+    insertImprovement(row: Improvement) {
+      orm.insert(improvements).values(row).run()
+    },
+    bumpImprovement(
+      id: string,
+      patch: {
+        hits: number
+        lastSeenAt: number
+        detail: string
+        sessionId: string | null
+      },
+    ) {
+      orm.update(improvements).set(patch).where(eq(improvements.id, id)).run()
+    },
+    improvementById(id: string) {
+      return (
+        orm.select().from(improvements).where(eq(improvements.id, id)).get() ??
+        null
+      )
+    },
+    listImprovements(status?: ImprovementStatus) {
+      return orm
+        .select({
+          id: improvements.id,
+          userId: improvements.userId,
+          sessionId: improvements.sessionId,
+          kind: improvements.kind,
+          surface: improvements.surface,
+          title: improvements.title,
+          detail: improvements.detail,
+          fingerprint: improvements.fingerprint,
+          hits: improvements.hits,
+          status: improvements.status,
+          note: improvements.note,
+          createdAt: improvements.createdAt,
+          lastSeenAt: improvements.lastSeenAt,
+          resolvedAt: improvements.resolvedAt,
+          email: users.email,
+        })
+        .from(improvements)
+        .leftJoin(users, eq(improvements.userId, users.id))
+        .where(status ? eq(improvements.status, status) : sql`1 = 1`)
+        .orderBy(desc(improvements.lastSeenAt))
+        .all()
+    },
+    setImprovementStatus(
+      id: string,
+      status: ImprovementStatus,
+      note?: string | null,
+    ) {
+      const row = this.improvementById(id)
+      if (!row) return null
+      const resolvedAt =
+        status === "open" ? null : (row.resolvedAt ?? Date.now())
+      orm
+        .update(improvements)
+        .set({
+          status,
+          resolvedAt,
+          ...(note !== undefined ? { note } : {}),
+        })
+        .where(eq(improvements.id, id))
+        .run()
+      return this.improvementById(id)
     },
   }
 }

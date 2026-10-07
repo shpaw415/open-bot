@@ -5,6 +5,8 @@ import { join } from "node:path"
 import { openDatabase } from "@open-bot/db"
 import {
   capturePath,
+  holdFile,
+  holdSystemLine,
   parseScreenList,
   pickDisplay,
   rfbPortFor,
@@ -31,10 +33,15 @@ describe("thread screens", () => {
     const line = vncSystemLine("ses_abc", 5904)
     expect(line).toContain("computer::5904")
     expect(line).toContain("ob-vnc --session ses_abc")
+    expect(line).toContain("ob-vnc paste")
+    expect(line).toContain("xclip")
     expect(line).toContain("ob-nav --session ses_abc")
     expect(line).toContain(capturePath(5904))
     expect(line).toContain("$OPEN_BOT_VNC")
     expect(line).toContain("![screen](open-bot://screen)")
+    expect(line).toContain("takes control")
+    expect(holdSystemLine()).toContain("user holds this screen")
+    expect(holdFile("ses_abc")).toBe("/home/agent/.open-bot/vnc/ses_abc.hold")
     expect(vncViewPath("ses_abc")).toBe("desktop/view/websockify?token=ses_abc")
   })
 

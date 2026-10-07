@@ -173,6 +173,12 @@ describe("viking skills", () => {
     expect(() => assertSkillInput({ ...skill, name: "desktop" })).toThrow(
       HttpError,
     )
+    expect(() => assertSkillInput({ ...skill, name: "shortcut" })).toThrow(
+      "shortcut is a built-in skill",
+    )
+    expect(() =>
+      assertSkillInput({ ...skill, name: "shortcut-open-mail" }),
+    ).not.toThrow()
     expect(() => assertSkillInput({ ...skill, description: "" })).toThrow(
       "description is required",
     )

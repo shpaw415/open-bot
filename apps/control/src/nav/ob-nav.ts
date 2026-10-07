@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseDecision } from "./action-space"
 import { connectCdp } from "./cdp"
@@ -58,6 +58,17 @@ async function main() {
     return
   }
   const home = process.env.HOME || "/home/agent"
+  if (existsSync(join(home, ".open-bot/vnc", `${session}.hold`))) {
+    emit(
+      {
+        status: "held",
+        steps: 0,
+        detail: "user has this screen. Stop until they say they are done.",
+      },
+      0,
+    )
+    return
+  }
   const auth = readConfig(home)
   if (!auth) {
     emit({ status: "unconfigured", steps: 0, detail: "no provider" }, 2)

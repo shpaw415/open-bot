@@ -15,7 +15,8 @@
     "images": "bash scripts/build-images.sh",
     "db:generate": "bun run --cwd packages/db db:generate",
     "setup": "bun scripts/setup.ts",
-    "update": "bash scripts/update.sh"
+    "update": "bash scripts/update.sh",
+    "update:dev": "bash scripts/update.sh --dev"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.4",

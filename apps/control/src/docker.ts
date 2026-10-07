@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -20,6 +20,7 @@ import {
 } from "./env"
 import { HttpError } from "./http-error"
 import { imageAuthReady } from "./image-providers"
+import { isUploadPath } from "./join-file"
 import { docker, sh } from "./shell"
 import { ensureVikingUser, vikingUserKey } from "./viking-user"
 
@@ -682,6 +683,52 @@ export async function desktopExec(
   return sh(["docker", "exec", n[role], ...args])
 }
 
+export async function writeAgentUpload(
+  userId: string,
+  path: string,
+  bytes: Uint8Array,
+) {
+  if (!isUploadPath(path))
+    throw new HttpError(400, "invalid upload path", "invalid_upload")
+  const n = names(userId)
+  const dir = mkdtempSync(join(tmpdir(), "ob-join-"))
+  const local = join(dir, "upload")
+  try {
+    writeFileSync(local, bytes)
+    const made = await sh([
+      "docker",
+      "exec",
+      "-u",
+      "agent",
+      n.opencode,
+      "mkdir",
+      "-p",
+      "--",
+      "/home/agent/workspace/uploads",
+    ])
+    if (made.code !== 0)
+      throw new HttpError(502, "could not save the file", "upload_failed")
+    const copied = await sh(["docker", "cp", local, `${n.opencode}:${path}`])
+    if (copied.code !== 0)
+      throw new HttpError(502, "could not save the file", "upload_failed")
+    const owned = await sh([
+      "docker",
+      "exec",
+      "-u",
+      "root",
+      n.opencode,
+      "chown",
+      "agent:agent",
+      "--",
+      path,
+    ])
+    if (owned.code !== 0)
+      throw new HttpError(502, "could not save the file", "upload_failed")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 export async function opencodeExec(userId: string, args: string[]) {
   const n = names(userId)
   return sh([
@@ -694,4 +741,136 @@ export async function opencodeExec(userId: string, args: string[]) {
     n.opencode,
     ...args,
   ])
+}
+
+const SCRIPT_READ_LIMIT = 16_001
+
+async function readCapped(
+  stream: ReadableStream<Uint8Array> | null | undefined,
+  max: number,
+): Promise<string> {
+  if (!stream) return ""
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || size >= max) continue
+      const room = max - size
+      chunks.push(value.byteLength > room ? value.subarray(0, room) : value)
+      size += Math.min(value.byteLength, room)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const merged = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(merged)
+}
+
+export async function opencodeScript(
+  userId: string,
+  script: string,
+  timeoutMs: number,
+) {
+  const n = names(userId)
+  let proc: ReturnType<typeof Bun.spawn>
+  try {
+    proc = Bun.spawn(
+      [
+        "docker",
+        "exec",
+        "-i",
+        "-u",
+        "agent",
+        "-e",
+        "HOME=/home/agent",
+        "-w",
+        "/home/agent/workspace",
+        n.opencode,
+        "bash",
+        "-s",
+      ],
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+    )
+  } catch (caught) {
+    return {
+      code: null,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      spawnError:
+        caught instanceof Error ? caught.message : "script failed to start",
+    }
+  }
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    try {
+      proc.kill()
+    } catch {}
+  }, timeoutMs)
+  let writeError: string | null = null
+  try {
+    const stdin = proc.stdin
+    if (!stdin || typeof stdin === "number")
+      throw new Error("script failed to start")
+    stdin.write(script)
+    await stdin.end()
+  } catch (caught) {
+    writeError =
+      caught instanceof Error ? caught.message : "script failed to start"
+  }
+  const outStream = typeof proc.stdout === "number" ? null : proc.stdout
+  const errStream = typeof proc.stderr === "number" ? null : proc.stderr
+  try {
+    const finished = Promise.all([
+      readCapped(outStream, SCRIPT_READ_LIMIT),
+      readCapped(errStream, SCRIPT_READ_LIMIT),
+      proc.exited,
+    ])
+    const result = await Promise.race([
+      finished.then((value) => ({ done: true as const, value })),
+      Bun.sleep(timeoutMs + 5_000).then(() => ({ done: false as const })),
+    ])
+    if (!result.done) {
+      timedOut = true
+      try {
+        proc.kill()
+      } catch {}
+      return {
+        code: null,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+        spawnError: null,
+      }
+    }
+    const [stdout, stderr, code] = result.value
+    return {
+      code,
+      stdout,
+      stderr,
+      timedOut,
+      spawnError: stdout || stderr ? null : writeError,
+    }
+  } catch (caught) {
+    return {
+      code: null,
+      stdout: "",
+      stderr: "",
+      timedOut,
+      spawnError:
+        writeError ??
+        (caught instanceof Error ? caught.message : "script failed to start"),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
 }

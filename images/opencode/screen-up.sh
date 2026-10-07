@@ -74,7 +74,7 @@ start_group() {
   echo $! >"$run_dir/$name.pid"
 }
 
-start_group xvfb Xvfb ":$display" -screen 0 1280x800x24 -ac -extension MIT-SHM
+start_group xvfb Xvfb ":$display" -screen 0 1920x1200x24 -ac -extension MIT-SHM
 i=0
 while [ ! -S "/tmp/.X11-unix/X$display" ]; do
   i=$((i + 1))
@@ -91,6 +91,8 @@ if [ -x /opt/google/chrome/google-chrome ]; then
     --disable-namespace-sandbox \
     --disable-dev-shm-usage \
     --disable-gpu \
+    --ozone-platform=x11 \
+    --window-position=0,0 \
     --password-store=basic \
     --hide-crash-restore-bubble \
     --no-first-run \
@@ -98,7 +100,8 @@ if [ -x /opt/google/chrome/google-chrome ]; then
     --remote-debugging-address=127.0.0.1 \
     --remote-allow-origins=* \
     --disable-search-engine-choice-screen \
-    --window-size=1280,800 \
+    --window-size=1920,1200 \
+    --force-device-scale-factor=1 \
     --user-data-dir="$profile" \
     about:blank
 else
@@ -106,13 +109,16 @@ else
     --no-sandbox \
     --disable-dev-shm-usage \
     --disable-gpu \
+    --ozone-platform=x11 \
+    --window-position=0,0 \
     --password-store=basic \
     --hide-crash-restore-bubble \
     --no-first-run \
     --remote-debugging-port="$cdp" \
     --remote-debugging-address=127.0.0.1 \
     --remote-allow-origins=* \
-    --window-size=1280,800 \
+    --window-size=1920,1200 \
+    --force-device-scale-factor=1 \
     --user-data-dir="$profile" \
     about:blank
 fi

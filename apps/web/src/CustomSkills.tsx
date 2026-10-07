@@ -140,8 +140,8 @@ export function CustomSkills() {
       <Typography variant="subtitle1">Custom skills</Typography>
       <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
         Stored in this desktop's OpenViking. The agent can create the same
-        skills. desktop, cron, persona, and cf-ai stay built in and are not
-        edited here.
+        skills. desktop, cron, persona, cf-ai, and shortcut stay built in and
+        are not edited here.
       </Typography>
       {error ? <Alert severity="error">{error}</Alert> : null}
       {saved ? <Alert severity="success">{saved}</Alert> : null}

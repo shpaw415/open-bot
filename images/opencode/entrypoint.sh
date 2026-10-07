@@ -5,6 +5,10 @@ mkdir -p /home/agent/workspace /home/agent/.config/opencode/skills /home/agent/.
 if [ -d /opt/image-usr-local ]; then
   mkdir -p /usr/local
   cp -a /opt/image-usr-local/. /usr/local/
+  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-improve 2>/dev/null || true
+fi
+if [ ! -f /opt/open-bot/dev-mode ]; then
+  rm -f /usr/local/bin/ob-improve
 fi
 if [ -e /opt/google/chrome/chrome-sandbox ]; then
   chown root:root /opt/google/chrome/chrome-sandbox
@@ -30,11 +34,24 @@ mkdir -p /home/agent/.config/opencode/skills/cf-ai
 cp /opt/open-bot/seed/skills/cf-ai/SKILL.md /home/agent/.config/opencode/skills/cf-ai/SKILL.md
 mkdir -p /home/agent/.config/opencode/skills/persona
 cp /opt/open-bot/seed/skills/persona/SKILL.md /home/agent/.config/opencode/skills/persona/SKILL.md
+mkdir -p /home/agent/.config/opencode/skills/shortcut
+cp /opt/open-bot/seed/skills/shortcut/SKILL.md /home/agent/.config/opencode/skills/shortcut/SKILL.md
+if [ -f /opt/open-bot/dev-mode ]; then
+  mkdir -p /home/agent/.config/opencode/skills/improve
+  cp /opt/open-bot/seed/skills/improve/SKILL.md /home/agent/.config/opencode/skills/improve/SKILL.md
+  cat >> /home/agent/.config/opencode/AGENTS.md <<'EOF'
+
+Product defects, on a development desktop only: load the `improve` skill and run `ob-improve` when you hit a product bug, repeated friction, or a missing capability during real work. Do not file user mistakes, secrets, one-offs, or a path a shortcut can cover. One sentence in the reply that it was filed is enough. Do not ask first. If `ob-improve` is missing, do not file.
+EOF
+else
+  rm -rf /home/agent/.config/opencode/skills/improve
+fi
 if [ ! -f /home/agent/.config/opencode/opencode.json ]; then
   cp /opt/open-bot/seed/opencode.json /home/agent/.config/opencode/opencode.json
 fi
-jq --arg prompt "You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions." \
-  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny"} | .agent.build.prompt = $prompt' \
+prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command does not finish, stop and say so.'
+jq --arg prompt "$prompt" \
+  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 8' \
   /home/agent/.config/opencode/opencode.json > /tmp/oc-perm.json
 mv /tmp/oc-perm.json /home/agent/.config/opencode/opencode.json
 cp /opt/open-bot/seed/openviking-config.json /home/agent/.config/opencode/openviking-config.json

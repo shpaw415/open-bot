@@ -53,6 +53,37 @@ function ensureCronJobColumns(sqlite: Database) {
   if (!columns.has("persona_id")) {
     sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN persona_id TEXT")
   }
+  if (!columns.has("run_kind")) {
+    sqlite.exec(
+      "ALTER TABLE cron_jobs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'prompt'",
+    )
+  }
+  if (!columns.has("script")) {
+    sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN script TEXT")
+  }
+}
+
+function ensureImprovementTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS improvements (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT NOT NULL,
+      session_id TEXT,
+      kind TEXT NOT NULL,
+      surface TEXT NOT NULL,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'open',
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      resolved_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS improvements_fingerprint_status ON improvements (fingerprint, status);
+    CREATE INDEX IF NOT EXISTS improvements_user_time ON improvements (user_id, created_at);
+  `)
 }
 
 function ensureCronNoticeTable(sqlite: Database) {
@@ -213,4 +244,5 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   ensureThreadScreenTable(sqlite)
   ensureCronNoticeTable(sqlite)
   ensureCronJobColumns(sqlite)
+  ensureImprovementTable(sqlite)
 }

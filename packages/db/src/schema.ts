@@ -146,8 +146,43 @@ export const cronJobs = sqliteTable(
     providerId: text("provider_id"),
     modelId: text("model_id"),
     personaId: text("persona_id"),
+    runKind: text("run_kind", { enum: ["prompt", "script", "both"] })
+      .notNull()
+      .default("prompt"),
+    script: text("script"),
   },
   (table) => [index("cron_user_due").on(table.userId, table.nextRunAt)],
+)
+
+export const improvements = sqliteTable(
+  "improvements",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id"),
+    kind: text("kind", { enum: ["bug", "friction", "feature"] }).notNull(),
+    surface: text("surface", {
+      enum: ["chat", "desktop", "nav", "cron", "persona", "config", "other"],
+    }).notNull(),
+    title: text("title").notNull(),
+    detail: text("detail").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    hits: integer("hits").notNull().default(1),
+    status: text("status", { enum: ["open", "done", "wontfix"] })
+      .notNull()
+      .default("open"),
+    note: text("note"),
+    createdAt: integer("created_at").notNull(),
+    lastSeenAt: integer("last_seen_at").notNull(),
+    resolvedAt: integer("resolved_at"),
+  },
+  (table) => [
+    index("improvements_fingerprint_status").on(
+      table.fingerprint,
+      table.status,
+    ),
+    index("improvements_user_time").on(table.userId, table.createdAt),
+  ],
 )
 
 export const cronNotices = sqliteTable(
