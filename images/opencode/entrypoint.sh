@@ -41,7 +41,7 @@ if [ -f /opt/open-bot/dev-mode ]; then
   cp /opt/open-bot/seed/skills/improve/SKILL.md /home/agent/.config/opencode/skills/improve/SKILL.md
   cat >> /home/agent/.config/opencode/AGENTS.md <<'EOF'
 
-Product defects, on a development desktop only: load the `improve` skill and run `ob-improve` when you hit a product bug, repeated friction, or a missing capability during real work. Do not file user mistakes, secrets, one-offs, or a path a shortcut can cover. One sentence in the reply that it was filed is enough. Do not ask first. If `ob-improve` is missing, do not file.
+Product defects, on a development desktop only: load the `improve` skill and run `ob-improve` when you hit a product bug, repeated friction, or a missing capability during real work. Recovering yourself does not make it not a bug: file especially when ob-nav errors, repeats one decision, gives up, or falls back to ob-vnc more than once in the same job, and name what you attempted. Do not file user mistakes, secrets, one-offs, or a path a shortcut can cover. One sentence in the reply that it was filed is enough. Do not ask first. If `ob-improve` is missing, do not file.
 EOF
 else
   rm -rf /home/agent/.config/opencode/skills/improve
@@ -49,9 +49,9 @@ fi
 if [ ! -f /home/agent/.config/opencode/opencode.json ]; then
   cp /opt/open-bot/seed/opencode.json /home/agent/.config/opencode/opencode.json
 fi
-prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command does not finish, stop and say so.'
-jq --arg prompt "$prompt" \
-  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 8' \
+prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. While you work, send no text messages: no plan, no status, no progress notes, no step summaries. Tool calls are silent. Send exactly one message, when the whole job is finished, containing only the final result and any deliverable images. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command hangs, kill it and move on. Never end the turn while ob-vnc can still advance the task; finish it yourself. Only stop for the user when the screen needs them.'
+jq --arg prompt "$prompt" --slurpfile seed /opt/open-bot/seed/opencode.json \
+  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 96 | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer' \
   /home/agent/.config/opencode/opencode.json > /tmp/oc-perm.json
 mv /tmp/oc-perm.json /home/agent/.config/opencode/opencode.json
 cp /opt/open-bot/seed/openviking-config.json /home/agent/.config/opencode/openviking-config.json

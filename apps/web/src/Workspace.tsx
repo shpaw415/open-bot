@@ -114,7 +114,6 @@ type CronJobInfo = {
   everySeconds: number | null
   atMs: number | null
   enabled: boolean
-  sessionId: string | null
   createdAt: number
   lastRunAt: number | null
   nextRunAt: number | null
@@ -131,9 +130,9 @@ type CronNotice = {
   id: string
   jobId: string
   jobName: string
-  sessionId: string
   summary: string | null
   createdAt: number
+  viewedAt: number | null
 }
 
 type Phase = "starting" | "running" | "sleeping"
@@ -163,6 +162,12 @@ function SendMark({ mark }: { mark: SendStatus }) {
 
 function messageKey(message: ChatMessage, index: number): string {
   return `${index}:${message.info?.role ?? "m"}:${visibleText(message).slice(0, 48)}`
+}
+
+function clipNoticeLine(text: string | null): string {
+  const line = (text ?? "").replace(/\s+/g, " ").trim()
+  if (line.length <= 200) return line
+  return `${line.slice(0, 199)}…`
 }
 
 type VncWindow = Window & {
@@ -364,6 +369,7 @@ export function Workspace({ me }: { me: Me }) {
   const [cronScript, setCronScript] = useState("")
   const [cronEditId, setCronEditId] = useState<string | null>(null)
   const [notices, setNotices] = useState<CronNotice[]>([])
+  const [cronResult, setCronResult] = useState<CronNotice | null>(null)
   const mobile = useMobile()
   const unread = useUnreadThreads()
   const outputRef = useRef<HTMLDivElement>(null)
@@ -376,6 +382,10 @@ export function Workspace({ me }: { me: Me }) {
   const running = phase === "running"
   const { live, subscribe } = useEventStream(running)
   const activeThread = sessions.find((item) => item.id === sessionId)
+  const unreadNotices = useMemo(
+    () => notices.filter((notice) => !notice.viewedAt),
+    [notices],
+  )
   const showUnread = (id: string) =>
     unread.has(id) && !(tab === "chat" && id === sessionId && !document.hidden)
   const shown = useMemo(
@@ -1029,8 +1039,6 @@ export function Workspace({ me }: { me: Me }) {
       localStorage.setItem(THREAD_KEY, id)
     }
     if (mobile) setThreadsOpen(false)
-    if (notices.some((notice) => notice.sessionId === id))
-      void markNoticesViewed({ sessionId: id })
   }
 
   function goTab(next: string) {
@@ -1112,8 +1120,6 @@ export function Workspace({ me }: { me: Me }) {
     try {
       await api(`/api/opencode/session/${target.id}`, { method: "DELETE" })
       setDeleteTarget(null)
-      if (notices.some((notice) => notice.sessionId === target.id))
-        void markNoticesViewed({ sessionId: target.id })
       writeDraft(localStorage, target.id, "")
       joinedStore.current.delete(target.id)
       seenThread(target.id)
@@ -1247,10 +1253,12 @@ export function Workspace({ me }: { me: Me }) {
   }, [])
 
   const markNoticesViewed = useCallback(
-    async (body: { id?: string; sessionId?: string }) => {
+    async (body: { id: string }) => {
       setNotices((current) =>
-        current.filter((notice) =>
-          body.id ? notice.id !== body.id : notice.sessionId !== body.sessionId,
+        current.map((notice) =>
+          notice.id === body.id && !notice.viewedAt
+            ? { ...notice, viewedAt: Date.now() }
+            : notice,
         ),
       )
       try {
@@ -1290,32 +1298,14 @@ export function Workspace({ me }: { me: Me }) {
     return () => clearInterval(timer)
   }, [running, live, tick, loadThreads, loadNotices, loadCron, tab])
 
-  useEffect(() => {
-    if (tab !== "chat" || !sessionId) return
-    if (!notices.some((notice) => notice.sessionId === sessionId)) return
-    void markNoticesViewed({ sessionId })
-  }, [tab, sessionId, notices, markNoticesViewed])
+  function openNotice(notice: CronNotice) {
+    void markNoticesViewed({ id: notice.id })
+    setCronResult(notice)
+  }
 
-  async function openNotice(notice: CronNotice) {
-    await markNoticesViewed({ id: notice.id })
-    if (phase !== "running") {
-      setError("")
-      setPhase("starting")
-      try {
-        await api("/api/desktop/start", { method: "POST" })
-        await waitForDesktop()
-        setPhase("running")
-      } catch (caught) {
-        setPhase("sleeping")
-        setError(caught instanceof Error ? caught.message : "start failed")
-        return
-      }
-    }
-    setSessionId(notice.sessionId)
-    setMessages([])
-    localStorage.setItem(THREAD_KEY, notice.sessionId)
-    setTab("chat")
-    if (mobile) setThreadsOpen(false)
+  function openJobResult(job: CronJobInfo) {
+    const notice = notices.find((item) => item.jobId === job.id)
+    if (notice) openNotice(notice)
   }
 
   function openCronForm(job?: CronJobInfo) {
@@ -1433,16 +1423,6 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
-  function openCronThread(job: CronJobInfo) {
-    if (!job.sessionId || !running) return
-    setSessionId(job.sessionId)
-    setMessages([])
-    localStorage.setItem(THREAD_KEY, job.sessionId)
-    setTab("chat")
-    if (notices.some((notice) => notice.sessionId === job.sessionId))
-      void markNoticesViewed({ sessionId: job.sessionId })
-  }
-
   const phaseColor = stopping
     ? "warning"
     : phase === "running"
@@ -1462,17 +1442,19 @@ export function Workspace({ me }: { me: Me }) {
           {error}
         </Alert>
       ) : null}
-      {notices[0] ? (
+      {unreadNotices[0] ? (
         <Alert
           severity="info"
-          onClose={() => void markNoticesViewed({ id: notices[0]?.id })}
+          onClose={() =>
+            void markNoticesViewed({ id: unreadNotices[0]?.id ?? "" })
+          }
         >
-          {notices.length > 1
-            ? `${notices.length} cron jobs published results. Latest: ${notices[0].jobName}. `
-            : `${notices[0].jobName} published results. `}
-          {notices[0].summary}{" "}
-          <Button size="small" onClick={() => void openNotice(notices[0])}>
-            Open thread
+          {unreadNotices.length > 1
+            ? `${unreadNotices.length} cron jobs published results. Latest: ${unreadNotices[0].jobName}. `
+            : `${unreadNotices[0].jobName} published results. `}
+          {clipNoticeLine(unreadNotices[0].summary)}{" "}
+          <Button size="small" onClick={() => openNotice(unreadNotices[0])}>
+            View result
           </Button>
         </Alert>
       ) : null}
@@ -1509,7 +1491,7 @@ export function Workspace({ me }: { me: Me }) {
                 : "Chat"
             : tab === "desktop"
               ? "Desktop"
-              : `Cron${notices.length ? ` (${notices.length})` : ""}`}
+              : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
         </Typography>
         <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
           {stopping ? "stopping…" : phase === "starting" ? "starting…" : phase}
@@ -1666,15 +1648,6 @@ export function Workspace({ me }: { me: Me }) {
                           />
                           {threadBusy(item.id) ? (
                             <CircularProgress size={1.2} sx={{ mr: 1 }} />
-                          ) : notices.some(
-                              (notice) => notice.sessionId === item.id,
-                            ) ? (
-                            <Chip
-                              size="small"
-                              color="primary"
-                              label="new"
-                              sx={{ mr: 1 }}
-                            />
                           ) : null}
                         </ListItemButton>
                         <IconButton
@@ -2297,7 +2270,9 @@ export function Workspace({ me }: { me: Me }) {
                     variant="outlined"
                     label={personaName(job.personaId ?? undefined)}
                   />
-                  {notices.some((notice) => notice.jobId === job.id) ? (
+                  {notices.some(
+                    (notice) => notice.jobId === job.id && !notice.viewedAt,
+                  ) ? (
                     <Chip size="small" color="primary" label="new result" />
                   ) : null}
                   <Box sx={{ flex: 1 }} />
@@ -2377,22 +2352,15 @@ export function Workspace({ me }: { me: Me }) {
                   >
                     Run now
                   </Button>
-                  {job.sessionId &&
-                  (running ||
-                    notices.some((notice) => notice.jobId === job.id)) ? (
+                  {notices.some((notice) => notice.jobId === job.id) ? (
                     <Button
                       size="small"
                       variant="text"
                       startIcon={<ChatIcon />}
-                      onClick={() => {
-                        const notice = notices.find(
-                          (item) => item.jobId === job.id,
-                        )
-                        if (notice) void openNotice(notice)
-                        else openCronThread(job)
-                      }}
+                      disabled={Boolean(cronBusyId)}
+                      onClick={() => openJobResult(job)}
                     >
-                      Thread
+                      Result
                     </Button>
                   ) : null}
                   <IconButton
@@ -2451,7 +2419,7 @@ export function Workspace({ me }: { me: Me }) {
             >
               <ScheduleIcon />
               <ListItemText
-                primary={`Cron${notices.length ? ` (${notices.length})` : ""}`}
+                primary={`Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
               />
             </ListItemButton>
           </List>
@@ -2903,7 +2871,7 @@ export function Workspace({ me }: { me: Me }) {
         <DialogTitle>Delete cron job?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            Deletes “{cronDeleteTarget?.name ?? ""}”. Its thread stays, but it
+            Deletes “{cronDeleteTarget?.name ?? ""}” and its past results. It
             will never run again. This cannot be undone.
           </Typography>
         </DialogContent>
@@ -2919,6 +2887,20 @@ export function Workspace({ me }: { me: Me }) {
             onClick={() => void removeCronJob()}
           >
             Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(cronResult)} onClose={() => setCronResult(null)}>
+        <DialogTitle>{cronResult?.jobName ?? ""}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+            {cronResult?.summary ?? ""}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button variant="text" onClick={() => setCronResult(null)}>
+            Close
           </Button>
         </DialogActions>
       </Dialog>

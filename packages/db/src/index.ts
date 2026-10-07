@@ -27,6 +27,7 @@ import {
   sessions,
   threadPersonas,
   threadScreens,
+  threadTitles,
   usageEvents,
   users,
   vikingProvider,
@@ -196,6 +197,16 @@ export type ThreadScreen = {
   lastActiveAt: number
 }
 
+export type ThreadTitleAuthor = "ob" | "user"
+
+export type ThreadTitle = {
+  userId: string
+  sessionId: string
+  title: string
+  author: ThreadTitleAuthor
+  createdAt: number
+}
+
 export type CronScheduleKind = "cron" | "every" | "at"
 export type CronRunKind = "prompt" | "script" | "both"
 
@@ -210,7 +221,6 @@ export type CronJob = {
   atMs: number | null
   enabled: boolean
   deleteAfterRun: boolean
-  sessionId: string | null
   createdAt: number
   lastRunAt: number | null
   nextRunAt: number | null
@@ -228,7 +238,6 @@ export type CronNotice = {
   userId: string
   jobId: string
   jobName: string
-  sessionId: string
   runSessionId: string | null
   summary: string | null
   createdAt: number
@@ -282,7 +291,6 @@ function mapCronJob(
     atMs: row.atMs,
     enabled: row.enabled,
     deleteAfterRun: row.deleteAfterRun,
-    sessionId: row.sessionId,
     createdAt: row.createdAt,
     lastRunAt: row.lastRunAt,
     nextRunAt: row.nextRunAt,
@@ -305,7 +313,6 @@ function mapCronNotice(row: typeof cronNotices.$inferSelect): CronNotice {
     userId: row.userId,
     jobId: row.jobId,
     jobName: row.jobName,
-    sessionId: row.sessionId,
     runSessionId: row.runSessionId,
     summary: row.summary,
     createdAt: row.createdAt,
@@ -739,6 +746,45 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    setThreadTitle(row: ThreadTitle) {
+      orm
+        .insert(threadTitles)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [threadTitles.userId, threadTitles.sessionId],
+          set: {
+            title: row.title,
+            author: row.author,
+            createdAt: row.createdAt,
+          },
+        })
+        .run()
+    },
+    threadTitle(userId: string, sessionId: string) {
+      return (
+        orm
+          .select()
+          .from(threadTitles)
+          .where(
+            and(
+              eq(threadTitles.userId, userId),
+              eq(threadTitles.sessionId, sessionId),
+            ),
+          )
+          .get() ?? null
+      )
+    },
+    clearThreadTitle(userId: string, sessionId: string) {
+      orm
+        .delete(threadTitles)
+        .where(
+          and(
+            eq(threadTitles.userId, userId),
+            eq(threadTitles.sessionId, sessionId),
+          ),
+        )
+        .run()
+    },
     createCronJob(job: CronJob) {
       orm.insert(cronJobs).values(job).run()
     },
@@ -799,9 +845,6 @@ export function openDatabase(path: string) {
         .where(eq(cronJobs.id, id))
         .run()
     },
-    setCronSession(id: string, sessionId: string) {
-      orm.update(cronJobs).set({ sessionId }).where(eq(cronJobs.id, id)).run()
-    },
     updateCronJob(
       id: string,
       userId: string,
@@ -848,6 +891,10 @@ export function openDatabase(path: string) {
         .delete(cronJobs)
         .where(and(eq(cronJobs.id, id), eq(cronJobs.userId, userId)))
         .run()
+      orm
+        .delete(cronNotices)
+        .where(and(eq(cronNotices.jobId, id), eq(cronNotices.userId, userId)))
+        .run()
       return true
     },
     createCronNotice(notice: CronNotice) {
@@ -884,12 +931,15 @@ export function openDatabase(path: string) {
         .all()
         .map(mapCronNotice)
     },
-    setCronNoticeSession(id: string, sessionId: string) {
-      orm
-        .update(cronNotices)
-        .set({ sessionId })
-        .where(eq(cronNotices.id, id))
-        .run()
+    recentCronNotices(userId: string, limit: number) {
+      return orm
+        .select()
+        .from(cronNotices)
+        .where(eq(cronNotices.userId, userId))
+        .orderBy(desc(cronNotices.createdAt))
+        .limit(limit)
+        .all()
+        .map(mapCronNotice)
     },
     settleCronNotice(id: string, summary: string) {
       const notice = this.cronNoticeById(id)
@@ -900,7 +950,7 @@ export function openDatabase(path: string) {
         .where(
           and(
             eq(cronNotices.userId, notice.userId),
-            eq(cronNotices.sessionId, notice.sessionId),
+            eq(cronNotices.jobId, notice.jobId),
             eq(cronNotices.summary, summary),
             isNull(cronNotices.viewedAt),
           ),
@@ -925,20 +975,6 @@ export function openDatabase(path: string) {
           and(
             eq(cronNotices.id, id),
             eq(cronNotices.userId, userId),
-            isNotNull(cronNotices.summary),
-            isNull(cronNotices.viewedAt),
-          ),
-        )
-        .run()
-    },
-    viewCronNoticesBySession(userId: string, sessionId: string) {
-      orm
-        .update(cronNotices)
-        .set({ viewedAt: Date.now() })
-        .where(
-          and(
-            eq(cronNotices.userId, userId),
-            eq(cronNotices.sessionId, sessionId),
             isNotNull(cronNotices.summary),
             isNull(cronNotices.viewedAt),
           ),

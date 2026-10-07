@@ -71,7 +71,7 @@ import {
   system1ProviderPublic,
   system1Providers,
 } from "./system1"
-import { isStockTitle, promptText, titleFromPrompt } from "./thread-title"
+import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
 import {
   assertSkillInput,
@@ -162,35 +162,6 @@ async function readJson(req: Request) {
 function basic(password: string) {
   return {
     authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
-  }
-}
-
-async function nameStockThread(
-  base: string,
-  auth: HeadersInit,
-  sessionId: string,
-  text: string,
-) {
-  const title = titleFromPrompt(text)
-  if (!title) return
-  try {
-    const current = await fetch(
-      `${base}/session/${encodeURIComponent(sessionId)}`,
-      { headers: auth, signal: AbortSignal.timeout(5000) },
-    )
-    if (!current.ok) return
-    const body = (await current.json().catch(() => null)) as {
-      title?: unknown
-    } | null
-    if (!isStockTitle(typeof body?.title === "string" ? body.title : "")) return
-    await fetch(`${base}/session/${encodeURIComponent(sessionId)}`, {
-      method: "PATCH",
-      headers: { ...new Headers(auth), "content-type": "application/json" },
-      body: JSON.stringify({ title }),
-      signal: AbortSignal.timeout(5000),
-    })
-  } catch {
-    // the prompt is already accepted; a stock title can be renamed later
   }
 }
 
@@ -871,8 +842,24 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       fetch(`${base}/provider`, { headers }).then((res) => res.json()),
       fetch(`${base}/provider/auth`, { headers }).then((res) => res.json()),
     ])
+    const catalog = (providers?.all ?? [])
+      .filter(
+        (item: { id?: unknown; name?: unknown }) =>
+          typeof item?.id === "string",
+      )
+      .map((item: { id: string; name?: unknown }) => ({
+        id: item.id,
+        name: typeof item.name === "string" && item.name ? item.name : item.id,
+      }))
     const saved = db.desktop(user.id)
-    return json({ providers, auth, selected: saved })
+    return json({
+      providers: {
+        catalog,
+        connected: providers?.connected ?? [],
+      },
+      auth,
+      selected: saved,
+    })
   }
   if (url.pathname === "/api/providers/login" && req.method === "POST") {
     await ensure(user, db)
@@ -952,15 +939,39 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     const auth = basic(desktop.opencodePassword)
     if (url.pathname === "/api/opencode/session" && req.method === "POST")
       return createOpencodeSession(req, base, auth, db, user.id)
-    const deleted = url.pathname.match(/^\/api\/opencode\/session\/([^/]+)$/)
-    if (deleted && req.method === "DELETE") {
-      const id = decodeURIComponent(deleted[1] ?? "")
+    const sessionRef = url.pathname.match(/^\/api\/opencode\/session\/([^/]+)$/)
+    if (sessionRef && req.method === "DELETE") {
+      const id = decodeURIComponent(sessionRef[1] ?? "")
       const res = await proxy(req, base, "/api/opencode", auth)
       if (res.ok) {
         db.clearThreadPersona(user.id, id)
+        db.clearThreadTitle(user.id, id)
         await stopThreadScreen(db, user.id, id)
       }
       return res
+    }
+    if (sessionRef && req.method === "PATCH") {
+      const id = decodeURIComponent(sessionRef[1] ?? "")
+      const raw = await req.text()
+      let parsed: { title?: unknown } | null = null
+      try {
+        parsed = JSON.parse(raw) as { title?: unknown }
+      } catch {
+        parsed = null
+      }
+      const title =
+        parsed && typeof parsed.title === "string" ? parsed.title.trim() : ""
+      if (title) {
+        const root = await resolveRootSession(base, auth, id).catch(() => id)
+        db.setThreadTitle({
+          userId: user.id,
+          sessionId: root,
+          title,
+          author: "user",
+          createdAt: Date.now(),
+        })
+      }
+      return proxy(req, base, "/api/opencode", auth, raw)
     }
     const prompted = url.pathname.match(
       /^\/api\/opencode\/session\/([^/]+)\/(?:prompt_async|message)$/,
@@ -979,8 +990,7 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       for (const upload of prepared.uploads)
         await writeAgentUpload(user.id, upload.path, upload.bytes)
       const outbound = prepared.body
-      const text =
-        promptText(body) || prepared.uploads[0]?.path.split("/").pop() || ""
+      const text = promptText(body)
       const root = await resolveRootSession(base, auth, promptedId)
       const screen = await Promise.race([
         ensureThreadScreen(db, user.id, root).catch(() => null),
@@ -1010,7 +1020,17 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       ]
         .filter((item): item is string => Boolean(item))
         .join("\n\n")
-      if (text) void nameStockThread(base, auth, promptedId, text)
+      if (text) {
+        const claimed = await claimThreadTitle(
+          base,
+          auth,
+          db,
+          user.id,
+          root,
+          text,
+        )
+        if (claimed) void refineThreadTitle(base, auth, db, user.id, root, text)
+      }
       return proxy(
         req,
         base,
@@ -1075,15 +1095,13 @@ async function handleCron(
   const idMatch = url.pathname.match(/^\/api\/cron\/([^/]+)(\/run)?$/)
 
   if (url.pathname === "/api/cron/notices" && req.method === "GET")
-    return json(db.unreadCronNotices(user.id))
+    return json(db.recentCronNotices(user.id, 20))
 
   if (url.pathname === "/api/cron/notices/view" && req.method === "POST") {
     const body = await readJson(req)
     const id = String(body.id ?? "").trim()
-    const sessionId = String(body.sessionId ?? "").trim()
-    if (id) db.viewCronNotice(id, user.id)
-    else if (sessionId) db.viewCronNoticesBySession(user.id, sessionId)
-    else return json({ error: "id or sessionId is required" }, 400)
+    if (!id) return json({ error: "id is required" }, 400)
+    db.viewCronNotice(id, user.id)
     hub.emit(user.id, { type: "cron.notices" })
     return json({ ok: true })
   }
@@ -1163,7 +1181,6 @@ async function handleCron(
       atMs,
       enabled: true,
       deleteAfterRun,
-      sessionId: null,
       createdAt: Date.now(),
       lastRunAt: null,
       nextRunAt: null,

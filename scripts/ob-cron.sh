@@ -23,10 +23,10 @@ Schedules (exactly one on add):
 
 Run options:
   --message TEXT           prompt for the agent. Alone, the job is a prompt.
-  --script TEXT            shell command run as you in /home/agent/workspace. Alone, its output is posted to the thread.
-                           With --message, the output is added to the prompt and the agent's result is posted.
+  --script TEXT            shell command run as you in /home/agent/workspace. Alone, its output is the result.
+                           With --message, the output is added to the prompt and the agent's result is stored.
   --model PROVIDER/MODEL   model for the temporary run. Omit to use the desktop default. Ignored for script-only jobs.
-  --persona ID             personality that runs the job. Omit for Assistant. Does not change the result thread.
+  --persona ID             personality that runs the job. Omit for Assistant. Applies only to the temporary run.
 
 Examples:
   ob-cron add --name standup --message "Summarize git log since yesterday" --cron "0 13 * * 1-5" --model grok/grok-4.5 --persona designer

@@ -1,8 +1,9 @@
-import { existsSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseDecision } from "./action-space"
 import { connectCdp } from "./cdp"
 import { runNav } from "./loop"
+import { writeFieldText } from "./text"
 import { decisionBody, decisionHeaders, type System1Auth } from "./wire"
 
 function arg(name: string) {
@@ -40,6 +41,16 @@ function readConfig(home: string): System1Auth | null {
     }
   } catch {
     return null
+  }
+}
+
+function note(home: string, row: Record<string, unknown>) {
+  const line = JSON.stringify({ t: new Date().toISOString(), ...row })
+  console.error(`system1 ${line}`)
+  try {
+    appendFileSync(join(home, ".open-bot/system1.log"), `${line}\n`)
+  } catch {
+    // the nav result still returns if the log cannot be written
   }
 }
 
@@ -91,16 +102,37 @@ async function main() {
       goal,
       extraValues: value ? [value] : [],
       driver,
+      writeText: ({ goal: fieldGoal, label, page }) => {
+        const url = process.env.OPEN_BOT_LLM_URL ?? ""
+        const token = process.env.OPEN_BOT_LLM_TOKEN ?? ""
+        if (!url || !token) return Promise.resolve("")
+        return writeFieldText({ url, token, goal: fieldGoal, label, page })
+      },
       ask: async ({ state, questions, space }) => {
+        const started = Date.now()
         const response = await fetch(auth.endpoint, {
           method: "POST",
           headers: decisionHeaders(auth),
           body: JSON.stringify(decisionBody(auth, state, questions)),
           signal: AbortSignal.timeout(8000),
         })
-        if (!response.ok) throw new Error(`decision HTTP ${response.status}`)
+        const ms = Date.now() - started
+        if (!response.ok) {
+          note(home, { ms, http: response.status })
+          throw new Error(`decision HTTP ${response.status}`)
+        }
         const decision = parseDecision(await response.json(), space)
-        if (!decision) throw new Error("invalid decision")
+        if (!decision) {
+          note(home, { ms, http: response.status, error: "invalid" })
+          throw new Error("invalid decision")
+        }
+        note(home, {
+          ms,
+          http: response.status,
+          op: decision.operation,
+          conf: Number(decision.confidence.toFixed(2)),
+          needs: Number(decision.needsUser.toFixed(2)),
+        })
         return decision
       },
     })

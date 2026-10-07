@@ -122,6 +122,18 @@ export const threadScreens = sqliteTable(
   (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
 )
 
+export const threadTitles = sqliteTable(
+  "thread_titles",
+  {
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    title: text("title").notNull(),
+    author: text("author", { enum: ["ob", "user"] }).notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
+)
+
 export const cronJobs = sqliteTable(
   "cron_jobs",
   {
@@ -137,7 +149,6 @@ export const cronJobs = sqliteTable(
     deleteAfterRun: integer("delete_after_run", { mode: "boolean" })
       .notNull()
       .default(false),
-    sessionId: text("session_id"),
     createdAt: integer("created_at").notNull(),
     lastRunAt: integer("last_run_at"),
     nextRunAt: integer("next_run_at"),
@@ -192,7 +203,6 @@ export const cronNotices = sqliteTable(
     userId: text("user_id").notNull(),
     jobId: text("job_id").notNull(),
     jobName: text("job_name").notNull(),
-    sessionId: text("session_id").notNull(),
     runSessionId: text("run_session_id"),
     summary: text("summary"),
     createdAt: integer("created_at").notNull(),

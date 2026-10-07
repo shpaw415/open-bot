@@ -1,4 +1,5 @@
 import {
+  type ActionSpace,
   buildActionSpace,
   buildQuestions,
   buildState,
@@ -56,17 +57,30 @@ export type Ask = (input: {
   space: ReturnType<typeof buildActionSpace>
 }) => Promise<Decision>
 
+export const DECISION_FAILS = 3
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 export async function runNav(opts: {
   goal: string
   extraValues?: string[]
   ask: Ask
   driver: Driver
   maxSteps?: number
+  writeText?: (input: {
+    goal: string
+    label: string
+    page: string
+  }) => Promise<string>
 }): Promise<NavResult> {
   const values = goalValues(opts.goal, opts.extraValues ?? [])
   const maxSteps = opts.maxSteps ?? MAX_STEPS
   const history: HistoryEntry[] = []
   let waits = 0
+  let fails = 0
+  let scrolledBlocked = false
+  const excluded = new Set<string>()
   const opened = await openGoal(
     opts.driver,
     opts.goal,
@@ -79,13 +93,21 @@ export async function runNav(opts: {
       return result(snapshot, step, "needs_user", "the page needs the user")
     }
     const space = buildActionSpace(snapshot, history)
+    pruneExcluded(space, excluded)
     let decision: Decision
     try {
-      decision = await opts.ask({
-        state: buildState(space, snapshot, history, opts.goal),
-        questions: buildQuestions(space, opts.goal, values),
-        space,
-      })
+      const ask = () =>
+        opts.ask({
+          state: buildState(space, snapshot, history, opts.goal),
+          questions: buildQuestions(space, opts.goal, values),
+          space,
+        })
+      try {
+        decision = await ask()
+      } catch {
+        await sleep(1000)
+        decision = await ask()
+      }
     } catch (error) {
       return result(
         snapshot,
@@ -95,32 +117,53 @@ export async function runNav(opts: {
         "vnc",
       )
     }
-    if (
-      decision.needsUser >= CONFIDENCE_MIN &&
-      !isBlankPage(snapshot.url) &&
-      pageNeedsUser(snapshot)
-    ) {
-      return result(snapshot, step, "needs_user", "the page needs the user")
-    }
     if (decision.needsUser >= CONFIDENCE_MIN && !isBlankPage(snapshot.url)) {
-      return result(
-        snapshot,
-        step,
-        "low_confidence",
-        "the page does not need the user",
-        "vnc",
-      )
+      if (pageNeedsUser(snapshot)) {
+        return result(snapshot, step, "needs_user", "the page needs the user")
+      }
+      fails += 1
+      if (decision.target) {
+        excluded.add(`${decision.operation}:${decision.target}`)
+      }
+      if (fails >= DECISION_FAILS) {
+        return result(snapshot, step, "low_confidence", "false handoff", "vnc")
+      }
+      continue
     }
     if (
       decision.operation !== "BLOCKED" &&
       decision.operation !== "DONE" &&
       decision.confidence < CONFIDENCE_MIN
     ) {
-      return result(snapshot, step, "low_confidence", decision.operation, "vnc")
+      fails += 1
+      if (decision.target) {
+        excluded.add(`${decision.operation}:${decision.target}`)
+      }
+      if (fails >= DECISION_FAILS) {
+        return result(
+          snapshot,
+          step,
+          "low_confidence",
+          decision.operation,
+          "vnc",
+        )
+      }
+      continue
     }
     if (decision.operation === "BLOCKED") {
-      return result(snapshot, step, "blocked", "no offered move", "vnc")
+      fails += 1
+      if (snapshot.canScrollDown && !scrolledBlocked) {
+        scrolledBlocked = true
+        await opts.driver.act({ kind: "scroll", direction: "down" })
+        snapshot = await opts.driver.probe()
+        continue
+      }
+      if (fails >= DECISION_FAILS) {
+        return result(snapshot, step, "blocked", "no offered move", "vnc")
+      }
+      continue
     }
+    fails = 0
     if (decision.operation === "DONE") {
       return result(snapshot, step, "done", snapshot.title || snapshot.url)
     }
@@ -151,10 +194,25 @@ export async function runNav(opts: {
       return result(snapshot, step, "blocked", "missing target", "vnc")
     }
     if (decision.operation === "TYPE_TEXT") {
-      const text = typedValue(decision, values)
+      let text = typedValue(decision, values)
+      if (!text && opts.writeText) {
+        text = await opts
+          .writeText({
+            goal: opts.goal,
+            label: candidate?.label || "",
+            page: snapshot.text,
+          })
+          .catch(() => "")
+      }
       if (!text) {
         return {
-          ...result(snapshot, step, "need_text", candidate?.label || "field"),
+          ...result(
+            snapshot,
+            step,
+            "need_text",
+            candidate?.label || "field",
+            "vnc",
+          ),
           field: candidate?.label || "",
         }
       }
@@ -219,6 +277,24 @@ async function openGoal(
     return result(snapshot, 0, "error", "page did not load", "vnc")
   }
   return snapshot
+}
+
+function pruneExcluded(space: ActionSpace, excluded: Set<string>) {
+  for (const [operation, head] of Object.entries(space.heads)) {
+    for (const key of Object.keys(head)) {
+      const candidate = head[key]
+      if (
+        excluded.has(`${operation}:${key}`) ||
+        excluded.has(`${operation}:${candidate.targetId}`)
+      ) {
+        delete head[key]
+      }
+    }
+    if (Object.keys(head).length === 0) {
+      delete space.heads[operation]
+      space.operations = space.operations.filter((item) => item !== operation)
+    }
+  }
 }
 
 function typedValue(decision: Decision, values: string[]) {

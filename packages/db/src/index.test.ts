@@ -187,7 +187,6 @@ describe("drizzle migrations", () => {
       atMs: null,
       enabled: true,
       deleteAfterRun: false,
-      sessionId: null,
       createdAt: 1,
       lastRunAt: null,
       nextRunAt: 2,
@@ -420,7 +419,6 @@ describe("cron store", () => {
       atMs: null,
       enabled: true,
       deleteAfterRun: false,
-      sessionId: null,
       createdAt: 1000,
       lastRunAt: null,
       nextRunAt: 2000,
@@ -511,11 +509,9 @@ describe("cron store", () => {
 
     db.recordCronRun("due", null)
     db.recordCronRun("due", "prompt failed (500)")
-    db.setCronSession("due", "ses_1")
     const after = db.cronJobById("due", "a")
     expect(after?.runCount).toBe(2)
     expect(after?.lastError).toBe("prompt failed (500)")
-    expect(after?.sessionId).toBe("ses_1")
     expect(after?.lastRunAt).toBeGreaterThan(0)
   })
 
@@ -530,7 +526,6 @@ describe("cron store", () => {
       userId: "a",
       jobId: "j1",
       jobName: "daily",
-      sessionId: "ses",
       runSessionId: "run",
       summary: null,
       createdAt: 1,
@@ -548,7 +543,6 @@ describe("cron store", () => {
       userId: "a",
       jobId: "j1",
       jobName: "daily",
-      sessionId: "ses",
       runSessionId: "run2",
       summary: null,
       createdAt: 2,
@@ -558,7 +552,20 @@ describe("cron store", () => {
     expect(db.cronNoticeById("n2")).toBeNull()
     expect(db.unreadCronNotices("a")).toHaveLength(1)
 
-    db.viewCronNoticesBySession("a", "ses")
+    db.createCronNotice({
+      id: "n2b",
+      userId: "a",
+      jobId: "j1",
+      jobName: "daily",
+      runSessionId: "run3",
+      summary: null,
+      createdAt: 2,
+      viewedAt: null,
+    })
+    expect(db.settleCronNotice("n2b", "different result")).toBe(true)
+    expect(db.cronNoticeById("n2b")?.summary).toBe("different result")
+    db.viewCronNotice("n2b", "a")
+    db.viewCronNotice("n1", "a")
     expect(db.unreadCronNotices("a")).toHaveLength(0)
 
     db.createCronNotice({
@@ -566,7 +573,6 @@ describe("cron store", () => {
       userId: "a",
       jobId: "j1",
       jobName: "daily",
-      sessionId: "ses2",
       runSessionId: null,
       summary: "done",
       createdAt: 3,

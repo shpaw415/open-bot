@@ -61,6 +61,9 @@ function ensureCronJobColumns(sqlite: Database) {
   if (!columns.has("script")) {
     sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN script TEXT")
   }
+  if (columns.has("session_id")) {
+    sqlite.exec("ALTER TABLE cron_jobs DROP COLUMN session_id")
+  }
 }
 
 function ensureImprovementTable(sqlite: Database) {
@@ -93,7 +96,6 @@ function ensureCronNoticeTable(sqlite: Database) {
       user_id TEXT NOT NULL,
       job_id TEXT NOT NULL,
       job_name TEXT NOT NULL,
-      session_id TEXT NOT NULL,
       run_session_id TEXT,
       summary TEXT,
       created_at INTEGER NOT NULL,
@@ -102,6 +104,9 @@ function ensureCronNoticeTable(sqlite: Database) {
     CREATE INDEX IF NOT EXISTS cron_notices_user ON cron_notices (user_id, viewed_at);
   `)
   const columns = columnNames(sqlite, "cron_notices")
+  if (columns.has("session_id")) {
+    sqlite.exec("ALTER TABLE cron_notices DROP COLUMN session_id")
+  }
   if (!columns.has("run_session_id")) {
     sqlite.exec("ALTER TABLE cron_notices ADD COLUMN run_session_id TEXT")
   }
@@ -115,6 +120,19 @@ function ensureThreadScreenTable(sqlite: Database) {
       display INTEGER NOT NULL,
       rfb_port INTEGER NOT NULL,
       last_active_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, session_id)
+    );
+  `)
+}
+
+function ensureThreadTitleTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS thread_titles (
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      author TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
       PRIMARY KEY (user_id, session_id)
     );
   `)
@@ -242,6 +260,7 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   ensureLegacyColumns(sqlite)
   ensurePersonaTables(sqlite)
   ensureThreadScreenTable(sqlite)
+  ensureThreadTitleTable(sqlite)
   ensureCronNoticeTable(sqlite)
   ensureCronJobColumns(sqlite)
   ensureImprovementTable(sqlite)

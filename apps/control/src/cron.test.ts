@@ -4,7 +4,6 @@ import {
   cronModelFields,
   cronPersonaFields,
   cronPrompt,
-  cronResultMessage,
   cronRunBody,
   interpretScriptRun,
   nextCronTime,
@@ -23,14 +22,11 @@ const T = (iso: string) => Date.parse(iso)
 describe("cron publish", () => {
   const started = T("2026-10-06T10:00:00Z")
 
-  test("prompt runs in a temporary session and the result is copied", () => {
+  test("prompt runs in a temporary session and the result lands in the Cron tab", () => {
     const text = cronPrompt({ name: "daily", message: "Check the log" })
     expect(text).toContain("[cron: daily]")
     expect(text).toContain("Check the log")
     expect(text).toContain("temporary session")
-    expect(cronResultMessage("daily", "found 3")).toBe(
-      "[cron-result: daily]\n\nfound 3",
-    )
   })
 
   test("summary is the latest finished assistant reply after the fire", () => {
@@ -207,7 +203,6 @@ describe("nextRunMs", () => {
           atMs: null,
           enabled: true,
           deleteAfterRun: false,
-          sessionId: null,
           createdAt: 0,
           lastRunAt: null,
           nextRunAt: null,
@@ -238,7 +233,6 @@ describe("nextRunMs", () => {
           atMs: 123_456,
           enabled: true,
           deleteAfterRun: true,
-          sessionId: null,
           createdAt: 0,
           lastRunAt: null,
           nextRunAt: null,
@@ -303,7 +297,6 @@ describe("cron model and personality", () => {
     expect(body.system).toContain("screen :1")
     expect(body.system).toContain("answer as Designer")
     expect(body.parts[0]?.text.startsWith("[cron: daily]")).toBe(true)
-    expect(cronResultMessage("daily", "done")).not.toContain("grok-4.5")
     const plain = cronRunBody({
       name: "daily",
       message: "check",
@@ -339,7 +332,6 @@ describe("cron model and personality", () => {
       scriptExit: 1,
     })
     expect(body.parts[0]?.text).toContain("exit 1")
-    expect(cronResultMessage("disk", "use 80%")).not.toContain("Script output")
   })
 })
 

@@ -35,8 +35,11 @@ export async function connectCdp(port: number): Promise<CdpDriver> {
       }
     },
     async act(action) {
-      await evaluate(socket, actionScript(action))
-      await Bun.sleep(action.kind === "wait" ? 500 : 400)
+      const ok = await evaluate(socket, actionScript(action))
+      if (ok === false) throw new Error("target covered")
+      const pause =
+        action.kind === "type" ? 200 : action.kind === "wait" ? 150 : 80
+      await Bun.sleep(pause)
     },
     close() {
       socket.close()
@@ -135,6 +138,7 @@ function normalize(value: unknown): Snapshot {
     text: String(raw.text ?? ""),
     canScrollDown: Boolean(raw.can_scroll_down),
     canScrollUp: Boolean(raw.can_scroll_up),
+    elementsTruncated: Boolean(raw.elements_truncated),
     elements: elements.map((item) => {
       const row = item as Record<string, unknown>
       const options = Array.isArray(row.options)
@@ -163,7 +167,7 @@ function actionScript(action: Act) {
   }
   const id = JSON.stringify(action.targetId)
   if (action.kind === "click") {
-    return `(() => { const el = document.querySelector('[data-obnav=' + ${id} + ']'); if (!el) return false; el.click(); return true })()`
+    return `(() => { const el = document.querySelector('[data-obnav=' + ${id} + ']'); if (!el) return false; const rect = el.getBoundingClientRect(); const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2); if (center && center !== el && !el.contains(center)) return false; el.click(); return true })()`
   }
   if (action.kind === "type") {
     const text = JSON.stringify(action.text)
@@ -177,7 +181,8 @@ function actionScript(action: Act) {
 }
 
 const PROBE = `(() => {
-  const max = 16
+  const max = 24
+  const bag = window.__obnav || (window.__obnav = { map: new WeakMap(), n: 1 })
   const selector = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'
   const out = []
   for (const el of document.querySelectorAll(selector)) {
@@ -187,7 +192,12 @@ const PROBE = `(() => {
     if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
     const style = getComputedStyle(el)
     if (style.visibility === "hidden" || style.display === "none") continue
-    const id = String(out.length + 1)
+    let id = bag.map.get(el)
+    if (!id) {
+      id = "n" + bag.n
+      bag.n += 1
+      bag.map.set(el, id)
+    }
     el.setAttribute("data-obnav", id)
     const label = (el.getAttribute("aria-label") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
     const item = {
@@ -206,9 +216,10 @@ const PROBE = `(() => {
   return {
     url: location.href,
     title: document.title,
-    text: (document.body && document.body.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 1500),
+    text: (document.body && document.body.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 2500),
     can_scroll_down: window.scrollY + window.innerHeight < document.documentElement.scrollHeight - 8,
     can_scroll_up: window.scrollY > 8,
     elements: out,
+    elements_truncated: out.length >= max,
   }
 })()`

@@ -9,13 +9,19 @@ const COOL_MS = 60_000
 
 const cooled = new Map<string, number>()
 
-type ToolState = { status?: unknown; time?: { start?: unknown } }
+type ToolState = {
+  status?: unknown
+  time?: { start?: unknown }
+  input?: { command?: unknown }
+}
 
-export function newestTool(
-  messages: unknown,
-): { status: string; start: number } | null {
+export function newestTool(messages: unknown): {
+  status: string
+  start: number
+  command: string
+} | null {
   if (!Array.isArray(messages)) return null
-  let best: { status: string; start: number } | null = null
+  let best: { status: string; start: number; command: string } | null = null
   for (const message of messages) {
     if (!message || typeof message !== "object") continue
     const parts = (message as { parts?: unknown }).parts
@@ -27,7 +33,16 @@ export function newestTool(
       const status = row.state?.status
       const start = row.state?.time?.start
       if (typeof status !== "string" || typeof start !== "number") continue
-      if (!best || start >= best.start) best = { status, start }
+      if (!best || start >= best.start) {
+        best = {
+          status,
+          start,
+          command:
+            typeof row.state?.input?.command === "string"
+              ? row.state.input.command
+              : "",
+        }
+      }
     }
   }
   return best
@@ -40,6 +55,15 @@ export function toolStuck(
 ): boolean {
   const tool = newestTool(messages)
   return Boolean(tool && tool.status === "running" && now - tool.start >= limit)
+}
+
+/** Desktop nav runs many Laya decisions in one bash call; they get longer. */
+export function toolLimit(messages: unknown): number {
+  const tool = newestTool(messages)
+  if (tool && /^ob-(nav|vnc|cron)\b/.test(tool.command.trim())) {
+    return 5 * STUCK_TOOL_MS
+  }
+  return STUCK_TOOL_MS
 }
 
 function busyIds(status: unknown): string[] {
@@ -75,7 +99,8 @@ async function sweepUser(
       signal: AbortSignal.timeout(10_000),
     })
     if (!messageRes.ok) continue
-    if (!toolStuck(await messageRes.json(), now)) continue
+    const messages: unknown = await messageRes.json()
+    if (!toolStuck(messages, now, toolLimit(messages))) continue
     cooled.set(key, now)
     const aborted = await fetch(`${base}/session/${sessionId}/abort`, {
       method: "POST",

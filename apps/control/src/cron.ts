@@ -10,20 +10,16 @@ const SEARCH_LIMIT_MS = 4 * 366 * 24 * 60 * 60 * 1000
 const PUBLISH_TIMEOUT_MS = 20 * 60 * 1000
 const PUBLISH_GRACE_MS = 8_000
 const PUBLISH_IDLE_MS = 20_000
-const SUMMARY_LIMIT = 500
+const SUMMARY_LIMIT = 8_000
 const SCRIPT_TIMEOUT_MS = 120_000
 const SCRIPT_OUTPUT_LIMIT = 12_000
 const SCRIPT_STORE_LIMIT = 16_000
 const MESSAGE_LIMIT = 4_000
 
 const PUBLISH_LINE =
-  "Do this work in this temporary session. End with what you did and what you found. Do not create another thread. This session is deleted after the result is copied to the user's thread."
+  "Do this work in this temporary session. End with what you did and what you found. Do not create another thread. This session is deleted after the result is copied to the user's Cron tab."
 
 export const CRON_RUN_TITLE = "cron-run:"
-
-export function cronResultMessage(name: string, summary: string): string {
-  return `[cron-result: ${name}]\n\n${summary}`
-}
 
 type CronFields = {
   minute: Set<number>
@@ -542,91 +538,23 @@ async function opencodeJson(
   return res
 }
 
-async function sessionLive(
-  base: string,
-  headers: Record<string, string>,
-  sessionId: string,
-) {
-  const check = await opencodeJson(`${base}/session/${sessionId}`, headers)
-  return check.ok
-}
-
 async function createSession(
   base: string,
   headers: Record<string, string>,
   title: string,
-  parentID?: string,
 ) {
   const created = await opencodeJson(`${base}/session`, headers, {
     method: "POST",
-    body: JSON.stringify(parentID ? { parentID, title } : { title }),
+    body: JSON.stringify({ title }),
   })
   if (!created.ok) throw new Error(`session create failed (${created.status})`)
   const body = (await created.json()) as { id?: string }
   if (!body.id) throw new Error("session create returned no id")
-  if (!parentID) {
-    await opencodeJson(`${base}/session/${body.id}`, headers, {
-      method: "PATCH",
-      body: JSON.stringify({ title }),
-    })
-  }
-  return body.id
-}
-
-async function ensureDeliveryThread(
-  base: string,
-  headers: Record<string, string>,
-  sessionId: string | null,
-  title: string,
-) {
-  if (sessionId && (await sessionLive(base, headers, sessionId)))
-    return sessionId
-  return createSession(base, headers, title)
-}
-
-async function postCronResult(
-  base: string,
-  headers: Record<string, string>,
-  sessionId: string,
-  name: string,
-  summary: string,
-) {
-  const posted = await opencodeJson(
-    `${base}/session/${sessionId}/prompt_async`,
-    headers,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        noReply: true,
-        parts: [{ type: "text", text: cronResultMessage(name, summary) }],
-      }),
-    },
-  )
-  if (!posted.ok) throw new Error(`result post failed (${posted.status})`)
-}
-
-async function postDirectResult(
-  db: Db,
-  hub: EventHub | undefined,
-  job: CronJob,
-  base: string,
-  headers: Record<string, string>,
-  sessionId: string,
-  text: string,
-) {
-  await postCronResult(base, headers, sessionId, job.name, text)
-  db.createCronNotice({
-    id: crypto.randomUUID(),
-    userId: job.userId,
-    jobId: job.id,
-    jobName: job.name,
-    sessionId,
-    runSessionId: null,
-    summary: clip(text),
-    createdAt: Date.now(),
-    viewedAt: null,
+  await opencodeJson(`${base}/session/${body.id}`, headers, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
   })
-  hub?.emit(job.userId, { type: "cron.notices" })
+  return body.id
 }
 
 async function deleteRunSession(
@@ -711,18 +639,6 @@ async function settleCronNotice(
     }
     const text = noticeText({ summary, sessionMissing: missing })
     const base = await endpoint(current.userId, "opencode", 4096)
-    const delivery = await ensureDeliveryThread(
-      base,
-      headers,
-      current.sessionId,
-      current.jobName,
-    )
-    if (delivery !== current.sessionId) {
-      db.setCronNoticeSession(current.id, delivery)
-      if (db.cronJobById(current.jobId, current.userId))
-        db.setCronSession(current.jobId, delivery)
-    }
-    await postCronResult(base, headers, delivery, current.jobName, text)
     if (current.runSessionId) {
       await deleteRunSession(
         db,
@@ -803,13 +719,6 @@ export async function fireCronJob(
     }
     const base = await endpoint(job.userId, "opencode", 4096)
 
-    const sessionId = await ensureDeliveryThread(
-      base,
-      headers,
-      job.sessionId,
-      job.name,
-    )
-    if (sessionId !== job.sessionId) db.setCronSession(job.id, sessionId)
     const runKind =
       job.runKind === "script" || job.runKind === "both"
         ? job.runKind
@@ -828,15 +737,17 @@ export async function fireCronJob(
         await opencodeScript(job.userId, job.script, SCRIPT_TIMEOUT_MS),
       )
       if (runKind === "script" || scriptBlocksAgent(ran)) {
-        await postDirectResult(
-          db,
-          hub,
-          job,
-          base,
-          headers,
-          sessionId,
-          scriptThreadText(ran),
-        )
+        db.createCronNotice({
+          id: crypto.randomUUID(),
+          userId: job.userId,
+          jobId: job.id,
+          jobName: job.name,
+          runSessionId: null,
+          summary: clip(scriptThreadText(ran)),
+          createdAt: Date.now(),
+          viewedAt: null,
+        })
+        hub?.emit(job.userId, { type: "cron.notices" })
         error = scriptJobError(ran)
       } else {
         scriptOutput = clipScriptOutput(ran.output)
@@ -848,7 +759,6 @@ export async function fireCronJob(
         base,
         headers,
         `${CRON_RUN_TITLE} ${job.name}`,
-        sessionId,
       )
       const screen = await ensureThreadScreen(db, job.userId, runSessionId)
       const prompt = await opencodeJson(
@@ -880,7 +790,6 @@ export async function fireCronJob(
         userId: job.userId,
         jobId: job.id,
         jobName: job.name,
-        sessionId,
         runSessionId,
         summary: null,
         createdAt: Date.now(),

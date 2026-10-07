@@ -43,16 +43,74 @@ function decision(partial: Partial<Decision>): Decision {
   }
 }
 
-test("a low-confidence click is not performed", async () => {
+test("a low-confidence click is skipped, then the run recovers", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      if (asked === 1)
+        return decision({ operation: "CLICK", target: "1", confidence: 0.2 })
+      return decision({ operation: "DONE" })
+    },
+    driver: driver(acts),
+  })
+  expect(asked).toBe(2)
+  expect(acts).toEqual([])
+  expect(result.status).toBe("done")
+})
+
+test("three bad decisions hand off to legacy navigation", async () => {
   const acts: Act[] = []
   const result = await runNav({
     goal: "open the page",
-    ask: async () =>
-      decision({ operation: "CLICK", target: "1", confidence: 0.2 }),
+    ask: async () => decision({ operation: "SCROLL_DOWN", confidence: 0.2 }),
     driver: driver(acts),
   })
   expect(result.status).toBe("low_confidence")
+  expect(result.fallback).toBe("vnc")
   expect(acts).toEqual([])
+})
+
+test("a blocked decision scrolls once before asking again", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      if (asked === 1) return decision({ operation: "BLOCKED" })
+      return decision({ operation: "DONE" })
+    },
+    driver: {
+      async probe() {
+        return { ...page, canScrollDown: true }
+      },
+      async act(action) {
+        acts.push(action)
+      },
+    },
+  })
+  expect(asked).toBe(2)
+  expect(acts).toEqual([{ kind: "scroll", direction: "down" }])
+  expect(result.status).toBe("done")
+})
+
+test("a failed decision call retries once before erroring", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      if (asked === 1) throw new Error("laya down")
+      return decision({ operation: "DONE" })
+    },
+    driver: driver(acts),
+  })
+  expect(asked).toBe(2)
+  expect(result.status).toBe("done")
 })
 
 test("a blank page with a url opens it before a decision", async () => {
@@ -109,17 +167,24 @@ test("a blank page without a url does not click", async () => {
   expect(asked).toBe(false)
 })
 
-test("a false user handoff falls back to legacy navigation", async () => {
+test("a false user handoff is retried, then hands off", async () => {
   const acts: Act[] = []
   const result = await runNav({
     goal: "open the page",
+    maxSteps: 5,
     ask: async () =>
-      decision({ operation: "CLICK", target: "1", needsUser: 0.9 }),
+      decision({
+        operation: "CLICK",
+        target: "1",
+        confidence: 0.9,
+        needsUser: 0.9,
+      }),
     driver: driver(acts),
   })
-  expect(result.status).toBe("low_confidence")
-  expect(result.fallback).toBe("vnc")
   expect(acts).toEqual([])
+  expect(result.status).toBe("low_confidence")
+  expect(result.detail).toBe("false handoff")
+  expect(result.fallback).toBe("vnc")
 })
 
 test("a password field stops without asking", async () => {
@@ -202,6 +267,7 @@ test("typing requires a value already in the goal", async () => {
     },
   })
   expect(missing.status).toBe("need_text")
+  expect(missing.fallback).toBe("vnc")
   expect(acts).toEqual([])
   const typed = await runNav({
     goal: 'search for "lasagna"',
@@ -222,6 +288,22 @@ test("typing requires a value already in the goal", async () => {
   })
   expect(typed.status).not.toBe("need_text")
   expect(acts[0]).toEqual({ kind: "type", targetId: "3", text: "lasagna" })
+  const generated: Act[] = []
+  const helped = await runNav({
+    goal: "post a short hello on the page",
+    ask: async () => decision({ operation: "TYPE_TEXT", target: "1" }),
+    writeText: async () => "hello",
+    driver: {
+      async probe() {
+        return field
+      },
+      async act(action) {
+        generated.push(action)
+      },
+    },
+  })
+  expect(helped.status).not.toBe("need_text")
+  expect(generated[0]).toEqual({ kind: "type", targetId: "3", text: "hello" })
 })
 
 test("headers keep the gateway token off the provider key", () => {

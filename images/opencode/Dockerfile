@@ -68,6 +68,7 @@ COPY images/opencode/apt-persist.conf /etc/apt/apt.conf.d/99open-bot-persist
 COPY images/opencode/ob-vnc.sh /usr/local/bin/ob-vnc
 COPY images/opencode/xcap.py /opt/open-bot/xcap.py
 COPY images/opencode/xshot.ts /opt/open-bot/xshot.ts
+COPY images/opencode/url-watch.ts /opt/open-bot/url-watch.ts
 COPY images/opencode/ob-nav.sh /usr/local/bin/ob-nav
 COPY images/opencode/chromium-policy.json /etc/chromium/policies/managed/open-bot.json
 COPY images/opencode/chromium-policy.json /etc/opt/chrome/policies/managed/open-bot.json

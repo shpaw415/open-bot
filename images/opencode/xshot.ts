@@ -67,10 +67,12 @@ function openSocket(url: string) {
 }
 
 async function pageSocket(port: number) {
-  const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then((response) =>
-    response.json(),
+  const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then(
+    (response) => response.json(),
   )) as { type?: string; webSocketDebuggerUrl?: string }[]
-  const page = list.find((item) => item.type === "page" && item.webSocketDebuggerUrl)
+  const page = list.find(
+    (item) => item.type === "page" && item.webSocketDebuggerUrl,
+  )
   if (!page?.webSocketDebuggerUrl) throw new Error("no page on this screen")
   return openSocket(page.webSocketDebuggerUrl)
 }
@@ -89,7 +91,8 @@ async function main() {
   const port = Number(process.argv[2])
   const file = process.argv[3]
   const spec = shotSize(process.argv[4] ?? "")
-  if (!file || !Number.isInteger(port)) throw new Error("usage: xshot.ts PORT FILE RESOLUTION")
+  if (!file || !Number.isInteger(port))
+    throw new Error("usage: xshot.ts PORT FILE RESOLUTION")
   const socket = await pageSocket(port)
   try {
     await socket.call("Page.enable")
@@ -97,7 +100,8 @@ async function main() {
     const scale = spec.scale
     const width = spec.width ?? current.width
     const height = spec.height ?? current.height
-    if (scale < 1 || scale > SCALE_MAX) throw new Error("resolution must be 2 or 2560x1600")
+    if (scale < 1 || scale > SCALE_MAX)
+      throw new Error("resolution must be 2 or 2560x1600")
     await socket.call("Emulation.setDeviceMetricsOverride", {
       width,
       height,
@@ -113,10 +117,14 @@ async function main() {
     await Bun.write(file, Buffer.from(shot.data, "base64"))
     console.log(`${width * scale}x${height * scale}`)
     if (scale !== 1) {
-      console.log(`clicks use the live screen. divide image x and y by ${scale}`)
+      console.log(
+        `clicks use the live screen. divide image x and y by ${scale}`,
+      )
     }
   } finally {
-    await socket.call("Emulation.clearDeviceMetricsOverride").catch(() => undefined)
+    await socket
+      .call("Emulation.clearDeviceMetricsOverride")
+      .catch(() => undefined)
     socket.close()
   }
 }

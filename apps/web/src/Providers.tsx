@@ -1,4 +1,5 @@
 import Alert from "@shpaw415/mui-lite/Alert"
+import AutoComplete from "@shpaw415/mui-lite/AutoComplete"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import Chip from "@shpaw415/mui-lite/Chip"
@@ -14,7 +15,7 @@ import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { Terminal } from "@xterm/xterm"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { api, waitForDesktop } from "./api"
 import { useMobile } from "./hooks"
 import { CheckCircleIcon, LoginIcon, LogoutIcon, RefreshIcon } from "./icons"
@@ -22,6 +23,18 @@ import "@xterm/xterm/css/xterm.css"
 
 type AuthMethod = { type?: string; label?: string }
 type ProviderAuth = Record<string, AuthMethod[]>
+type CatalogEntry = { id: string; name: string }
+type ProviderOption = { id: string; label: string }
+
+const PROVIDER_PRIORITY = [
+  "opencode",
+  "openai",
+  "github-copilot",
+  "google",
+  "anthropic",
+  "openrouter",
+  "vercel",
+]
 
 function LoginTerminal({
   loginId,
@@ -143,18 +156,55 @@ function LoginTerminal({
   return <div ref={hostRef} className="ob-tty" />
 }
 
+function mergedOptions(
+  catalog: CatalogEntry[],
+  authIds: string[],
+  connected: string[],
+): ProviderOption[] {
+  const byId = new Map<string, string>()
+  for (const item of catalog) byId.set(item.id, item.name)
+  for (const id of authIds) if (!byId.has(id)) byId.set(id, id)
+  const connectedSet = new Set(connected)
+  const rank = (id: string) => {
+    if (connectedSet.has(id)) return 0
+    return PROVIDER_PRIORITY.includes(id) ? 1 : 2
+  }
+  return [...byId]
+    .map(([id, name]) => ({ id, label: name }))
+    .sort((a, b) => {
+      const byRank = rank(a.id) - rank(b.id)
+      if (byRank !== 0) return byRank
+      const byPriority =
+        PROVIDER_PRIORITY.indexOf(a.id) - PROVIDER_PRIORITY.indexOf(b.id)
+      if (byPriority !== 0) return byPriority
+      return a.label.localeCompare(b.label) || a.id.localeCompare(b.id)
+    })
+}
+
 export function Providers() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const [provider, setProvider] = useState("")
+  const [query, setQuery] = useState("")
   const [method, setMethod] = useState("")
   const [auth, setAuth] = useState<ProviderAuth>({})
+  const [catalog, setCatalog] = useState<CatalogEntry[]>([])
   const [connected, setConnected] = useState<string[]>([])
   const [loginId, setLoginId] = useState("")
   const [loginBusy, setLoginBusy] = useState(false)
   const mobile = useMobile()
 
-  const providerIds = Object.keys(auth)
+  const providerIds = useMemo(() => Object.keys(auth), [auth])
+  const nameById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const item of catalog) map.set(item.id, item.name)
+    return map
+  }, [catalog])
+  const nameOf = useCallback((id: string) => nameById.get(id) ?? id, [nameById])
+  const providerOptions = useMemo<ProviderOption[]>(
+    () => mergedOptions(catalog, providerIds, connected),
+    [catalog, providerIds, connected],
+  )
   const methods = provider && auth[provider] ? auth[provider] : []
 
   async function load() {
@@ -164,14 +214,23 @@ export function Providers() {
       await api("/api/desktop/start", { method: "POST" })
       await waitForDesktop()
       const body = await api<{
-        providers?: { connected?: string[] }
+        providers?: { catalog?: CatalogEntry[]; connected?: string[] }
         auth?: ProviderAuth
       }>("/api/providers")
-      setConnected(body.providers?.connected ?? [])
-      setAuth(body.auth ?? {})
-      const ids = Object.keys(body.auth ?? {})
-      if (ids.length > 0 && !ids.includes(provider)) {
-        setProvider(ids[0] ?? "")
+      const nextCatalog = body.providers?.catalog ?? []
+      const nextAuth = body.auth ?? {}
+      const nextConnected = body.providers?.connected ?? []
+      setConnected(nextConnected)
+      setCatalog(nextCatalog)
+      setAuth(nextAuth)
+      const options = mergedOptions(
+        nextCatalog,
+        Object.keys(nextAuth),
+        nextConnected,
+      )
+      if (options.length > 0 && !options.some((item) => item.id === provider)) {
+        setProvider(options[0].id)
+        setQuery(options[0].label)
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "failed")
@@ -325,8 +384,8 @@ export function Providers() {
                       <CheckCircleIcon />
                     </ListItemIcon>
                     <ListItemText
-                      primary={id}
-                      secondary="opencode auth connected"
+                      primary={nameOf(id)}
+                      secondary={id}
                       sx={{ flex: 1, minWidth: 0 }}
                       SlotProps={{
                         primary: {
@@ -385,47 +444,91 @@ export function Providers() {
                   <Skeleton height={44} />
                   <Skeleton height={44} />
                 </Stack>
-              ) : providerIds.length === 0 ? (
+              ) : providerOptions.length === 0 ? (
                 <Typography variant="body2" color="textSecondary">
                   Press “Connect & reload” to list provider ids.
                 </Typography>
               ) : (
                 <>
-                  <Select
-                    name="provider"
-                    label="Provider"
-                    value={provider}
-                    onSelect={(value) => {
-                      setProvider(value)
-                      setMethod("")
+                  <AutoComplete
+                    options={providerOptions}
+                    value={query || (provider ? nameOf(provider) : "")}
+                    onChange={(event) => setQuery(event.currentTarget.value)}
+                    onFilter={(opt, input) => {
+                      const needle = input.trim().toLowerCase()
+                      if (!needle) return true
+                      return (
+                        opt.label.toLowerCase().includes(needle) ||
+                        opt.id.toLowerCase().includes(needle)
+                      )
                     }}
-                  >
-                    {providerIds.map((id) => (
-                      <option key={id} value={id}>
-                        {id}
-                      </option>
-                    ))}
-                  </Select>
-                  <Select
-                    name="method"
-                    label="Method (optional)"
-                    value={method}
-                    onSelect={setMethod}
-                  >
-                    {[
-                      <option key="default" value="">
-                        default
-                      </option>,
-                      ...methods.map((item, index) => (
-                        <option
-                          key={`${item.label ?? item.type ?? index}`}
-                          value={item.label ?? item.type ?? ""}
-                        >
-                          {item.label ?? item.type ?? `method ${index + 1}`}
-                        </option>
-                      )),
-                    ]}
-                  </Select>
+                    formatInput={(opt) => opt.label}
+                    onSelect={(opt) => {
+                      setProvider(opt.id)
+                      setMethod("")
+                      setQuery(opt.label)
+                    }}
+                    SlotProps={{
+                      input: {
+                        id: "ob-provider-ac",
+                        label: "Provider",
+                        sx: { width: "100%" },
+                        variant: "outlined",
+                      },
+                      listButton: { className: "ob-provider-ac" },
+                    }}
+                    listItemRender={(opt) => (
+                      <Stack
+                        direction="row"
+                        spacing={1}
+                        sx={{ alignItems: "center", minWidth: 0 }}
+                      >
+                        <Typography variant="body2" sx={{ flexShrink: 0 }}>
+                          {opt.label}
+                        </Typography>
+                        {opt.id !== opt.label ? (
+                          <Typography
+                            variant="caption"
+                            color="textSecondary"
+                            sx={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {opt.id}
+                          </Typography>
+                        ) : null}
+                      </Stack>
+                    )}
+                  />
+                  {methods.length > 0 ? (
+                    <Select
+                      name="method"
+                      label="Method (optional)"
+                      value={method}
+                      onSelect={setMethod}
+                    >
+                      {[
+                        <option key="default" value="">
+                          default
+                        </option>,
+                        ...methods.map((item, index) => (
+                          <option
+                            key={`${item.label ?? item.type ?? index}`}
+                            value={item.label ?? item.type ?? ""}
+                          >
+                            {item.label ?? item.type ?? `method ${index + 1}`}
+                          </option>
+                        )),
+                      ]}
+                    </Select>
+                  ) : (
+                    <Typography variant="caption" color="textSecondary">
+                      No OAuth sign-in for this one — the terminal asks for an
+                      API key and stores it.
+                    </Typography>
+                  )}
                 </>
               )}
               <Button

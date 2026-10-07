@@ -40,6 +40,8 @@ describe("thread screens", () => {
     expect(line).toContain("$OPEN_BOT_VNC")
     expect(line).toContain("![screen](open-bot://screen)")
     expect(line).toContain("takes control")
+    expect(line).toContain("last page")
+    expect(line).toContain("Do not call the screen dark")
     expect(holdSystemLine()).toContain("user holds this screen")
     expect(holdFile("ses_abc")).toBe("/home/agent/.open-bot/vnc/ses_abc.hold")
     expect(vncViewPath("ses_abc")).toBe("desktop/view/websockify?token=ses_abc")
