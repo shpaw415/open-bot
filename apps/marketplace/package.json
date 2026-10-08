@@ -27,6 +27,7 @@
     "frame-master-plugin-seo": "^0.1.1",
     "frame-master-plugin-serve-from-build": "^1.1.1",
     "frame-master-plugin-tailwind": "^2.0.2",
+    "jose": "^6.2.12",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3"

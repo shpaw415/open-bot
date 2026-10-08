@@ -363,6 +363,134 @@ function Discussion({ pluginId }: { pluginId: string }) {
   )
 }
 
+type MarketKeyInfo = {
+  configured: boolean
+  hint: string | null
+  source: "account" | "instance"
+}
+
+function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
+  const [info, setInfo] = useState<MarketKeyInfo | null>(null)
+  const [value, setValue] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const [notice, setNotice] = useState("")
+
+  const load = useCallback(async () => {
+    try {
+      setInfo(await api<MarketKeyInfo>("/api/plugins/marketplace/key"))
+    } catch {
+      setInfo(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  async function save() {
+    setBusy(true)
+    setError("")
+    setNotice("")
+    try {
+      await api("/api/plugins/marketplace/key", {
+        method: "PUT",
+        body: JSON.stringify({ key: value.trim() }),
+      })
+      setValue("")
+      setNotice("marketplace API key saved")
+      await load()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "failed to save")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function remove() {
+    setBusy(true)
+    setError("")
+    setNotice("")
+    try {
+      await api("/api/plugins/marketplace/key", { method: "DELETE" })
+      setNotice("marketplace API key removed")
+      await load()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "failed to remove")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Stack spacing={1}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography variant="subtitle2" sx={{ flex: 1 }}>
+            Marketplace account
+          </Typography>
+          {info?.configured ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={
+                info.source === "account"
+                  ? `API key …${info.hint ?? ""}`
+                  : "instance token"
+              }
+            />
+          ) : (
+            <Chip size="small" variant="outlined" label="not configured" />
+          )}
+        </Stack>
+        <Typography variant="body2" color="textSecondary">
+          Sign in at{" "}
+          <a
+            href="https://market.open-bot.app/account"
+            target="_blank"
+            rel="noreferrer"
+          >
+            market.open-bot.app
+          </a>{" "}
+          and create an API key under Account, then paste it here to publish
+          plugins under your own marketplace account.
+        </Typography>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {notice ? <Alert severity="success">{notice}</Alert> : null}
+        {isAdmin ? (
+          <Stack direction="row" spacing={1} alignItems="center">
+            <TextField
+              label="API key (obm_…)"
+              type="password"
+              value={value}
+              onChange={(event) => setValue(event.currentTarget.value)}
+              sx={{ flex: 1 }}
+            />
+            <Button
+              size="small"
+              variant="contained"
+              disabled={busy || !value.trim()}
+              onClick={() => void save()}
+            >
+              Save
+            </Button>
+            {info?.source === "account" ? (
+              <Button
+                size="small"
+                variant="text"
+                disabled={busy}
+                onClick={() => void remove()}
+              >
+                Remove
+              </Button>
+            ) : null}
+          </Stack>
+        ) : null}
+      </Stack>
+    </Paper>
+  )
+}
+
 export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   const { plugins, policy, configured, refresh } = useInstalledPlugins()
   const [market, setMarket] = useState<MarketPlugin[]>([])
@@ -460,11 +588,13 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         </Stack>
         {!configured ? (
           <Alert severity="info">
-            The marketplace is not configured on this instance. Set
+            The marketplace is not configured on this instance. Paste a
+            marketplace API key below (admin), or set
             OPEN_BOT_MARKETPLACE_URL and OPEN_BOT_MARKETPLACE_TOKEN on the
-            control plane to browse and publish plugins.
+            control plane.
           </Alert>
         ) : null}
+        <MarketplaceAccount isAdmin={isAdmin} />
         {error ? <Alert severity="error">{error}</Alert> : null}
         {notice ? <Alert severity="success">{notice}</Alert> : null}
 

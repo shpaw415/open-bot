@@ -6,6 +6,7 @@ import {
   validatePluginManifest,
 } from "@open-bot/plugin-kit"
 import { addComment, getPluginRow, pluginFromRow } from "../../lib/db"
+import { apiKeyAuth, touchApiKey } from "../../lib/auth"
 import { findingsComment, reviewPublish } from "../../lib/security"
 
 function authorized(request: Request, token: string | undefined) {
@@ -39,7 +40,11 @@ async function fetchReadme(
 
 export async function onRequestPost(context: EventContext<Env, never, never>) {
   const { DB, MARKETPLACE_TOKEN, GITHUB_TOKEN } = context.env
-  if (!authorized(context.request, MARKETPLACE_TOKEN)) {
+  const apiKey = await apiKeyAuth(DB, context.request)
+  if (apiKey) void touchApiKey(DB, apiKey.keyId).catch(() => undefined)
+  const authed =
+    authorized(context.request, MARKETPLACE_TOKEN) || apiKey !== null
+  if (!authed) {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
   let body: { manifest?: unknown; notes?: unknown }

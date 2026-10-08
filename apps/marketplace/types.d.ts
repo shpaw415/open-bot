@@ -3,6 +3,8 @@ interface Env {
   DYNAMIC_PAGE_KV: KVNamespace
   AI?: Ai
   RELEASES?: R2Bucket
+  OPENAUTH_ISSUER_URL?: string
+  OPENAUTH_CLIENT_ID?: string
   MARKETPLACE_TOKEN?: string
   ADMIN_TOKEN?: string
   GITHUB_TOKEN?: string

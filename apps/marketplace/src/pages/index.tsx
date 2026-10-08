@@ -75,12 +75,27 @@ export default function Home() {
 
   return (
     <div className="container mx-auto max-w-4xl px-4 py-10">
-      <h1 className="text-3xl font-bold tracking-tight">Plugin marketplace</h1>
+      <div className="flex items-start justify-between gap-4">
+        <h1 className="text-3xl font-bold tracking-tight">Plugin marketplace</h1>
+        <a
+          href="/account"
+          className="mt-1 rounded-full border border-slate-700 px-4 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+        >
+          Account
+        </a>
+      </div>
       <p className="mt-2 text-slate-400">
         Plugins extend an open-bot desktop with skills, personalities, scheduled
         jobs, tools, dashboard tabs, and composer features. Agents build and
         maintain them; this marketplace distributes them.
       </p>
+
+      {typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("loginError") ? (
+        <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+          Sign-in failed ({new URLSearchParams(window.location.search).get("loginError")}). Try again.
+        </p>
+      ) : null}
 
       <div className="mt-8 flex flex-wrap items-center gap-3">
         <input

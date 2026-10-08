@@ -6,7 +6,9 @@
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "BUN_VERSION": "1.4.2",
-    "SKIP_DEPENDENCY_INSTALL": "true"
+    "SKIP_DEPENDENCY_INSTALL": "true",
+    "OPENAUTH_ISSUER_URL": "https://ef328c08c4d04075a0fd1e7f175983de-auth.webcreas.com",
+    "OPENAUTH_CLIENT_ID": "__open_bot_18f8d590"
   },
   "d1_databases": [
     {

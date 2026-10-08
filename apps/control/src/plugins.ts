@@ -16,6 +16,7 @@ import {
 } from "./plugins-apply"
 
 const POLICY_KEY = "plugin_install_policy"
+const MARKET_KEY_SETTING = "marketplace_api_key"
 const POLICIES = ["manual", "auto"] as const
 type Policy = (typeof POLICIES)[number]
 
@@ -31,15 +32,21 @@ function policy(db: Db): Policy {
   return POLICIES.includes(saved as Policy) ? (saved as Policy) : "manual"
 }
 
-function marketplaceConfigured() {
-  return marketplaceUrl !== "" && marketplaceToken !== ""
+function marketToken(db: Db): string {
+  return db.getSetting(MARKET_KEY_SETTING) || marketplaceToken
+}
+
+function marketplaceConfigured(db: Db) {
+  return marketplaceUrl !== "" && marketToken(db) !== ""
 }
 
 async function marketplace(
+  db: Db,
   path: string,
   init: RequestInit & { json?: unknown } = {},
 ): Promise<Response> {
-  if (!marketplaceConfigured()) {
+  const token = marketToken(db)
+  if (marketplaceUrl === "" || token === "") {
     throw new HttpError(
       503,
       "the plugin marketplace is not configured on this instance",
@@ -47,7 +54,7 @@ async function marketplace(
     )
   }
   const headers: Record<string, string> = {
-    authorization: `Bearer ${marketplaceToken}`,
+    authorization: `Bearer ${token}`,
   }
   let body: string | undefined
   if (init.json !== undefined) {
@@ -139,11 +146,13 @@ function publicInstalled(row: {
 }
 
 async function fetchDetail(
+  db: Db,
   pluginId: string,
   version?: string,
 ): Promise<MarketDetail> {
   const suffix = version ? `?version=${encodeURIComponent(version)}` : ""
   const response = await marketplace(
+    db,
     `/api/plugins/${encodeURIComponent(pluginId)}${suffix}`,
   )
   const body = (await response.json()) as MarketDetail
@@ -313,8 +322,36 @@ export function handlePlugins(
     return json({
       plugins: db.installedPlugins(user.id).map(publicInstalled),
       policy: policy(db),
-      configured: marketplaceConfigured(),
+      configured: marketplaceConfigured(db),
     })
+
+  if (path === "/api/plugins/marketplace/key" && req.method === "GET")
+    return json({
+      configured: marketplaceConfigured(db),
+      hint: marketToken(db).slice(-4) || null,
+      source: db.getSetting(MARKET_KEY_SETTING) ? "account" : "instance",
+    })
+
+  if (path === "/api/plugins/marketplace/key" && req.method === "PUT") {
+    if (user.role !== "admin") return json({ error: "admin only" }, 403)
+    return req
+      .json()
+      .then((body: Record<string, unknown>) => {
+        const key = String(body.key ?? "").trim()
+        if (!/^obm_[A-Za-z0-9_-]{40,120}$/.test(key)) {
+          return json({ error: "that does not look like a marketplace API key" }, 400)
+        }
+        db.setSetting(MARKET_KEY_SETTING, key)
+        return json({ ok: true, hint: key.slice(-4) })
+      })
+      .catch(() => json({ error: "invalid json" }, 400))
+  }
+
+  if (path === "/api/plugins/marketplace/key" && req.method === "DELETE") {
+    if (user.role !== "admin") return json({ error: "admin only" }, 403)
+    db.setSetting(MARKET_KEY_SETTING, "")
+    return json({ ok: true })
+  }
 
   if (path === "/api/plugins/market" && req.method === "GET") {
     const query = new URLSearchParams()
@@ -323,7 +360,7 @@ export function handlePlugins(
     if (q) query.set("q", q)
     if (category) query.set("category", category)
     const suffix = query.toString()
-    return marketplace(`/api/plugins${suffix ? `?${suffix}` : ""}`).then(
+    return marketplace(db, `/api/plugins${suffix ? `?${suffix}` : ""}`).then(
       (response) =>
         new Response(response.body, {
           status: response.status,
@@ -335,7 +372,7 @@ export function handlePlugins(
   const marketDetail = path.match(/^\/api\/plugins\/market\/([^/]+)$/)
   if (marketDetail && req.method === "GET") {
     const id = decodeURIComponent(marketDetail[1] ?? "")
-    return marketplace(`/api/plugins/${encodeURIComponent(id)}`).then(
+    return marketplace(db, `/api/plugins/${encodeURIComponent(id)}`).then(
       (response) =>
         new Response(response.body, {
           status: response.status,
@@ -347,7 +384,10 @@ export function handlePlugins(
   const comments = path.match(/^\/api\/plugins\/market\/([^/]+)\/comments$/)
   if (comments && req.method === "GET") {
     const id = decodeURIComponent(comments[1] ?? "")
-    return marketplace(`/api/plugins/${encodeURIComponent(id)}/comments`).then(
+    return marketplace(
+      db,
+      `/api/plugins/${encodeURIComponent(id)}/comments`,
+    ).then(
       (response) =>
         new Response(response.body, {
           status: response.status,
@@ -364,7 +404,7 @@ export function handlePlugins(
         if (!text || text.length > 4000) {
           return json({ error: "comment body is required (max 4000)" }, 400)
         }
-        return marketplace(`/api/plugins/${encodeURIComponent(id)}/comments`, {
+        return marketplace(db, `/api/plugins/${encodeURIComponent(id)}/comments`, {
           method: "POST",
           json: { body: text, authorKind: "agent", author: "open-bot agent" },
         }).then(
@@ -389,7 +429,7 @@ export function handlePlugins(
         if (version && !SEMVER_PATTERN.test(version)) {
           return json({ error: "version must be semver" }, 400)
         }
-        const detail = await fetchDetail(pluginId, version || undefined)
+        const detail = await fetchDetail(db, pluginId, version || undefined)
         if (version && detail.plugin.version !== version) {
           return json({ error: `version ${version} does not exist` }, 404)
         }
@@ -429,12 +469,12 @@ export function handlePlugins(
           },
           { settings },
         )
-        if (marketplaceConfigured()) {
+        if (marketplaceConfigured(db)) {
           void fetch(
             `${marketplaceUrl}/api/plugins/${encodeURIComponent(detail.plugin.id)}/download`,
             {
               method: "POST",
-              headers: { authorization: `Bearer ${marketplaceToken}` },
+              headers: { authorization: `Bearer ${marketToken(db)}` },
             },
           ).catch(() => {})
         }
@@ -528,7 +568,7 @@ export function handlePlugins(
       .json()
       .then(async (body: Record<string, unknown>) => {
         const manifest = parsePublishBody(body)
-        const response = await marketplace("/api/publish", {
+        const response = await marketplace(db, "/api/publish", {
           method: "POST",
           json: { manifest },
         })
@@ -590,7 +630,7 @@ export function handlePlugins(
           repo = typeof manifest.repo === "string" ? manifest.repo : ""
         }
         if (!repo) {
-          const detail = await fetchDetail(pluginId)
+          const detail = await fetchDetail(db, pluginId)
           repo = detail.plugin.repo
         }
         if (!repo) return json({ error: "plugin has no GitHub repo" }, 400)
