@@ -2190,40 +2190,47 @@ export function Workspace({ me }: { me: Me }) {
                   </Button>
                 </Stack>
               ) : messagesLoading && shown.length === 0 ? (
-                <>
-                  <Skeleton
-                    key="bubble-user-0"
-                    variant="rounded"
-                    height={44}
-                    width="42%"
-                    sx={{ alignSelf: "flex-end" }}
-                  />
-                  <Skeleton
-                    key="bubble-assistant-0"
-                    variant="rounded"
-                    height={72}
-                    width="78%"
-                  />
-                  <Skeleton
-                    key="bubble-user-1"
-                    variant="rounded"
-                    height={44}
-                    width="30%"
-                    sx={{ alignSelf: "flex-end" }}
-                  />
-                  <Skeleton
-                    key="bubble-assistant-1"
-                    variant="rounded"
-                    height={56}
-                    width="64%"
-                  />
-                  <Skeleton
-                    key="bubble-assistant-2"
-                    variant="rounded"
-                    height={48}
-                    width="56%"
-                  />
-                </>
+                <Stack
+                  alignItems="center"
+                  justifyContent="center"
+                  sx={{ flex: 1, minHeight: 160 }}
+                  spacing={1}
+                >
+                  <Stack spacing={1} sx={{ width: "min(620px, 100%)" }}>
+                    <Skeleton
+                      key="bubble-user-0"
+                      variant="rounded"
+                      height={44}
+                      width="42%"
+                      sx={{ alignSelf: "flex-end" }}
+                    />
+                    <Skeleton
+                      key="bubble-assistant-0"
+                      variant="rounded"
+                      height={72}
+                      width="78%"
+                    />
+                    <Skeleton
+                      key="bubble-user-1"
+                      variant="rounded"
+                      height={44}
+                      width="30%"
+                      sx={{ alignSelf: "flex-end" }}
+                    />
+                    <Skeleton
+                      key="bubble-assistant-1"
+                      variant="rounded"
+                      height={56}
+                      width="64%"
+                    />
+                    <Skeleton
+                      key="bubble-assistant-2"
+                      variant="rounded"
+                      height={48}
+                      width="56%"
+                    />
+                  </Stack>
+                </Stack>
               ) : shown.length === 0 ? (
                 <Stack
                   alignItems="center"

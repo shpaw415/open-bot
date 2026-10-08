@@ -46,21 +46,30 @@ urlencode() {
   printf '%s' "$1" | jq -sRr @uri
 }
 
-# poll STATE_URL OUT_FIELD TERMINAL_VALUES TIMEOUT_S
+# poll STATE_URL OUT_FIELD TERMINAL_VALUES TIMEOUT_S (raw body -> $POLLFILE)
 poll_field() {
   url="$1"
   field="$2"
   terminals="$3"
   timeout_s="$4"
   deadline=$(( $(date +%s) + timeout_s ))
+  tmp="$(mktemp)"
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    out=$(request GET "$url")
-    value=$(printf '%s' "$out" | jq -r "$field" 2>/dev/null) || value=""
+    code=$(curl -sS -X GET -H "Authorization: Bearer $TOKEN" \
+      -o "$tmp" -w '%{http_code}' "$BASE$url" 2>/dev/null) || code=000
+    if [ "$code" = "401" ] || [ "$code" = "404" ]; then
+      rm -f "$tmp"
+      echo "gone"
+      return 0
+    fi
+    printf '%s' "$(cat "$tmp")" > "$POLLFILE"
+    value=$(printf '%s' "$(cat "$tmp")" | jq -r "$field" 2>/dev/null) || value=""
     for t in $terminals; do
-      [ "$value" = "$t" ] && { LAST_POLL="$out"; echo "$value"; return 0; }
+      [ "$value" = "$t" ] && { rm -f "$tmp"; echo "$value"; return 0; }
     done
     sleep 3
   done
+  rm -f "$tmp"
   echo "timeout"
 }
 
@@ -84,12 +93,17 @@ case "$cmd" in
     fail_on_error "$out"
     id=$(printf '%s' "$out" | jq -r '.id')
     echo "backup $id started"
+    POLLFILE="$(mktemp)"
+    trap 'rm -f "$POLLFILE"' EXIT
     state=$(poll_field "/api/backup/$(urlencode "$id")" '.run.state // empty' "done failed" 1800)
     if [ "$state" = "done" ]; then
-      printf '%s' "$LAST_POLL" | jq -r '.run.manifest | "backup finished: \(.id) (\(.totalBytes) bytes)"'
+      jq -r '.run.manifest | "backup finished: \(.id) (\(.totalBytes) bytes)"' "$POLLFILE"
     elif [ "$state" = "failed" ]; then
-      msg=$(printf '%s' "$LAST_POLL" | jq -r '.run.error // "backup failed"')
+      msg=$(jq -r '.run.error // "backup failed"' "$POLLFILE")
       echo "ob-backup: $msg" >&2
+      exit 1
+    elif [ "$state" = "gone" ]; then
+      echo "ob-backup: lost access to the backup status; check the dashboard" >&2
       exit 1
     else
       echo "ob-backup: still running after 30m; check the dashboard" >&2
@@ -106,7 +120,7 @@ case "$cmd" in
     [ $# -eq 1 ] || { usage; exit 2; }
     out=$(request GET "/api/backup/$(urlencode "$1")")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '.manifest'
+    printf '%s' "$out" | jq '.run.manifest // .manifest'
     ;;
   restore)
     [ $# -eq 1 ] || { usage; exit 2; }
@@ -117,6 +131,8 @@ case "$cmd" in
     request_id=$(printf '%s' "$out" | jq -r '.id')
     echo "restore of backup $backup_id requested."
     echo "Waiting for the user to approve it in the open-bot dashboard (password required)..."
+    POLLFILE="$(mktemp)"
+    trap 'rm -f "$POLLFILE"' EXIT
     status=$(poll_field "/api/reset-requests/$(urlencode "$request_id")" '.status // empty' "approved denied expired" 330)
     case "$status" in
       approved)
@@ -130,6 +146,11 @@ case "$cmd" in
       expired)
         echo "ob-backup: the request was not approved in time and expired" >&2
         exit 1
+        ;;
+      gone)
+        echo "The request is no longer visible (an approval tears this desktop"
+        echo "down, which invalidates this session's token). The dashboard"
+        echo "shows the outcome."
         ;;
       *)
         echo "ob-backup: no decision after 5.5 minutes; request expired" >&2

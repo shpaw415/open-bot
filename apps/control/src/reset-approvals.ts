@@ -36,10 +36,11 @@ export class ResetApprovals {
   private pending = new Map<string, ResetApproval>()
 
   create(userId: string, action: ApprovalAction): ResetApproval {
-    for (const [id, record] of this.pending) {
+    for (const record of this.pending.values()) {
       if (record.userId !== userId || record.status !== "pending") continue
+      // Keep the replaced record visible as expired so anyone polling it
+      // sees a terminal state instead of a 404.
       record.status = "expired"
-      this.pending.delete(id)
     }
     const record: ResetApproval = {
       id: randomToken(),

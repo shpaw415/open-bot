@@ -72,9 +72,17 @@ case "$cmd" in
     echo "Waiting for the user to approve it in the open-bot dashboard (password required)..."
     deadline=$(( $(date +%s) + 330 ))
     status=""
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
     while [ "$(date +%s)" -lt "$deadline" ]; do
-      out=$(request GET "/api/reset-requests/$(urlencode "$request_id")")
-      status=$(printf '%s' "$out" | jq -r '.status // empty' 2>/dev/null) || status=""
+      code=$(curl -sS -X GET -H "Authorization: Bearer $TOKEN" \
+        -o "$tmp" -w '%{http_code}' \
+        "$BASE/api/reset-requests/$(urlencode "$request_id")" 2>/dev/null) || code=000
+      if [ "$code" = "401" ] || [ "$code" = "404" ]; then
+        status="gone"
+        break
+      fi
+      status=$(jq -r '.status // empty' "$tmp" 2>/dev/null) || status=""
       case "$status" in
         approved|denied|expired) break ;;
       esac
@@ -92,6 +100,11 @@ case "$cmd" in
       expired)
         echo "ob-reset: the request was not approved in time and expired" >&2
         exit 1
+        ;;
+      gone)
+        echo "Approved (or the request vanished): an approved reset destroys"
+        echo "this desktop and rotates this session's token, so the request"
+        echo "is no longer pollable. The dashboard shows the outcome."
         ;;
       *)
         echo "ob-reset: no decision after 5.5 minutes; request expired" >&2

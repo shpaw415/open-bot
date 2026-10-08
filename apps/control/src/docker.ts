@@ -549,7 +549,7 @@ export async function destroyDesktop(userId: string) {
     n.vikingData,
     n.x11,
   ])
-  if (volumes.code !== 0) {
+  if (volumes.code !== 0 && !/no such volume/i.test(volumes.stderr)) {
     throw new Error(volumes.stderr.trim() || "could not remove desktop volumes")
   }
   await sh(["docker", "network", "rm", n.network])
