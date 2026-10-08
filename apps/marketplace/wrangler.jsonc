@@ -20,5 +20,14 @@
       "binding": "DYNAMIC_PAGE_KV",
       "id": "6bc447065f274b4da2df5bfc80fa6964"
     }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "open-bot-marketplace-releases"
+    }
   ]
 }

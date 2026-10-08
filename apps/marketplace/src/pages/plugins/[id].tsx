@@ -57,7 +57,14 @@ export default function PluginDetail() {
     )
   }
 
-  const { plugin, manifest, versions } = detail
+  const { plugin, manifest, versions, security } = detail
+
+  const securityBadge =
+    security.status === "pass"
+      ? "border-emerald-500/40 text-emerald-400"
+      : security.status === "concern"
+        ? "border-red-500/40 text-red-400"
+        : "border-amber-500/40 text-amber-400"
 
   return (
     <div className="container mx-auto max-w-3xl px-4 py-10">
@@ -104,6 +111,25 @@ export default function PluginDetail() {
             Requires vault keys: {manifest.permissions.vaultCreate.join(", ")} —
             fill them on your open-bot Config → Keys page after installing.
           </p>
+        ) : null}
+        {security.status ? (
+          <div className="mt-4 border-t border-slate-800 pt-4">
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider ${securityBadge}`}
+            >
+              security review: {security.status}
+            </span>
+            {security.findings.length > 0 ? (
+              <ul className="mt-2 space-y-1 text-xs text-slate-400">
+                {security.findings.map((finding, index) => (
+                  <li key={index}>
+                    [{finding.severity}] {finding.title}
+                    {finding.path ? ` (${finding.path})` : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
         ) : null}
       </div>
 

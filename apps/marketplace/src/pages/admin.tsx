@@ -104,6 +104,20 @@ export default function Admin() {
                   >
                     {plugin.status}
                   </span>
+                  {plugin.securityStatus ? (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider ${
+                        plugin.securityStatus === "pass"
+                          ? "border border-emerald-500/40 text-emerald-400"
+                          : plugin.securityStatus === "concern"
+                            ? "border border-red-500/40 text-red-400"
+                            : "border border-amber-500/40 text-amber-400"
+                      }`}
+                      title="Automated security review"
+                    >
+                      sec: {plugin.securityStatus}
+                    </span>
+                  ) : null}
                 </div>
                 <p className="mt-1 truncate text-sm text-slate-400">
                   {plugin.description}

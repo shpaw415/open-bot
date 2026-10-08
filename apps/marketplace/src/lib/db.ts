@@ -10,6 +10,7 @@ export type PluginRow = {
   tags: string
   latest_version: string
   status: "pending" | "approved" | "rejected"
+  security_status: string | null
   downloads: number
   readme: string | null
   created_at: number
@@ -21,6 +22,11 @@ export type VersionRow = {
   version: string
   manifest: string
   notes: string | null
+  security_status: string | null
+  security_findings: string | null
+  artifact_key: string | null
+  artifact_sha256: string | null
+  analyzed_at: number | null
   created_at: number
 }
 
@@ -33,6 +39,19 @@ export type CommentRow = {
   created_at: number
 }
 
+export type SecuritySummary = {
+  status: string | null
+  findings: SecurityFindingJson[]
+  analyzedAt: number | null
+}
+
+export type SecurityFindingJson = {
+  title: string
+  severity: string
+  detail: string
+  path: string | null
+}
+
 export type MarketPlugin = {
   id: string
   name: string
@@ -43,6 +62,7 @@ export type MarketPlugin = {
   category: string
   tags: string[]
   status: PluginRow["status"]
+  securityStatus: string | null
   downloads: number
   createdAt: number
   updatedAt: number
@@ -52,7 +72,14 @@ export type MarketDetail = {
   plugin: MarketPlugin
   manifest: PluginManifest
   readme: string | null
-  versions: { version: string; createdAt: number; notes: string | null }[]
+  security: SecuritySummary
+  versions: {
+    version: string
+    createdAt: number
+    notes: string | null
+    securityStatus: string | null
+    artifactSha256: string | null
+  }[]
 }
 
 export type MarketComment = {
@@ -82,9 +109,35 @@ export function pluginFromRow(row: PluginRow): MarketPlugin {
     category: row.category,
     tags,
     status: row.status,
+    securityStatus: row.security_status,
     downloads: row.downloads,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+function parseFindings(raw: string | null): SecurityFindingJson[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is SecurityFindingJson =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        typeof (item as SecurityFindingJson).title === "string" &&
+        typeof (item as SecurityFindingJson).detail === "string",
+    )
+  } catch {
+    return []
+  }
+}
+
+export function securityFromRow(row: VersionRow): SecuritySummary {
+  return {
+    status: row.security_status,
+    findings: parseFindings(row.security_findings),
+    analyzedAt: row.analyzed_at,
   }
 }
 
@@ -106,6 +159,7 @@ export function detailFromRows(
     plugin: pluginFromRow(row),
     manifest,
     readme: row.readme,
+    security: securityFromRow(chosen),
     versions: versions
       .slice()
       .sort((a, b) => b.created_at - a.created_at)
@@ -113,6 +167,8 @@ export function detailFromRows(
         version: item.version,
         createdAt: item.created_at,
         notes: item.notes,
+        securityStatus: item.security_status,
+        artifactSha256: item.artifact_sha256,
       })),
   }
 }

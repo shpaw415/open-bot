@@ -5,7 +5,8 @@ import {
   type PluginManifest,
   validatePluginManifest,
 } from "@open-bot/plugin-kit"
-import { getPluginRow, pluginFromRow } from "../../lib/db"
+import { addComment, getPluginRow, pluginFromRow } from "../../lib/db"
+import { findingsComment, reviewPublish } from "../../lib/security"
 
 function authorized(request: Request, token: string | undefined) {
   if (!token) return false
@@ -59,11 +60,19 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
   const readme = await fetchReadme(manifest.repo, tag, GITHUB_TOKEN)
   const now = Date.now()
   const existing = await getPluginRow(DB, manifest.id)
-  const status = existing?.status === "approved" ? "approved" : "pending"
+  const security = await reviewPublish(context.env, manifest, readme)
+  const status =
+    security.status === "pass"
+      ? "approved"
+      : security.status === "concern"
+        ? "rejected"
+        : existing?.status === "approved"
+          ? "approved"
+          : "pending"
   if (existing) {
     await DB.prepare(
       `UPDATE plugins SET name = ?2, description = ?3, author = ?4, repo = ?5, category = ?6,
-       tags = ?7, latest_version = ?8, status = ?9, readme = ?10, updated_at = ?11 WHERE id = ?1`,
+       tags = ?7, latest_version = ?8, status = ?9, security_status = ?10, readme = ?11, updated_at = ?12 WHERE id = ?1`,
     )
       .bind(
         manifest.id,
@@ -75,14 +84,15 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
         JSON.stringify(manifest.tags ?? []),
         manifest.version,
         status,
+        security.status,
         readme ?? existing.readme,
         now,
       )
       .run()
   } else {
     await DB.prepare(
-      `INSERT INTO plugins (id, name, description, author, repo, category, tags, latest_version, status, downloads, readme, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12)`,
+      `INSERT INTO plugins (id, name, description, author, repo, category, tags, latest_version, status, security_status, downloads, readme, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13)`,
     )
       .bind(
         manifest.id,
@@ -94,6 +104,7 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
         JSON.stringify(manifest.tags ?? []),
         manifest.version,
         status,
+        security.status,
         readme,
         now,
         now,
@@ -101,9 +112,16 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
       .run()
   }
   await DB.prepare(
-    `INSERT INTO plugin_versions (plugin_id, version, manifest, notes, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5)
-     ON CONFLICT (plugin_id, version) DO UPDATE SET manifest = excluded.manifest, notes = excluded.notes`,
+    `INSERT INTO plugin_versions (plugin_id, version, manifest, notes, security_status, security_findings, artifact_key, artifact_sha256, analyzed_at, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+     ON CONFLICT (plugin_id, version) DO UPDATE SET
+       manifest = excluded.manifest,
+       notes = excluded.notes,
+       security_status = excluded.security_status,
+       security_findings = excluded.security_findings,
+       artifact_key = excluded.artifact_key,
+       artifact_sha256 = excluded.artifact_sha256,
+       analyzed_at = excluded.analyzed_at`,
   )
     .bind(
       manifest.id,
@@ -112,14 +130,37 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
       typeof body.notes === "string"
         ? (body.notes as string).slice(0, 4000)
         : null,
+      security.status,
+      JSON.stringify(security.findings),
+      security.artifactKey,
+      security.artifactSha256,
+      now,
       now,
     )
     .run()
+  if (security.status === "concern" && security.findings.length > 0) {
+    await addComment(
+      DB,
+      manifest.id,
+      "security-bot",
+      "agent",
+      findingsComment(security.findings),
+    ).catch(() => undefined)
+  }
   const row = await getPluginRow(DB, manifest.id)
   return Response.json({
     ok: true,
     plugin: row ? pluginFromRow(row) : null,
     status,
     readme: readme !== null,
+    security: {
+      status: security.status,
+      severity: security.severity,
+      findings: security.findings,
+      issueUrl: security.issueUrl,
+      artifactKey: security.artifactKey,
+      artifactSha256: security.artifactSha256,
+      error: security.error,
+    },
   })
 }
