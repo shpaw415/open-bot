@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "bun run --cwd apps/web build && bun run --cwd apps/control dev",
     "dev:web": "bun run --cwd apps/web dev",
-    "typecheck": "bun run --cwd packages/ai typecheck && bun run --cwd packages/db typecheck && bun run --cwd apps/control typecheck && bun run --cwd apps/web typecheck",
+    "typecheck": "bun run --cwd packages/ai typecheck && bun run --cwd packages/db typecheck && bun run --cwd packages/plugin-kit typecheck && bun run --cwd apps/control typecheck && bun run --cwd apps/web typecheck && bun run --cwd apps/marketplace typecheck",
     "test": "bun test",
     "check": "biome check --write .",
     "images": "bash scripts/build-images.sh",

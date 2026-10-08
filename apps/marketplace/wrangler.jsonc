@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "open-bot-marketplace",
+  "pages_build_output_dir": ".frame-master/build",
+  "compatibility_date": "2026-02-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "BUN_VERSION": "1.3.13",
+    "SKIP_DEPENDENCY_INSTALL": "true"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "open-bot-marketplace",
+      "database_id": "fdef926d-637c-4d77-a9e3-af9ed14393d9"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "DYNAMIC_PAGE_KV",
+      "id": "6bc447065f274b4da2df5bfc80fa6964"
+    }
+  ]
+}
