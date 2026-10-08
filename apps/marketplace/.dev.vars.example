@@ -1,0 +1,4 @@
+# Local secrets for `wrangler pages dev` (bun dev). Copy to .dev.vars.
+MARKETPLACE_TOKEN=local-marketplace-token
+ADMIN_TOKEN=local-admin-token
+GITHUB_TOKEN=

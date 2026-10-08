@@ -10,5 +10,6 @@ apps/web/public/monaco
 .DS_Store
 apps/marketplace/.frame-master
 apps/marketplace/.env
+apps/marketplace/.dev.vars
 apps/marketplace/.wrangler
 apps/marketplace/functions
