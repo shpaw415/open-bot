@@ -1,6 +1,7 @@
 import type { CronJob, CronNotice, CronRunKind, Db } from "@open-bot/db"
 import { desktopPhase, endpoint, opencodeScript, startDesktop } from "./docker"
 import type { EventHub } from "./events"
+import { resolveDesktopProviders } from "./key-vault"
 import { personaSystem, resolvePersona } from "./personas"
 import { ensureThreadScreen, stopThreadScreen } from "./screens"
 
@@ -675,14 +676,16 @@ async function settleCronNotice(
     if (!account || account.disabled || !desktop || !headers)
       throw new Error("account unavailable")
     if (!desktopUp) {
+      const auth = resolveDesktopProviders(db, current.userId)
       await startDesktop(
         current.userId,
         desktop,
-        db.getVikingProvider(current.userId),
-        db.getImageProvider(current.userId),
-        db.getSystem1(current.userId),
-        db.getVideoProvider(current.userId),
-        db.getModel3dProvider(current.userId),
+        auth.viking,
+        auth.image,
+        auth.system1,
+        auth.video,
+        auth.model3d,
+        auth.chatKeys,
       )
       desktopUp = true
       await readRun()
@@ -764,14 +767,16 @@ export async function fireCronJob(
     if (!account || account.disabled) throw new Error("account unavailable")
     const desktop = db.desktop(job.userId)
     if (!desktop) throw new Error("desktop record missing")
+    const auth = resolveDesktopProviders(db, job.userId)
     await startDesktop(
       job.userId,
       desktop,
-      db.getVikingProvider(job.userId),
-      db.getImageProvider(job.userId),
-      db.getSystem1(job.userId),
-      db.getVideoProvider(job.userId),
-      db.getModel3dProvider(job.userId),
+      auth.viking,
+      auth.image,
+      auth.system1,
+      auth.video,
+      auth.model3d,
+      auth.chatKeys,
     )
     db.touchDesktop(job.userId)
     const headers = {

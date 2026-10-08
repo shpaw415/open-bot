@@ -10,11 +10,13 @@ import {
   type Model3dProvider,
   type System1Provider,
   type User,
+  type UserKeyFields,
   type VideoProvider,
   type VikingProvider,
   vikingProviderReady,
 } from "@open-bot/db"
 import { handleAdmin } from "./admin"
+import { handleBackupApi } from "./backup-api"
 import {
   cronModelFields,
   cronPersonaFields,
@@ -26,16 +28,19 @@ import {
 } from "./cron"
 import {
   blenderStatus,
+  type ChatKeyEntry,
   desktopPhase,
   endpoint,
   isRunning,
   opencodeExec,
   restartOpencode,
   spawnLogin,
+  spawnProjectShell,
   startDesktop,
   startError,
   stopDesktop,
   syncBlenderMcp,
+  syncChatAuth,
   syncImageAuth,
   syncModel3dAuth,
   syncSystem1,
@@ -54,6 +59,24 @@ import {
 } from "./image-providers"
 import { handleImprovementPost } from "./improvements"
 import { JOINED_REPLY, prepareJoinedPrompt } from "./join-file"
+import {
+  fillImageFromVault,
+  fillModel3dFromVault,
+  fillSystem1FromVault,
+  fillVideoFromVault,
+  imageVaultSlug,
+  keyVaultFieldError,
+  keyVaultPublic,
+  keyVaultSpecById,
+  model3dVaultSlug,
+  resolveDesktopProviders,
+  resolveImageProvider,
+  resolveModel3dProvider,
+  resolveSystem1,
+  resolveVideoProvider,
+  system1VaultSlug,
+  videoVaultSlug,
+} from "./key-vault"
 import { handleLlm } from "./llm"
 import {
   model3dAuthReady,
@@ -69,6 +92,7 @@ import {
   personaSystem,
   resolvePersona,
 } from "./personas"
+import { handlePlugins } from "./plugins"
 import {
   projectDir,
   projectName,
@@ -76,6 +100,8 @@ import {
   slugifyName,
 } from "./projects"
 import { resolveReferenceLine } from "./references"
+import { startReset } from "./reset"
+import { ResetApprovals } from "./reset-approvals"
 import {
   ensureThreadScreen,
   holdSystemLine,
@@ -137,9 +163,19 @@ type LoginSocket = {
   rows: number
 }
 
+type TermSocket = {
+  kind: "term"
+  userId: string
+  path: string
+  cols: number
+  rows: number
+  proc: ReturnType<typeof spawnProjectShell> | null
+  done: boolean
+}
+
 type EventsSocket = EventsSocketData
 
-type SocketData = ProxySocket | LoginSocket | EventsSocket
+type SocketData = ProxySocket | LoginSocket | TermSocket | EventsSocket
 
 type LoginSession = {
   id: string
@@ -156,6 +192,9 @@ type LoginSession = {
 }
 
 const logins = new Map<string, LoginSession>()
+
+const approvals = new ResetApprovals()
+setInterval(() => approvals.sweep(), 60_000).unref?.()
 
 const MAX_PROJECT_FILE_CHARS = 4 * 1024 * 1024
 
@@ -358,6 +397,111 @@ async function applyModel3dAuth(userId: string, value: Model3dProvider) {
   }
 }
 
+async function applyVaultChange(
+  user: User,
+  db: Db,
+  changed: { slug: string; key: string },
+  revoke: ChatKeyEntry[] = [],
+) {
+  const applied: Record<string, unknown> = {}
+  const image = resolveImageProvider(db, user.id)
+  if (image && imageVaultSlug(image.value.provider) === changed.slug) {
+    try {
+      applied.image = await syncImageAuth(
+        user.id,
+        image.value.apiKey
+          ? {
+              provider: image.value.provider,
+              accountId: image.value.accountId,
+              token: image.value.apiKey,
+              model: image.value.model,
+            }
+          : null,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing cf-ai setup")) applied.imageError = message
+    }
+  }
+  const video = resolveVideoProvider(db, user.id)
+  if (video && videoVaultSlug(video.value.provider) === changed.slug) {
+    try {
+      applied.video = await syncVideoAuth(
+        user.id,
+        video.value.apiKey
+          ? {
+              provider: video.value.provider,
+              accountId: video.value.accountId,
+              token: video.value.apiKey,
+              model: video.value.model,
+            }
+          : null,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing video setup")) applied.videoError = message
+    }
+  }
+  const model3d = resolveModel3dProvider(db, user.id)
+  if (model3d && model3dVaultSlug(model3d.value.provider) === changed.slug) {
+    try {
+      applied.model3d = await syncModel3dAuth(
+        user.id,
+        model3d.value.apiKey
+          ? {
+              provider: model3d.value.provider,
+              accountId: model3d.value.accountId,
+              token: model3d.value.apiKey,
+              model: model3d.value.model,
+            }
+          : null,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing model3d setup")) {
+        applied.model3dError = message
+      }
+    }
+  }
+  const system1 = resolveSystem1(db, user.id)
+  if (system1 && system1VaultSlug(system1.value.provider) === changed.slug) {
+    const spec = system1ProviderById(system1.value.provider)
+    const usable = Boolean(system1.value.apiKey) || !spec?.keyRequired
+    try {
+      applied.system1 = await syncSystem1(
+        user.id,
+        usable ? system1.value : null,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing system1 setup")) {
+        applied.system1Error = message
+      }
+    }
+  }
+  if (keyVaultSpecById(changed.slug)?.chatProvider) {
+    const desktop = db.desktop(user.id)
+    if (desktop) {
+      try {
+        const chat = await syncChatAuth(
+          user.id,
+          basic(desktop.opencodePassword).authorization,
+          changed.key ? [{ slug: changed.slug, key: changed.key }] : [],
+          revoke,
+        )
+        applied.chat = chat
+        if (chat.applied) await restartOpencode(user.id)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ""
+        if (!message.includes("missing chat setup")) {
+          applied.chatError = message
+        }
+      }
+    }
+  }
+  return applied
+}
+
 async function skillsClient(user: User, db: Db) {
   const desktop = await ensure(user, db)
   const base = await endpoint(user.id, "viking", 1933)
@@ -370,14 +514,16 @@ async function ensure(user: User, db: Db) {
   }
   const desktop = db.desktop(user.id)
   if (!desktop) throw new Error("desktop record missing")
+  const auth = resolveDesktopProviders(db, user.id)
   await startDesktop(
     user.id,
     desktop,
-    db.getVikingProvider(user.id),
-    db.getImageProvider(user.id),
-    db.getSystem1(user.id),
-    db.getVideoProvider(user.id),
-    db.getModel3dProvider(user.id),
+    auth.viking,
+    auth.image,
+    auth.system1,
+    auth.video,
+    auth.model3d,
+    auth.chatKeys,
   )
   db.touchDesktop(user.id)
   return desktop
@@ -453,6 +599,12 @@ export function createServer(
         ) {
           return await loginTtyUpgrade(req, url, db, server)
         }
+        if (
+          req.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+          url.pathname.startsWith("/api/projects/")
+        ) {
+          return await termUpgrade(req, url, db, server)
+        }
         if (url.pathname.startsWith("/api/"))
           return await api(req, url, db, hub)
         if (url.pathname.startsWith("/desktop/"))
@@ -475,6 +627,10 @@ export function createServer(
           openLogin(ws)
           return
         }
+        if (ws.data.kind === "term") {
+          openTerm(ws)
+          return
+        }
         const data = ws.data
         const upstream = new WebSocket(data.target)
         upstream.binaryType = "arraybuffer"
@@ -494,6 +650,10 @@ export function createServer(
           writeLogin(ws, message)
           return
         }
+        if (ws.data.kind === "term") {
+          writeTerm(ws, message)
+          return
+        }
         const upstream = ws.data.upstream
         if (!upstream || upstream.readyState !== WebSocket.OPEN) {
           ws.data.queue.push(message)
@@ -508,6 +668,10 @@ export function createServer(
         }
         if (ws.data.kind === "login") {
           closeLogin(ws)
+          return
+        }
+        if (ws.data.kind === "term") {
+          closeTerm(ws)
           return
         }
         ws.data.upstream?.close()
@@ -570,58 +734,91 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     const model = String(body.model ?? "").trim()
     if (!model) return json({ error: "model is required" }, 400)
     if (kind === "image") {
-      const current = db.getImageProvider(agent.id)
-      if (!current) return json({ error: "no image provider configured" }, 400)
-      const next = { ...current, model }
-      db.setImageProvider(agent.id, next)
+      const resolved = resolveImageProvider(db, agent.id)
+      if (!resolved) return json({ error: "no image provider configured" }, 400)
+      const raw = db.getRawImageProvider(agent.id)
+      db.setImageProvider(agent.id, { ...(raw ?? resolved.value), model })
+      const next = { ...resolved.value, model }
       return json({
         provider: next.provider,
         model: next.model,
+        keySource: resolved.keySource,
         ...(await applyImageAuth(agent.id, next)),
       })
     }
     if (kind === "video") {
-      const current = db.getVideoProvider(agent.id)
-      if (!current) return json({ error: "no video provider configured" }, 400)
+      const resolved = resolveVideoProvider(db, agent.id)
+      if (!resolved) return json({ error: "no video provider configured" }, 400)
       if (videoModelLooksLikeImage(model)) {
         return json(
           { error: `${model} is an image model, not a video model` },
           400,
         )
       }
-      const next = { ...current, model }
-      db.setVideoProvider(agent.id, next)
+      const raw = db.getRawVideoProvider(agent.id)
+      db.setVideoProvider(agent.id, { ...(raw ?? resolved.value), model })
+      const next = { ...resolved.value, model }
       return json({
         provider: next.provider,
         model: next.model,
+        keySource: resolved.keySource,
         ...(await applyVideoAuth(agent.id, next)),
       })
     }
     if (kind === "model3d") {
-      const current = db.getModel3dProvider(agent.id)
-      if (!current) {
+      const resolved = resolveModel3dProvider(db, agent.id)
+      if (!resolved) {
         return json({ error: "no 3d model provider configured" }, 400)
       }
-      const next = { ...current, model }
-      db.setModel3dProvider(agent.id, next)
+      const raw = db.getRawModel3dProvider(agent.id)
+      db.setModel3dProvider(agent.id, { ...(raw ?? resolved.value), model })
+      const next = { ...resolved.value, model }
       return json({
         provider: next.provider,
         model: next.model,
+        keySource: resolved.keySource,
         ...(await applyModel3dAuth(agent.id, next)),
       })
     }
     return json({ error: "kind must be image, video, or model3d" }, 400)
+  }
+  const isBackupPath =
+    url.pathname.startsWith("/api/backup") ||
+    url.pathname.startsWith("/api/reset-requests") ||
+    url.pathname.startsWith("/api/reset-ops") ||
+    url.pathname === "/api/desktop/reset" ||
+    url.pathname === "/api/factory-reset"
+  if (isBackupPath) {
+    const agent = userFromLlmToken(req, db)
+    if (agent) {
+      const handled = await handleBackupApi(
+        req,
+        url,
+        db,
+        hub,
+        { actor: agent, scope: "agent" },
+        approvals,
+      )
+      if (handled) return handled
+    }
   }
   const isCronPath =
     url.pathname === "/api/cron" || url.pathname.startsWith("/api/cron/")
   const isPersonaPath =
     url.pathname === "/api/personas" ||
     url.pathname.startsWith("/api/personas/")
-  if (isCronPath || isPersonaPath) {
+  const isPluginPath =
+    url.pathname === "/api/plugins" || url.pathname.startsWith("/api/plugins/")
+  if (isCronPath || isPersonaPath || isPluginPath) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
       if (isPersonaPath) {
         const handled = handlePersonas(req, url, db, agent)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
+      if (isPluginPath) {
+        const handled = handlePlugins(req, url, db, agent, hub)
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -635,7 +832,36 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
+  if (isPluginPath) {
+    const handled = handlePlugins(req, url, db, user, hub)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
   if (isCronPath) return handleCron(req, url, db, user, hub)
+  if (isBackupPath) {
+    const handled = await handleBackupApi(
+      req,
+      url,
+      db,
+      hub,
+      { actor: user, scope: user.role === "admin" ? "admin" : "user" },
+      approvals,
+    )
+    if (handled) return handled
+  }
+  const adminResetMatch = url.pathname.match(
+    /^\/api\/admin\/users\/([^/]+)\/reset-desktop$/,
+  )
+  if (adminResetMatch && req.method === "POST") {
+    if (user.role !== "admin") return json({ error: "admin only" }, 403)
+    const target = db.userById(decodeURIComponent(adminResetMatch[1] ?? ""))
+    if (!target) return json({ error: "user not found" }, 404)
+    const body = await readJson(req)
+    const op = startReset(db, hub, target.id, {
+      backup: body.backup !== false,
+    })
+    return json({ opId: op.id }, 202)
+  }
   if (url.pathname === "/api/auth/credentials" && req.method === "POST") {
     if (!user.mustChangePassword)
       return json({ error: "credentials already set" }, 400)
@@ -700,14 +926,16 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     if ((await desktopPhase(user.id)) !== "running") {
       const desktop = db.desktop(user.id)
       if (!desktop) throw new Error("desktop record missing")
+      const auth = resolveDesktopProviders(db, user.id)
       void startDesktop(
         user.id,
         desktop,
-        db.getVikingProvider(user.id),
-        db.getImageProvider(user.id),
-        db.getSystem1(user.id),
-        db.getVideoProvider(user.id),
-        db.getModel3dProvider(user.id),
+        auth.viking,
+        auth.image,
+        auth.system1,
+        auth.video,
+        auth.model3d,
+        auth.chatKeys,
       ).catch(() => {})
       db.touchDesktop(user.id)
     }
@@ -777,6 +1005,71 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     await setScreenHold(user.id, root, false)
     return json({ sessionId: root, held: false })
   }
+  if (url.pathname === "/api/keys" && req.method === "GET") {
+    const entries = db.getUserKeys(user.id).map((key) => ({
+      slug: key.slug,
+      accountId: key.accountId,
+      gatewayId: key.gatewayId,
+      gatewaySlug: key.gatewaySlug,
+      baseUrl: key.baseUrl,
+      hasKey: key.apiKey !== "",
+      hasGatewayToken: key.gatewayToken !== "",
+      updatedAt: key.updatedAt,
+    }))
+    return json({
+      catalog: keyVaultPublic(),
+      entries,
+      sources: {
+        image: resolveImageProvider(db, user.id)?.keySource ?? null,
+        video: resolveVideoProvider(db, user.id)?.keySource ?? null,
+        model3d: resolveModel3dProvider(db, user.id)?.keySource ?? null,
+        system1: resolveSystem1(db, user.id)?.keySource ?? null,
+      },
+    })
+  }
+  if (url.pathname === "/api/keys" && req.method === "PUT") {
+    const body = await readJson(req)
+    const slug = String(body.slug ?? "").trim()
+    const spec = keyVaultSpecById(slug)
+    if (!spec) return json({ error: "unknown key entry" }, 400)
+    const current = db.getUserKey(user.id, slug)
+    const field = (name: keyof UserKeyFields) =>
+      String(body[name] ?? "").trim() || current?.[name] || ""
+    const fields: UserKeyFields = {
+      apiKey: field("apiKey"),
+      accountId: field("accountId"),
+      gatewayId: field("gatewayId"),
+      gatewayToken: field("gatewayToken"),
+      gatewaySlug: field("gatewaySlug"),
+      baseUrl: field("baseUrl"),
+    }
+    for (const name of ["gatewayId", "gatewaySlug"] as const) {
+      const error = keyVaultFieldError(slug, name, fields[name])
+      if (error) return json({ error }, 400)
+    }
+    if (Object.values(fields).every((value) => value === "")) {
+      return json({ error: "at least one field is required" }, 400)
+    }
+    db.setUserKey(user.id, slug, fields)
+    const applied = await applyVaultChange(user, db, {
+      slug,
+      key: fields.apiKey,
+    })
+    return json({ ok: true, applied })
+  }
+  if (url.pathname === "/api/keys" && req.method === "DELETE") {
+    const slug = url.searchParams.get("slug") ?? ""
+    const spec = keyVaultSpecById(slug)
+    if (!spec) return json({ error: "unknown key entry" }, 400)
+    const current = db.getUserKey(user.id, slug)
+    db.clearUserKey(user.id, slug)
+    const revoke: ChatKeyEntry[] =
+      spec.chatProvider && current?.apiKey
+        ? [{ slug, key: current.apiKey }]
+        : []
+    const applied = await applyVaultChange(user, db, { slug, key: "" }, revoke)
+    return json({ ok: true, applied })
+  }
   if (url.pathname === "/api/viking" && req.method === "GET") {
     const saved = db.getVikingProvider(user.id)
     return json({
@@ -820,11 +1113,12 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       accountId: saved?.accountId ?? "",
       model: saved?.model ?? selected?.defaultModel ?? "",
       hasKey: Boolean(saved?.apiKey),
+      keySource: resolveImageProvider(db, user.id)?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/image" && req.method === "PUT") {
     const body = await readJson(req)
-    const current = db.getImageProvider(user.id)
+    const current = db.getRawImageProvider(user.id)
     const spec = imageProviderById(String(body.provider ?? "").trim())
     if (!spec) return json({ error: "unsupported image provider" }, 400)
     const typedKey = String(body.apiKey ?? "").trim()
@@ -834,14 +1128,19 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
       model: String(body.model ?? "").trim() || spec.defaultModel,
     }
-    if (!imageAuthReady(next)) {
+    const vault = db.getUserKey(user.id, imageVaultSlug(spec.id))
+    if (!imageAuthReady(fillImageFromVault(next, vault))) {
       return json(
         { error: "the fields required by this provider are missing" },
         400,
       )
     }
     db.setImageProvider(user.id, next)
-    return json(await applyImageAuth(user.id, next))
+    const resolved = resolveImageProvider(db, user.id)
+    return json({
+      keySource: resolved?.keySource ?? null,
+      ...(await applyImageAuth(user.id, resolved?.value ?? next)),
+    })
   }
   if (url.pathname === "/api/image" && req.method === "DELETE") {
     db.clearImageProvider(user.id)
@@ -870,11 +1169,12 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       accountId: saved?.accountId ?? "",
       model: saved?.model ?? selected?.defaultModel ?? "",
       hasKey: Boolean(saved?.apiKey),
+      keySource: resolveVideoProvider(db, user.id)?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/video" && req.method === "PUT") {
     const body = await readJson(req)
-    const current = db.getVideoProvider(user.id)
+    const current = db.getRawVideoProvider(user.id)
     const spec = videoProviderById(String(body.provider ?? "").trim())
     if (!spec) return json({ error: "unsupported video provider" }, 400)
     const typedKey = String(body.apiKey ?? "").trim()
@@ -884,7 +1184,9 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
       model: String(body.model ?? "").trim() || spec.defaultModel,
     }
-    if (!videoAuthReady(next)) {
+    const vault = db.getUserKey(user.id, videoVaultSlug(spec.id))
+    const resolvedNext = fillVideoFromVault(next, vault)
+    if (!videoAuthReady(resolvedNext)) {
       return json(
         { error: "the fields required by this provider are missing" },
         400,
@@ -899,7 +1201,11 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       )
     }
     db.setVideoProvider(user.id, next)
-    return json(await applyVideoAuth(user.id, next))
+    const resolved = resolveVideoProvider(db, user.id)
+    return json({
+      keySource: resolved?.keySource ?? null,
+      ...(await applyVideoAuth(user.id, resolved?.value ?? next)),
+    })
   }
   if (url.pathname === "/api/video" && req.method === "DELETE") {
     db.clearVideoProvider(user.id)
@@ -938,11 +1244,12 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       accountId: saved?.accountId ?? "",
       model: saved?.model ?? selected?.defaultModel ?? "",
       hasKey: Boolean(saved?.apiKey),
+      keySource: resolveModel3dProvider(db, user.id)?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/model3d" && req.method === "PUT") {
     const body = await readJson(req)
-    const current = db.getModel3dProvider(user.id)
+    const current = db.getRawModel3dProvider(user.id)
     const spec = model3dProviderById(String(body.provider ?? "").trim())
     if (!spec) return json({ error: "unsupported 3d model provider" }, 400)
     const typedKey = String(body.apiKey ?? "").trim()
@@ -952,14 +1259,19 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
       model: String(body.model ?? "").trim() || spec.defaultModel,
     }
-    if (!model3dAuthReady(next)) {
+    const vault = db.getUserKey(user.id, model3dVaultSlug(spec.id))
+    if (!model3dAuthReady(fillModel3dFromVault(next, vault))) {
       return json(
         { error: "the fields required by this provider are missing" },
         400,
       )
     }
     db.setModel3dProvider(user.id, next)
-    return json(await applyModel3dAuth(user.id, next))
+    const resolved = resolveModel3dProvider(db, user.id)
+    return json({
+      keySource: resolved?.keySource ?? null,
+      ...(await applyModel3dAuth(user.id, resolved?.value ?? next)),
+    })
   }
   if (url.pathname === "/api/model3d" && req.method === "DELETE") {
     db.clearModel3dProvider(user.id)
@@ -982,6 +1294,7 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     const saved = db.getSystem1(user.id)
     const selected =
       system1ProviderById(saved?.provider ?? "") ?? system1Providers[0]
+    const resolved = resolveSystem1(db, user.id)
     return json({
       providers: system1ProviderPublic(),
       provider: saved?.provider ?? selected?.id ?? "",
@@ -992,6 +1305,7 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       slug: saved?.slug ?? "jev",
       hasKey: Boolean(saved?.apiKey),
       hasGatewayToken: Boolean(saved?.gatewayToken),
+      keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/system1" && req.method === "PUT") {
@@ -1028,11 +1342,17 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       gatewayId,
       slug,
     }
-    if (spec.keyRequired && !next.apiKey) {
+    const vault = db.getUserKey(user.id, system1VaultSlug(spec.id))
+    const resolvedNext = fillSystem1FromVault(next, vault)
+    if (spec.keyRequired && !resolvedNext.apiKey) {
       return json({ error: "API key is required" }, 400)
     }
     db.setSystem1(user.id, next)
-    return json(await applySystem1(user.id, next))
+    const resolved = resolveSystem1(db, user.id)
+    return json({
+      keySource: resolved?.keySource ?? null,
+      ...(await applySystem1(user.id, resolved?.value ?? next)),
+    })
   }
   if (url.pathname === "/api/system1" && req.method === "DELETE") {
     db.clearSystem1(user.id)
@@ -1053,9 +1373,12 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
   }
   if (url.pathname === "/api/projects" && req.method === "GET") {
     return json({
-      projects: db
-        .projects(user.id)
-        .map(({ id, name, path, createdAt }) => ({ id, name, path, createdAt })),
+      projects: db.projects(user.id).map(({ id, name, path, createdAt }) => ({
+        id,
+        name,
+        path,
+        createdAt,
+      })),
     })
   }
   if (url.pathname === "/api/projects" && req.method === "POST") {
@@ -1094,7 +1417,9 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     if (!db.deleteProject(id, user.id)) return json({ error: "not found" }, 404)
     return json({ ok: true })
   }
-  const projectRef = url.pathname.match(/^\/api\/projects\/([^/]+)\/(files|file)$/)
+  const projectRef = url.pathname.match(
+    /^\/api\/projects\/([^/]+)\/(files|file)$/,
+  )
   if (projectRef && (req.method === "GET" || req.method === "PUT")) {
     const project = db.projectById(
       decodeURIComponent(projectRef[1] ?? ""),
@@ -1144,7 +1469,11 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
         return json({ error: "not found" }, 404)
       if (body.content.length > MAX_PROJECT_FILE_CHARS)
         return json({ error: "file is too large to open" }, 413)
-      return json({ type: body.type, encoding: body.encoding, content: body.content })
+      return json({
+        type: body.type,
+        encoding: body.encoding,
+        content: body.content,
+      })
     }
     if (kind === "file" && req.method === "PUT") {
       const path = projectSubpath(
@@ -1856,6 +2185,104 @@ function closeLogin(ws: Bun.ServerWebSocket<SocketData>) {
     // already closed
   }
   logins.delete(session.id)
+}
+
+async function termUpgrade(
+  req: Request,
+  url: URL,
+  db: Db,
+  server: Bun.Server<SocketData>,
+) {
+  const user = userFrom(req, db)
+  if (!user) return json({ error: "unauthorized" }, 401)
+  const match = url.pathname.match(/^\/api\/projects\/([^/]+)\/terminal$/)
+  if (!match) return json({ error: "not found" }, 404)
+  const project = db.projectById(decodeURIComponent(match[1] ?? ""), user.id)
+  if (!project) return json({ error: "not found" }, 404)
+  await ensure(user, db)
+  db.touchDesktop(user.id)
+  const ok = server.upgrade(req, {
+    data: {
+      kind: "term",
+      userId: user.id,
+      path: project.path,
+      cols: ttySizeOr(url.searchParams.get("cols"), 80),
+      rows: ttySizeOr(url.searchParams.get("rows"), 24),
+      proc: null,
+      done: false,
+    },
+  })
+  return ok ? undefined : new Response("upgrade failed", { status: 400 })
+}
+
+function openTerm(ws: Bun.ServerWebSocket<SocketData>) {
+  const data = ws.data
+  if (data.kind !== "term") return
+  try {
+    data.proc = spawnProjectShell(data.userId, {
+      cwd: data.path,
+      cols: data.cols,
+      rows: data.rows,
+      onData(chunk) {
+        try {
+          ws.send(chunk)
+        } catch {
+          // socket already closed
+        }
+      },
+    })
+  } catch (error) {
+    data.done = true
+    ws.send(
+      ttyExitFrame(1, error instanceof Error ? error.message : "shell failed"),
+    )
+    ws.close()
+    return
+  }
+  const proc = data.proc
+  if (!proc) return
+  void proc.exited.then((code) => {
+    if (data.done) return
+    data.done = true
+    try {
+      ws.send(ttyExitFrame(code))
+      ws.close()
+    } catch {
+      // socket already closed
+    }
+  })
+}
+
+function writeTerm(
+  ws: Bun.ServerWebSocket<SocketData>,
+  message: string | Buffer,
+) {
+  const data = ws.data
+  if (data.kind !== "term") return
+  const terminal = data.proc?.terminal
+  if (!terminal || data.done) return
+  if (typeof message === "string") {
+    const resize = parseTtyControl(message)
+    if (resize) terminal.resize(resize.cols, resize.rows)
+    return
+  }
+  terminal.write(new Uint8Array(message))
+}
+
+function closeTerm(ws: Bun.ServerWebSocket<SocketData>) {
+  const data = ws.data
+  if (data.kind !== "term") return
+  data.done = true
+  try {
+    data.proc?.kill()
+  } catch {
+    // already exited
+  }
+  try {
+    data.proc?.terminal.close()
+  } catch {
+    // already closed
+  }
 }
 
 async function finishLogin(session: LoginSession) {

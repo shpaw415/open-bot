@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@open-bot/ai": "workspace:*",
-    "@open-bot/db": "workspace:*"
+    "@open-bot/db": "workspace:*",
+    "@open-bot/plugin-kit": "workspace:*"
   }
 }

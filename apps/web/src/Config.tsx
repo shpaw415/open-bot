@@ -7,19 +7,23 @@ import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api, type Me } from "./api"
+import { Backup } from "./Backup"
 import { BlenderMcp } from "./BlenderMcp"
 import { ConfigSection } from "./ConfigSection"
 import { CustomSkills } from "./CustomSkills"
 import { useMobile } from "./hooks"
 import { ImageProvider } from "./ImageProvider"
 import {
+  BackupIcon,
   ChatIcon,
   ExtensionIcon,
   ImageIcon,
   MemoryIcon,
   NavigationIcon,
   PersonIcon,
+  VpnKeyIcon,
 } from "./icons"
+import { KeyVault } from "./KeyVault"
 import { Model3dProvider } from "./Model3dProvider"
 import { Personalities } from "./Personalities"
 import { System1 } from "./System1"
@@ -28,7 +32,15 @@ import { VikingModels } from "./VikingModels"
 
 type Model = { providerID: string; modelID: string; name?: string }
 
-type ConfigTab = "chat" | "memory" | "nav" | "media" | "personas" | "skills"
+type ConfigTab =
+  | "keys"
+  | "chat"
+  | "memory"
+  | "nav"
+  | "media"
+  | "personas"
+  | "skills"
+  | "backup"
 
 function DefaultModelSection({
   me,
@@ -195,9 +207,9 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
         <Stack spacing={0.25}>
           <Typography variant="h6">Configuration</Typography>
           <Typography variant="body2" color="textSecondary">
-            Chat defaults, memory, navigation, media, personas, and skills for
-            this desktop. Chat models themselves are connected on the Providers
-            page.
+            Shared provider keys, chat defaults, memory, navigation, media,
+            personas, and skills for this desktop. Chat models themselves are
+            connected on the Providers page.
           </Typography>
         </Stack>
         <Tabs
@@ -205,13 +217,16 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
           variant="scrollable"
           onChange={(_event, value) => setTab(value as ConfigTab)}
         >
+          <Tab label="Keys" value="keys" icon={<VpnKeyIcon />} />
           <Tab label="Chat" value="chat" icon={<ChatIcon />} />
           <Tab label="Memory" value="memory" icon={<MemoryIcon />} />
           <Tab label="Navigation" value="nav" icon={<NavigationIcon />} />
           <Tab label="Media" value="media" icon={<ImageIcon />} />
           <Tab label="Personas" value="personas" icon={<PersonIcon />} />
           <Tab label="Skills" value="skills" icon={<ExtensionIcon />} />
+          <Tab label="Backup" value="backup" icon={<BackupIcon />} />
         </Tabs>
+        {tab === "keys" ? <KeyVault /> : null}
         {tab === "chat" ? (
           <DefaultModelSection me={me} onChanged={onChanged} />
         ) : null}
@@ -223,6 +238,7 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
         {tab === "media" ? <BlenderMcp /> : null}
         {tab === "personas" ? <Personalities /> : null}
         {tab === "skills" ? <CustomSkills /> : null}
+        {tab === "backup" ? <Backup me={me} /> : null}
       </Stack>
     </Box>
   )

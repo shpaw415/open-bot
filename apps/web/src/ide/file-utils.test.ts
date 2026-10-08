@@ -57,6 +57,31 @@ describe("parse entries", () => {
     expect(entries[2]?.isDir).toBe(false)
   })
 
+  test("prefers absolute and ignores relative listed paths", () => {
+    const entries = parseEntries(
+      [
+        {
+          name: "src",
+          path: "my-app/src/",
+          absolute: `${ROOT}/src`,
+          type: "directory",
+        },
+        {
+          name: "hello.ts",
+          path: "my-app/hello.ts",
+          absolute: `${ROOT}/hello.ts`,
+          type: "file",
+        },
+      ],
+      ROOT,
+    )
+    expect(entries.map((entry) => entry.path)).toEqual([
+      `${ROOT}/src`,
+      `${ROOT}/hello.ts`,
+    ])
+    expect(entries[0]?.isDir).toBe(true)
+  })
+
   test("fills name from path and rejects junk shapes", () => {
     const entries = parseEntries(
       [{ path: `${ROOT}/only-path.md` }, {}, { type: "directory" }],
@@ -116,7 +141,9 @@ describe("decode content", () => {
   })
 
   test("png binary payload becomes a data url", () => {
-    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const bytes = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ])
     let binary = ""
     for (const byte of bytes) binary += String.fromCharCode(byte)
     const body = {
@@ -133,9 +160,13 @@ describe("decode content", () => {
   })
 
   test("unknown binary and junk shapes", () => {
-    expect(decodeContent("x.zip", { type: "binary", encoding: "base64", content: "aGVsbG8=" })).toEqual(
-      { kind: "binary" },
-    )
+    expect(
+      decodeContent("x.zip", {
+        type: "binary",
+        encoding: "base64",
+        content: "aGVsbG8=",
+      }),
+    ).toEqual({ kind: "binary" })
     expect(decodeContent("x", null)).toBeNull()
     expect(decodeContent("x", {})).toBeNull()
   })

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import {
+  PROJECTS_ROOT,
   projectDir,
   projectName,
-  PROJECTS_ROOT,
   projectSubpath,
   slugifyName,
 } from "./projects"
@@ -57,9 +57,7 @@ describe("project subpath", () => {
     expect(projectSubpath(root, `${root}/50% off.txt`)).toBe(
       `${root}/50% off.txt`,
     )
-    expect(projectSubpath(root, `${root}/README.md`)).toBe(
-      `${root}/README.md`,
-    )
+    expect(projectSubpath(root, `${root}/README.md`)).toBe(`${root}/README.md`)
   })
 })
 

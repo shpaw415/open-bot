@@ -16,6 +16,8 @@ const FORWARDED = new Set([
   "message.updated",
   "message.removed",
   "message.part.updated",
+  "file.edited",
+  "file.watcher.updated",
 ])
 
 const PING_MS = 30_000

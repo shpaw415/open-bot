@@ -78,6 +78,8 @@ describe("sse parser", () => {
     expect(forwardable("message.updated")).toBe(true)
     expect(forwardable("server.connected")).toBe(false)
     expect(forwardable(undefined)).toBe(false)
+    expect(forwardable("file.watcher.updated")).toBe(true)
+    expect(forwardable("file.edited")).toBe(true)
   })
 })
 

@@ -711,3 +711,95 @@ describe("personas", () => {
     expect(db.threadPersona("a", "ses")).toBeNull()
   })
 })
+
+describe("plugin store", () => {
+  function installed(
+    partial: Partial<
+      Parameters<ReturnType<typeof openDatabase>["createInstalledPlugin"]>[0]
+    > &
+      Pick<
+        Parameters<ReturnType<typeof openDatabase>["createInstalledPlugin"]>[0],
+        "id" | "userId" | "pluginId"
+      >,
+  ) {
+    return {
+      version: "1.0.0",
+      manifest: "{}",
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+      ...partial,
+    }
+  }
+
+  test("stores, toggles, and uninstalls plugins per user", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    db.createInstalledPlugin(
+      installed({ id: "r1", userId: "a", pluginId: "weather-pro" }),
+    )
+    expect(db.installedPlugins("a")).toHaveLength(1)
+    expect(db.installedPlugins("b")).toHaveLength(0)
+    expect(db.installedPlugin("a", "weather-pro")?.version).toBe("1.0.0")
+    expect(db.installedPlugin("a", "weather-pro")?.applied.skills).toEqual([])
+
+    expect(
+      db.setInstalledPluginEnabled("a", "weather-pro", false)?.enabled,
+    ).toBe(false)
+    db.setInstalledPluginApplied("a", "weather-pro", {
+      personaIds: ["p1"],
+      cronJobIds: [],
+      skills: ["weather"],
+      keys: ["weatherapi"],
+      tools: ["weather"],
+      opencode: false,
+    })
+    expect(db.installedPlugin("a", "weather-pro")?.applied.personaIds).toEqual([
+      "p1",
+    ])
+    const updated = db.updateInstalledPlugin("a", "weather-pro", {
+      version: "1.1.0",
+      manifest: "{}",
+      readme: "# hi",
+    })
+    expect(updated?.version).toBe("1.1.0")
+    expect(updated?.readme).toBe("# hi")
+
+    db.setPluginSetting("a", "weather-pro", "units", "metric")
+    expect(db.pluginSettings("a", "weather-pro")[0]?.value).toBe("metric")
+    db.setPluginSetting("a", "weather-pro", "units", "imperial")
+    expect(db.pluginSettings("a", "weather-pro")[0]?.value).toBe("imperial")
+    expect(db.pluginSettings("b", "weather-pro")).toHaveLength(0)
+
+    expect(db.deleteInstalledPlugin("a", "nope")).toBe(false)
+    expect(db.deleteInstalledPlugin("a", "weather-pro")).toBe(true)
+    expect(db.installedPlugins("a")).toHaveLength(0)
+    expect(db.pluginSettings("a", "weather-pro")).toHaveLength(0)
+  })
+
+  test("keeps app settings and cleans up plugins on user delete", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    expect(db.getSetting("plugin_install_policy")).toBeNull()
+    db.setSetting("plugin_install_policy", "auto")
+    expect(db.getSetting("plugin_install_policy")).toBe("auto")
+    db.setSetting("plugin_install_policy", "manual")
+    expect(db.getSetting("plugin_install_policy")).toBe("manual")
+
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createInstalledPlugin(
+      installed({ id: "r1", userId: "a", pluginId: "weather-pro" }),
+    )
+    db.setPluginSetting("a", "weather-pro", "units", "metric")
+    db.deleteUser("a")
+    expect(db.installedPlugins("a")).toHaveLength(0)
+    expect(db.pluginSettings("a", "weather-pro")).toHaveLength(0)
+    expect(db.getSetting("plugin_install_policy")).toBe("manual")
+  })
+})

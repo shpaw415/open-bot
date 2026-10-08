@@ -42,6 +42,21 @@ type ThemeModeContextValue = {
   setMode: (mode: ThemeMode) => void
 }
 
+// The mui-lite default secondary is violet; teal sits better next to the
+// blue primary and the IDE's VSCode-style blues.
+const SECONDARY = {
+  "bg-secondary": {
+    light: "#4db6ac",
+    dark: "#26a69a",
+    main: "#009688",
+  },
+  "text-secondary": {
+    light: "#00897b",
+    dark: "#4db6ac",
+    main: "#009688",
+  },
+}
+
 const ThemeModeContext = createContext<ThemeModeContextValue>({
   mode: "light",
   toggle: () => {},
@@ -110,7 +125,12 @@ export function ThemeModeProvider({ children }: { children: ReactNode }) {
   }, [mode])
 
   const theme = useMemo(
-    () => ({ ...DefaultTheme, theme: mode }) as typeof DefaultTheme,
+    () =>
+      ({
+        ...DefaultTheme,
+        ...SECONDARY,
+        theme: mode,
+      }) as typeof DefaultTheme,
     [mode],
   )
   const value = useMemo(

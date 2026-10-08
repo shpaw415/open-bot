@@ -22,9 +22,14 @@ blender-team "a ceramic owl figurine, 80mm tall, printable" -o /home/agent/works
   the blender MCP tools (`get_scene_info`, `execute_code`, …). QA renders a
   preview and exports the model; on `RESULT: FAIL` it spawns fix rounds
   (`--rounds`, default 1).
-- `--roles model,materials,qa` picks a shorter pipeline. `--timeout 20` sets
-  the per-worker minute budget (default 15). `--out path.glb` (or `.stl`)
-  sets the export target.
+- `--roles model,materials,qa` picks a shorter pipeline. `--timeout 40` sets
+  the per-worker minute budget (default 30 — raise it for hard organic
+  models). `--out path.glb` (or `.stl`) sets the export target.
+- `--resume` continues on the live scene from an earlier pipeline (after a
+  failed or timed-out run) instead of assuming a factory-startup scene;
+  pair it with `--roles` to rerun only the stages that are still missing.
+  A retried stage is told the scene may hold partial work, so a timeout
+  costs progress only when the work was unusable.
 - Each worker saves the scene to a `blender-team-<ts>/scene.blend` under the
   workspace and renders `preview-<role>.png` there. Read those PNGs to review
   a stage.

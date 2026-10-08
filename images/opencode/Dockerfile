@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl jq libatomic1 procps sudo unzip \
+    bash ca-certificates curl gh git jq libatomic1 procps sudo unzip \
     xvfb openbox chromium sqlite3 \
     python3 python3-pip python3-venv \
     fonts-liberation \
@@ -60,6 +60,8 @@ RUN python3 -m venv /opt/gpio-3d/venv \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends blender xauth \
     && rm -rf /var/lib/apt/lists/* \
+    && grep -rl "np\.bool\b" /usr/share/blender/scripts/addons/io_scene_gltf2 \
+      | xargs -r sed -i "s/np\.bool\b/bool/g" \
     && python3 -m pip install --no-cache-dir --no-binary=:all: --target /opt/blender-requests requests \
     && python3 -m venv /opt/blender-mcp-venv \
     && /opt/blender-mcp-venv/bin/pip install --no-cache-dir blender-mcp \
@@ -75,6 +77,10 @@ COPY scripts/opencode-auth.sh /opt/open-bot/opencode-auth.sh
 COPY scripts/ob-cron.sh /usr/local/bin/ob-cron
 COPY scripts/ob-persona.sh /usr/local/bin/ob-persona
 COPY scripts/ob-config.sh /usr/local/bin/ob-config
+COPY scripts/ob-plugin.sh /usr/local/bin/ob-plugin
+COPY scripts/ob-backup.sh /usr/local/bin/ob-backup
+COPY scripts/ob-reset.sh /usr/local/bin/ob-reset
+COPY images/opencode/apply-plugin-auth.sh /opt/open-bot/apply-plugin-auth.sh
 COPY images/opencode/entrypoint.sh /opt/open-bot/entrypoint.sh
 COPY images/opencode/apply-model.sh /opt/open-bot/apply-model.sh
 COPY images/opencode/apply-image-auth.sh /opt/open-bot/apply-image-auth.sh
@@ -93,6 +99,7 @@ COPY images/opencode/blender-team.ts /opt/open-bot/blender-team.ts
 RUN ln -sf /opt/open-bot/blender-team.ts /usr/local/bin/blender-team \
     && chmod 755 /opt/open-bot/blender-team.ts
 COPY images/opencode/apply-system1.sh /opt/open-bot/apply-system1.sh
+COPY images/opencode/apply-chat-auth.sh /opt/open-bot/apply-chat-auth.sh
 COPY apps/control/src/nav /opt/open-bot/nav
 COPY images/opencode/screen-up.sh /opt/open-bot/screen-up.sh
 COPY images/opencode/screen-down.sh /opt/open-bot/screen-down.sh
@@ -122,12 +129,12 @@ RUN if [ "$OPEN_BOT_DEV" = "1" ]; then \
     fi \
     && rm -f /tmp/ob-improve.sh
 RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
-     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-config /usr/local/bin/ob-page \
+     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset \
     && cp -a /usr/local /opt/image-usr-local \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-     && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-blender-mcp.sh /opt/open-bot/blender-up.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-page \
+      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-blender-mcp.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/blender-up.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset \
     && touch /opt/open-bot/instance
 
 USER root

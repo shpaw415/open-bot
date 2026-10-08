@@ -297,15 +297,19 @@ export function buildQuestions(
     },
   }
   for (const [operation, head] of Object.entries(space.heads)) {
+    const options = Object.entries(head).map(([key, candidate]) => [
+      key,
+      `[${key}] ${candidate.label}${candidate.optionLabel ? ` option ${candidate.optionLabel}` : ""}`,
+    ])
+    // Clef validates at least two options per choice question; a lone control
+    // gets an explicit opt-out so the request stays valid.
+    if (options.length === 1) {
+      options.push([NONE_VALUE, "Do not perform this operation."])
+    }
     questions[`${operation.toLowerCase()}_target`] = {
       type: "choice",
       instructions: `If the next operation is ${operation}, which offered control should receive it? Do not pick a field that already has the requested value. Goal: ${goal}`,
-      criteria: Object.fromEntries(
-        Object.entries(head).map(([key, candidate]) => [
-          key,
-          `[${key}] ${candidate.label}${candidate.optionLabel ? ` option ${candidate.optionLabel}` : ""}`,
-        ]),
-      ),
+      criteria: Object.fromEntries(options),
     }
   }
   if (values.length > 0 && space.heads.TYPE_TEXT) {
@@ -354,7 +358,13 @@ export function parseDecision(
   space: ActionSpace,
 ): Decision | null {
   if (!raw || typeof raw !== "object") return null
-  const answers = (raw as { answers?: unknown }).answers
+  // Jev and Laya return answers at the top level; Workers AI (Clef) wraps them
+  // in a result envelope.
+  const outer = raw as { result?: unknown; answers?: unknown }
+  const body = (outer.answers ? outer : (outer.result ?? null)) as {
+    answers?: unknown
+  } | null
+  const answers = body && typeof body === "object" ? body.answers : undefined
   if (!answers || typeof answers !== "object") return null
   const record = answers as Record<string, unknown>
   const operation = choiceOf(record.operation)

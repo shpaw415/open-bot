@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { openDatabase } from "@open-bot/db"
 import { endpoint, isRunning, startDesktop, stopDesktop } from "./docker"
 import { dataDir, names } from "./env"
+import { resolveDesktopProviders } from "./key-vault"
 
 if (!existsSync("/.dockerenv") && process.env.OPEN_BOT_IN_DOCKER !== "1") {
   console.error("recycle runs inside the open-bot container")
@@ -10,7 +11,6 @@ if (!existsSync("/.dockerenv") && process.env.OPEN_BOT_IN_DOCKER !== "1") {
 }
 
 const db = openDatabase(join(dataDir, "open-bot.sqlite"))
-const viking = db.getVikingProvider()
 
 function busyIds(status: unknown): string[] {
   if (!status || typeof status !== "object") return []
@@ -48,14 +48,16 @@ for (const userId of db.desktopUserIds()) {
   db.touchDesktop(userId)
   try {
     await stopDesktop(userId)
+    const auth = resolveDesktopProviders(db, userId)
     await startDesktop(
       userId,
       desktop,
-      viking,
-      db.getImageProvider(userId),
-      db.getSystem1(userId),
-      db.getVideoProvider(userId),
-      db.getModel3dProvider(userId),
+      auth.viking,
+      auth.image,
+      auth.system1,
+      auth.video,
+      auth.model3d,
+      auth.chatKeys,
     )
     db.touchDesktop(userId)
     restarted += 1

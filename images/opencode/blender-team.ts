@@ -43,14 +43,17 @@ export function extractResult(output: string): string {
   return ""
 }
 
+let ownLock = false
+
 function fail(message: string): never {
   console.error(message)
+  if (ownLock) releaseLock()
   process.exit(1)
 }
 
 function usage(): never {
   fail(
-    'usage: blender-team "goal" [--roles model,materials,lighting,qa] [--rounds 1] [--timeout 15] [--out /home/agent/workspace/model.glb]',
+    'usage: blender-team "goal" [--roles model,materials,lighting,qa] [--rounds 1] [--timeout 30] [--out /home/agent/workspace/model.glb] [--resume]',
   )
 }
 
@@ -86,17 +89,6 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-function lockHolderAlive(): boolean {
-  try {
-    const pid = Number(readFileSync(`${LOCK_DIR}/pid`, "utf8").trim())
-    if (!Number.isInteger(pid) || pid <= 0) return true
-    const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8")
-    return cmdline.includes("blender-team")
-  } catch {
-    return true
-  }
-}
-
 async function acquireLock(): Promise<void> {
   const deadline = Date.now() + LOCK_TIMEOUT_MS
   let announcedStale = false
@@ -125,14 +117,6 @@ async function acquireLock(): Promise<void> {
     "another blender-team run holds the scene lock. Wait for it to finish, or remove ~/.open-bot/blender-team.lock if it is stale.",
   )
 }
-      }
-      await Bun.sleep(1000)
-    }
-  }
-  fail(
-    "another blender-team run holds the scene lock. Wait for it to finish, or remove ~/.open-bot/blender-team.lock if it is stale.",
-  )
-}
 
 function lockHolderAlive(): boolean {
   try {
@@ -151,21 +135,30 @@ function releaseLock() {
   }
 }
 
-function rolePrompt(
+export function rolePrompt(
   role: Role,
   goal: string,
   dir: string,
   blendPath: string,
   outPath: string,
   context: string[],
+  resumed = false,
 ): string {
+  let sceneState: string
+  if (context.length > 0) {
+    sceneState = `What previous stages did:\n${context.map((line) => `- ${line}`).join("\n")}`
+  } else if (resumed) {
+    sceneState =
+      "This run continues an earlier pipeline: the live scene already contains work from a previous attempt. Inspect it first with get_scene_info and build on that state; only redo existing objects when they are unusable for the goal."
+  } else {
+    sceneState =
+      "The live scene starts from the factory startup file; you are first."
+  }
   const shared = [
     `You are the ${role} worker in a blender-team pipeline. The orchestrator assigned you one stage.`,
     `Goal of the whole team: ${goal}`,
     `A single Blender instance runs headless on 127.0.0.1:9876 with the team scene in memory. Drive it ONLY through the blender MCP tools (get_scene_info, get_object_info, execute_blender_code). Never launch another Blender process and never open the scene file in a second instance.`,
-    context.length > 0
-      ? `What previous stages did:\n${context.map((line) => `- ${line}`).join("\n")}`
-      : "The live scene starts from the factory startup file; you are first.",
+    sceneState,
   ].join("\n\n")
   const save =
     `When your stage is done, save the scene with execute_blender_code: bpy.ops.wm.save_as_mainfile(filepath="${blendPath}")` +
@@ -177,7 +170,7 @@ function rolePrompt(
       "Assign physically plausible PBR materials to every object via execute_blender_code (Principled BSDF; measured-ish base colors/roughness). Do not change geometry or transforms. Do not touch lights or the camera.",
     lighting:
       "Set up lighting (sun + area or three-point rig) and frame a camera on the model. Set the scene render engine to CYCLES. Do not model or change materials.",
-    qa: `Inspect the scene: for every mesh object check scale/transforms are applied, count loose or non-manifold geometry (bmesh), and judge the model against the goal. Fix small defects yourself; do not redesign. Then render the final preview to ${dir}/preview-qa.png. If the goal asks for a printable part, verify watertightness. If everything is sound, export the model to ${outPath} with the matching bpy export operator (GLB via bpy.ops.export_scene.gltf, or STL via the STL export operator when the path ends in .stl) — create the output directory if needed.`,
+    qa: `Inspect the scene: for every mesh object check scale/transforms are applied, count loose or non-manifold geometry (bmesh), and judge the model against the goal. Verify every countable or measurable requirement in the goal (object counts, dimensions, orientation, placement) by reading the scene, not by eyeballing a render. Fix small defects yourself; do not redesign. Then render at least two contrasting previews: the hero view to ${dir}/preview-qa.png plus a view from the opposite side or a close-up of the most detailed region to ${dir}/preview-qa-2.png, so a spec miss on one side cannot hide. If the goal asks for a printable part, verify watertightness. If everything is sound, export the model to ${outPath} with the matching bpy export operator (GLB via bpy.ops.export_scene.gltf, or STL via the STL export operator when the path ends in .stl) — create the output directory if needed.`,
     fix: "The QA stage rejected the previous state. Fix exactly the defects listed below without redesigning what already passed. Re-run the same checks, re-render the preview, and save.",
   }
   return `${shared}\n\n${tasks[role]}\n\n${save}\n\nEnd your reply with exactly one line starting with "RESULT: " — for qa and fix it must start with "RESULT: PASS ..." or "RESULT: FAIL: <defects>".`
@@ -255,15 +248,17 @@ async function main() {
   let goal = ""
   let rolesRaw = ""
   let rounds = 1
-  let timeout = 15
+  let timeout = 30
   let out = ""
+  let resume = false
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if (arg === "--roles") rolesRaw = args[++i] ?? ""
     else if (arg === "--rounds") rounds = Number.parseInt(args[++i] ?? "1", 10)
     else if (arg === "--timeout") {
-      timeout = Number.parseInt(args[++i] ?? "15", 10)
+      timeout = Number.parseInt(args[++i] ?? "30", 10)
     } else if (arg === "--out") out = args[++i] ?? ""
+    else if (arg === "--resume") resume = true
     else if (arg === "-h" || arg === "--help") usage()
     else if (goal === "") goal = arg
   }
@@ -298,6 +293,7 @@ async function main() {
   const outPath = out.trim() || `${home}/workspace/blender-team-${stamp}.glb`
 
   await acquireLock()
+  ownLock = true
   process.on("SIGINT", () => {
     releaseLock()
     process.exit(130)
@@ -320,9 +316,18 @@ async function main() {
       let attempt = 0
       while (attempt <= STAGE_RETRIES) {
         attempt += 1
+        const stageResumed = resume || attempt > 1
         try {
           const run = await runWorker(
-            rolePrompt(role, goal, dir, blendPath, outPath, context),
+            rolePrompt(
+              role,
+              goal,
+              dir,
+              blendPath,
+              outPath,
+              context,
+              stageResumed,
+            ),
             timeout,
           )
           result = extractResult(run.output)

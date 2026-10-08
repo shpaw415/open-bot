@@ -70,3 +70,32 @@ test("an empty payload removes both files", async () => {
     readFileSync(join(home, ".config/open-bot/system1.json")),
   ).toThrow()
 })
+
+test("cloudflare-clef writes the workers-ai endpoint and api key only", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-s1-"))
+  const result = await run(
+    home,
+    JSON.stringify({
+      provider: "cloudflare-clef",
+      endpoint:
+        "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef",
+      model: "clef",
+      apiKey: "cf-token",
+      gatewayToken: "",
+    }),
+  )
+  expect(result.code).toBe(0)
+  const marker = JSON.parse(
+    readFileSync(join(home, ".config/open-bot/system1.json"), "utf8"),
+  )
+  expect(marker).toEqual({
+    provider: "cloudflare-clef",
+    endpoint:
+      "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef",
+    model: "clef",
+  })
+  const auth = JSON.parse(
+    readFileSync(join(home, ".config/open-bot/system1-auth.json"), "utf8"),
+  )
+  expect(auth).toEqual({ apiKey: "cf-token", gatewayToken: "" })
+})

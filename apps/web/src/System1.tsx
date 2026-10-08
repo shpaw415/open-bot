@@ -27,6 +27,7 @@ type System1Form = {
   slug: string
   hasKey: boolean
   hasGatewayToken: boolean
+  keySource?: "setup" | "vault" | null
 }
 
 function composeEndpoint(accountId: string, gatewayId: string, slug: string) {
@@ -51,6 +52,7 @@ export function System1() {
   const [busy, setBusy] = useState(false)
   const [hasKey, setHasKey] = useState(false)
   const [hasGatewayToken, setHasGatewayToken] = useState(false)
+  const [keySource, setKeySource] = useState<"setup" | "vault" | null>(null)
   const [providers, setProviders] = useState<System1Spec[]>([])
   const [provider, setProvider] = useState("")
   const [endpoint, setEndpoint] = useState("")
@@ -75,6 +77,7 @@ export function System1() {
         setSlug(body.slug || "jev")
         setHasKey(body.hasKey)
         setHasGatewayToken(body.hasGatewayToken)
+        setKeySource(body.keySource ?? null)
       })
       .catch((caught: unknown) => {
         setError(caught instanceof Error ? caught.message : "failed")
@@ -89,6 +92,9 @@ export function System1() {
       return (
         composeEndpoint(accountId, gatewayId, slug) || next.endpointPlaceholder
       )
+    }
+    if (next.id === "cloudflare-clef") {
+      return composeClefEndpoint(accountId) || next.endpointPlaceholder
     }
     return next.endpointPlaceholder
   }
@@ -127,12 +133,28 @@ export function System1() {
     })
   }
 
+  function setClefAccount(nextAccount: string) {
+    setAccountId(nextAccount)
+    if (spec?.id !== "cloudflare-clef") return
+    const previous = composeClefEndpoint(accountId)
+    const placeholder = spec.endpointPlaceholder
+    setEndpoint((current) => {
+      if (current && current !== previous && current !== placeholder) {
+        return current
+      }
+      return composeClefEndpoint(nextAccount) || placeholder
+    })
+  }
+
   async function save() {
     setError("")
     setSaved("")
     setBusy(true)
     try {
-      const body = await api<{ applied?: boolean }>("/api/system1", {
+      const body = await api<{
+        applied?: boolean
+        keySource?: "setup" | "vault" | null
+      }>("/api/system1", {
         method: "PUT",
         body: JSON.stringify({
           provider: spec?.id ?? provider,
@@ -146,6 +168,7 @@ export function System1() {
         }),
       })
       setHasKey(Boolean(apiKey) || hasKey)
+      setKeySource(body.keySource ?? "setup")
       setApiKey("")
       setHasGatewayToken(Boolean(gatewayToken) || hasGatewayToken)
       setGatewayToken("")
@@ -170,6 +193,7 @@ export function System1() {
       const first = providers[0]
       setHasKey(false)
       setHasGatewayToken(false)
+      setKeySource(null)
       setEndpoint("")
       setApiKey("")
       setGatewayToken("")
@@ -190,11 +214,13 @@ export function System1() {
     <ConfigSection
       icon={<NavigationIcon />}
       title="Desktop navigation"
-      description="System 1 endpoint for page navigation. Cloudflare Jev is an AI Gateway custom provider. Self-hosted Laya uses the same POST path. Page text is sent to this endpoint."
+      description="System 1 endpoint for page navigation. Cloudflare Jev is an AI Gateway custom provider. Cloudflare Clef runs on Workers AI and answers the same typed questions. Self-hosted Laya uses the same POST path. Page text is sent to this endpoint."
       status={
         hasKey || hasGatewayToken || endpoint.trim()
           ? { label: spec?.label ?? "Configured", color: "success" }
-          : { label: "Not set" }
+          : keySource === "vault"
+            ? { label: "Vault key", color: "primary" }
+            : { label: "Not set" }
       }
     >
       <Stack spacing={1.5}>
@@ -241,6 +267,14 @@ export function System1() {
             />
           </Stack>
         ) : null}
+        {spec?.id === "cloudflare-clef" ? (
+          <TextField
+            label="Account ID"
+            value={accountId}
+            placeholder="Cloudflare account ID"
+            onChange={(event) => setClefAccount(event.currentTarget.value)}
+          />
+        ) : null}
         <TextField
           label="Endpoint"
           value={endpoint}
@@ -275,7 +309,11 @@ export function System1() {
           />
         ) : null}
         <TextField
-          label="Model"
+          label={
+            spec?.id === "cloudflare-clef"
+              ? "Model (clef or clef-flash)"
+              : "Model"
+          }
           value={model}
           placeholder={spec?.defaultModel || "omit to let the server choose"}
           onChange={(event) => setModel(event.currentTarget.value)}

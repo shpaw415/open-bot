@@ -18,18 +18,22 @@ import {
 import { drizzle } from "drizzle-orm/bun-sqlite"
 import { applyMigrations } from "./migrate"
 import {
+  appSettings,
   cronJobs,
   cronNotices,
   desktops,
   improvements,
+  installedPlugins,
   invites,
   personas,
+  pluginSettings,
   projects,
   sessions,
   threadPersonas,
   threadScreens,
   threadTitles,
   usageEvents,
+  userKeys,
   users,
   vikingProvider,
 } from "./schema"
@@ -129,6 +133,18 @@ export type VikingProvider = {
   embedModel: string
   embedDimension: number
   vlmModel: string
+}
+
+export type UserKey = {
+  userId: string
+  slug: string
+  apiKey: string
+  accountId: string
+  gatewayId: string
+  gatewayToken: string
+  gatewaySlug: string
+  baseUrl: string
+  updatedAt: number
 }
 
 export function vikingProviderReady(
@@ -268,6 +284,81 @@ export type Project = {
   createdAt: number
 }
 
+export type PluginAppliedLog = {
+  personaIds: string[]
+  cronJobIds: string[]
+  skills: string[]
+  keys: string[]
+  tools: string[]
+  opencode: boolean
+}
+
+export type InstalledPlugin = {
+  id: string
+  userId: string
+  pluginId: string
+  version: string
+  manifest: Record<string, unknown>
+  readme: string | null
+  enabled: boolean
+  applied: PluginAppliedLog
+  createdAt: number
+  updatedAt: number
+}
+
+export type PluginSetting = {
+  key: string
+  value: string
+  updatedAt: number
+}
+
+export function emptyAppliedLog(): PluginAppliedLog {
+  return {
+    personaIds: [],
+    cronJobIds: [],
+    skills: [],
+    keys: [],
+    tools: [],
+    opencode: false,
+  }
+}
+
+function mapInstalledPlugin(
+  row: typeof installedPlugins.$inferSelect | undefined,
+): InstalledPlugin | null {
+  if (!row) return null
+  let manifest: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(row.manifest)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      manifest = parsed as Record<string, unknown>
+    }
+  } catch {
+    manifest = {}
+  }
+  let applied = emptyAppliedLog()
+  try {
+    const parsed = JSON.parse(row.applied)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      applied = { ...emptyAppliedLog(), ...(parsed as PluginAppliedLog) }
+    }
+  } catch {
+    applied = emptyAppliedLog()
+  }
+  return {
+    id: row.id,
+    userId: row.userId,
+    pluginId: row.pluginId,
+    version: row.version,
+    manifest,
+    readme: row.readme,
+    enabled: row.enabled,
+    applied,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
 const migrationsFolder = join(
   dirname(fileURLToPath(import.meta.url)),
   "../drizzle",
@@ -345,6 +436,29 @@ function mapCronNotice(row: typeof cronNotices.$inferSelect): CronNotice {
   }
 }
 
+export type UserKeyFields = {
+  apiKey: string
+  accountId: string
+  gatewayId: string
+  gatewayToken: string
+  gatewaySlug: string
+  baseUrl: string
+}
+
+function rowFromUserKeys(row: typeof userKeys.$inferSelect): UserKey {
+  return {
+    userId: row.userId,
+    slug: row.slug,
+    apiKey: row.apiKey ?? "",
+    accountId: row.accountId ?? "",
+    gatewayId: row.gatewayId ?? "",
+    gatewayToken: row.gatewayToken ?? "",
+    gatewaySlug: row.gatewaySlug ?? "",
+    baseUrl: row.baseUrl ?? "",
+    updatedAt: row.updatedAt,
+  }
+}
+
 export function openDatabase(path: string) {
   mkdirSync(dirname(path), { recursive: true })
   const sqlite = new Database(path)
@@ -368,6 +482,9 @@ export function openDatabase(path: string) {
       threadScreens,
       improvements,
       projects,
+      installedPlugins,
+      pluginSettings,
+      appSettings,
     },
   })
 
@@ -503,6 +620,25 @@ export function openDatabase(path: string) {
         .where(eq(desktops.userId, userId))
         .run()
     },
+    getRawImageProvider(userId: string): ImageProvider | null {
+      const row = orm
+        .select({
+          provider: desktops.imageProvider,
+          accountId: desktops.imageAccountId,
+          apiKey: desktops.imageApiKey,
+          model: desktops.imageModel,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      if (!row?.provider) return null
+      return {
+        provider: row.provider,
+        accountId: row.accountId ?? "",
+        apiKey: row.apiKey ?? "",
+        model: row.model ?? "",
+      }
+    },
     getImageProvider(userId: string): ImageProvider | null {
       const row = orm
         .select({
@@ -546,6 +682,25 @@ export function openDatabase(path: string) {
         .where(eq(desktops.userId, userId))
         .run()
     },
+    getRawVideoProvider(userId: string): VideoProvider | null {
+      const row = orm
+        .select({
+          provider: desktops.videoProvider,
+          accountId: desktops.videoAccountId,
+          apiKey: desktops.videoApiKey,
+          model: desktops.videoModel,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      if (!row?.provider) return null
+      return {
+        provider: row.provider,
+        accountId: row.accountId ?? "",
+        apiKey: row.apiKey ?? "",
+        model: row.model ?? "",
+      }
+    },
     getVideoProvider(userId: string): VideoProvider | null {
       const row = orm
         .select({
@@ -588,6 +743,25 @@ export function openDatabase(path: string) {
         })
         .where(eq(desktops.userId, userId))
         .run()
+    },
+    getRawModel3dProvider(userId: string): Model3dProvider | null {
+      const row = orm
+        .select({
+          provider: desktops.model3dProvider,
+          accountId: desktops.model3dAccountId,
+          apiKey: desktops.model3dApiKey,
+          model: desktops.model3dModel,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      if (!row?.provider) return null
+      return {
+        provider: row.provider,
+        accountId: row.accountId ?? "",
+        apiKey: row.apiKey ?? "",
+        model: row.model ?? "",
+      }
     },
     getModel3dProvider(userId: string): Model3dProvider | null {
       const row = orm
@@ -697,6 +871,42 @@ export function openDatabase(path: string) {
         .from(desktops)
         .all()
         .map((row) => row.userId)
+    },
+    getUserKeys(userId: string): UserKey[] {
+      return orm
+        .select()
+        .from(userKeys)
+        .where(eq(userKeys.userId, userId))
+        .all()
+        .map(rowFromUserKeys)
+    },
+    getUserKey(userId: string, slug: string): UserKey | null {
+      const row = orm
+        .select()
+        .from(userKeys)
+        .where(and(eq(userKeys.userId, userId), eq(userKeys.slug, slug)))
+        .get()
+      return row ? rowFromUserKeys(row) : null
+    },
+    setUserKey(userId: string, slug: string, value: UserKeyFields) {
+      const updatedAt = Date.now()
+      orm
+        .insert(userKeys)
+        .values({ userId, slug, ...value, updatedAt })
+        .onConflictDoUpdate({
+          target: [userKeys.userId, userKeys.slug],
+          set: { ...value, updatedAt },
+        })
+        .run()
+    },
+    clearUserKey(userId: string, slug: string) {
+      orm
+        .delete(userKeys)
+        .where(and(eq(userKeys.userId, userId), eq(userKeys.slug, slug)))
+        .run()
+    },
+    clearUserKeys(userId: string) {
+      orm.delete(userKeys).where(eq(userKeys.userId, userId)).run()
     },
     touchDesktop(userId: string) {
       orm
@@ -1136,6 +1346,173 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    createInstalledPlugin(
+      row: Omit<InstalledPlugin, "manifest" | "applied"> & {
+        manifest: string
+        applied?: string
+      },
+    ) {
+      orm.insert(installedPlugins).values(row).run()
+    },
+    installedPlugins(userId: string) {
+      return orm
+        .select()
+        .from(installedPlugins)
+        .where(eq(installedPlugins.userId, userId))
+        .orderBy(installedPlugins.createdAt)
+        .all()
+        .map(mapInstalledPlugin)
+        .filter((row): row is InstalledPlugin => row !== null)
+    },
+    installedPlugin(userId: string, pluginId: string) {
+      return mapInstalledPlugin(
+        orm
+          .select()
+          .from(installedPlugins)
+          .where(
+            and(
+              eq(installedPlugins.userId, userId),
+              eq(installedPlugins.pluginId, pluginId),
+            ),
+          )
+          .get(),
+      )
+    },
+    setInstalledPluginEnabled(
+      userId: string,
+      pluginId: string,
+      enabled: boolean,
+    ) {
+      if (!this.installedPlugin(userId, pluginId)) return null
+      orm
+        .update(installedPlugins)
+        .set({ enabled, updatedAt: Date.now() })
+        .where(
+          and(
+            eq(installedPlugins.userId, userId),
+            eq(installedPlugins.pluginId, pluginId),
+          ),
+        )
+        .run()
+      return this.installedPlugin(userId, pluginId)
+    },
+    updateInstalledPlugin(
+      userId: string,
+      pluginId: string,
+      changes: { version: string; manifest: string; readme: string | null },
+    ) {
+      if (!this.installedPlugin(userId, pluginId)) return null
+      orm
+        .update(installedPlugins)
+        .set({ ...changes, updatedAt: Date.now() })
+        .where(
+          and(
+            eq(installedPlugins.userId, userId),
+            eq(installedPlugins.pluginId, pluginId),
+          ),
+        )
+        .run()
+      return this.installedPlugin(userId, pluginId)
+    },
+    setInstalledPluginApplied(
+      userId: string,
+      pluginId: string,
+      applied: PluginAppliedLog,
+    ) {
+      orm
+        .update(installedPlugins)
+        .set({ applied: JSON.stringify(applied), updatedAt: Date.now() })
+        .where(
+          and(
+            eq(installedPlugins.userId, userId),
+            eq(installedPlugins.pluginId, pluginId),
+          ),
+        )
+        .run()
+    },
+    deleteInstalledPlugin(userId: string, pluginId: string) {
+      if (!this.installedPlugin(userId, pluginId)) return false
+      orm
+        .delete(installedPlugins)
+        .where(
+          and(
+            eq(installedPlugins.userId, userId),
+            eq(installedPlugins.pluginId, pluginId),
+          ),
+        )
+        .run()
+      orm
+        .delete(pluginSettings)
+        .where(
+          and(
+            eq(pluginSettings.userId, userId),
+            eq(pluginSettings.pluginId, pluginId),
+          ),
+        )
+        .run()
+      return true
+    },
+    pluginSettings(userId: string, pluginId: string): PluginSetting[] {
+      return orm
+        .select()
+        .from(pluginSettings)
+        .where(
+          and(
+            eq(pluginSettings.userId, userId),
+            eq(pluginSettings.pluginId, pluginId),
+          ),
+        )
+        .all()
+        .map((row) => ({
+          key: row.key,
+          value: row.value,
+          updatedAt: row.updatedAt,
+        }))
+    },
+    setPluginSetting(
+      userId: string,
+      pluginId: string,
+      key: string,
+      value: string,
+    ) {
+      const updatedAt = Date.now()
+      orm
+        .insert(pluginSettings)
+        .values({ userId, pluginId, key, value, updatedAt })
+        .onConflictDoUpdate({
+          target: [
+            pluginSettings.userId,
+            pluginSettings.pluginId,
+            pluginSettings.key,
+          ],
+          set: { value, updatedAt },
+        })
+        .run()
+    },
+    getSetting(key: string): string | null {
+      const row = orm
+        .select()
+        .from(appSettings)
+        .where(eq(appSettings.key, key))
+        .get()
+      return row?.value ?? null
+    },
+    setSetting(key: string, value: string) {
+      const updatedAt = Date.now()
+      orm
+        .insert(appSettings)
+        .values({ key, value, updatedAt })
+        .onConflictDoUpdate({
+          target: appSettings.key,
+          set: { value, updatedAt },
+        })
+        .run()
+    },
+    cronJobsByPlugin(userId: string, pluginId: string) {
+      return this.cronJobs(userId).filter((job) =>
+        job.name.startsWith(`plugin:${pluginId}:`),
+      )
+    },
     listUsers() {
       return orm
         .select({
@@ -1188,6 +1565,26 @@ export function openDatabase(path: string) {
     deleteUserSessions(userId: string) {
       orm.delete(sessions).where(eq(sessions.userId, userId)).run()
     },
+    rotateDesktopTokens(
+      userId: string,
+      tokens: {
+        llmToken: string
+        opencodePassword: string
+        vikingKey: string
+      },
+    ) {
+      orm.update(desktops).set(tokens).where(eq(desktops.userId, userId)).run()
+    },
+    resetDesktopState(userId: string) {
+      orm.transaction((tx) => {
+        tx.delete(cronJobs).where(eq(cronJobs.userId, userId)).run()
+        tx.delete(cronNotices).where(eq(cronNotices.userId, userId)).run()
+        tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
+        tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
+        tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
+        tx.delete(projects).where(eq(projects.userId, userId)).run()
+      })
+    },
     deleteUser(userId: string) {
       orm.transaction((tx) => {
         tx.delete(sessions).where(eq(sessions.userId, userId)).run()
@@ -1199,6 +1596,11 @@ export function openDatabase(path: string) {
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(improvements).where(eq(improvements.userId, userId)).run()
+        tx.delete(userKeys).where(eq(userKeys.userId, userId)).run()
+        tx.delete(installedPlugins)
+          .where(eq(installedPlugins.userId, userId))
+          .run()
+        tx.delete(pluginSettings).where(eq(pluginSettings.userId, userId)).run()
         tx.delete(users).where(eq(users.id, userId)).run()
       })
     },
@@ -1351,6 +1753,9 @@ export function openDatabase(path: string) {
         .where(eq(improvements.id, id))
         .run()
       return this.improvementById(id)
+    },
+    close() {
+      sqlite.close()
     },
   }
 }

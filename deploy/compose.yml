@@ -15,6 +15,9 @@ services:
       OPEN_BOT_AI_CONFIG: /app/config/ai.ts
       BIND_HOST: "0.0.0.0"
       PORT: "8787"
+      OPEN_BOT_MARKETPLACE_URL: ${OPEN_BOT_MARKETPLACE_URL:-}
+      OPEN_BOT_MARKETPLACE_TOKEN: ${OPEN_BOT_MARKETPLACE_TOKEN:-}
+      OPEN_BOT_GITHUB_TOKEN: ${OPEN_BOT_GITHUB_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - open-bot-data:/data

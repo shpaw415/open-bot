@@ -54,10 +54,10 @@ describe("stuck tools", () => {
     expect(toolStuck("nope", now)).toBe(false)
   })
 
-  test("desktop nav commands get a five minute budget", () => {
+  test("desktop nav commands get a shorter budget than the default", () => {
     const now = 10_000_000
     expect(toolLimit([running(now - 1, "ob-nav --session s --goal g")])).toBe(
-      5 * STUCK_TOOL_MS,
+      0.75 * STUCK_TOOL_MS,
     )
     expect(toolLimit([running(now - 1, "sleep 500")])).toBe(STUCK_TOOL_MS)
   })
@@ -71,11 +71,11 @@ describe("stuck tools", () => {
           'blender-team "an owl" -o /home/agent/workspace/o.glb',
         ),
       ]),
-    ).toBe(60 * STUCK_TOOL_MS)
+    ).toBe(6 * STUCK_TOOL_MS)
     expect(
       toolLimit([
         running(now - 1, "blender --background --python-expr 'import bpy'"),
       ]),
-    ).toBe(10 * STUCK_TOOL_MS)
+    ).toBe(3 * STUCK_TOOL_MS)
   })
 })

@@ -264,6 +264,62 @@ export function cronResultBody(text: string): string | null {
   return (split === -1 ? "" : text.slice(split)).trim()
 }
 
+export type PluginCardBlock = {
+  plugin: string
+  type: string
+  data: Record<string, unknown>
+}
+
+export type TextSegment =
+  | { kind: "text"; text: string }
+  | { kind: "plugin-card"; block: PluginCardBlock }
+
+const PLUGIN_CARD_FENCE =
+  /```plugin-card[ \t]*:?[ \t]*([\w-]*)[ \t]*\r?\n([\s\S]*?)```/g
+
+/** Parses ```plugin-card fenced blocks the agent emits into chat replies. */
+export function splitPluginCards(text: string): TextSegment[] {
+  const out: TextSegment[] = []
+  let cursor = 0
+  PLUGIN_CARD_FENCE.lastIndex = 0
+  for (const match of text.matchAll(PLUGIN_CARD_FENCE)) {
+    const start = match.index ?? 0
+    if (start > cursor) {
+      out.push({ kind: "text", text: text.slice(cursor, start) })
+    }
+    let parsed: unknown = null
+    try {
+      parsed = JSON.parse(match[2] ?? "")
+    } catch {
+      parsed = null
+    }
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    const data =
+      record.data &&
+      typeof record.data === "object" &&
+      !Array.isArray(record.data)
+        ? (record.data as Record<string, unknown>)
+        : {}
+    out.push({
+      kind: "plugin-card",
+      block: {
+        plugin:
+          typeof record.plugin === "string" ? record.plugin : (match[1] ?? ""),
+        type: typeof record.type === "string" ? record.type : "",
+        data,
+      },
+    })
+    cursor = start + match[0].length
+  }
+  if (cursor < text.length) {
+    out.push({ kind: "text", text: text.slice(cursor) })
+  }
+  return out.length > 0 ? out : [{ kind: "text", text }]
+}
+
 const BUBBLE_GAP_MS = 5 * 60_000
 
 function messageSentAt(message: ChatMessage): number | null {

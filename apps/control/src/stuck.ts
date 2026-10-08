@@ -2,12 +2,16 @@ import type { Db } from "@open-bot/db"
 import { desktopPhase, endpoint } from "./docker"
 import type { EventHub } from "./events"
 
-export const STUCK_TOOL_MS = 90_000
-export const STUCK_MESSAGE = "stopped a stuck command, send again."
+export const STUCK_TOOL_MS = 1_200_000
+export const STUCK_MESSAGE = "stopped a stuck command; the agent will wrap up."
+const WRAP_UP_PROMPT =
+  "Your running command was stopped automatically by the stuck-command watchdog after its time budget. Do not restart that same command. Reply with one short message: what is already done, the paths of the deliverables produced so far, and the single command that would finish the job."
 const SWEEP_MS = 15_000
 const COOL_MS = 60_000
+const NUDGE_MS = 3_600_000
 
 const cooled = new Map<string, number>()
+const nudged = new Map<string, number>()
 
 type ToolState = {
   status?: unknown
@@ -57,20 +61,24 @@ export function toolStuck(
   return Boolean(tool && tool.status === "running" && now - tool.start >= limit)
 }
 
-/** Desktop nav runs many Laya decisions in one bash call; they get longer. */
+/**
+ * Long-running commands are normal on this bot (renders, installs, polls,
+ * pipelines), so the default budget is generous; true hangs (daemonized
+ * xclip, dead sockets) produce no output and only need to outlive it.
+ */
 export function toolLimit(messages: unknown): number {
   const tool = newestTool(messages)
   const command = tool?.command.trim() ?? ""
   if (/^blender-team\b/.test(command)) {
-    // blender-team pipelines run LLM worker stages (15 min each) back to back.
-    return 60 * STUCK_TOOL_MS
+    // blender-team pipelines run LLM worker stages (~30 min each) back to back
+    return 6 * STUCK_TOOL_MS
   }
   if (/^blender\s/.test(command)) {
-    // headless bpy one-offs with Cycles renders can run for minutes
-    return 10 * STUCK_TOOL_MS
+    // headless bpy one-offs with Cycles renders can run for many minutes
+    return 3 * STUCK_TOOL_MS
   }
   if (/^ob-(nav|vnc|cron)\b/.test(command)) {
-    return 5 * STUCK_TOOL_MS
+    return 0.75 * STUCK_TOOL_MS
   }
   return STUCK_TOOL_MS
 }
@@ -121,6 +129,20 @@ async function sweepUser(
       type: "session.stuck",
       properties: { sessionID: sessionId, message: STUCK_MESSAGE },
     })
+    // a dead-silent turn is worse than a late one: ask the agent to wrap up
+    const nudgeKey = key
+    if (now - (nudged.get(nudgeKey) ?? 0) >= NUDGE_MS) {
+      nudged.set(nudgeKey, now)
+      await fetch(`${base}/session/${sessionId}/prompt_async`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          agent: "build",
+          parts: [{ type: "text", text: WRAP_UP_PROMPT }],
+        }),
+        signal: AbortSignal.timeout(15_000),
+      }).catch(() => undefined)
+    }
   }
 }
 

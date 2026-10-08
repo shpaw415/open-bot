@@ -39,10 +39,12 @@ import {
   handoffStamp,
   modelActivity,
   nearBottom,
+  type PluginCardBlock,
   type SendReceipt,
   type SendStatus,
   samePayload,
   showLiveScreen,
+  splitPluginCards,
   transcriptBubbles,
   userMessageCount,
   visibleText,
@@ -75,6 +77,7 @@ import {
   SendIcon,
   StopIcon,
 } from "./icons"
+import { Projects } from "./ide/Projects"
 import {
   type JoinedFile,
   joinedImage,
@@ -90,7 +93,11 @@ import {
   THREAD_KEY,
 } from "./notify"
 import type { PersonaInfo } from "./Personalities"
-import { Projects } from "./ide/Projects"
+import {
+  type PluginCardSpec,
+  PluginCards,
+  useInstalledPlugins,
+} from "./plugin-ui"
 import {
   detectMention,
   mentionSuggestions,
@@ -270,6 +277,79 @@ function ChatMarkdown({ text }: { text: string }) {
   )
 }
 
+type PluginRenderer = { title: string; spec: PluginCardSpec[] }
+
+function PluginCardBlockView({
+  block,
+  renderers,
+}: {
+  block: PluginCardBlock
+  renderers: Map<string, PluginRenderer>
+}) {
+  const renderer = renderers.get(block.type)
+  if (renderer) {
+    return <PluginCards spec={renderer.spec} data={block.data} />
+  }
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Typography variant="caption" color="textSecondary">
+        {block.plugin || "plugin"}
+        {block.type ? ` · ${block.type}` : ""}
+      </Typography>
+      <Typography
+        variant="body2"
+        component="pre"
+        sx={{
+          whiteSpace: "pre-wrap",
+          m: 0,
+          fontSize: 13,
+          maxHeight: 260,
+          overflowY: "auto",
+        }}
+      >
+        {JSON.stringify(block.data, null, 2).slice(0, 4000)}
+      </Typography>
+    </Paper>
+  )
+}
+
+function PluginSegments({
+  text,
+  renderers,
+}: {
+  text: string
+  renderers: Map<string, PluginRenderer>
+}) {
+  const segments = splitPluginCards(text)
+  if (segments.length === 1 && segments[0]?.kind === "text") {
+    return <ChatMarkdown text={(segments[0].text ?? "").trim()} />
+  }
+  const parts = segments.map((segment, index) => ({
+    id:
+      segment.kind === "text"
+        ? `text-${index}`
+        : `card-${segment.block.plugin}-${segment.block.type}-${index}`,
+    segment,
+  }))
+  return (
+    <>
+      {parts.map((part) =>
+        part.segment.kind === "text" ? (
+          part.segment.text.trim() ? (
+            <ChatMarkdown key={part.id} text={part.segment.text.trim()} />
+          ) : null
+        ) : (
+          <PluginCardBlockView
+            key={part.id}
+            block={part.segment.block}
+            renderers={renderers}
+          />
+        ),
+      )}
+    </>
+  )
+}
+
 function threadTime(session: SessionInfo): number {
   return session.time?.updated ?? session.time?.created ?? 0
 }
@@ -346,6 +426,7 @@ export function Workspace({ me }: { me: Me }) {
   const [error, setError] = useState("")
   const [sessionId, setSessionId] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messagesLoading, setMessagesLoading] = useState(false)
   const [draft, setDraft] = useState("")
   const draftRef = useRef("")
   const draftSessionRef = useRef("")
@@ -416,6 +497,73 @@ export function Workspace({ me }: { me: Me }) {
   const [notices, setNotices] = useState<CronNotice[]>([])
   const [cronResult, setCronResult] = useState<CronNotice | null>(null)
   const mobile = useMobile()
+  const { plugins: installedPlugins } = useInstalledPlugins()
+  const pluginRenderers = useMemo(() => {
+    const map = new Map<string, PluginRenderer>()
+    for (const plugin of installedPlugins) {
+      if (!plugin.enabled) continue
+      for (const renderer of plugin.manifest.textbox?.renderers ?? []) {
+        map.set(renderer.type, { title: renderer.title, spec: renderer.spec })
+      }
+    }
+    return map
+  }, [installedPlugins])
+  const pluginCommands = useMemo(
+    () =>
+      installedPlugins
+        .filter((plugin) => plugin.enabled)
+        .flatMap((plugin) =>
+          (plugin.manifest.textbox?.commands ?? []).map((command) => ({
+            plugin: plugin.pluginId,
+            ...command,
+          })),
+        ),
+    [installedPlugins],
+  )
+  const pluginButtons = useMemo(
+    () =>
+      installedPlugins
+        .filter((plugin) => plugin.enabled)
+        .flatMap((plugin) =>
+          (plugin.manifest.textbox?.buttons ?? []).map((button) => ({
+            plugin: plugin.pluginId,
+            ...button,
+          })),
+        ),
+    [installedPlugins],
+  )
+  const pluginValidators = useMemo(
+    () =>
+      installedPlugins
+        .filter((plugin) => plugin.enabled)
+        .flatMap((plugin) =>
+          (plugin.manifest.textbox?.validators ?? []).map((validator) => ({
+            plugin: plugin.pluginId,
+            ...validator,
+          })),
+        ),
+    [installedPlugins],
+  )
+  const pluginAccept = useMemo(() => {
+    for (const plugin of installedPlugins) {
+      if (!plugin.enabled) continue
+      const accept = plugin.manifest.textbox?.attachments?.accept ?? []
+      if (accept.length > 0) return accept.join(",")
+    }
+    return ""
+  }, [installedPlugins])
+  const [slashHidden, setSlashHidden] = useState(false)
+  const [slashIndex, setSlashIndex] = useState(0)
+  const slashActive = useMemo(() => {
+    if (!draft.startsWith("/") || draft.includes(" ") || draft.includes("\n")) {
+      return null
+    }
+    const typed = draft.slice(1).toLowerCase()
+    const matches = pluginCommands.filter((command) =>
+      command.command.startsWith(typed),
+    )
+    return matches.length > 0 ? matches : null
+  }, [draft, pluginCommands])
   const unread = useUnreadThreads()
   const outputRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
@@ -635,21 +783,26 @@ export function Workspace({ me }: { me: Me }) {
   }
 
   useEffect(() => {
-    if (phase !== "starting") return
+    if (phase === "running") return
+    // Poll while starting, and on the Projects tab where IDE API calls wake
+    // the desktop behind our back and the stream needs to catch up.
+    if (phase !== "starting" && tab !== "projects") return
     const timer = setInterval(() => {
       void api<DesktopStatus>("/api/desktop")
         .then((status) => {
           if (status.error) {
-            setPhase("sleeping")
-            setError(status.error)
-          } else if (status.phase !== "starting") {
+            if (phase === "starting") {
+              setPhase("sleeping")
+              setError(status.error)
+            }
+          } else if (status.phase !== phase) {
             setPhase(status.phase)
           }
         })
         .catch(() => {})
     }, 2000)
     return () => clearInterval(timer)
-  }, [phase])
+  }, [phase, tab])
 
   const loadModels = useCallback(async () => {
     if (!running) return
@@ -718,6 +871,8 @@ export function Workspace({ me }: { me: Me }) {
       }
     } catch {
       return
+    } finally {
+      setMessagesLoading(false)
     }
     try {
       const statusRes = await fetch("/api/opencode/session/status")
@@ -750,7 +905,7 @@ export function Workspace({ me }: { me: Me }) {
           setError(
             typeof props?.message === "string"
               ? props.message
-              : "stopped a stuck command, send again.",
+              : "stopped a stuck command; the agent will wrap up.",
           )
         }
         return
@@ -836,6 +991,7 @@ export function Workspace({ me }: { me: Me }) {
     const stored = localStorage.getItem(THREAD_KEY)
     if (stored && !sessionId && sessions.some((item) => item.id === stored)) {
       setSessionId(stored)
+      setMessagesLoading(true)
     }
   }, [running, sessions, sessionsLoading, sessionId])
 
@@ -864,6 +1020,7 @@ export function Workspace({ me }: { me: Me }) {
       if (!id) return
       setSessionId(id)
       setMessages([])
+      setMessagesLoading(true)
       setTab("chat")
       if (mobile) setThreadsOpen(false)
     }
@@ -1205,10 +1362,41 @@ export function Workspace({ me }: { me: Me }) {
     restoreCaret()
   }
 
-  async function send() {
-    const text = draft.trim()
+  function acceptCommand(command: {
+    command: string
+    title: string
+    template: string
+  }) {
+    setSlashHidden(false)
+    const marker = "{input}"
+    const at = command.template.indexOf(marker)
+    if (at === -1) {
+      setDraft("")
+      draftRef.current = ""
+      writeDraft(localStorage, draftSessionRef.current, "")
+      void send(command.template)
+      return
+    }
+    const rendered = command.template.replace(marker, "")
+    rememberDraft(rendered)
+    pendingCaretRef.current = at
+    restoreCaret()
+  }
+
+  async function send(textOverride?: string) {
+    const text = (textOverride ?? draft).trim()
     const files = joinedRef.current
     if (!text && files.length === 0) return
+    for (const validator of pluginValidators) {
+      try {
+        if (new RegExp(validator.pattern).test(text)) {
+          setError(validator.message)
+          return
+        }
+      } catch {
+        // ignore malformed plugin patterns
+      }
+    }
     if (!running || stopping || sending) {
       setError(
         stopping
@@ -1249,6 +1437,7 @@ export function Workspace({ me }: { me: Me }) {
     if (id !== sessionId) {
       setSessionId(id)
       setMessages([])
+      setMessagesLoading(true)
       localStorage.setItem(THREAD_KEY, id)
     }
     if (mobile) setThreadsOpen(false)
@@ -1341,6 +1530,7 @@ export function Workspace({ me }: { me: Me }) {
       if (target.id === sessionId) {
         setSessionId("")
         setMessages([])
+        setMessagesLoading(false)
         localStorage.removeItem(THREAD_KEY)
       }
       await loadThreads()
@@ -1999,6 +2189,41 @@ export function Workspace({ me }: { me: Me }) {
                     Start desktop
                   </Button>
                 </Stack>
+              ) : messagesLoading && shown.length === 0 ? (
+                <>
+                  <Skeleton
+                    key="bubble-user-0"
+                    variant="rounded"
+                    height={44}
+                    width="42%"
+                    sx={{ alignSelf: "flex-end" }}
+                  />
+                  <Skeleton
+                    key="bubble-assistant-0"
+                    variant="rounded"
+                    height={72}
+                    width="78%"
+                  />
+                  <Skeleton
+                    key="bubble-user-1"
+                    variant="rounded"
+                    height={44}
+                    width="30%"
+                    sx={{ alignSelf: "flex-end" }}
+                  />
+                  <Skeleton
+                    key="bubble-assistant-1"
+                    variant="rounded"
+                    height={56}
+                    width="64%"
+                  />
+                  <Skeleton
+                    key="bubble-assistant-2"
+                    variant="rounded"
+                    height={48}
+                    width="56%"
+                  />
+                </>
               ) : shown.length === 0 ? (
                 <Stack
                   alignItems="center"
@@ -2054,7 +2279,10 @@ export function Workspace({ me }: { me: Me }) {
                       ) : null}
                       <div className="ob-md">
                         {message.text.trim() ? (
-                          <ChatMarkdown text={message.text} />
+                          <PluginSegments
+                            text={message.text}
+                            renderers={pluginRenderers}
+                          />
                         ) : null}
                         {message.images.map((src) => (
                           <img key={src} src={src} alt="" />
@@ -2190,6 +2418,30 @@ export function Workspace({ me }: { me: Me }) {
                   })}
                 </Stack>
               ) : null}
+              {pluginButtons.length > 0 && running && !sending ? (
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+                >
+                  {pluginButtons.map((button) => (
+                    <Chip
+                      key={`${button.plugin}:${button.id}`}
+                      label={button.label}
+                      size="small"
+                      variant="outlined"
+                      disabled={!running || sending || stopping}
+                      onClick={() => {
+                        const template = button.template.replace(
+                          /\{input\}/g,
+                          "",
+                        )
+                        void send(template)
+                      }}
+                    />
+                  ))}
+                </Stack>
+              ) : null}
               <Stack direction="row" spacing={1} alignItems="flex-end">
                 <IconButton
                   size="medium"
@@ -2208,6 +2460,7 @@ export function Workspace({ me }: { me: Me }) {
                   type="file"
                   multiple
                   hidden
+                  accept={pluginAccept || undefined}
                   onChange={(event) => {
                     void addJoined(event.currentTarget.files)
                     event.currentTarget.value = ""
@@ -2222,6 +2475,8 @@ export function Workspace({ me }: { me: Me }) {
                     disabled={!running || sending || stopping}
                     onChange={(event) => {
                       setMentionHidden(false)
+                      setSlashHidden(false)
+                      setSlashIndex(0)
                       if (event.currentTarget.value.includes("@")) {
                         ensureSkills()
                         ensureProjects()
@@ -2241,6 +2496,34 @@ export function Workspace({ me }: { me: Me }) {
                     onKeyDown={(
                       event: React.KeyboardEvent<HTMLInputElement>,
                     ) => {
+                      if (slashActive && !slashHidden) {
+                        const last = slashActive.length - 1
+                        if (event.key === "ArrowDown") {
+                          event.preventDefault()
+                          setSlashIndex((index) =>
+                            index + 1 > last ? 0 : index + 1,
+                          )
+                          return
+                        }
+                        if (event.key === "ArrowUp") {
+                          event.preventDefault()
+                          setSlashIndex((index) =>
+                            index - 1 < 0 ? last : index - 1,
+                          )
+                          return
+                        }
+                        if (event.key === "Tab" || event.key === "Enter") {
+                          event.preventDefault()
+                          const picked = slashActive[Math.min(slashIndex, last)]
+                          if (picked) acceptCommand(picked)
+                          return
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault()
+                          setSlashHidden(true)
+                          return
+                        }
+                      }
                       if (mention && !mentionHidden && suggestions.length) {
                         const last = suggestions.length - 1
                         if (event.key === "ArrowDown") {
@@ -2316,6 +2599,35 @@ export function Workspace({ me }: { me: Me }) {
                             />
                           </ListItemButton>
                         )}
+                      </List>
+                    </Paper>
+                  ) : null}
+                  {slashActive && !slashHidden && !sending && !stopping ? (
+                    <Paper
+                      elevation={8}
+                      sx={{
+                        position: "absolute",
+                        bottom: "calc(100% + 8px)",
+                        left: 0,
+                        right: 0,
+                        maxHeight: 264,
+                        overflowY: "auto",
+                        zIndex: 3,
+                      }}
+                    >
+                      <List dense disablePadding>
+                        {slashActive.map((command, index) => (
+                          <ListItemButton
+                            key={`${command.plugin}:${command.command}`}
+                            selected={index === slashIndex}
+                            onClick={() => acceptCommand(command)}
+                          >
+                            <ListItemText
+                              primary={`/${command.command}`}
+                              secondary={`${command.title} — ${command.plugin}`}
+                            />
+                          </ListItemButton>
+                        ))}
                       </List>
                     </Paper>
                   ) : null}
@@ -2693,7 +3005,7 @@ export function Workspace({ me }: { me: Me }) {
           flexDirection: "column",
         }}
       >
-        <Projects />
+        <Projects subscribe={subscribe} />
       </Box>
 
       <Drawer

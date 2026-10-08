@@ -8,3 +8,7 @@ apps/web/public/monaco
 *.sqlite
 *.sqlite-journal
 .DS_Store
+apps/marketplace/.frame-master
+apps/marketplace/.env
+apps/marketplace/.wrangler
+apps/marketplace/functions

@@ -23,6 +23,7 @@ import {
   AdminPanelSettingsIcon,
   DarkModeIcon,
   DashboardIcon,
+  ExtensionIcon,
   LightModeIcon,
   LogoutIcon,
   SettingsIcon,
@@ -30,7 +31,10 @@ import {
 } from "./icons"
 import { Login, SetCredentials } from "./Login"
 import { openNotifiedThread, setNoticeFocus } from "./notify"
+import { Plugins } from "./Plugins"
 import { Providers } from "./Providers"
+import { PluginTabView, pluginTabs, useInstalledPlugins } from "./plugin-tabs"
+import { ResetApprovals } from "./ResetApprovals"
 import { useThemeMode } from "./theme"
 import { Workspace } from "./Workspace"
 
@@ -42,6 +46,7 @@ export function App() {
   )
   const mobile = useMobile()
   const { mode, toggle } = useThemeMode()
+  const { plugins } = useInstalledPlugins()
 
   useEffect(() => {
     api<Me>("/api/me")
@@ -87,13 +92,19 @@ export function App() {
   if (!me) return <Login onLogin={setMe} />
   if (me.mustChangePassword) return <SetCredentials me={me} onSaved={setMe} />
 
+  const tabs = pluginTabs(plugins)
+  const pluginTab = tabs.find((tab) => tab.key === path.slice(1))
   const section = path.startsWith("/admin")
     ? "admin"
     : path.startsWith("/providers")
       ? "providers"
       : path.startsWith("/config")
         ? "config"
-        : "workspace"
+        : path.startsWith("/plugins")
+          ? "plugins"
+          : pluginTab
+            ? `plugin:${pluginTab.key}`
+            : "workspace"
   const goSection = (value: string) =>
     go(
       value === "admin"
@@ -102,7 +113,11 @@ export function App() {
           ? "/providers"
           : value === "config"
             ? "/config"
-            : "/",
+            : value === "plugins"
+              ? "/plugins"
+              : value.startsWith("plugin:")
+                ? `/${value.slice("plugin:".length)}`
+                : "/",
     )
 
   return (
@@ -126,6 +141,14 @@ export function App() {
               />
               <Tab label="Providers" value="providers" icon={<VpnKeyIcon />} />
               <Tab label="Config" value="config" icon={<SettingsIcon />} />
+              <Tab label="Plugins" value="plugins" icon={<ExtensionIcon />} />
+              {tabs.map((tab) => (
+                <Tab
+                  key={tab.key}
+                  label={tab.title}
+                  value={`plugin:${tab.key}`}
+                />
+              ))}
               {me.role === "admin" ? (
                 <Tab
                   label="Admin"
@@ -200,6 +223,10 @@ export function App() {
           )
         ) : section === "providers" ? (
           <Providers />
+        ) : section === "plugins" ? (
+          <Plugins isAdmin={me.role === "admin"} />
+        ) : pluginTab ? (
+          <PluginTabView tab={pluginTab} />
         ) : section === "config" ? (
           <Config
             me={me}
@@ -215,6 +242,8 @@ export function App() {
       </Box>
 
       <AgentNotices onOpen={openReply} />
+
+      <ResetApprovals />
 
       {mobile ? (
         <BottomNavigation
@@ -237,6 +266,17 @@ export function App() {
             value="config"
             icon={<SettingsIcon />}
           />
+          <BottomNavigationAction
+            label="Plugins"
+            value="plugins"
+            icon={<ExtensionIcon />}
+          />
+          {tabs.length > 0 ? (
+            <BottomNavigationAction
+              label={tabs[0]?.title ?? ""}
+              value={`plugin:${tabs[0]?.key ?? ""}`}
+            />
+          ) : null}
           {me.role === "admin" ? (
             <BottomNavigationAction
               label="Admin"

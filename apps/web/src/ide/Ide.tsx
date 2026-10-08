@@ -4,40 +4,44 @@ import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type * as Monaco from "monaco-editor"
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react"
 import { api } from "../api"
-import { useMobile } from "../hooks"
+import { type EventStream, useDebounced, useMobile } from "../hooks"
 import {
   ArrowBackIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   CloseIcon,
+  DeleteIcon,
   DescriptionIcon,
   FolderIcon,
   FolderOpenIcon,
   RefreshIcon,
   SaveIcon,
   SearchIcon,
+  TerminalIcon,
 } from "../icons"
 import {
   baseName,
   decodeContent,
   dirName,
+  type FileContent,
+  type FileIconToken,
   fuzzyFilterFiles,
   iconForFile,
   languageFor,
   parseEntries,
   pathSegments,
   relPath,
-  type FileContent,
-  type FileIconToken,
   type TreeEntry,
 } from "./file-utils"
+import { ProjectTerminal } from "./ProjectTerminal"
 import { iconColors, monoFont, uiFont, vscode } from "./theme"
 import type { ProjectInfo } from "./types"
 
@@ -45,7 +49,13 @@ loader.config({ paths: { vs: "/monaco/vs" } })
 
 type Toast = { text: string; error?: boolean }
 
-function FileGlyph({ token, size = 16 }: { token: FileIconToken; size?: number }) {
+function FileGlyph({
+  token,
+  size = 16,
+}: {
+  token: FileIconToken
+  size?: number
+}) {
   const color = iconColors[token] ?? iconColors.file
   if (token === "react") {
     return (
@@ -53,8 +63,20 @@ function FileGlyph({ token, size = 16 }: { token: FileIconToken; size?: number }
         <circle cx="12" cy="12" r="2" fill={color} />
         <g stroke={color} strokeWidth="1" fill="none">
           <ellipse cx="12" cy="12" rx="9" ry="3.6" />
-          <ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(60 12 12)" />
-          <ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(120 12 12)" />
+          <ellipse
+            cx="12"
+            cy="12"
+            rx="9"
+            ry="3.6"
+            transform="rotate(60 12 12)"
+          />
+          <ellipse
+            cx="12"
+            cy="12"
+            rx="9"
+            ry="3.6"
+            transform="rotate(120 12 12)"
+          />
         </g>
       </svg>
     )
@@ -74,7 +96,13 @@ function FileGlyph({ token, size = 16 }: { token: FileIconToken; size?: number }
         fontWeight="700"
         fill={color}
       >
-        {token === "ts" ? "TS" : token === "js" ? "JS" : token === "json" ? "{}" : ""}
+        {token === "ts"
+          ? "TS"
+          : token === "js"
+            ? "JS"
+            : token === "json"
+              ? "{}"
+              : ""}
       </text>
     </svg>
   )
@@ -82,9 +110,17 @@ function FileGlyph({ token, size = 16 }: { token: FileIconToken; size?: number }
 
 function FolderGlyph({ open, size = 16 }: { open: boolean; size?: number }) {
   return open ? (
-    <FolderOpenIcon width={size} height={size} style={{ color: iconColors.folder }} />
+    <FolderOpenIcon
+      width={size}
+      height={size}
+      style={{ color: iconColors.folder }}
+    />
   ) : (
-    <FolderIcon width={size} height={size} style={{ color: iconColors.folder }} />
+    <FolderIcon
+      width={size}
+      height={size}
+      style={{ color: iconColors.folder }}
+    />
   )
 }
 
@@ -129,9 +165,11 @@ const EDITOR_OPTIONS: Monaco.editor.IStandaloneEditorConstructionOptions = {
 export function Ide({
   project,
   onBack,
+  subscribe,
 }: {
   project: ProjectInfo
   onBack: () => void
+  subscribe?: EventStream["subscribe"]
 }) {
   const mobile = useMobile()
   const [root, setRoot] = useState<TreeEntry[] | null>(null)
@@ -151,10 +189,13 @@ export function Ide({
   const [quickFiles, setQuickFiles] = useState<string[] | null>(null)
   const [sidebar, setSidebar] = useState(!mobile)
   const [cursor, setCursor] = useState({ ln: 1, col: 1 })
+  const [termOpen, setTermOpen] = useState(false)
 
   const stateRef = useRef({ active, draft, saved, project, saving })
   stateRef.current = { active, draft, saved, project, saving }
   const quickInputRef = useRef<HTMLInputElement | null>(null)
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
+  const touchedRef = useRef<Set<string>>(new Set())
 
   const showToast = useCallback((text: string, error = false) => {
     setToast({ text, error })
@@ -190,16 +231,24 @@ export function Ide({
     }
   }, [listDir, project.path, showToast])
 
-  useEffect(() => {
-    let alive = true
-    void refreshTree().then((entries) => {
-      if (alive && entries.length > 0) return
-      // keep the (possibly empty) root; nothing else to prime
-    })
-    return () => {
-      alive = false
-    }
-  }, [refreshTree])
+  /** Re-list specific directories after file events without touching others. */
+  const refreshDirs = useCallback(
+    async (dirs: string[]) => {
+      for (const dir of dirs) {
+        try {
+          const entries = await listDir(dir)
+          if (dir === project.path) setRoot(entries)
+          else
+            setChildren((current) =>
+              current[dir] ? { ...current, [dir]: entries } : current,
+            )
+        } catch {
+          // transient — the next event batch retries
+        }
+      }
+    },
+    [listDir, project.path],
+  )
 
   const dirty = useMemo(() => {
     const out: Record<string, boolean> = {}
@@ -210,6 +259,91 @@ export function Ide({
   }, [draft, saved])
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+
+  const reloadActive = useCallback(
+    async (path: string) => {
+      try {
+        const body = await api<unknown>(
+          `/api/projects/${project.id}/file?path=${encodeURIComponent(path)}`,
+        )
+        const content = decodeContent(baseName(path), body)
+        if (content?.kind !== "text") return
+        const viewState = editorRef.current?.saveViewState()
+        setSaved((current) => ({ ...current, [path]: content.text }))
+        setDraft((current) => ({ ...current, [path]: content.text }))
+        const editor = editorRef.current
+        if (viewState && editor) {
+          requestAnimationFrame(() => editor.restoreViewState(viewState))
+        }
+      } catch {
+        // the file may have been unlinked; the tree refresh shows it
+      }
+    },
+    [project.id],
+  )
+
+  /** Apply a debounced batch of file events: refresh trees, reload clean active file. */
+  const flushTouched = useCallback(() => {
+    const files = [...touchedRef.current]
+    touchedRef.current.clear()
+    if (files.length === 0) return
+    const dirs = new Set<string>([project.path])
+    for (const file of files) {
+      let dir = dirName(file)
+      while (dir.startsWith(project.path) && dir.length > project.path.length) {
+        dirs.add(dir)
+        dir = dirName(dir)
+      }
+    }
+    void refreshDirs([...dirs])
+    const snapshot = stateRef.current
+    const activePath = snapshot.active
+    if (activePath && files.includes(activePath)) {
+      if (dirtyRef.current[activePath])
+        showToast(
+          `${baseName(activePath)} changed on the desktop — your edits are unsaved`,
+        )
+      else void reloadActive(activePath)
+    }
+  }, [project.path, refreshDirs, reloadActive, showToast])
+  const flushTouchedDebounced = useDebounced(flushTouched, 350)
+
+  useEffect(() => {
+    if (!subscribe) return
+    return subscribe((event) => {
+      let touched: string[] | null = null
+      if (event.type === "project.files") {
+        const props = event.properties as { files?: unknown } | undefined
+        if (Array.isArray(props?.files)) touched = props.files as string[]
+      } else if (
+        event.type === "file.watcher.updated" ||
+        event.type === "file.edited"
+      ) {
+        const props = event.properties as { file?: unknown } | undefined
+        if (typeof props?.file === "string") touched = [props.file]
+      }
+      if (!touched) return
+      let hit = false
+      for (const file of touched) {
+        if (typeof file !== "string") continue
+        if (!file.startsWith(`${project.path}/`)) continue
+        hit = true
+        touchedRef.current.add(file)
+      }
+      if (hit) flushTouchedDebounced()
+    })
+  }, [flushTouchedDebounced, project.path, subscribe])
+
+  useEffect(() => {
+    let alive = true
+    void refreshTree().then((entries) => {
+      if (alive && entries.length > 0) return
+      // keep the (possibly empty) root; nothing else to prime
+    })
+    return () => {
+      alive = false
+    }
+  }, [refreshTree])
 
   const openFile = useCallback(
     async (path: string) => {
@@ -273,11 +407,14 @@ export function Ide({
     if (value === snapshot.saved[path]) return
     setSaving(true)
     try {
-      await api(`/api/projects/${snapshot.project.id}/file`, {
-        method: "PUT",
-        headers: { "content-type": "text/plain; charset=utf-8" },
-        body: value,
-      })
+      await api(
+        `/api/projects/${snapshot.project.id}/file?path=${encodeURIComponent(path)}`,
+        {
+          method: "PUT",
+          headers: { "content-type": "text/plain; charset=utf-8" },
+          body: value,
+        },
+      )
       setSaved((current) => ({ ...current, [path]: value }))
       showToast(`Saved ${baseName(path)}`)
     } catch (error) {
@@ -290,21 +427,23 @@ export function Ide({
     }
   }, [showToast])
 
-  const closeTab = useCallback(
-    (path: string) => {
-      if (dirtyRef.current[path] && !window.confirm(`Save changes to ${baseName(path)} before closing?`)) {
-        return
-      }
-      setTabs((current) => {
-        const next = current.filter((item) => item !== path)
-        setActive((currentActive) =>
-          currentActive === path ? (next[next.length - 1] ?? null) : currentActive,
-        )
-        return next
-      })
-    },
-    [],
-  )
+  const closeTab = useCallback((path: string) => {
+    if (
+      dirtyRef.current[path] &&
+      !window.confirm(`Save changes to ${baseName(path)} before closing?`)
+    ) {
+      return
+    }
+    setTabs((current) => {
+      const next = current.filter((item) => item !== path)
+      setActive((currentActive) =>
+        currentActive === path
+          ? (next[next.length - 1] ?? null)
+          : currentActive,
+      )
+      return next
+    })
+  }, [])
 
   const ensureQuickFiles = useCallback(async () => {
     if (quickFiles) return
@@ -332,10 +471,12 @@ export function Ide({
         ? fuzzyFilterFiles(quickFiles ?? [], project.path, quickQuery)
         : [],
     [project.path, quickFiles, quickOpen, quickQuery],
-  );
+  )
 
   useEffect(() => {
-    setQuickIndex((current) => Math.min(current, Math.max(results.length - 1, 0)))
+    setQuickIndex((current) =>
+      Math.min(current, Math.max(results.length - 1, 0)),
+    )
   }, [results.length])
 
   useEffect(() => {
@@ -349,6 +490,11 @@ export function Ide({
       if (mod && event.key.toLowerCase() === "p") {
         event.preventDefault()
         openQuickOpen()
+        return
+      }
+      if (mod && event.key === "`") {
+        event.preventDefault()
+        setTermOpen((current) => !current)
       }
     }
     window.addEventListener("keydown", onKey, true)
@@ -383,9 +529,7 @@ export function Ide({
             height: 22,
             paddingRight: 1,
             cursor: "pointer",
-            backgroundColor: selected
-              ? vscode.listActive
-              : undefined,
+            backgroundColor: selected ? vscode.listActive : undefined,
             color: vscode.sidebarFg,
             fontSize: 13,
             whiteSpace: "nowrap",
@@ -410,7 +554,10 @@ export function Ide({
           ) : (
             <FileGlyph token={iconForFile(entry.name)} />
           )}
-          <Box Element="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+          <Box
+            Element="span"
+            sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
+          >
             {entry.name}
           </Box>
         </Box>,
@@ -439,7 +586,6 @@ export function Ide({
   }
 
   const activeBase = active ? baseName(active) : null
-  const activeDirty = active ? dirty[active] === true : false
   const activePreview = active ? previews[active] : undefined
 
   return (
@@ -470,16 +616,20 @@ export function Ide({
           gap: 1,
         }}
       >
-        {mobile ? (
-          <TitleBarIcon label="Back to projects" onClick={onBack}>
-            <ArrowBackIcon width={18} height={18} />
-          </TitleBarIcon>
-        ) : null}
+        <TitleBarIcon label="Back to projects" onClick={onBack}>
+          <ArrowBackIcon width={18} height={18} />
+        </TitleBarIcon>
         <TitleBarIcon
           label={sidebar ? "Hide explorer" : "Show explorer"}
           onClick={() => setSidebar((current) => !current)}
         >
           <DescriptionIcon width={18} height={18} />
+        </TitleBarIcon>
+        <TitleBarIcon
+          label={termOpen ? "Hide terminal" : "Show terminal"}
+          onClick={() => setTermOpen((current) => !current)}
+        >
+          <TerminalIcon width={18} height={18} />
         </TitleBarIcon>
         <Box
           sx={{
@@ -492,7 +642,7 @@ export function Ide({
         >
           {activeBase ? `${activeBase} — ${project.name}` : project.name}
         </Box>
-        <Box sx={{ width: 18 * 2 + 8 }} />
+        <Box sx={{ width: mobile ? 192 : 152 }} />
       </Box>
 
       {/* Body */}
@@ -518,7 +668,11 @@ export function Ide({
             >
               <DescriptionIcon width={24} height={24} />
             </ActivityIcon>
-            <ActivityIcon label="Quick open" active={false} onClick={openQuickOpen}>
+            <ActivityIcon
+              label="Quick open"
+              active={false}
+              onClick={openQuickOpen}
+            >
               <SearchIcon width={24} height={24} />
             </ActivityIcon>
           </Box>
@@ -574,7 +728,10 @@ export function Ide({
               }}
             >
               <Chevron open />
-              <Box Element="span" sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+              <Box
+                Element="span"
+                sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}
+              >
                 {project.name}
               </Box>
               <IconAction
@@ -735,7 +892,10 @@ export function Ide({
             >
               {pathSegments(relPath(project.path, active)).map(
                 (segment, index, all) => (
-                  <Box key={index} sx={{ display: "flex", alignItems: "center", gap: "2px" }}>
+                  <Box
+                    key={all.slice(0, index + 1).join("/")}
+                    sx={{ display: "flex", alignItems: "center", gap: "2px" }}
+                  >
                     {index > 0 ? (
                       <ChevronRightIcon width={14} height={14} />
                     ) : null}
@@ -780,7 +940,11 @@ export function Ide({
                     Element="img"
                     src={activePreview.src}
                     alt={activeBase ?? "preview"}
-                    sx={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+                    sx={{
+                      maxWidth: "100%",
+                      maxHeight: "100%",
+                      objectFit: "contain",
+                    }}
                   />
                 </Box>
               ) : (
@@ -808,6 +972,7 @@ export function Ide({
                   options={EDITOR_OPTIONS}
                   loading={<CircularProgress size={1.6} />}
                   onMount={(editor) => {
+                    editorRef.current = editor
                     editor.onDidChangeCursorPosition((event) => {
                       setCursor({
                         ln: event.position.lineNumber,
@@ -835,21 +1000,93 @@ export function Ide({
                   color: "#565656",
                 }}
               >
-                <Typography sx={{ fontSize: 42, fontWeight: 200, letterSpacing: "0.02em" }}>
+                <Typography
+                  sx={{
+                    fontSize: 42,
+                    fontWeight: 200,
+                    letterSpacing: "0.02em",
+                  }}
+                >
                   {project.name}
                 </Typography>
                 <Box sx={{ fontSize: 13, color: vscode.muted }}>
                   Open a file from the explorer
                 </Box>
                 {!mobile ? (
-                  <Box sx={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: 2, fontSize: 12 }}>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "4px",
+                      marginTop: 2,
+                      fontSize: 12,
+                    }}
+                  >
                     <ShortcutRow keys="Ctrl+P" text="Quick open a file" />
                     <ShortcutRow keys="Ctrl+S" text="Save the active file" />
+                    <ShortcutRow keys="Ctrl+`" text="Toggle the terminal" />
                   </Box>
                 ) : null}
               </Box>
             ) : null}
           </Box>
+
+          {/* Terminal panel */}
+          {termOpen ? (
+            <Box
+              sx={{
+                height: 280,
+                flexShrink: 0,
+                display: "flex",
+                flexDirection: "column",
+                borderTop: `1px solid ${vscode.border}`,
+                backgroundColor: vscode.editorBg,
+                minHeight: 0,
+              }}
+            >
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  height: 30,
+                  flexShrink: 0,
+                  padding: "0 8px",
+                  gap: "6px",
+                  fontSize: 11,
+                  color: vscode.sidebarFg,
+                }}
+              >
+                <TerminalIcon width={14} height={14} />
+                <Box
+                  Element="span"
+                  sx={{ fontWeight: 700, letterSpacing: "0.04em" }}
+                >
+                  TERMINAL
+                </Box>
+                <Box Element="span" sx={{ color: vscode.muted }}>
+                  bash — {project.name}
+                </Box>
+                <Box sx={{ flex: 1 }} />
+                <IconAction
+                  label="Kill terminal"
+                  onClick={() => {
+                    setTermOpen(false)
+                  }}
+                >
+                  <DeleteIcon width={15} height={15} />
+                </IconAction>
+                <IconAction
+                  label="Hide panel"
+                  onClick={() => setTermOpen(false)}
+                >
+                  <ChevronDownIcon width={16} height={16} />
+                </IconAction>
+              </Box>
+              <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
+                <ProjectTerminal project={project} />
+              </Box>
+            </Box>
+          ) : null}
 
           {/* Status bar */}
           <Box
@@ -1020,14 +1257,24 @@ export function Ide({
                           cursor: "pointer",
                           color: vscode.editorFg,
                           backgroundColor:
-                            index === quickIndex ? vscode.quickActiveBg : undefined,
+                            index === quickIndex
+                              ? vscode.quickActiveBg
+                              : undefined,
                         }}
                       >
-                        <FileGlyph token={iconForFile(baseName(path))} size={15} />
+                        <FileGlyph
+                          token={iconForFile(baseName(path))}
+                          size={15}
+                        />
                         <Box Element="span">{baseName(path)}</Box>
                         <Box
                           Element="span"
-                          sx={{ color: vscode.muted, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis" }}
+                          sx={{
+                            color: vscode.muted,
+                            fontSize: 11,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
                         >
                           {relPath(project.path, dirName(path))}
                         </Box>

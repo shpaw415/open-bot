@@ -14,6 +14,7 @@ import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "../api"
+import type { EventStream } from "../hooks"
 import { useMobile } from "../hooks"
 import { AddIcon, DeleteIcon, FolderIcon } from "../icons"
 import { Ide } from "./Ide"
@@ -32,11 +33,16 @@ function createdLabel(ms: number): string {
   return date.toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
-    year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+    year:
+      date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
   })
 }
 
-export function Projects() {
+export function Projects({
+  subscribe,
+}: {
+  subscribe?: EventStream["subscribe"]
+}) {
   const mobile = useMobile()
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
   const [error, setError] = useState("")
@@ -107,6 +113,7 @@ export function Projects() {
       >
         <Ide
           project={selected}
+          subscribe={subscribe}
           onBack={() => {
             setSelected(null)
             load()
@@ -199,9 +206,7 @@ export function Projects() {
                 <FolderIcon />
               </Box>
               <Stack sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 600 }}>
-                  {project.name}
-                </Typography>
+                <Typography sx={{ fontWeight: 600 }}>{project.name}</Typography>
                 <Typography
                   variant="caption"
                   sx={{

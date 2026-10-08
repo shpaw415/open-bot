@@ -12,6 +12,7 @@ import {
   extractResult,
   isProcessAlive,
   parseRoles,
+  rolePrompt,
 } from "./blender-team"
 
 const script = join(import.meta.dir, "blender-team.ts")
@@ -57,6 +58,22 @@ test("isProcessAlive checks pid liveness", () => {
   expect(isProcessAlive(2_000_000_000)).toBe(false)
   expect(isProcessAlive(0)).toBe(false)
   expect(isProcessAlive(Number.NaN)).toBe(false)
+})
+
+test("rolePrompt describes the scene state for fresh, resumed, and retried runs", () => {
+  const args = [
+    "model",
+    "an owl",
+    "/tmp/d",
+    "/tmp/d/scene.blend",
+    "/tmp/o.glb",
+  ] as const
+  expect(rolePrompt(...args, [])).toContain("factory startup file")
+  expect(rolePrompt(...args, [], true)).toContain("previous attempt")
+  expect(rolePrompt(...args, [], true)).not.toContain("factory startup file")
+  expect(rolePrompt(...args, ["materials: PASS assigned ebony"])).toContain(
+    "previous stages did",
+  )
 })
 
 test("a stale lock from a dead run is cleared instead of blocking", async () => {

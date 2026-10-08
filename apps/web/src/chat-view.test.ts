@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import {
   chatImageUrl,
   embedWorkspaceImages,
+  splitPluginCards,
   workspaceModel3dPath,
   workspaceModel3dSrc,
 } from "./chat-view"
@@ -31,4 +32,37 @@ test("embeds a bare glb path line like a workspace image", () => {
   expect(embedWorkspaceImages("saved at /home/agent/workspace/owl.glb")).toBe(
     "saved at /home/agent/workspace/owl.glb",
   )
+})
+
+test("splits plugin-card blocks out of the message text", () => {
+  const text = [
+    "Here is the weather:",
+    "```plugin-card",
+    '{"plugin":"weather-pro","type":"weather-card","data":{"city":"Paris"}}',
+    "```",
+    "Enjoy!",
+  ].join("\n")
+  const segments = splitPluginCards(text)
+  expect(segments).toHaveLength(3)
+  expect(segments[0]).toEqual({ kind: "text", text: "Here is the weather:\n" })
+  expect(segments[1]?.kind).toBe("plugin-card")
+  if (segments[1]?.kind === "plugin-card") {
+    expect(segments[1].block.plugin).toBe("weather-pro")
+    expect(segments[1].block.type).toBe("weather-card")
+    expect(segments[1].block.data.city).toBe("Paris")
+  }
+  expect(segments[2]).toEqual({ kind: "text", text: "\nEnjoy!" })
+})
+
+test("keeps plain text and malformed cards readable", () => {
+  expect(splitPluginCards("just text")).toEqual([
+    { kind: "text", text: "just text" },
+  ])
+  const broken = splitPluginCards("```plugin-card\nnot json\n```")
+  expect(broken).toHaveLength(1)
+  expect(broken[0]?.kind).toBe("plugin-card")
+  if (broken[0]?.kind === "plugin-card") {
+    expect(broken[0].block.plugin).toBe("")
+    expect(broken[0].block.data).toEqual({})
+  }
 })

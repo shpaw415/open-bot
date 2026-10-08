@@ -37,10 +37,19 @@ export function parseEntries(body: unknown, dir: string): TreeEntry[] {
     const item = raw as {
       name?: unknown
       path?: unknown
+      absolute?: unknown
       type?: unknown
       isDirectory?: unknown
     }
-    const path = typeof item.path === "string" ? item.path : ""
+    const absolute =
+      typeof item.absolute === "string" && item.absolute.startsWith("/")
+        ? item.absolute.replace(/\/+$/g, "")
+        : ""
+    const listed =
+      typeof item.path === "string" && item.path.startsWith("/")
+        ? item.path.replace(/\/+$/g, "")
+        : ""
+    const path = absolute || listed
     let name = typeof item.name === "string" ? item.name : ""
     if (!name && path) name = baseName(path)
     if (!name || name === "." || name === "..") continue
@@ -164,9 +173,17 @@ export function isImageFile(name: string): boolean {
   const base = baseName(name).toLowerCase()
   const dot = base.lastIndexOf(".")
   const ext = dot < 0 ? "" : base.slice(dot + 1)
-  return ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif"].includes(
-    ext,
-  )
+  return [
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "svg",
+    "ico",
+    "bmp",
+    "avif",
+  ].includes(ext)
 }
 
 export type FileContent =
@@ -217,7 +234,12 @@ function imageMimeFromBase64(base64: string): string | null {
     bytes[3] === 0x47
   )
     return "image/png"
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  )
     return "image/jpeg"
   if (
     bytes.length >= 4 &&

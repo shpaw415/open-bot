@@ -1,0 +1,69 @@
+---
+name: plugin
+description: Create, publish, install, and maintain open-bot plugins. Use when a task needs a capability the desktop does not have, when the user asks about plugins or the marketplace, or when a message starts with [cron: and mentions a plugin guard.
+---
+
+# Plugins
+
+Plugins extend what you can do: skills, personalities, scheduled jobs, desktop tools, dashboard tabs, chat composer features, vault keys, and OpenCode extensions. They live on the open-bot plugin marketplace. Use the `ob-plugin` CLI.
+
+## When you lack a capability
+
+When a task needs something you cannot do with current tools, skills, or plugins, plan a plugin instead of giving up or hand-rolling a one-off:
+
+1. Scaffold: `ob-plugin new <slug>` creates `~/plugins-create/<slug>/` with `open-bot.plugin.json` and a README.
+2. Implement: fill the manifest — inline `skills`, `personas`, `cron`, `tools`, `configs`, `permissions`, `dashboard`, `textbox`, `opencode`. Tool files are plain scripts installed into `/usr/local/bin`.
+3. Test locally: run the tool scripts yourself, walk through the skill steps, and check the cron prompt reads well.
+4. Validate: `ob-plugin validate ~/plugins-create/<slug>` and fix every issue.
+5. Publish (see below), then `ob-plugin install <slug>` so the new capability goes live on this desktop.
+
+Tell the user in one sentence that you built and published a plugin for it.
+
+## Publish checklist
+
+Publishing requires the manifest to be on GitHub at the matching release tag:
+
+```sh
+cd ~/plugins-create/NAME
+ob-plugin validate ~/plugins-create/NAME
+git init -b main && git add -A && git commit -m "v1.0.0"
+gh repo create OWNER/NAME --public --source . --push
+gh release create v1.0.0 -R OWNER/NAME --notes "First release"
+ob-plugin publish ~/plugins-create/NAME
+ob-plugin install NAME
+```
+
+- `publish` registers the manifest on the marketplace and automatically creates a daily guard cron named `plugin:NAME:guard`. Keep that job; it is your maintenance duty. It survives uninstalling the plugin.
+- Bump `version` (semver) for every change, commit, create a matching `v<version>` release, and publish again so the marketplace serves the new version.
+- Never put secrets in a manifest. Request vault slugs with `permissions.vaultCreate` and let the user fill values on the Config Keys page.
+
+## Maintaining your plugins (guard cron)
+
+When a message starts with `[cron: plugin:NAME:guard]`, do the maintenance pass in this temporary session:
+
+1. `gh issue list -R OWNER/NAME --state open` and `gh pr list -R OWNER/NAME --state open`.
+2. For each: read it and act. Answer questions, fix clear bugs in `~/plugins-create/NAME`, review PRs (`gh pr diff NUMBER -R OWNER/NAME`, `gh pr checks NUMBER -R OWNER/NAME`) and merge satisfying ones with `gh pr merge NUMBER -R OWNER/NAME --squash --delete-branch`, close invalid ones with a kind comment.
+3. Check the marketplace discussion: `ob-plugin comments NAME`, reply with `ob-plugin comment NAME "..."`.
+4. If merged changes warrant a release: bump the version, commit, release the new tag, `ob-plugin publish ~/plugins-create/NAME`.
+5. End with what you did. If there was nothing to do, say exactly that.
+
+## Using and installing plugins
+
+```sh
+ob-plugin search weather       # search the marketplace
+ob-plugin info weather-pro     # details, versions, repo
+ob-plugin install weather-pro  # installs skills, personas, cron, tools, tabs
+ob-plugin list                 # installed plugins
+ob-plugin remove weather-pro   # uninstall (reverses everything it created)
+ob-plugin issue weather-pro "Title" "Details"   # file a GitHub issue
+ob-plugin settings weather-pro units=imperial   # change settings
+```
+
+Install respects the instance policy: `manual` asks the user to confirm the permission list (a `--yes` flag skips only when the policy allows it), `auto` installs immediately. To report a bug in a plugin you use, prefer `ob-plugin issue` — the creator's guard cron picks it up within a day.
+
+## Rules
+
+- Plugin projects live in `~/plugins-create/<slug>/`. Do not scatter plugin files elsewhere.
+- Only publish manifests you validated. Never publish another creator's plugin under your name.
+- Do not edit installed plugin payloads by hand (skills, cron jobs named `plugin:<id>:...`, `/usr/local/bin/ob-plugin-<id>-*` tools, `~/.config/open-bot/plugin-<id>.json`). Uninstall or republish instead.
+- Do not touch the guard cron of a plugin you did not publish.

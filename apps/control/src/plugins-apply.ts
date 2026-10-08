@@ -1,0 +1,330 @@
+import type {
+  CronJob,
+  Db,
+  InstalledPlugin,
+  PluginAppliedLog,
+  User,
+} from "@open-bot/db"
+import type { PluginManifest } from "@open-bot/plugin-kit"
+import { nextRunMs } from "./cron"
+import {
+  endpoint,
+  type PluginToolFile,
+  removePluginTools,
+  restartOpencode,
+  syncOpencodePlugin,
+  syncPluginAuth,
+  syncPluginTools,
+} from "./docker"
+import { createVikingSkills } from "./viking-skills"
+import { vikingUserKey } from "./viking-user"
+
+export type MarketplaceEntry = {
+  id: string
+  version: string
+  status: "pending" | "approved" | "rejected"
+  manifest: PluginManifest
+  readme: string | null
+  downloads: number
+}
+
+export type PluginInstallOptions = {
+  settings?: Record<string, string>
+}
+
+export async function ensureAgentDesktop(user: User, db: Db) {
+  if (user.disabled) throw new Error("account disabled")
+  const desktop = db.desktop(user.id)
+  if (!desktop) throw new Error("desktop record missing")
+  return desktop
+}
+
+async function vikingSkills(user: User, db: Db) {
+  const desktop = await ensureAgentDesktop(user, db)
+  const base = await endpoint(user.id, "viking", 1933)
+  return createVikingSkills(base, vikingUserKey(desktop.vikingKey))
+}
+
+export function pluginSettingsFor(
+  manifest: PluginManifest,
+  existing: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const config of manifest.configs ?? []) {
+    out[config.key] = existing[config.key] ?? config.def
+  }
+  return out
+}
+
+export function pluginConfigPayload(
+  db: Db,
+  userId: string,
+  manifest: PluginManifest,
+  settings: Record<string, string>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { settings }
+  const vaultRead = manifest.permissions?.vaultRead ?? []
+  if (vaultRead.length > 0) {
+    const vault: Record<string, unknown> = {}
+    for (const slug of vaultRead) {
+      const key = db.getUserKey(userId, slug)
+      if (key?.apiKey) {
+        vault[slug] = {
+          apiKey: key.apiKey,
+          accountId: key.accountId,
+          baseUrl: key.baseUrl,
+        }
+      }
+    }
+    payload.vault = vault
+  }
+  return payload
+}
+
+// Creates personas, cron jobs, skills, vault entries, desktop tools, and
+// OpenCode extensions declared by the manifest, and records what it created
+// so uninstall can reverse every piece.
+export async function applyPluginInstall(
+  db: Db,
+  user: User,
+  entry: MarketplaceEntry,
+  options: PluginInstallOptions = {},
+): Promise<InstalledPlugin> {
+  const { manifest } = entry
+  const existing = db.installedPlugin(user.id, manifest.id)
+  const previous = existing?.applied
+  const reusedPersonaIds: string[] = []
+  const applied: PluginAppliedLog = {
+    personaIds: [],
+    cronJobIds: [],
+    skills: [],
+    keys: [],
+    tools: [],
+    opencode: false,
+  }
+
+  try {
+    const wantedSettings = pluginSettingsFor(manifest, options.settings ?? {})
+    for (const [key, value] of Object.entries(wantedSettings)) {
+      db.setPluginSetting(user.id, manifest.id, key, value)
+    }
+
+    for (const slug of manifest.permissions?.vaultCreate ?? []) {
+      if (!db.getUserKey(user.id, slug)) {
+        db.setUserKey(user.id, slug, {
+          apiKey: "",
+          accountId: "",
+          gatewayId: "",
+          gatewayToken: "",
+          gatewaySlug: "",
+          baseUrl: "",
+        })
+      }
+      applied.keys.push(slug)
+    }
+
+    for (const persona of manifest.personas ?? []) {
+      const match = db
+        .personas(user.id)
+        .find((row) => row.name.toLowerCase() === persona.name.toLowerCase())
+      if (match) {
+        reusedPersonaIds.push(match.id)
+        continue
+      }
+      const id = crypto.randomUUID()
+      db.createPersona({
+        id,
+        userId: user.id,
+        name: persona.name,
+        instruction: persona.instruction,
+        createdAt: Date.now(),
+      })
+      applied.personaIds.push(id)
+    }
+
+    for (const job of manifest.cron ?? []) {
+      const name = `plugin:${manifest.id}:${job.name}`
+      const previousOwned = previous?.cronJobIds.find(
+        (id) => db.cronJobById(id, user.id)?.name === name,
+      )
+      if (previousOwned) {
+        db.deleteCronJob(previousOwned, user.id)
+      } else {
+        const clash = db.cronJobs(user.id).find((row) => row.name === name)
+        if (clash)
+          throw new Error(`a scheduled job named ${name} already exists`)
+      }
+      const id = crypto.randomUUID()
+      const row: CronJob = {
+        id,
+        userId: user.id,
+        name,
+        message: job.message,
+        kind: job.cronExpr ? ("cron" as const) : ("every" as const),
+        cronExpr: job.cronExpr ?? null,
+        everySeconds: job.everySeconds ?? null,
+        atMs: null,
+        enabled: true,
+        deleteAfterRun: false,
+        sessionId: null,
+        createdAt: Date.now(),
+        lastRunAt: null,
+        nextRunAt: null,
+        runCount: 0,
+        lastError: null,
+        providerId: null,
+        modelId: null,
+        personaId: null,
+        runKind: "prompt" as const,
+        script: null,
+      }
+      row.nextRunAt = nextRunMs(row)
+      db.createCronJob(row)
+      applied.cronJobIds.push(id)
+    }
+
+    if ((manifest.skills?.length ?? 0) > 0) {
+      const skills = await vikingSkills(user, db)
+      const owned = new Set(previous?.skills ?? [])
+      const existingNames = new Set((await skills.list()).map((s) => s.name))
+      for (const skill of manifest.skills ?? []) {
+        if (existingNames.has(skill.name) && !owned.has(skill.name)) {
+          throw new Error(`a skill named ${skill.name} already exists`)
+        }
+        await skills.save({
+          name: skill.name,
+          description: skill.description,
+          body: skill.body,
+        })
+        if (!applied.skills.includes(skill.name))
+          applied.skills.push(skill.name)
+      }
+    }
+
+    const toolFiles: PluginToolFile[] = (manifest.tools ?? []).map((tool) => ({
+      name: tool.name,
+      content: tool.content,
+      exec: tool.exec !== false,
+    }))
+    if (toolFiles.length > 0) {
+      await syncPluginTools(user.id, manifest.id, toolFiles)
+      for (const file of toolFiles) applied.tools.push(file.name)
+    }
+
+    const payload = pluginConfigPayload(db, user.id, manifest, wantedSettings)
+    await syncPluginAuth(user.id, manifest.id, payload)
+
+    const opencode = manifest.opencode
+    if (opencode && (opencode.plugin?.length || opencode.mcp)) {
+      await syncOpencodePlugin(user.id, {
+        addPlugins: opencode.plugin ?? [],
+        removePlugins: [],
+        addMcp: (opencode.mcp ?? {}) as Record<string, unknown>,
+        removeMcp: [],
+      })
+      applied.opencode = true
+      await restartOpencode(user.id).catch(() => {})
+    }
+  } catch (error) {
+    // A failed fresh install must leave nothing behind. A failed upgrade can
+    // leave a partially upgraded state; uninstall still cleans everything.
+    if (!existing) {
+      try {
+        await revertApplied(db, user, manifest.id, applied)
+      } catch {
+        // best effort
+      }
+    }
+    throw error
+  }
+
+  const now = Date.now()
+  applied.personaIds.push(...reusedPersonaIds)
+  if (existing) {
+    db.updateInstalledPlugin(user.id, manifest.id, {
+      version: entry.version,
+      manifest: JSON.stringify(manifest),
+      readme: entry.readme ?? existing.readme,
+    })
+  } else {
+    db.createInstalledPlugin({
+      id: crypto.randomUUID(),
+      userId: user.id,
+      pluginId: manifest.id,
+      version: entry.version,
+      manifest: JSON.stringify(manifest),
+      readme: entry.readme,
+      enabled: true,
+      applied: "{}",
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+  db.setInstalledPluginApplied(user.id, manifest.id, applied)
+  const row = db.installedPlugin(user.id, manifest.id)
+  if (!row) throw new Error("plugin row disappeared after install")
+  return row
+}
+
+async function revertApplied(
+  db: Db,
+  user: User,
+  pluginId: string,
+  applied: InstalledPlugin["applied"],
+) {
+  for (const id of applied.personaIds) {
+    const persona = db.personaById(id, user.id)
+    if (persona) db.deletePersona(id, user.id)
+  }
+  for (const id of applied.cronJobIds) db.deleteCronJob(id, user.id)
+  if (applied.skills.length > 0) {
+    const skills = await vikingSkills(user, db)
+    for (const name of applied.skills) await skills.remove(name).catch(() => {})
+  }
+  for (const slug of applied.keys) {
+    const key = db.getUserKey(user.id, slug)
+    if (key && key.apiKey === "") db.clearUserKey(user.id, slug)
+  }
+  if (applied.tools.length > 0) {
+    await removePluginTools(user.id, pluginId, applied.tools).catch(() => {})
+  }
+  if (applied.opencode) {
+    const manifest = db.installedPlugin(user.id, pluginId)?.manifest as
+      | PluginManifest
+      | undefined
+    await syncOpencodePlugin(user.id, {
+      addPlugins: [],
+      removePlugins: manifest?.opencode?.plugin ?? [],
+      addMcp: {},
+      removeMcp: Object.keys((manifest?.opencode?.mcp ?? {}) as object),
+    }).catch(() => {})
+  }
+}
+
+export async function applyPluginUninstall(
+  db: Db,
+  user: User,
+  row: InstalledPlugin,
+) {
+  await revertApplied(db, user, row.pluginId, row.applied)
+  await syncPluginAuth(user.id, row.pluginId, null).catch(() => {})
+  db.deleteInstalledPlugin(user.id, row.pluginId)
+}
+
+export async function reapplyPluginConfig(
+  db: Db,
+  user: User,
+  row: InstalledPlugin,
+) {
+  const manifest = row.manifest as PluginManifest
+  const saved: Record<string, string> = {}
+  for (const setting of db.pluginSettings(user.id, row.pluginId)) {
+    saved[setting.key] = setting.value
+  }
+  const settings = pluginSettingsFor(manifest, saved)
+  await syncPluginAuth(
+    user.id,
+    row.pluginId,
+    pluginConfigPayload(db, user.id, manifest, settings),
+  )
+}

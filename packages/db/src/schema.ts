@@ -70,6 +70,22 @@ export const desktops = sqliteTable("desktops", {
   system1Slug: text("system1_slug"),
 })
 
+export const userKeys = sqliteTable(
+  "user_keys",
+  {
+    userId: text("user_id").notNull(),
+    slug: text("slug").notNull(),
+    apiKey: text("api_key"),
+    accountId: text("account_id"),
+    gatewayId: text("gateway_id"),
+    gatewayToken: text("gateway_token"),
+    gatewaySlug: text("gateway_slug"),
+    baseUrl: text("base_url"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.slug] })],
+)
+
 export const usageEvents = sqliteTable(
   "usage_events",
   {
@@ -235,3 +251,46 @@ export const projects = sqliteTable(
     uniqueIndex("projects_user_name").on(table.userId, table.name),
   ],
 )
+
+export const installedPlugins = sqliteTable(
+  "installed_plugins",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    pluginId: text("plugin_id").notNull(),
+    version: text("version").notNull(),
+    manifest: text("manifest").notNull(),
+    readme: text("readme"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    applied: text("applied").notNull().default("{}"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("installed_plugins_user").on(table.userId),
+    uniqueIndex("installed_plugins_user_plugin").on(
+      table.userId,
+      table.pluginId,
+    ),
+  ],
+)
+
+export const pluginSettings = sqliteTable(
+  "plugin_settings",
+  {
+    userId: text("user_id").notNull(),
+    pluginId: text("plugin_id").notNull(),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.pluginId, table.key] }),
+  ],
+)
+
+export const appSettings = sqliteTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+})

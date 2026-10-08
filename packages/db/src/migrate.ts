@@ -2,9 +2,6 @@ import type { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { drizzle } from "drizzle-orm/bun-sqlite"
-import { migrate } from "drizzle-orm/bun-sqlite/migrator"
-import * as schema from "./schema"
 
 function tableNames(sqlite: Database) {
   return new Set(
@@ -157,6 +154,23 @@ function ensurePersonaTables(sqlite: Database) {
   `)
 }
 
+function ensureUserKeysTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS user_keys (
+      user_id TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      api_key TEXT,
+      account_id TEXT,
+      gateway_id TEXT,
+      gateway_token TEXT,
+      gateway_slug TEXT,
+      base_url TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, slug)
+    );
+  `)
+}
+
 function ensureProjectsTable(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -231,54 +245,76 @@ function migrationsRecorded(sqlite: Database) {
   return row.n > 0
 }
 
-function applyMissingBaseline(sqlite: Database, migrationsFolder: string) {
-  const baseline = journalEntries(migrationsFolder)[0]
-  if (!baseline) return
-  const query = readFileSync(
-    join(migrationsFolder, `${baseline.tag}.sql`),
-    "utf8",
-  )
-  const tables = tableNames(sqlite)
-  const indexes = indexNames(sqlite)
-  for (const statement of query.split("--> statement-breakpoint")) {
-    const trimmed = statement.trim()
-    if (!trimmed) continue
-    const table = /^CREATE TABLE `([^`]+)`/i.exec(trimmed)
-    if (table?.[1] && tables.has(table[1])) continue
-    const index = /^CREATE (?:UNIQUE )?INDEX `([^`]+)`/i.exec(trimmed)
-    if (index?.[1] && indexes.has(index[1])) continue
-    sqlite.exec(trimmed)
-  }
+function lastMigrationStamp(sqlite: Database) {
+  if (!migrationsRecorded(sqlite)) return -1
+  const row = sqlite
+    .query(
+      'SELECT created_at FROM "__drizzle_migrations" ORDER BY created_at DESC LIMIT 1',
+    )
+    .get() as { created_at: number | string | null } | undefined
+  return row?.created_at === null || row?.created_at === undefined
+    ? -1
+    : Number(row.created_at)
 }
 
-function stampBaseline(sqlite: Database, migrationsFolder: string) {
-  const baseline = journalEntries(migrationsFolder)[0]
-  if (!baseline) return
+// Live databases contain hand-rolled copies of tables and columns that later
+// drizzle snapshots also declare. Skip statements whose target already exists
+// so migrations apply on fresh databases and no-op on live ones.
+function statementApplicable(
+  sqlite: Database,
+  statement: string,
+  tables: Set<string>,
+  indexes: Set<string>,
+): boolean {
+  const table = /^CREATE TABLE (?:IF NOT EXISTS )?`?"?(\w+)`?"?/i.exec(
+    statement,
+  )
+  if (table?.[1] && tables.has(table[1])) return false
+  const index =
+    /^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?`?"?(\w+)`?"?/i.exec(
+      statement,
+    )
+  if (index?.[1] && indexes.has(index[1])) return false
+  const alter =
+    /^ALTER TABLE `?"?(\w+)`?"?\s+ADD (?:COLUMN )?`?"?(\w+)`?"?/i.exec(
+      statement,
+    )
+  if (alter?.[1] && tables.has(alter[1])) {
+    const columns = columnNames(sqlite, alter[1])
+    if (alter[2] && columns.has(alter[2])) return false
+  }
+  return true
+}
+
+export function applyMigrations(sqlite: Database, migrationsFolder: string) {
+  ensureLegacyColumns(sqlite)
   sqlite.exec(`CREATE TABLE IF NOT EXISTS "__drizzle_migrations" (
     id SERIAL PRIMARY KEY,
     hash text NOT NULL,
     created_at numeric
   )`)
-  if (migrationsRecorded(sqlite)) return
-  const query = readFileSync(
-    join(migrationsFolder, `${baseline.tag}.sql`),
-    "utf8",
-  )
-  const hash = createHash("sha256").update(query).digest("hex")
-  sqlite
-    .query(
-      'INSERT INTO "__drizzle_migrations" ("hash", "created_at") VALUES (?, ?)',
+  const last = lastMigrationStamp(sqlite)
+  for (const entry of journalEntries(migrationsFolder)) {
+    if (Number(entry.when) <= last) continue
+    const query = readFileSync(
+      join(migrationsFolder, `${entry.tag}.sql`),
+      "utf8",
     )
-    .run(hash, baseline.when)
-}
-
-export function applyMigrations(sqlite: Database, migrationsFolder: string) {
-  ensureLegacyColumns(sqlite)
-  if (!migrationsRecorded(sqlite) && tableNames(sqlite).has("users")) {
-    applyMissingBaseline(sqlite, migrationsFolder)
-    stampBaseline(sqlite, migrationsFolder)
+    const tables = tableNames(sqlite)
+    const indexes = indexNames(sqlite)
+    for (const statement of query.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim()
+      if (!trimmed) continue
+      if (!statementApplicable(sqlite, trimmed, tables, indexes)) continue
+      sqlite.exec(trimmed)
+    }
+    const hash = createHash("sha256").update(query).digest("hex")
+    sqlite
+      .query(
+        'INSERT INTO "__drizzle_migrations" ("hash", "created_at") VALUES (?, ?)',
+      )
+      .run(hash, entry.when)
   }
-  migrate(drizzle(sqlite, { schema }), { migrationsFolder })
   ensureLegacyColumns(sqlite)
   ensurePersonaTables(sqlite)
   ensureThreadScreenTable(sqlite)
@@ -287,4 +323,5 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   ensureCronJobColumns(sqlite)
   ensureImprovementTable(sqlite)
   ensureProjectsTable(sqlite)
+  ensureUserKeysTable(sqlite)
 }

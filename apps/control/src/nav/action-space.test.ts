@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test"
 import {
   buildActionSpace,
+  buildQuestions,
   goalValues,
+  NONE_VALUE,
   parseDecision,
   type Snapshot,
 } from "./action-space"
@@ -91,4 +93,73 @@ test("a decision must name an offered target", () => {
       space,
     ),
   ).toBeNull()
+})
+
+test("a lone target question offers an explicit opt-out", () => {
+  const space = buildActionSpace(
+    page([
+      {
+        targetId: "9",
+        role: "button",
+        label: "Accept",
+        value: "",
+        editable: false,
+        actionable: true,
+      },
+    ]),
+    [],
+  )
+  const questions = buildQuestions(space, "accept cookies", [])
+  expect(Object.keys(questions.click_target?.criteria ?? {})).toEqual([
+    "1",
+    NONE_VALUE,
+  ])
+})
+
+test("a clef result envelope unwraps to the answers", () => {
+  const space = buildActionSpace(
+    page([
+      {
+        targetId: "9",
+        role: "button",
+        label: "Go",
+        value: "",
+        editable: false,
+        actionable: true,
+      },
+    ]),
+    [],
+  )
+  const decision = parseDecision(
+    {
+      result: {
+        model: "clef",
+        answers: {
+          operation: {
+            type: "choice",
+            choice: "CLICK",
+            probabilities: { CLICK: 0.9659, DONE: 0.0341 },
+            confidence: 0.8683,
+          },
+          click_target: {
+            type: "choice",
+            choice: "1",
+            probabilities: { "1": 0.99 },
+            confidence: 0.99,
+          },
+          needs_user: { type: "noul", noul: 0.0088 },
+        },
+        usage: { input_tokens: 152, output_tokens: 0 },
+      },
+      success: true,
+      errors: [],
+    },
+    space,
+  )
+  expect(decision).toMatchObject({
+    operation: "CLICK",
+    confidence: 0.9659,
+    target: "1",
+    needsUser: 0.0088,
+  })
 })

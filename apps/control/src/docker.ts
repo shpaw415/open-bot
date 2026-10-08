@@ -14,12 +14,14 @@ import { manualPackages } from "./apt-snapshot"
 import {
   computerImage,
   controlName,
+  githubToken,
   inDocker,
   maxDesktops,
   names,
   opencodeImage,
   vikingImage,
 } from "./env"
+import { startFileWatch, stopFileWatch } from "./file-watch"
 import { HttpError } from "./http-error"
 import { imageAuthReady } from "./image-providers"
 import { isUploadPath } from "./join-file"
@@ -243,6 +245,7 @@ export async function startDesktop(
   system1: System1Provider | null = null,
   video: VideoProvider | null = null,
   model3d: Model3dProvider | null = null,
+  chatKeys: ChatKeyEntry[] = [],
 ) {
   const existing = starting.get(userId)
   if (existing) return existing
@@ -255,6 +258,7 @@ export async function startDesktop(
     system1,
     video,
     model3d,
+    chatKeys,
   )
     .catch((error: unknown) => {
       startErrors.set(
@@ -276,6 +280,7 @@ async function startDesktopInner(
   system1: System1Provider | null,
   video: VideoProvider | null,
   model3d: Model3dProvider | null,
+  chatKeys: ChatKeyEntry[],
 ) {
   const n = names(userId)
   if (
@@ -409,6 +414,7 @@ async function startDesktopInner(
       `OPEN_BOT_MODEL_PROVIDER=${desktop.selectedProvider ?? ""}`,
       "-e",
       `OPEN_BOT_MODEL=${desktop.selectedModel ?? ""}`,
+      ...(githubToken ? ["-e", `GITHUB_TOKEN=${githubToken}`] : []),
       "-v",
       `${n.usrLocal}:/usr/local`,
       "-v",
@@ -484,6 +490,15 @@ async function startDesktopInner(
       const message = error instanceof Error ? error.message : ""
       if (!message.includes("missing system1 setup")) throw error
     }
+    if (chatKeys.length > 0) {
+      try {
+        const chat = await syncChatAuth(userId, auth, chatKeys)
+        if (chat.applied) await restartOpencode(userId)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ""
+        if (!message.includes("missing chat setup")) throw error
+      }
+    }
   }
 
   if (!(await isRunning(n.computer))) {
@@ -509,9 +524,11 @@ async function startDesktopInner(
     ])
   }
   await waitHttp(n.computer, n.network, 6080, "/vnc.html", undefined, 60000)
+  startFileWatch(userId)
 }
 
 export async function stopDesktop(userId: string) {
+  stopFileWatch(userId)
   const n = names(userId)
   await sh(["docker", "stop", "-t", "5", n.computer])
   await sh(["docker", "stop", "-t", "30", n.opencode])
@@ -519,6 +536,7 @@ export async function stopDesktop(userId: string) {
 }
 
 export async function destroyDesktop(userId: string) {
+  stopFileWatch(userId)
   const n = names(userId)
   await sh(["docker", "rm", "-f", n.computer, n.opencode, n.viking])
   const volumes = await sh([
@@ -609,6 +627,56 @@ export function spawnLogin(
     }
   ).terminal
   if (!terminal) throw new Error("login pty missing")
+  terminal.setRawMode(true)
+  return {
+    terminal,
+    exited: proc.exited,
+    kill() {
+      proc.kill()
+    },
+  }
+}
+
+export function spawnProjectShell(
+  userId: string,
+  opts: {
+    cwd: string
+    cols: number
+    rows: number
+    onData: (data: Uint8Array) => void
+  },
+): LoginProc {
+  const n = names(userId)
+  const args = [
+    "docker",
+    "exec",
+    "-it",
+    "-u",
+    "agent",
+    "-e",
+    "HOME=/home/agent",
+    "-e",
+    "TERM=xterm-256color",
+    "-w",
+    opts.cwd,
+    n.opencode,
+    "bash",
+  ]
+  const proc = Bun.spawn(args, {
+    terminal: {
+      cols: opts.cols,
+      rows: opts.rows,
+      data(_terminal: unknown, data: Uint8Array) {
+        opts.onData(data.slice())
+      },
+    },
+  } as Parameters<typeof Bun.spawn>[1])
+  const terminal = (
+    proc as {
+      terminal?: LoginProc["terminal"] & { setRawMode(enabled: boolean): void }
+    }
+  ).terminal
+  if (!terminal) throw new Error("project shell pty missing")
   terminal.setRawMode(true)
   return {
     terminal,
@@ -812,6 +880,235 @@ export async function syncSystem1(
       )
     }
     throw new Error(detail || "could not write system1 config")
+  }
+  return true
+}
+
+export type ChatKeyEntry = { slug: string; key: string }
+
+export async function syncChatAuth(
+  userId: string,
+  auth: string,
+  entries: ChatKeyEntry[],
+  revoke: ChatKeyEntry[] = [],
+): Promise<{ applied: boolean; changed: string[]; removed: string[] }> {
+  const none = { applied: false, changed: [], removed: [] }
+  if (entries.length === 0 && revoke.length === 0) return none
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return none
+  const known = new Set<string>()
+  try {
+    const base = await endpoint(userId, "opencode", 4096)
+    const response = await fetch(`${base}/provider`, {
+      headers: { authorization: auth },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (response.ok) {
+      const body = (await response.json()) as { all?: { id?: string }[] }
+      for (const item of body.all ?? []) {
+        if (item.id) known.add(item.id)
+      }
+    }
+  } catch {
+    // catalog unreadable; sync by slug identity
+  }
+  const matches = (slug: string) => known.size === 0 || known.has(slug)
+  const payloadEntries = entries
+    .filter((item) => matches(item.slug))
+    .map((item) => ({ provider: item.slug, key: item.key }))
+  const payloadRevoke = revoke
+    .filter((item) => matches(item.slug))
+    .map((item) => ({ provider: item.slug, key: item.key }))
+  if (payloadEntries.length === 0 && payloadRevoke.length === 0) return none
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-chat-auth.sh",
+    ],
+    JSON.stringify({ entries: payloadEntries, revoke: payloadRevoke }),
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing chat setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write chat auth")
+  }
+  let parsed: { changed?: string[]; removed?: string[] } = {}
+  try {
+    parsed = JSON.parse(result.stdout.trim() || "{}")
+  } catch {
+    parsed = {}
+  }
+  const changed = Array.isArray(parsed.changed) ? parsed.changed : []
+  const removed = Array.isArray(parsed.removed) ? parsed.removed : []
+  return { applied: changed.length > 0 || removed.length > 0, changed, removed }
+}
+
+export type PluginToolFile = {
+  name: string
+  content: string
+  exec: boolean
+}
+
+// Install files into /usr/local/bin (root). The container's /usr/local is a
+// named volume, so the files survive desktop restarts.
+export async function syncPluginTools(
+  userId: string,
+  pluginId: string,
+  files: PluginToolFile[],
+) {
+  const n = names(userId)
+  if (files.length === 0) return false
+  if (!(await isRunning(n.opencode))) return false
+  for (const file of files) {
+    if (!/^[\w.-]{1,64}$/.test(file.name)) {
+      throw new HttpError(400, `invalid tool name: ${file.name}`, "plugin_tool")
+    }
+    const dir = mkdtempSync(join(tmpdir(), "ob-plugin-"))
+    const local = join(dir, file.name)
+    try {
+      writeFileSync(local, file.content, { mode: 0o755 })
+      const bin = `/usr/local/bin/ob-plugin-${pluginId}-${file.name}`
+      const copied = await sh(["docker", "cp", local, `${n.opencode}:${bin}`])
+      if (copied.code !== 0) {
+        throw new HttpError(
+          502,
+          `could not install tool ${file.name}`,
+          "plugin_tool",
+        )
+      }
+      const chmod = await sh([
+        "docker",
+        "exec",
+        n.opencode,
+        "chmod",
+        file.exec ? "755" : "644",
+        bin,
+      ])
+      if (chmod.code !== 0) {
+        throw new HttpError(
+          502,
+          `could not install tool ${file.name}`,
+          "plugin_tool",
+        )
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  return true
+}
+
+export async function removePluginTools(
+  userId: string,
+  pluginId: string,
+  toolNames: string[],
+) {
+  const n = names(userId)
+  if (toolNames.length === 0) return false
+  for (const name of toolNames) {
+    if (!/^[\w.-]{1,64}$/.test(name)) continue
+    await sh([
+      "docker",
+      "exec",
+      n.opencode,
+      "rm",
+      "-f",
+      `/usr/local/bin/ob-plugin-${pluginId}-${name}`,
+    ])
+  }
+  return true
+}
+
+// Write the plugin's merged config (vault grants + settings) into the desktop,
+// following the apply-*.sh pattern. data: null removes the file.
+export async function syncPluginAuth(
+  userId: string,
+  pluginId: string,
+  data: Record<string, unknown> | null,
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-plugin-auth.sh",
+    ],
+    JSON.stringify({ file: `plugin-${pluginId}.json`, data: data ?? null }),
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing plugin setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write plugin config")
+  }
+  return true
+}
+
+// Merge (patch non-null) or remove (patch null) a plugin's OpenCode plugin
+// packages and MCP servers in the desktop's opencode.json.
+export async function syncOpencodePlugin(
+  userId: string,
+  patch: {
+    addPlugins: string[]
+    removePlugins: string[]
+    addMcp: Record<string, unknown>
+    removeMcp: string[]
+  } | null,
+) {
+  const n = names(userId)
+  const empty =
+    !patch ||
+    (patch.addPlugins.length === 0 &&
+      patch.removePlugins.length === 0 &&
+      Object.keys(patch.addMcp).length === 0 &&
+      patch.removeMcp.length === 0)
+  if (empty) return false
+  if (!(await isRunning(n.opencode))) return false
+  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
+  const script = [
+    "sh",
+    "-c",
+    `jq --argjson addP ${quote(JSON.stringify(patch.addPlugins))} --argjson rmP ${quote(JSON.stringify(patch.removePlugins))} --argjson addM ${quote(JSON.stringify(patch.addMcp))} --argjson rmM ${quote(JSON.stringify(patch.removeMcp))} '.plugin = (((.plugin // []) + $addP) - $rmP | unique) | .mcp = (((.mcp // {}) + $addM) | with_entries(select(.key as $k | ($rmM | index($k)) | not)))' $HOME/.config/opencode/opencode.json > /tmp/oc-plugin.json && mv /tmp/oc-plugin.json $HOME/.config/opencode/opencode.json`,
+  ]
+  const result = await sh([
+    "docker",
+    "exec",
+    "-u",
+    "agent",
+    "-e",
+    "HOME=/home/agent",
+    n.opencode,
+    ...script,
+  ])
+  if (result.code !== 0) {
+    throw new HttpError(
+      502,
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        "could not update the agent config",
+      "opencode_plugin",
+    )
   }
   return true
 }

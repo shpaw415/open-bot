@@ -28,6 +28,7 @@ type ImageForm = {
   accountId: string
   model: string
   hasKey: boolean
+  keySource?: "setup" | "vault" | null
 }
 
 export function ImageProvider() {
@@ -35,6 +36,7 @@ export function ImageProvider() {
   const [saved, setSaved] = useState("")
   const [busy, setBusy] = useState(false)
   const [hasKey, setHasKey] = useState(false)
+  const [keySource, setKeySource] = useState<"setup" | "vault" | null>(null)
   const [providers, setProviders] = useState<ImageSpec[]>([])
   const [provider, setProvider] = useState("")
   const [accountId, setAccountId] = useState("")
@@ -50,6 +52,7 @@ export function ImageProvider() {
         setProvider(body.provider || body.providers?.[0]?.id || "")
         setAccountId(body.accountId)
         setHasKey(body.hasKey)
+        setKeySource(body.keySource ?? null)
         setModel(body.model || body.providers?.[0]?.defaultModel || "")
       })
       .catch((caught: unknown) => {
@@ -73,7 +76,10 @@ export function ImageProvider() {
     setSaved("")
     setBusy(true)
     try {
-      const body = await api<{ applied?: boolean }>("/api/image", {
+      const body = await api<{
+        applied?: boolean
+        keySource?: "setup" | "vault" | null
+      }>("/api/image", {
         method: "PUT",
         body: JSON.stringify({
           provider: spec?.id ?? provider,
@@ -83,6 +89,7 @@ export function ImageProvider() {
         }),
       })
       setHasKey(true)
+      setKeySource(body.keySource ?? "setup")
       setApiKey("")
       setSaved(
         body.applied
@@ -104,6 +111,7 @@ export function ImageProvider() {
       await api("/api/image", { method: "DELETE" })
       const first = providers[0]
       setHasKey(false)
+      setKeySource(null)
       setAccountId("")
       setApiKey("")
       setProvider(first?.id ?? "")
@@ -124,7 +132,9 @@ export function ImageProvider() {
       status={
         hasKey
           ? { label: spec?.label ?? "Configured", color: "success" }
-          : { label: "Not set" }
+          : keySource === "vault"
+            ? { label: "Vault key", color: "primary" }
+            : { label: "Not set" }
       }
     >
       <Stack spacing={1.5}>

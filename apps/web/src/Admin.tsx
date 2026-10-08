@@ -1,12 +1,14 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
+import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "@shpaw415/mui-lite/Dialog"
+import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
 import Menu from "@shpaw415/mui-lite/Menu"
@@ -21,6 +23,7 @@ import Table, {
   TableHead,
   TableRow,
 } from "@shpaw415/mui-lite/Table"
+import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "./api"
@@ -30,9 +33,11 @@ import {
   BlockIcon,
   ContentCopyIcon,
   DeleteIcon,
+  FactoryIcon,
   LockResetIcon,
   MoreVertIcon,
   PersonAddIcon,
+  RefreshIcon,
 } from "./icons"
 import {
   type ChartTheme,
@@ -124,6 +129,13 @@ export function Admin({ meId }: { meId: string }) {
   const [rowsPerPage, setRowsPerPage] = useState<10 | 25 | 50 | 100>(10)
   const [menuId, setMenuId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<AdminUser | null>(null)
+  const [pendingReset, setPendingReset] = useState<AdminUser | null>(null)
+  const [resetBackup, setResetBackup] = useState(true)
+  const [factoryOpen, setFactoryOpen] = useState(false)
+  const [factoryConfirm, setFactoryConfirm] = useState("")
+  const [factoryPassword, setFactoryPassword] = useState("")
+  const [factoryBackup, setFactoryBackup] = useState(true)
+  const [notice, setNotice] = useState("")
   const [busy, setBusy] = useState(false)
   const anchorRef = useRef<HTMLElement | null>(null)
   const themeRef = useRef<HTMLDivElement>(null)
@@ -208,6 +220,49 @@ export function Admin({ meId }: { meId: string }) {
     }
   }
 
+  async function resetDesktop(user: AdminUser) {
+    setError("")
+    setBusy(true)
+    setPendingReset(null)
+    try {
+      await api(`/api/admin/users/${user.id}/reset-desktop`, {
+        method: "POST",
+        body: JSON.stringify({ backup: resetBackup }),
+      })
+      setNotice(`Desktop reset started for ${user.email}.`)
+      await load(days)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "reset failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function factoryReset() {
+    setError("")
+    setBusy(true)
+    try {
+      await api("/api/factory-reset", {
+        method: "POST",
+        body: JSON.stringify({
+          confirm: factoryConfirm,
+          password: factoryPassword,
+          backup: factoryBackup,
+        }),
+      })
+      setFactoryOpen(false)
+      setNotice(
+        "Factory reset running. All desktops are destroyed, data is wiped, and open-bot restarts with default credentials shortly.",
+      )
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "factory reset failed",
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const daily = usage?.daily ?? []
   const selectedUser = users.find((row) => row.id === selected) ?? null
   const running = users.filter((row) => row.desktop === "running").length
@@ -224,6 +279,11 @@ export function Admin({ meId }: { meId: string }) {
         {error ? (
           <Alert severity="error" onClose={() => setError("")}>
             {error}
+          </Alert>
+        ) : null}
+        {notice ? (
+          <Alert severity="success" onClose={() => setNotice("")}>
+            {notice}
           </Alert>
         ) : null}
         <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
@@ -462,6 +522,35 @@ export function Admin({ meId }: { meId: string }) {
           )}
         </Paper>
         <Improvements />
+        <Paper variant="outlined" sx={{ p: 1.5, borderColor: "error.main" }}>
+          <Stack spacing={1}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <FactoryIcon />
+              <Typography variant="subtitle1" sx={{ flex: 1 }}>
+                Danger zone
+              </Typography>
+            </Stack>
+            <Typography variant="body2" color="textSecondary">
+              Factory reset open-bot: destroys every desktop, wipes the control
+              database, and restarts with default credentials (admin@localhost /
+              changeme). Backups on the control volume are kept. This cannot be
+              undone.
+            </Typography>
+            <Box>
+              <Button
+                variant="outlined"
+                color="error"
+                onClick={() => {
+                  setFactoryConfirm("")
+                  setFactoryPassword("")
+                  setFactoryOpen(true)
+                }}
+              >
+                Factory reset open-bot
+              </Button>
+            </Box>
+          </Stack>
+        </Paper>
       </Stack>
       <Menu
         open={Boolean(menuUser)}
@@ -514,6 +603,19 @@ export function Admin({ meId }: { meId: string }) {
               />
             </ListItemButton>
             <ListItemButton
+              disabled={busy}
+              onClick={() => {
+                setPendingReset(menuUser)
+                setMenuId(null)
+              }}
+            >
+              <RefreshIcon />
+              <ListItemText
+                primary="Reset desktop"
+                secondary="Wipes the desktop's containers and volumes; a fresh desktop starts next time."
+              />
+            </ListItemButton>
+            <ListItemButton
               disabled={busy || menuUser.id === meId}
               onClick={() => {
                 setPendingDelete(menuUser)
@@ -553,6 +655,102 @@ export function Admin({ meId }: { meId: string }) {
             }}
           >
             Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={Boolean(pendingReset)}
+        onClose={() => setPendingReset(null)}
+      >
+        <DialogTitle>Reset {pendingReset?.email}'s desktop?</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1} sx={{ mt: 0.5 }}>
+            <Typography variant="body2">
+              Destroys the desktop's containers and volumes: chat history,
+              installed packages, browser logins, workspace files, and this
+              desktop's memory. The account and its keys are kept; the next
+              start is a fresh desktop.
+            </Typography>
+            <FormControlLabel
+              control={
+                <CheckBox
+                  checked={resetBackup}
+                  onChange={(event) =>
+                    setResetBackup(event.currentTarget.checked)
+                  }
+                />
+              }
+              label="Back up the desktop first (recommended)"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button variant="text" onClick={() => setPendingReset(null)}>
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={busy}
+            onClick={() => {
+              const user = pendingReset
+              if (user) void resetDesktop(user)
+            }}
+          >
+            Reset desktop
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={factoryOpen} onClose={() => !busy && setFactoryOpen(false)}>
+        <DialogTitle>Factory reset open-bot?</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1} sx={{ mt: 0.5 }}>
+            <Typography variant="body2">
+              Every desktop is destroyed, all users and data are wiped, and the
+              control plane restarts with default credentials. Type{" "}
+              <strong>RESET</strong> and enter your password to confirm.
+            </Typography>
+            <TextField
+              label='Type "RESET" to confirm'
+              value={factoryConfirm}
+              onChange={(event) => setFactoryConfirm(event.currentTarget.value)}
+            />
+            <TextField
+              label="Your password"
+              type="password"
+              value={factoryPassword}
+              onChange={(event) =>
+                setFactoryPassword(event.currentTarget.value)
+              }
+            />
+            <FormControlLabel
+              control={
+                <CheckBox
+                  checked={factoryBackup}
+                  onChange={(event) =>
+                    setFactoryBackup(event.currentTarget.checked)
+                  }
+                />
+              }
+              label="Take a final full backup first (recommended)"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            variant="text"
+            disabled={busy}
+            onClick={() => setFactoryOpen(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={busy || factoryConfirm !== "RESET" || !factoryPassword}
+            onClick={() => void factoryReset()}
+          >
+            Factory reset
           </Button>
         </DialogActions>
       </Dialog>
