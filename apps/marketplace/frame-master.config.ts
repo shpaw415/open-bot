@@ -202,7 +202,6 @@ export default {
               version: 1,
               include: ["/*"],
               exclude: [
-                "/api/*",
                 "/static/*",
                 "/favicon.ico",
                 "/robots.txt",
