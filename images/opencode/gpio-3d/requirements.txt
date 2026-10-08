@@ -1,0 +1,4 @@
+trimesh==4.9.0
+numpy>=2.2,<2.3
+manifold3d==3.5.4
+fonttools==4.66.1

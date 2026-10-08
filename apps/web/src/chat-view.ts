@@ -1,5 +1,7 @@
 const WORKSPACE = "/home/agent/workspace/"
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i
+const VIDEO_EXT = /\.(mp4|webm)$/i
+const MODEL3D_EXT = /\.glb$/i
 const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp);base64,[a-z0-9+/]+={0,2}$/i
 
 export type ChatPart = {
@@ -134,6 +136,18 @@ export function splitScreenHandoff(text: string): {
 }
 
 export function workspaceImagePath(raw: string): string | null {
+  return workspaceMediaPath(raw, IMAGE_EXT)
+}
+
+export function workspaceVideoPath(raw: string): string | null {
+  return workspaceMediaPath(raw, VIDEO_EXT)
+}
+
+export function workspaceModel3dPath(raw: string): string | null {
+  return workspaceMediaPath(raw, MODEL3D_EXT)
+}
+
+function workspaceMediaPath(raw: string, ext: RegExp): string | null {
   let path = raw.trim()
   if (!path || path.includes("\0") || path.includes("\\")) return null
   if (path.startsWith("file://")) {
@@ -158,7 +172,7 @@ export function workspaceImagePath(raw: string): string | null {
   const segments = rest.split("/")
   if (segments.some((seg) => seg === "" || seg === "." || seg === ".."))
     return null
-  if (!IMAGE_EXT.test(rest)) return null
+  if (!ext.test(rest)) return null
   return `${WORKSPACE}${rest}`
 }
 
@@ -166,9 +180,21 @@ export function workspaceImageSrc(path: string): string {
   return `/api/workspace/image?path=${encodeURIComponent(path)}`
 }
 
+export function workspaceVideoSrc(path: string): string {
+  return `/api/workspace/video?path=${encodeURIComponent(path)}`
+}
+
+export function workspaceModel3dSrc(path: string): string {
+  return `/api/workspace/model3d?path=${encodeURIComponent(path)}`
+}
+
 export function chatImageUrl(url: string): string {
   const local = workspaceImagePath(url)
   if (local) return workspaceImageSrc(local)
+  const video = workspaceVideoPath(url)
+  if (video) return workspaceVideoSrc(video)
+  const model = workspaceModel3dPath(url)
+  if (model) return workspaceModel3dSrc(model)
   const trimmed = url.trim()
   if (/^https:\/\//i.test(trimmed)) return trimmed
   return ""
@@ -180,7 +206,7 @@ export function embedWorkspaceImages(text: string): string {
     .map((line) => {
       const trimmed = line.trim()
       const bare = trimmed.replace(/^`|`$/g, "")
-      const path = workspaceImagePath(bare)
+      const path = workspaceImagePath(bare) ?? workspaceModel3dPath(bare)
       if (!path || (trimmed !== path && trimmed !== `\`${path}\``)) return line
       const name = path.slice(path.lastIndexOf("/") + 1)
       return `![${name}](${path})`

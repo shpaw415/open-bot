@@ -61,4 +61,21 @@ describe("stuck tools", () => {
     )
     expect(toolLimit([running(now - 1, "sleep 500")])).toBe(STUCK_TOOL_MS)
   })
+
+  test("blender pipelines get long budgets", () => {
+    const now = 10_000_000
+    expect(
+      toolLimit([
+        running(
+          now - 1,
+          'blender-team "an owl" -o /home/agent/workspace/o.glb',
+        ),
+      ]),
+    ).toBe(60 * STUCK_TOOL_MS)
+    expect(
+      toolLimit([
+        running(now - 1, "blender --background --python-expr 'import bpy'"),
+      ]),
+    ).toBe(10 * STUCK_TOOL_MS)
+  })
 })

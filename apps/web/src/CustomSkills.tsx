@@ -1,11 +1,13 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Paper from "@shpaw415/mui-lite/Paper"
+import Divider from "@shpaw415/mui-lite/Divider"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
+import { ConfigSection } from "./ConfigSection"
+import { ExtensionIcon } from "./icons"
 
 type SkillSummary = {
   name: string
@@ -136,58 +138,61 @@ export function CustomSkills() {
   }
 
   return (
-    <Paper variant="outlined" sx={{ p: 1.5 }}>
-      <Typography variant="subtitle1">Custom skills</Typography>
-      <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-        Stored in this desktop's OpenViking. The agent can create the same
-        skills. desktop, cron, persona, cf-ai, and shortcut stay built in and
-        are not edited here.
-      </Typography>
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {saved ? <Alert severity="success">{saved}</Alert> : null}
-      <Stack spacing={1.5} sx={{ mt: 1 }}>
+    <ConfigSection
+      icon={<ExtensionIcon />}
+      title="Custom skills"
+      description="Stored in this desktop's OpenViking. The agent can create the same skills. desktop, cron, persona, cf-ai, and shortcut stay built in and are not edited here."
+      status={
+        !loading && skills.length > 0
+          ? {
+              label: `${skills.length} custom`,
+            }
+          : null
+      }
+    >
+      <Stack spacing={1.5}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {saved ? <Alert severity="success">{saved}</Alert> : null}
         {loading && skills.length === 0 ? (
           <Typography variant="body2" color="textSecondary">
             Loading skills — this starts your desktop if it was asleep…
           </Typography>
         ) : (
-          skills.map((skill) => (
-            <Stack
-              key={skill.name}
-              direction="row"
-              spacing={1}
-              alignItems="center"
-            >
-              <Stack sx={{ flex: 1, minWidth: 0 }}>
-                <Typography variant="subtitle2">{skill.name}</Typography>
-                <Typography
-                  variant="body2"
-                  color="textSecondary"
-                  sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
+          skills.map((skill, index) => (
+            <Stack key={skill.name} spacing={1.5}>
+              {index > 0 ? <Divider /> : null}
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Stack sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="subtitle2">{skill.name}</Typography>
+                  <Typography
+                    variant="body2"
+                    color="textSecondary"
+                    sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                  >
+                    {skill.description}
+                  </Typography>
+                </Stack>
+                <Button
+                  variant="text"
+                  disabled={busy}
+                  onClick={() => void openEdit(skill.name)}
                 >
-                  {skill.description}
-                </Typography>
+                  Edit
+                </Button>
+                <Button
+                  variant="text"
+                  disabled={busy}
+                  onClick={() => {
+                    if (confirmName === skill.name) {
+                      void remove(skill.name)
+                      return
+                    }
+                    setConfirmName(skill.name)
+                  }}
+                >
+                  {confirmName === skill.name ? "Confirm delete" : "Delete"}
+                </Button>
               </Stack>
-              <Button
-                variant="text"
-                disabled={busy}
-                onClick={() => void openEdit(skill.name)}
-              >
-                Edit
-              </Button>
-              <Button
-                variant="text"
-                disabled={busy}
-                onClick={() => {
-                  if (confirmName === skill.name) {
-                    void remove(skill.name)
-                    return
-                  }
-                  setConfirmName(skill.name)
-                }}
-              >
-                {confirmName === skill.name ? "Confirm delete" : "Delete"}
-              </Button>
             </Stack>
           ))
         )}
@@ -254,6 +259,6 @@ export function CustomSkills() {
           </Button>
         )}
       </Stack>
-    </Paper>
+    </ConfigSection>
   )
 }

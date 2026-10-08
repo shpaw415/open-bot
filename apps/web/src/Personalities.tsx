@@ -1,11 +1,13 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Paper from "@shpaw415/mui-lite/Paper"
+import Divider from "@shpaw415/mui-lite/Divider"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
+import { ConfigSection } from "./ConfigSection"
+import { PersonIcon } from "./icons"
 
 export type PersonaInfo = {
   id: string
@@ -114,67 +116,72 @@ export function Personalities() {
     }
   }
 
+  const customCount = personas.filter((persona) => !persona.builtin).length
+
   return (
-    <Paper variant="outlined" sx={{ p: 1.5 }}>
-      <Typography variant="subtitle1">Personalities</Typography>
-      <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-        A name and how the bot should behave. Pick one when starting a thread.
-        It stays for that thread. Built-ins cannot be edited. The bot can add
-        the same customs.
-      </Typography>
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {saved ? <Alert severity="success">{saved}</Alert> : null}
-      <Stack spacing={1.5} sx={{ mt: 1 }}>
+    <ConfigSection
+      icon={<PersonIcon />}
+      title="Personalities"
+      description="A name and how the bot should behave. Pick one when starting a thread. It stays for that thread. Built-ins cannot be edited. The bot can add the same customs."
+      status={
+        personas.length > 0
+          ? {
+              label: `${personas.length} total · ${customCount} custom`,
+            }
+          : null
+      }
+    >
+      <Stack spacing={1.5}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {saved ? <Alert severity="success">{saved}</Alert> : null}
         {loading && personas.length === 0 ? (
           <Typography variant="body2" color="textSecondary">
             Loading personalities…
           </Typography>
         ) : (
-          personas.map((persona) => (
-            <Stack
-              key={persona.id}
-              direction="row"
-              spacing={1}
-              alignItems="center"
-            >
-              <Stack sx={{ flex: 1, minWidth: 0 }}>
-                <Typography variant="subtitle2">
-                  {persona.name}
-                  {persona.builtin ? " · built-in" : ""}
-                </Typography>
-                <Typography
-                  variant="body2"
-                  color="textSecondary"
-                  sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
-                >
-                  {persona.instruction ||
-                    "Default voice. No extra instructions."}
-                </Typography>
+          personas.map((persona, index) => (
+            <Stack key={persona.id} spacing={1.5}>
+              {index > 0 ? <Divider /> : null}
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Stack sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="subtitle2">
+                    {persona.name}
+                    {persona.builtin ? " · built-in" : ""}
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    color="textSecondary"
+                    sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                  >
+                    {persona.instruction ||
+                      "Default voice. No extra instructions."}
+                  </Typography>
+                </Stack>
+                {persona.builtin ? null : (
+                  <>
+                    <Button
+                      variant="text"
+                      disabled={busy}
+                      onClick={() => openEdit(persona)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="text"
+                      disabled={busy}
+                      onClick={() => {
+                        if (confirmId === persona.id) {
+                          void remove(persona.id)
+                          return
+                        }
+                        setConfirmId(persona.id)
+                      }}
+                    >
+                      {confirmId === persona.id ? "Confirm delete" : "Delete"}
+                    </Button>
+                  </>
+                )}
               </Stack>
-              {persona.builtin ? null : (
-                <>
-                  <Button
-                    variant="text"
-                    disabled={busy}
-                    onClick={() => openEdit(persona)}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="text"
-                    disabled={busy}
-                    onClick={() => {
-                      if (confirmId === persona.id) {
-                        void remove(persona.id)
-                        return
-                      }
-                      setConfirmId(persona.id)
-                    }}
-                  >
-                    {confirmId === persona.id ? "Confirm delete" : "Delete"}
-                  </Button>
-                </>
-              )}
             </Stack>
           ))
         )}
@@ -227,6 +234,6 @@ export function Personalities() {
           </Button>
         )}
       </Stack>
-    </Paper>
+    </ConfigSection>
   )
 }

@@ -49,13 +49,49 @@ RUN curl -fsSL https://bun.sh/install | bash \
     && ln -sf /opt/cf-ai/node_modules/.bin/cf-ai /usr/local/bin/cf-ai \
     && chmod -R a+rx /opt/cf-ai
 
+COPY images/opencode/gpio-3d /opt/gpio-3d
+RUN python3 -m venv /opt/gpio-3d/venv \
+    && /opt/gpio-3d/venv/bin/pip install --no-cache-dir --only-binary=:all: -r /opt/gpio-3d/requirements.txt \
+    && /opt/gpio-3d/venv/bin/python -c "import trimesh, numpy, manifold3d" \
+    && printf '#!/bin/sh\nset -eu\nexport PYTHONPATH="/opt/gpio-3d${PYTHONPATH:+:$PYTHONPATH}"\nexec /opt/gpio-3d/venv/bin/python -m gpio_3d "$@"\n' > /usr/local/bin/gpio-3d \
+    && chmod 755 /usr/local/bin/gpio-3d \
+    && chmod -R a+rX /opt/gpio-3d
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends blender xauth \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m pip install --no-cache-dir --no-binary=:all: --target /opt/blender-requests requests \
+    && python3 -m venv /opt/blender-mcp-venv \
+    && /opt/blender-mcp-venv/bin/pip install --no-cache-dir blender-mcp \
+    && test -x /opt/blender-mcp-venv/bin/blender-mcp \
+    && chmod -R a+rX /opt/blender-requests /opt/blender-mcp-venv
+
+COPY images/opencode/blender-mcp /opt/open-bot/blender-mcp
+COPY images/opencode/blender-up.sh /opt/open-bot/blender-up.sh
+COPY images/opencode/apply-blender-mcp.sh /opt/open-bot/apply-blender-mcp.sh
+
 COPY images/opencode/seed /opt/open-bot/seed
 COPY scripts/opencode-auth.sh /opt/open-bot/opencode-auth.sh
 COPY scripts/ob-cron.sh /usr/local/bin/ob-cron
 COPY scripts/ob-persona.sh /usr/local/bin/ob-persona
+COPY scripts/ob-config.sh /usr/local/bin/ob-config
 COPY images/opencode/entrypoint.sh /opt/open-bot/entrypoint.sh
 COPY images/opencode/apply-model.sh /opt/open-bot/apply-model.sh
 COPY images/opencode/apply-image-auth.sh /opt/open-bot/apply-image-auth.sh
+COPY images/opencode/gen-image.ts /opt/open-bot/gen-image.ts
+RUN ln -sf /opt/open-bot/gen-image.ts /usr/local/bin/gen-image \
+    && chmod 755 /opt/open-bot/gen-image.ts
+COPY images/opencode/apply-video-auth.sh /opt/open-bot/apply-video-auth.sh
+COPY images/opencode/gen-video.ts /opt/open-bot/gen-video.ts
+RUN ln -sf /opt/open-bot/gen-video.ts /usr/local/bin/gen-video \
+    && chmod 755 /opt/open-bot/gen-video.ts
+COPY images/opencode/apply-model3d-auth.sh /opt/open-bot/apply-model3d-auth.sh
+COPY images/opencode/gen-3d.ts /opt/open-bot/gen-3d.ts
+RUN ln -sf /opt/open-bot/gen-3d.ts /usr/local/bin/gen-3d \
+    && chmod 755 /opt/open-bot/gen-3d.ts
+COPY images/opencode/blender-team.ts /opt/open-bot/blender-team.ts
+RUN ln -sf /opt/open-bot/blender-team.ts /usr/local/bin/blender-team \
+    && chmod 755 /opt/open-bot/blender-team.ts
 COPY images/opencode/apply-system1.sh /opt/open-bot/apply-system1.sh
 COPY apps/control/src/nav /opt/open-bot/nav
 COPY images/opencode/screen-up.sh /opt/open-bot/screen-up.sh
@@ -66,8 +102,11 @@ COPY images/opencode/record-apt.sh /opt/open-bot/record-apt.sh
 COPY images/opencode/restore-apt.sh /opt/open-bot/restore-apt.sh
 COPY images/opencode/apt-persist.conf /etc/apt/apt.conf.d/99open-bot-persist
 COPY images/opencode/ob-vnc.sh /usr/local/bin/ob-vnc
+COPY images/opencode/ob-page.sh /usr/local/bin/ob-page
 COPY images/opencode/xcap.py /opt/open-bot/xcap.py
 COPY images/opencode/xshot.ts /opt/open-bot/xshot.ts
+COPY images/opencode/hittest.ts /opt/open-bot/hittest.ts
+COPY images/opencode/coord.ts /opt/open-bot/coord.ts
 COPY images/opencode/url-watch.ts /opt/open-bot/url-watch.ts
 COPY images/opencode/ob-nav.sh /usr/local/bin/ob-nav
 COPY images/opencode/chromium-policy.json /etc/chromium/policies/managed/open-bot.json
@@ -83,12 +122,12 @@ RUN if [ "$OPEN_BOT_DEV" = "1" ]; then \
     fi \
     && rm -f /tmp/ob-improve.sh
 RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
-    && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona \
+     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-config /usr/local/bin/ob-page \
     && cp -a /usr/local /opt/image-usr-local \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-    && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona \
+     && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-blender-mcp.sh /opt/open-bot/blender-up.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-page \
     && touch /opt/open-bot/instance
 
 USER root

@@ -8,6 +8,12 @@ import {
 test("catalog starts with Cloudflare Workers AI and can grow", () => {
   expect(imageProviders.map((item) => item.id)).toEqual([
     "cloudflare-workers-ai",
+    "xai",
+    "xai-gateway",
+    "openai",
+    "google",
+    "stability",
+    "replicate",
   ])
   expect(imageProviderById("missing")).toBeUndefined()
   expect(
@@ -18,6 +24,30 @@ test("catalog starts with Cloudflare Workers AI and can grow", () => {
       model: "@cf/black-forest-labs/flux-2-klein-9b",
     }),
   ).toBe(true)
+  expect(
+    imageAuthReady({
+      provider: "xai",
+      accountId: "",
+      apiKey: "tok",
+      model: "grok-2-image-1212",
+    }),
+  ).toBe(true)
+  expect(
+    imageAuthReady({
+      provider: "xai-gateway",
+      accountId: "acct",
+      apiKey: "tok",
+      model: "grok-2-image-1212",
+    }),
+  ).toBe(true)
+  expect(
+    imageAuthReady({
+      provider: "xai-gateway",
+      accountId: "",
+      apiKey: "tok",
+      model: "m",
+    }),
+  ).toBe(false)
   expect(
     imageAuthReady({
       provider: "other",

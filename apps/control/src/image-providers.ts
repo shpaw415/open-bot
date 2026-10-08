@@ -30,6 +30,76 @@ export const imageProviders: ImageProviderSpec[] = [
       required: true,
     },
   },
+  {
+    id: "xai",
+    label: "xAI (Grok image)",
+    defaultModel: "grok-2-image-1212",
+    account: null,
+    secret: {
+      label: "API key",
+      placeholder: "xAI API key",
+      required: true,
+    },
+  },
+  {
+    id: "xai-gateway",
+    label: "xAI (Cloudflare Gateway)",
+    defaultModel: "grok-2-image-1212",
+    account: {
+      label: "Account ID",
+      placeholder: "Cloudflare account ID",
+      required: true,
+    },
+    secret: {
+      label: "API token",
+      placeholder: "Cloudflare API token",
+      required: true,
+    },
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    defaultModel: "gpt-image-1",
+    account: null,
+    secret: {
+      label: "API key",
+      placeholder: "OpenAI API key",
+      required: true,
+    },
+  },
+  {
+    id: "google",
+    label: "Google Gemini (Imagen)",
+    defaultModel: "imagen-4.0-generate-001",
+    account: null,
+    secret: {
+      label: "API key",
+      placeholder: "Gemini API key",
+      required: true,
+    },
+  },
+  {
+    id: "stability",
+    label: "Stability AI",
+    defaultModel: "core",
+    account: null,
+    secret: {
+      label: "API key",
+      placeholder: "Stability API key",
+      required: true,
+    },
+  },
+  {
+    id: "replicate",
+    label: "Replicate",
+    defaultModel: "black-forest-labs/flux-schnell",
+    account: null,
+    secret: {
+      label: "API token",
+      placeholder: "Replicate API token",
+      required: true,
+    },
+  },
 ]
 
 export function imageProviderById(id: string) {

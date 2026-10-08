@@ -1,12 +1,12 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Paper from "@shpaw415/mui-lite/Paper"
 import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
-import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useState } from "react"
 import { api } from "./api"
+import { ConfigSection } from "./ConfigSection"
+import { ImageIcon } from "./icons"
 
 type ImageField = {
   label: string
@@ -117,15 +117,19 @@ export function ImageProvider() {
   }
 
   return (
-    <Paper variant="outlined" sx={{ p: 1.5 }}>
-      <Typography variant="subtitle1">Image generation</Typography>
-      <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-        Provider used by the desktop agent. Only Cloudflare Workers AI is
-        available now. More providers can be added later.
-      </Typography>
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {saved ? <Alert severity="success">{saved}</Alert> : null}
-      <Stack spacing={1.5} sx={{ mt: 1 }}>
+    <ConfigSection
+      icon={<ImageIcon />}
+      title="Image generation"
+      description="Provider used by the desktop agent when it generates images. Switching providers keeps the saved key only while the provider stays the same."
+      status={
+        hasKey
+          ? { label: spec?.label ?? "Configured", color: "success" }
+          : { label: "Not set" }
+      }
+    >
+      <Stack spacing={1.5}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {saved ? <Alert severity="success">{saved}</Alert> : null}
         <Select
           name="image-provider"
           label="Provider"
@@ -183,6 +187,6 @@ export function ImageProvider() {
           ) : null}
         </Stack>
       </Stack>
-    </Paper>
+    </ConfigSection>
   )
 }

@@ -91,6 +91,7 @@ def capture(path):
             rgb[out + 2] = raw[pixel]
             out += 3
     png(path, width, height, rgb)
+    print(f"capture {width}x{height} live {width}x{height} factor 1 offset 0,0")
     lib.XCloseDisplay(display)
     return 0
 

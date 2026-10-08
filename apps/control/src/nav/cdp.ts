@@ -3,9 +3,20 @@ import type { Act, Driver } from "./loop"
 
 export type CdpDriver = Driver & { close(): void }
 
-type CdpSocket = {
+export type CdpSocket = {
   call(method: string, params?: Record<string, unknown>): Promise<unknown>
   close(): void
+}
+
+export async function connectCdpSocket(port: number): Promise<CdpSocket> {
+  const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then(
+    (response) => response.json(),
+  )) as { type?: string; webSocketDebuggerUrl?: string }[]
+  const page = list.find(
+    (item) => item.type === "page" && item.webSocketDebuggerUrl,
+  )
+  if (!page?.webSocketDebuggerUrl) throw new Error("no page on this screen")
+  return openSocket(page.webSocketDebuggerUrl)
 }
 
 export async function connectCdp(port: number): Promise<CdpDriver> {
@@ -19,8 +30,7 @@ export async function connectCdp(port: number): Promise<CdpDriver> {
   const socket = await openSocket(page.webSocketDebuggerUrl)
   return {
     async probe() {
-      const value = await evaluate(socket, PROBE)
-      return normalize(value)
+      return probeSnapshot(socket)
     },
     async navigate(url: string) {
       await socket.call("Page.navigate", { url })
@@ -117,19 +127,54 @@ async function present(socket: CdpSocket) {
   })
 }
 
-async function evaluate(socket: CdpSocket, expression: string) {
+export async function evaluate(
+  socket: CdpSocket,
+  expression: string,
+): Promise<unknown> {
   const result = (await socket.call("Runtime.evaluate", {
     expression,
     returnByValue: true,
     awaitPromise: true,
-  })) as { result?: { value?: unknown }; exceptionDetails?: { text?: string } }
+  })) as {
+    result?: { value?: unknown }
+    exceptionDetails?: {
+      text?: string
+      exception?: { className?: string; description?: string }
+    }
+  }
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || "page script failed")
+    // Chrome puts the literal "Uncaught" in `text`; the useful message lives
+    // on exception.description. Surface it or every failure reads "Uncaught".
+    const raw =
+      result.exceptionDetails.exception?.description ||
+      result.exceptionDetails.exception?.className ||
+      result.exceptionDetails.text
+    throw new Error(
+      raw
+        ? `page error: ${singleLine(raw).slice(0, 200)}`
+        : "page script failed",
+    )
   }
   return result.result?.value
 }
 
-function normalize(value: unknown): Snapshot {
+function singleLine(value: string) {
+  return value.replace(/\s+/g, " ").trim()
+}
+
+// A page-world throw right after a navigation usually means the execution
+// context was torn down mid-load. PROBE only reads (plus data-obnav markers),
+// so one retry on the settled context is safe.
+export async function probeSnapshot(socket: CdpSocket): Promise<Snapshot> {
+  try {
+    return normalize(await evaluate(socket, PROBE))
+  } catch {
+    await Bun.sleep(500)
+    return normalize(await evaluate(socket, PROBE))
+  }
+}
+
+export function normalize(value: unknown): Snapshot {
   const raw = (value ?? {}) as Record<string, unknown>
   const elements = Array.isArray(raw.elements) ? raw.elements : []
   return {
@@ -159,28 +204,28 @@ function normalize(value: unknown): Snapshot {
   }
 }
 
-function actionScript(action: Act) {
+export function actionScript(action: Act) {
   if (action.kind === "wait") return "true"
   if (action.kind === "scroll") {
     const delta = action.direction === "down" ? "1" : "-1"
-    return `window.scrollBy(0, window.innerHeight * 0.75 * ${delta})`
+    return `window.scrollBy(0, window.innerHeight * ${delta})`
   }
   const id = JSON.stringify(action.targetId)
   if (action.kind === "click") {
-    return `(() => { const el = document.querySelector('[data-obnav=' + ${id} + ']'); if (!el) return false; const rect = el.getBoundingClientRect(); const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2); if (center && center !== el && !el.contains(center)) return false; el.click(); return true })()`
+    return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el) return false; const rect = el.getBoundingClientRect(); const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2); if (center && center !== el && !el.contains(center)) return false; el.click(); return true })()`
   }
   if (action.kind === "type") {
     const text = JSON.stringify(action.text)
-    return `(() => { const el = document.querySelector('[data-obnav=' + ${id} + ']'); if (!el) return false; el.focus(); if ('value' in el) { el.value = ${text}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } return true })()`
+    return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el) return false; el.focus(); if ('value' in el) { el.value = ${text}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } return true })()`
   }
   if (action.kind === "enter") {
-    return `(() => { const el = document.querySelector('[data-obnav=' + ${id} + ']'); if (!el) return false; el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true })()`
+    return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el) return false; el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true })()`
   }
   const label = JSON.stringify(action.label)
-  return `(() => { const el = document.querySelector('[data-obnav=' + ${id} + ']'); if (!el || el.tagName !== 'SELECT') return false; const option = [...el.options].find((item) => item.label === ${label}); if (!option) return false; el.value = option.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el || el.tagName !== 'SELECT') return false; const option = [...el.options].find((item) => item.label === ${label}); if (!option) return false; el.value = option.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
 }
 
-const PROBE = `(() => {
+export const PROBE = `(() => {
   const max = 24
   const bag = window.__obnav || (window.__obnav = { map: new WeakMap(), n: 1 })
   const selector = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'

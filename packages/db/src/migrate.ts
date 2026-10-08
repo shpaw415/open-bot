@@ -44,6 +44,9 @@ function journalEntries(migrationsFolder: string) {
 function ensureCronJobColumns(sqlite: Database) {
   if (!tableNames(sqlite).has("cron_jobs")) return
   const columns = columnNames(sqlite, "cron_jobs")
+  if (!columns.has("session_id")) {
+    sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN session_id TEXT")
+  }
   if (!columns.has("provider_id")) {
     sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN provider_id TEXT")
   }
@@ -60,9 +63,6 @@ function ensureCronJobColumns(sqlite: Database) {
   }
   if (!columns.has("script")) {
     sqlite.exec("ALTER TABLE cron_jobs ADD COLUMN script TEXT")
-  }
-  if (columns.has("session_id")) {
-    sqlite.exec("ALTER TABLE cron_jobs DROP COLUMN session_id")
   }
 }
 
@@ -157,6 +157,20 @@ function ensurePersonaTables(sqlite: Database) {
   `)
 }
 
+function ensureProjectsTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS projects_user ON projects (user_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS projects_user_name ON projects (user_id, name);
+  `)
+}
+
 function ensureLegacyColumns(sqlite: Database) {
   const names = tableNames(sqlite)
   if (names.has("users")) {
@@ -184,6 +198,14 @@ function ensureLegacyColumns(sqlite: Database) {
       image_account_id: "TEXT",
       image_api_key: "TEXT",
       image_model: "TEXT",
+      video_provider: "TEXT",
+      video_account_id: "TEXT",
+      video_api_key: "TEXT",
+      video_model: "TEXT",
+      model3d_provider: "TEXT",
+      model3d_account_id: "TEXT",
+      model3d_api_key: "TEXT",
+      model3d_model: "TEXT",
       system1_provider: "TEXT",
       system1_endpoint: "TEXT",
       system1_api_key: "TEXT",
@@ -264,4 +286,5 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   ensureCronNoticeTable(sqlite)
   ensureCronJobColumns(sqlite)
   ensureImprovementTable(sqlite)
+  ensureProjectsTable(sqlite)
 }

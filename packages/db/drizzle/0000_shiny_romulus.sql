@@ -9,6 +9,7 @@ CREATE TABLE `cron_jobs` (
 	`at_ms` integer,
 	`enabled` integer DEFAULT true NOT NULL,
 	`delete_after_run` integer DEFAULT false NOT NULL,
+	`session_id` text,
 	`created_at` integer NOT NULL,
 	`last_run_at` integer,
 	`next_run_at` integer,

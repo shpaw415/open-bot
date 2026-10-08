@@ -64,6 +64,7 @@ import {
   ComputerIcon,
   DeleteIcon,
   EditIcon,
+  FolderIcon,
   MenuIcon,
   MoreVertIcon,
   OpenInNewIcon,
@@ -81,6 +82,7 @@ import {
   promptParts,
   readJoinedFile,
 } from "./join-file"
+import { Model3dView } from "./Model3dView"
 import {
   OPEN_THREAD_EVENT,
   seenThread,
@@ -88,6 +90,15 @@ import {
   THREAD_KEY,
 } from "./notify"
 import type { PersonaInfo } from "./Personalities"
+import { Projects } from "./ide/Projects"
+import {
+  detectMention,
+  mentionSuggestions,
+  type RefItemView,
+  type RefSectionView,
+  type SkillSummary,
+  type Suggestion,
+} from "./references"
 
 const BUILTIN_PERSONA_NAMES: Record<string, string> = {
   assistant: "Assistant",
@@ -97,6 +108,12 @@ const BUILTIN_PERSONA_NAMES: Record<string, string> = {
 }
 
 type Model = { providerID: string; modelID: string; name?: string }
+type ProjectMention = {
+  id: string
+  name: string
+  path: string
+  createdAt?: number
+}
 type SessionInfo = {
   id: string
   title?: string
@@ -114,6 +131,7 @@ type CronJobInfo = {
   everySeconds: number | null
   atMs: number | null
   enabled: boolean
+  sessionId: string | null
   createdAt: number
   lastRunAt: number | null
   nextRunAt: number | null
@@ -224,6 +242,32 @@ function openVnc(path: string, interactive: boolean) {
 function chatUrl(url: string, key: string): string {
   if (key === "src") return chatImageUrl(url)
   return defaultUrlTransform(url)
+}
+
+function ChatMarkdown({ text }: { text: string }) {
+  return (
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      urlTransform={chatUrl}
+      components={{
+        img: ({ src, alt }) => {
+          if (!src) return null
+          if (/\.(mp4|webm)$/i.test(src)) {
+            return (
+              // biome-ignore lint/a11y/useMediaCaption: generated clips ship without captions
+              <video src={src} controls preload="metadata" />
+            )
+          }
+          if (src.startsWith("/api/workspace/model3d") || /\.glb$/i.test(src)) {
+            return <Model3dView src={src} alt={alt ?? ""} />
+          }
+          return <img src={src} alt={alt ?? ""} />
+        },
+      }}
+    >
+      {text}
+    </Markdown>
+  )
 }
 
 function threadTime(session: SessionInfo): number {
@@ -346,6 +390,7 @@ export function Workspace({ me }: { me: Me }) {
   } | null>(null)
   const [screenError, setScreenError] = useState("")
   const [held, setHeld] = useState(false)
+  const [holdOrigin, setHoldOrigin] = useState<"desktop" | "chat">("chat")
   const [dismissedHandoff, setDismissedHandoff] = useState("")
   const [controlBusy, setControlBusy] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([])
@@ -378,9 +423,103 @@ export function Workspace({ me }: { me: Me }) {
   const menuAnchor = useRef<HTMLElement | null>(null)
   const restoredRef = useRef(false)
   const stoppingRef = useRef(false)
+  const messageInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingCaretRef = useRef<number | null>(null)
+  const skillsRequestedRef = useRef(false)
+  const projectsRequestedRef = useRef(false)
+  const [caret, setCaret] = useState(0)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const [mentionHidden, setMentionHidden] = useState(false)
+  const [skillList, setSkillList] = useState<SkillSummary[]>([])
+  const [projectList, setProjectList] = useState<ProjectMention[]>([])
 
   const running = phase === "running"
   const { live, subscribe } = useEventStream(running)
+  const mentionSections = useMemo<RefSectionView[]>(
+    () => [
+      {
+        key: "personas",
+        label: "Personas",
+        items: personas.map(
+          (persona): RefItemView => ({
+            id: persona.id,
+            name: persona.name,
+            description: persona.builtin
+              ? "built-in persona"
+              : "custom persona",
+          }),
+        ),
+      },
+      {
+        key: "cron",
+        label: "Cron jobs",
+        items: cronJobs.map(
+          (job): RefItemView => ({
+            id: job.id,
+            name: job.name,
+            description: `${job.enabled ? "" : "paused · "}${cronSchedule(job)}`,
+          }),
+        ),
+      },
+      ...(skillList.length
+        ? [
+            {
+              key: "skills",
+              label: "Skills",
+              items: skillList.map(
+                (skill): RefItemView => ({
+                  id: skill.name,
+                  name: skill.name,
+                  description: skill.description,
+                }),
+              ),
+            },
+          ]
+        : []),
+      ...(projectList.length
+        ? [
+            {
+              key: "projects",
+              label: "Projects",
+              items: projectList.map(
+                (project): RefItemView => ({
+                  id: project.id,
+                  name: project.name,
+                  description: project.path,
+                }),
+              ),
+            },
+          ]
+        : []),
+    ],
+    [personas, cronJobs, skillList, projectList],
+  )
+  const mentionKeys = useMemo(
+    () => mentionSections.map((section) => section.key),
+    [mentionSections],
+  )
+  const mention = useMemo(
+    () => detectMention(draft, caret, mentionKeys),
+    [draft, caret, mentionKeys],
+  )
+  const suggestions = useMemo(
+    () => (mention ? mentionSuggestions(mention, mentionSections) : []),
+    [mention, mentionSections],
+  )
+  function ensureSkills() {
+    if (skillsRequestedRef.current) return
+    skillsRequestedRef.current = true
+    api<{ skills?: SkillSummary[] }>("/api/skills")
+      .then((body) => setSkillList(body.skills ?? []))
+      .catch(() => setSkillList([]))
+  }
+  function ensureProjects() {
+    if (projectsRequestedRef.current) return
+    projectsRequestedRef.current = true
+    api<{ projects?: ProjectMention[] }>("/api/projects")
+      .then((body) => setProjectList(body.projects ?? []))
+      .catch(() => setProjectList([]))
+  }
   const activeThread = sessions.find((item) => item.id === sessionId)
   const unreadNotices = useMemo(
     () => notices.filter((notice) => !notice.viewedAt),
@@ -870,6 +1009,39 @@ export function Workspace({ me }: { me: Me }) {
     }
   }, [running, sessionId])
 
+  // A Desktop-tab hold ends on its own: leaving the tab or switching threads
+  // hands the screen back silently, without a message to the thread.
+  useEffect(() => {
+    if (!held || holdOrigin !== "desktop" || controlBusy) return
+    const holdSession = screen?.sessionId
+    if (!holdSession) return
+    if (tab === "desktop" && holdSession === sessionId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        await api("/api/desktop/screen/hold", {
+          method: "DELETE",
+          body: JSON.stringify({ sessionId: holdSession }),
+        })
+      } catch {
+        // control plane may be restarting; local state still resets below
+      }
+      if (cancelled) return
+      setHeld(false)
+      if (holdSession === sessionId) {
+        const last = [...shown].reverse().find((entry) => entry.message.handoff)
+        const stamp = last ? handoffStamp(last.message) : ""
+        if (stamp) {
+          sessionStorage.setItem(`ob-screen-dismiss:${sessionId}`, stamp)
+          setDismissedHandoff(stamp)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [tab, held, holdOrigin, sessionId, screen, shown, controlBusy])
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only when the transcript changes
   useEffect(() => {
     if (tab !== "chat" || !stickRef.current) return
@@ -997,8 +1169,40 @@ export function Workspace({ me }: { me: Me }) {
 
   function rememberDraft(text: string) {
     draftRef.current = text
+    setMentionIndex(0)
     setDraft(text)
     writeDraft(localStorage, draftSessionRef.current, text)
+  }
+
+  function restoreCaret() {
+    requestAnimationFrame(() => {
+      const pos = pendingCaretRef.current
+      if (pos === null) return
+      pendingCaretRef.current = null
+      const el = messageInputRef.current
+      if (el) {
+        el.focus()
+        el.setSelectionRange(pos, pos)
+      }
+      setCaret(pos)
+    })
+  }
+
+  function acceptSuggestion(suggestion: Suggestion) {
+    const el = messageInputRef.current
+    const pos = el?.selectionStart ?? draftRef.current.length
+    const active = detectMention(draftRef.current, pos, mentionKeys)
+    if (!active) return
+    const next =
+      draftRef.current.slice(0, active.start) +
+      suggestion.complete +
+      draftRef.current.slice(pos)
+    pendingCaretRef.current = active.start + suggestion.complete.length
+    setMentionHidden(false)
+    ensureSkills()
+    ensureProjects()
+    rememberDraft(next)
+    restoreCaret()
   }
 
   async function send() {
@@ -1032,6 +1236,15 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
+  function viewJobThreadNotices(id: string) {
+    const job = cronJobs.find((item) => item.sessionId === id)
+    if (!job) return
+    for (const notice of notices) {
+      if (notice.jobId === job.id && !notice.viewedAt)
+        void markNoticesViewed({ id: notice.id })
+    }
+  }
+
   function selectThread(id: string) {
     if (id !== sessionId) {
       setSessionId(id)
@@ -1039,6 +1252,7 @@ export function Workspace({ me }: { me: Me }) {
       localStorage.setItem(THREAD_KEY, id)
     }
     if (mobile) setThreadsOpen(false)
+    viewJobThreadNotices(id)
   }
 
   function goTab(next: string) {
@@ -1120,6 +1334,7 @@ export function Workspace({ me }: { me: Me }) {
     try {
       await api(`/api/opencode/session/${target.id}`, { method: "DELETE" })
       setDeleteTarget(null)
+      viewJobThreadNotices(target.id)
       writeDraft(localStorage, target.id, "")
       joinedStore.current.delete(target.id)
       seenThread(target.id)
@@ -1173,9 +1388,8 @@ export function Workspace({ me }: { me: Me }) {
         },
       )
       setScreen(next)
+      setHoldOrigin(tab === "desktop" ? "desktop" : "chat")
       setHeld(true)
-      setTab("chat")
-      stickRef.current = true
       await api(`/api/opencode/session/${sessionId}/abort`, {
         method: "POST",
       }).catch(() => {})
@@ -1188,7 +1402,7 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
-  async function releaseControl() {
+  async function releaseControl(notify = true) {
     if (!sessionId || controlBusy) return
     const last = [...shown].reverse().find((entry) => entry.message.handoff)
     const stamp = last ? handoffStamp(last.message) : ""
@@ -1204,7 +1418,9 @@ export function Workspace({ me }: { me: Me }) {
         sessionStorage.setItem(`ob-screen-dismiss:${sessionId}`, stamp)
         setDismissedHandoff(stamp)
       }
-      void prompt("Done on the screen. You have the desktop again.")
+      if (notify) {
+        void prompt("Done on the screen. You have the desktop again.")
+      }
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "could not return control",
@@ -1227,8 +1443,8 @@ export function Workspace({ me }: { me: Me }) {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
   useEffect(() => {
-    if (tab !== "cron") return
     void loadCron()
+    if (tab !== "cron") return
     void api<{ personas?: PersonaInfo[] }>("/api/personas")
       .then((body) => {
         if (body.personas?.length) setPersonas(body.personas)
@@ -1491,7 +1707,9 @@ export function Workspace({ me }: { me: Me }) {
                 : "Chat"
             : tab === "desktop"
               ? "Desktop"
-              : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
+              : tab === "projects"
+                ? "Projects"
+                : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
         </Typography>
         <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
           {stopping ? "stopping…" : phase === "starting" ? "starting…" : phase}
@@ -1772,6 +1990,14 @@ export function Workspace({ me }: { me: Me }) {
                   <Typography variant="body2" color="textSecondary">
                     Start the desktop to chat with OpenCode.
                   </Typography>
+                  <Button
+                    variant="contained"
+                    startIcon={<PlayArrowIcon />}
+                    onClick={() => void start()}
+                    sx={{ mt: 1 }}
+                  >
+                    Start desktop
+                  </Button>
                 </Stack>
               ) : shown.length === 0 ? (
                 <Stack
@@ -1828,16 +2054,7 @@ export function Workspace({ me }: { me: Me }) {
                       ) : null}
                       <div className="ob-md">
                         {message.text.trim() ? (
-                          <Markdown
-                            remarkPlugins={[remarkGfm]}
-                            urlTransform={chatUrl}
-                            components={{
-                              img: ({ src, alt }) =>
-                                src ? <img src={src} alt={alt ?? ""} /> : null,
-                            }}
-                          >
-                            {message.text}
-                          </Markdown>
+                          <ChatMarkdown text={message.text} />
                         ) : null}
                         {message.images.map((src) => (
                           <img key={src} src={src} alt="" />
@@ -1906,7 +2123,9 @@ export function Workspace({ me }: { me: Me }) {
                 })
               )}
             </Box>
-            {held && screen?.sessionId === sessionId ? (
+            {held &&
+            holdOrigin === "chat" &&
+            screen?.sessionId === sessionId ? (
               <div className="ob-takeover">
                 <Stack direction="row" spacing={1} alignItems="center">
                   <Typography variant="caption" sx={{ flex: 1 }}>
@@ -1994,21 +2213,113 @@ export function Workspace({ me }: { me: Me }) {
                     event.currentTarget.value = ""
                   }}
                 />
-                <TextField
-                  label="Message"
-                  value={draft}
-                  multiline
-                  disabled={!running || sending || stopping}
-                  onChange={(event) => rememberDraft(event.currentTarget.value)}
-                  onKeyDown={(event: React.KeyboardEvent) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault()
-                      if (canStop) void stopThread()
-                      else void send()
+                <Box sx={{ position: "relative", flex: 1, minWidth: 0 }}>
+                  <TextField
+                    label="Message"
+                    value={draft}
+                    multiline
+                    ref={messageInputRef}
+                    disabled={!running || sending || stopping}
+                    onChange={(event) => {
+                      setMentionHidden(false)
+                      if (event.currentTarget.value.includes("@")) {
+                        ensureSkills()
+                        ensureProjects()
+                      }
+                      rememberDraft(event.currentTarget.value)
+                      setCaret(
+                        event.currentTarget.selectionStart ??
+                          event.currentTarget.value.length,
+                      )
+                    }}
+                    onClick={(event) =>
+                      setCaret(event.currentTarget.selectionStart ?? 0)
                     }
-                  }}
-                  sx={{ flex: 1 }}
-                />
+                    onKeyUp={(event) =>
+                      setCaret(event.currentTarget.selectionStart ?? 0)
+                    }
+                    onKeyDown={(
+                      event: React.KeyboardEvent<HTMLInputElement>,
+                    ) => {
+                      if (mention && !mentionHidden && suggestions.length) {
+                        const last = suggestions.length - 1
+                        if (event.key === "ArrowDown") {
+                          event.preventDefault()
+                          setMentionIndex((index) =>
+                            index + 1 > last ? 0 : index + 1,
+                          )
+                          return
+                        }
+                        if (event.key === "ArrowUp") {
+                          event.preventDefault()
+                          setMentionIndex((index) =>
+                            index - 1 < 0 ? last : index - 1,
+                          )
+                          return
+                        }
+                        if (event.key === "Tab" || event.key === "Enter") {
+                          event.preventDefault()
+                          const picked =
+                            suggestions[Math.min(mentionIndex, last)]
+                          if (picked) acceptSuggestion(picked)
+                          return
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault()
+                          setMentionHidden(true)
+                          return
+                        }
+                      }
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault()
+                        if (canStop) void stopThread()
+                        else void send()
+                      }
+                    }}
+                    sx={{ flex: 1 }}
+                  />
+                  {mention && !mentionHidden && !sending && !stopping ? (
+                    <Paper
+                      elevation={8}
+                      sx={{
+                        position: "absolute",
+                        bottom: "calc(100% + 8px)",
+                        left: 0,
+                        right: 0,
+                        maxHeight: 264,
+                        overflowY: "auto",
+                        zIndex: 3,
+                      }}
+                    >
+                      <List dense disablePadding>
+                        {suggestions.length ? (
+                          suggestions.map((suggestion, index) => (
+                            <ListItemButton
+                              key={suggestion.key}
+                              selected={index === mentionIndex}
+                              onClick={() => acceptSuggestion(suggestion)}
+                            >
+                              <ListItemText
+                                primary={suggestion.primary}
+                                secondary={suggestion.secondary}
+                              />
+                            </ListItemButton>
+                          ))
+                        ) : (
+                          <ListItemButton disabled>
+                            <ListItemText
+                              primary={
+                                mention.stage === "name"
+                                  ? `No ${mention.section} match`
+                                  : "No section match"
+                              }
+                            />
+                          </ListItemButton>
+                        )}
+                      </List>
+                    </Paper>
+                  ) : null}
+                </Box>
                 {canStop ? (
                   mobile ? (
                     <IconButton
@@ -2115,7 +2426,7 @@ export function Workspace({ me }: { me: Me }) {
                 {stopping
                   ? "Stopping the desktop…"
                   : held
-                    ? "You have this screen in chat. The agent is paused."
+                    ? "You have this screen. The agent is paused."
                     : `Screen for ${
                         sessions.find((item) => item.id === sessionId)?.title ||
                         "this thread"
@@ -2124,20 +2435,13 @@ export function Workspace({ me }: { me: Me }) {
               <Button
                 size="small"
                 variant="contained"
-                disabled={!running || stopping || controlBusy || held}
-                onClick={() => void takeControl()}
+                disabled={!running || stopping || controlBusy}
+                onClick={() =>
+                  void (held ? releaseControl(false) : takeControl())
+                }
               >
-                Take control
+                {held ? "Done" : "Take control"}
               </Button>
-              {held ? (
-                <Button
-                  size="small"
-                  variant="text"
-                  onClick={() => setTab("chat")}
-                >
-                  Open chat
-                </Button>
-              ) : null}
               <ToolTip title="Reload VNC">
                 <Button
                   size="small"
@@ -2165,20 +2469,13 @@ export function Workspace({ me }: { me: Me }) {
                 </Button>
               </ToolTip>
             </Stack>
-            {held && screen?.sessionId === sessionId ? (
-              <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-                <Typography variant="subtitle1">You have the screen</Typography>
-                <Typography variant="body2" color="textSecondary">
-                  It is open in chat. Done there gives it back to the agent.
-                </Typography>
-              </Paper>
-            ) : screen?.sessionId === sessionId ? (
+            {screen?.sessionId === sessionId ? (
               <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
                 <VncFrame
-                  key={`${screen.sessionId}-${desktopKey}`}
+                  key={`${screen.sessionId}-${desktopKey}-${held ? "held" : "view"}`}
                   title="desktop"
                   path={screen.path}
-                  interactive={false}
+                  interactive={held}
                   className="ob-frame"
                 />
               </Box>
@@ -2387,6 +2684,18 @@ export function Workspace({ me }: { me: Me }) {
         </Box>
       </Box>
 
+      {/* Projects */}
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          display: tab === "projects" ? "flex" : "none",
+          flexDirection: "column",
+        }}
+      >
+        <Projects />
+      </Box>
+
       <Drawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
@@ -2421,6 +2730,13 @@ export function Workspace({ me }: { me: Me }) {
               <ListItemText
                 primary={`Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
               />
+            </ListItemButton>
+            <ListItemButton
+              selected={tab === "projects"}
+              onClick={() => goTab("projects")}
+            >
+              <FolderIcon />
+              <ListItemText primary="Projects" />
             </ListItemButton>
           </List>
           <Divider />
@@ -2894,9 +3210,15 @@ export function Workspace({ me }: { me: Me }) {
       <Dialog open={Boolean(cronResult)} onClose={() => setCronResult(null)}>
         <DialogTitle>{cronResult?.jobName ?? ""}</DialogTitle>
         <DialogContent>
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-            {cronResult?.summary ?? ""}
-          </Typography>
+          {cronResult?.summary?.trim() ? (
+            <div className="ob-md">
+              <ChatMarkdown text={cronResult.summary} />
+            </div>
+          ) : (
+            <Typography variant="body2" color="textSecondary">
+              No output.
+            </Typography>
+          )}
         </DialogContent>
         <DialogActions>
           <Button variant="text" onClick={() => setCronResult(null)}>

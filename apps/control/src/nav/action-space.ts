@@ -114,6 +114,29 @@ export function sameSite(pageUrl: string, target: string) {
   }
 }
 
+// True only when the page is already at the requested address. A host-only
+// match made ob-nav refuse new search urls on the same site and left the run
+// staring at the old page.
+export function sameUrl(pageUrl: string, target: string) {
+  try {
+    const page = new URL(pageUrl)
+    const goal = new URL(target)
+    page.hash = ""
+    goal.hash = ""
+    return page.href === goal.href
+  } catch {
+    return false
+  }
+}
+
+export function hostOf(url: string) {
+  try {
+    return new URL(url).host
+  } catch {
+    return ""
+  }
+}
+
 export function pageNeedsUser(snapshot: Snapshot) {
   const url = snapshot.url.toLowerCase()
   if (/\/login(\/|$|\?)/.test(url)) return true
@@ -126,6 +149,18 @@ export function pageNeedsUser(snapshot: Snapshot) {
     return true
   }
   return /\bcaptcha\b|\brecaptcha\b/i.test(snapshot.text)
+}
+
+// Bot-walls and dead ends ("Error Page | eBay", "Access denied", …) load fine
+// but cannot move a task. Title-anchored plus short-body matching keeps this
+// off ordinary result pages that merely mention the words.
+const ERROR_PAGE =
+  /\berror page\b|something went wrong|pardon (?:our|the) interruption|access denied|unusual traffic|are you a robot|are you a human|prove you are human|request blocked|refused to connect/i
+
+export function pageIsError(snapshot: Snapshot) {
+  if (ERROR_PAGE.test(snapshot.title)) return true
+  if (snapshot.text.length > 400) return false
+  return ERROR_PAGE.test(snapshot.text)
 }
 
 export function pageKey(snapshot: Snapshot) {

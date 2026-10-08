@@ -4,6 +4,7 @@ data
 config/ai.ts
 config/ai.ts.bak.*
 deploy/.env
+apps/web/public/monaco
 *.sqlite
 *.sqlite-journal
 .DS_Store

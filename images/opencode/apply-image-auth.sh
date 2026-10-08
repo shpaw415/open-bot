@@ -14,10 +14,10 @@ token=$(printf '%s' "$payload" | jq -r '.token // empty')
 model=$(printf '%s' "$payload" | jq -r '.model // empty')
 
 clear_all() {
-  rm -f "$cf_dir/auth.json" "$cf_dir/image-model" "$marker_dir/image.json"
+  rm -f "$cf_dir/auth.json" "$cf_dir/image-model" "$marker_dir/image.json" "$marker_dir/image-auth.json"
 }
 
-if [ -z "$account" ] || [ -z "$token" ]; then
+if [ -z "$token" ]; then
   clear_all
   exit 0
 fi
@@ -26,8 +26,22 @@ if [ -z "$provider" ]; then
   exit 1
 fi
 
+write_marker() {
+  jq -n --arg provider "$provider" --arg model "$model" '{provider:$provider, model:$model}' > "$marker_dir/image.json"
+}
+
+write_key_auth() {
+  jq -n --arg account "$account" --arg token "$token" '{accountId:(if $account == "" then null else $account end), token:$token}' > "$marker_dir/image-auth.json.tmp"
+  mv "$marker_dir/image-auth.json.tmp" "$marker_dir/image-auth.json"
+  chmod 600 "$marker_dir/image-auth.json"
+}
+
 case "$provider" in
   cloudflare-workers-ai)
+    if [ -z "$account" ]; then
+      clear_all
+      exit 0
+    fi
     if [ -z "$model" ]; then
       model="@cf/black-forest-labs/flux-2-klein-9b"
     fi
@@ -39,7 +53,46 @@ case "$provider" in
     printf '%s\n' "$model" > "$cf_dir/image-model.tmp"
     mv "$cf_dir/image-model.tmp" "$cf_dir/image-model"
     chmod 600 "$cf_dir/image-model"
-    jq -n --arg provider "$provider" --arg model "$model" '{provider:$provider, model:$model}' > "$marker_dir/image.json"
+    write_marker
+    ;;
+  xai|xai-gateway)
+    if [ "$provider" = "xai-gateway" ] && [ -z "$account" ]; then
+      clear_all
+      exit 0
+    fi
+    model="${model:-grok-2-image-1212}"
+    clear_all
+    mkdir -p "$marker_dir"
+    write_key_auth
+    write_marker
+    ;;
+  openai)
+    model="${model:-gpt-image-1}"
+    clear_all
+    mkdir -p "$marker_dir"
+    write_key_auth
+    write_marker
+    ;;
+  google)
+    model="${model:-imagen-4.0-generate-001}"
+    clear_all
+    mkdir -p "$marker_dir"
+    write_key_auth
+    write_marker
+    ;;
+  stability)
+    model="${model:-core}"
+    clear_all
+    mkdir -p "$marker_dir"
+    write_key_auth
+    write_marker
+    ;;
+  replicate)
+    model="${model:-black-forest-labs/flux-schnell}"
+    clear_all
+    mkdir -p "$marker_dir"
+    write_key_auth
+    write_marker
     ;;
   *)
     echo "unsupported image provider: $provider" >&2

@@ -187,6 +187,7 @@ describe("drizzle migrations", () => {
       atMs: null,
       enabled: true,
       deleteAfterRun: false,
+      sessionId: null,
       createdAt: 1,
       lastRunAt: null,
       nextRunAt: 2,
@@ -373,6 +374,68 @@ describe("usage ledger", () => {
     expect(db.getImageProvider("a")).toBeNull()
   })
 
+  test("stores a per-desktop video provider and clears it", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "t",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    expect(db.getVideoProvider("a")).toBeNull()
+    db.setVideoProvider("a", {
+      provider: "openai",
+      accountId: "",
+      apiKey: "secret",
+      model: "sora-2",
+    })
+    expect(db.getVideoProvider("a")).toEqual({
+      provider: "openai",
+      accountId: "",
+      apiKey: "secret",
+      model: "sora-2",
+    })
+    db.clearVideoProvider("a")
+    expect(db.getVideoProvider("a")).toBeNull()
+  })
+
+  test("stores a per-desktop 3d model provider and clears it", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "t",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      lastActiveAt: 1,
+    })
+    expect(db.getModel3dProvider("a")).toBeNull()
+    db.setModel3dProvider("a", {
+      provider: "meshy",
+      accountId: "",
+      apiKey: "secret",
+      model: "meshy-5",
+    })
+    expect(db.getModel3dProvider("a")).toEqual({
+      provider: "meshy",
+      accountId: "",
+      apiKey: "secret",
+      model: "meshy-5",
+    })
+    db.clearModel3dProvider("a")
+    expect(db.getModel3dProvider("a")).toBeNull()
+  })
+
   test("stores a per-desktop system1 provider and clears it", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
@@ -419,6 +482,7 @@ describe("cron store", () => {
       atMs: null,
       enabled: true,
       deleteAfterRun: false,
+      sessionId: null,
       createdAt: 1000,
       lastRunAt: null,
       nextRunAt: 2000,
@@ -509,9 +573,11 @@ describe("cron store", () => {
 
     db.recordCronRun("due", null)
     db.recordCronRun("due", "prompt failed (500)")
+    db.setCronSession("due", "ses_1")
     const after = db.cronJobById("due", "a")
     expect(after?.runCount).toBe(2)
     expect(after?.lastError).toBe("prompt failed (500)")
+    expect(after?.sessionId).toBe("ses_1")
     expect(after?.lastRunAt).toBeGreaterThan(0)
   })
 

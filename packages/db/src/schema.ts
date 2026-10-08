@@ -6,6 +6,7 @@ import {
   primaryKey,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core"
 
 export const users = sqliteTable("users", {
@@ -51,6 +52,14 @@ export const desktops = sqliteTable("desktops", {
   imageAccountId: text("image_account_id"),
   imageApiKey: text("image_api_key"),
   imageModel: text("image_model"),
+  videoProvider: text("video_provider"),
+  videoAccountId: text("video_account_id"),
+  videoApiKey: text("video_api_key"),
+  videoModel: text("video_model"),
+  model3dProvider: text("model3d_provider"),
+  model3dAccountId: text("model3d_account_id"),
+  model3dApiKey: text("model3d_api_key"),
+  model3dModel: text("model3d_model"),
   system1Provider: text("system1_provider"),
   system1Endpoint: text("system1_endpoint"),
   system1ApiKey: text("system1_api_key"),
@@ -149,6 +158,7 @@ export const cronJobs = sqliteTable(
     deleteAfterRun: integer("delete_after_run", { mode: "boolean" })
       .notNull()
       .default(false),
+    sessionId: text("session_id"),
     createdAt: integer("created_at").notNull(),
     lastRunAt: integer("last_run_at"),
     nextRunAt: integer("next_run_at"),
@@ -209,4 +219,19 @@ export const cronNotices = sqliteTable(
     viewedAt: integer("viewed_at"),
   },
   (table) => [index("cron_notices_user").on(table.userId, table.viewedAt)],
+)
+
+export const projects = sqliteTable(
+  "projects",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    path: text("path").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("projects_user").on(table.userId),
+    uniqueIndex("projects_user_name").on(table.userId, table.name),
+  ],
 )

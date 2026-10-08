@@ -56,6 +56,86 @@ test("writes workers-ai auth and the model", async () => {
   })
 })
 
+test("writes key-only auth for xai without an account", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cf-ai-"))
+  const result = await run(
+    home,
+    JSON.stringify({
+      provider: "xai",
+      accountId: "",
+      token: "xai-key",
+      model: "grok-2-image-1212",
+    }),
+  )
+  expect(result.code).toBe(0)
+  expect(result.stderr).toBe("")
+  const auth = JSON.parse(
+    readFileSync(join(home, ".config/open-bot/image-auth.json"), "utf8"),
+  )
+  expect(auth).toEqual({ accountId: null, token: "xai-key" })
+  expect(
+    statSync(join(home, ".config/open-bot/image-auth.json")).mode & 0o777,
+  ).toBe(0o600)
+  expect(
+    JSON.parse(readFileSync(join(home, ".config/open-bot/image.json"), "utf8")),
+  ).toEqual({ provider: "xai", model: "grok-2-image-1212" })
+})
+
+test("writes account auth for xai-gateway and defaults its model", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cf-ai-"))
+  const result = await run(
+    home,
+    JSON.stringify({
+      provider: "xai-gateway",
+      accountId: "acct",
+      token: "cf-token",
+      model: "",
+    }),
+  )
+  expect(result.code).toBe(0)
+  const auth = JSON.parse(
+    readFileSync(join(home, ".config/open-bot/image-auth.json"), "utf8"),
+  )
+  expect(auth).toEqual({ accountId: "acct", token: "cf-token" })
+  expect(
+    JSON.parse(readFileSync(join(home, ".config/open-bot/image.json"), "utf8")),
+  ).toEqual({ provider: "xai-gateway", model: "grok-2-image-1212" })
+})
+
+test("switching providers removes the cloudflare cf-ai files", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cf-ai-"))
+  const written = await run(
+    home,
+    JSON.stringify({
+      provider: "cloudflare-workers-ai",
+      accountId: "acct",
+      token: "tok",
+      model: "m",
+    }),
+  )
+  expect(written.code).toBe(0)
+  const switched = await run(
+    home,
+    JSON.stringify({
+      provider: "openai",
+      accountId: "",
+      token: "sk",
+      model: "gpt-image-1",
+    }),
+  )
+  expect(switched.code).toBe(0)
+  expect(() => readFileSync(join(home, ".config/cf-ai/auth.json"))).toThrow()
+  expect(() => readFileSync(join(home, ".config/cf-ai/image-model"))).toThrow()
+  expect(
+    JSON.parse(readFileSync(join(home, ".config/open-bot/image.json"), "utf8")),
+  ).toEqual({ provider: "openai", model: "gpt-image-1" })
+  expect(
+    JSON.parse(
+      readFileSync(join(home, ".config/open-bot/image-auth.json"), "utf8"),
+    ),
+  ).toEqual({ accountId: null, token: "sk" })
+})
+
 test("clears auth when credentials are empty", async () => {
   const home = mkdtempSync(join(tmpdir(), "cf-ai-"))
   const written = await run(
@@ -74,6 +154,9 @@ test("clears auth when credentials are empty", async () => {
   expect(() => readFileSync(join(home, ".config/cf-ai/image-model"))).toThrow()
   expect(() =>
     readFileSync(join(home, ".config/open-bot/image.json")),
+  ).toThrow()
+  expect(() =>
+    readFileSync(join(home, ".config/open-bot/image-auth.json")),
   ).toThrow()
 })
 

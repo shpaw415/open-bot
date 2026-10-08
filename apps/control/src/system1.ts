@@ -10,6 +10,9 @@ export type System1Spec = {
 export const CLOUDFLARE_ENDPOINT_PLACEHOLDER =
   "https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/custom-jev/v1/systemone"
 
+export const CLEF_ENDPOINT_PLACEHOLDER =
+  "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/clef"
+
 export const LAYA_ENDPOINT_PLACEHOLDER = "http://laya.example:8000/v1/systemone"
 
 export const system1Providers: System1Spec[] = [
@@ -20,6 +23,14 @@ export const system1Providers: System1Spec[] = [
     endpointPlaceholder: CLOUDFLARE_ENDPOINT_PLACEHOLDER,
     keyRequired: true,
     gatewayToken: true,
+  },
+  {
+    id: "cloudflare-clef",
+    label: "Cloudflare Clef",
+    defaultModel: "clef",
+    endpointPlaceholder: CLEF_ENDPOINT_PLACEHOLDER,
+    keyRequired: true,
+    gatewayToken: false,
   },
   {
     id: "laya",
@@ -60,6 +71,12 @@ export function composeCloudflareEndpoint(
   return `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}/custom-${name}/v1/systemone`
 }
 
+export function composeClefEndpoint(accountId: string) {
+  const account = accountId.trim()
+  if (!/^[A-Za-z0-9_-]+$/.test(account)) return ""
+  return `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/@cf/cloudflare/clef`
+}
+
 export function system1EndpointError(provider: string, endpoint: string) {
   const spec = system1ProviderById(provider)
   if (!spec) return "unsupported provider"
@@ -75,7 +92,7 @@ export function system1EndpointError(provider: string, endpoint: string) {
   if (url.username || url.password) {
     return "endpoint must not include a username or password"
   }
-  if (spec.id === "cloudflare-jev") {
+  if (spec.id === "cloudflare-jev" || spec.id === "cloudflare-clef") {
     if (url.protocol !== "https:") return "Cloudflare endpoint must be https"
     return null
   }

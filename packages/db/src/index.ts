@@ -24,6 +24,7 @@ import {
   improvements,
   invites,
   personas,
+  projects,
   sessions,
   threadPersonas,
   threadScreens,
@@ -91,6 +92,20 @@ export type Session = {
 }
 
 export type ImageProvider = {
+  provider: string
+  accountId: string
+  apiKey: string
+  model: string
+}
+
+export type VideoProvider = {
+  provider: string
+  accountId: string
+  apiKey: string
+  model: string
+}
+
+export type Model3dProvider = {
   provider: string
   accountId: string
   apiKey: string
@@ -221,6 +236,7 @@ export type CronJob = {
   atMs: number | null
   enabled: boolean
   deleteAfterRun: boolean
+  sessionId: string | null
   createdAt: number
   lastRunAt: number | null
   nextRunAt: number | null
@@ -242,6 +258,14 @@ export type CronNotice = {
   summary: string | null
   createdAt: number
   viewedAt: number | null
+}
+
+export type Project = {
+  id: string
+  userId: string
+  name: string
+  path: string
+  createdAt: number
 }
 
 const migrationsFolder = join(
@@ -291,6 +315,7 @@ function mapCronJob(
     atMs: row.atMs,
     enabled: row.enabled,
     deleteAfterRun: row.deleteAfterRun,
+    sessionId: row.sessionId,
     createdAt: row.createdAt,
     lastRunAt: row.lastRunAt,
     nextRunAt: row.nextRunAt,
@@ -324,6 +349,9 @@ export function openDatabase(path: string) {
   mkdirSync(dirname(path), { recursive: true })
   const sqlite = new Database(path)
   sqlite.exec("PRAGMA journal_mode = WAL")
+  // Concurrent control-plane processes (thread screens, cron, the server)
+  // write at once; without a busy timeout they die instantly on SQLITE_BUSY.
+  sqlite.exec("PRAGMA busy_timeout = 10000")
   applyMigrations(sqlite, migrationsFolder)
   const orm = drizzle(sqlite, {
     schema: {
@@ -339,6 +367,7 @@ export function openDatabase(path: string) {
       threadPersonas,
       threadScreens,
       improvements,
+      projects,
     },
   })
 
@@ -513,6 +542,92 @@ export function openDatabase(path: string) {
           imageAccountId: null,
           imageApiKey: null,
           imageModel: null,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    getVideoProvider(userId: string): VideoProvider | null {
+      const row = orm
+        .select({
+          provider: desktops.videoProvider,
+          accountId: desktops.videoAccountId,
+          apiKey: desktops.videoApiKey,
+          model: desktops.videoModel,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      if (!row?.provider || !row.apiKey || !row.model) return null
+      return {
+        provider: row.provider,
+        accountId: row.accountId ?? "",
+        apiKey: row.apiKey,
+        model: row.model,
+      }
+    },
+    setVideoProvider(userId: string, value: VideoProvider) {
+      orm
+        .update(desktops)
+        .set({
+          videoProvider: value.provider,
+          videoAccountId: value.accountId,
+          videoApiKey: value.apiKey,
+          videoModel: value.model,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    clearVideoProvider(userId: string) {
+      orm
+        .update(desktops)
+        .set({
+          videoProvider: null,
+          videoAccountId: null,
+          videoApiKey: null,
+          videoModel: null,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    getModel3dProvider(userId: string): Model3dProvider | null {
+      const row = orm
+        .select({
+          provider: desktops.model3dProvider,
+          accountId: desktops.model3dAccountId,
+          apiKey: desktops.model3dApiKey,
+          model: desktops.model3dModel,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      if (!row?.provider || !row.apiKey || !row.model) return null
+      return {
+        provider: row.provider,
+        accountId: row.accountId ?? "",
+        apiKey: row.apiKey,
+        model: row.model,
+      }
+    },
+    setModel3dProvider(userId: string, value: Model3dProvider) {
+      orm
+        .update(desktops)
+        .set({
+          model3dProvider: value.provider,
+          model3dAccountId: value.accountId,
+          model3dApiKey: value.apiKey,
+          model3dModel: value.model,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    clearModel3dProvider(userId: string) {
+      orm
+        .update(desktops)
+        .set({
+          model3dProvider: null,
+          model3dAccountId: null,
+          model3dApiKey: null,
+          model3dModel: null,
         })
         .where(eq(desktops.userId, userId))
         .run()
@@ -845,6 +960,9 @@ export function openDatabase(path: string) {
         .where(eq(cronJobs.id, id))
         .run()
     },
+    setCronSession(id: string, sessionId: string) {
+      orm.update(cronJobs).set({ sessionId }).where(eq(cronJobs.id, id)).run()
+    },
     updateCronJob(
       id: string,
       userId: string,
@@ -899,6 +1017,43 @@ export function openDatabase(path: string) {
     },
     createCronNotice(notice: CronNotice) {
       orm.insert(cronNotices).values(notice).run()
+    },
+    createProject(project: Project) {
+      orm.insert(projects).values(project).run()
+    },
+    projects(userId: string) {
+      return orm
+        .select()
+        .from(projects)
+        .where(eq(projects.userId, userId))
+        .orderBy(projects.createdAt)
+        .all()
+    },
+    projectByName(userId: string, name: string) {
+      return (
+        orm
+          .select()
+          .from(projects)
+          .where(and(eq(projects.userId, userId), eq(projects.name, name)))
+          .get() ?? null
+      )
+    },
+    projectById(id: string, userId: string) {
+      return (
+        orm
+          .select()
+          .from(projects)
+          .where(and(eq(projects.id, id), eq(projects.userId, userId)))
+          .get() ?? null
+      )
+    },
+    deleteProject(id: string, userId: string) {
+      if (!this.projectById(id, userId)) return false
+      orm
+        .delete(projects)
+        .where(and(eq(projects.id, id), eq(projects.userId, userId)))
+        .run()
+      return true
     },
     pendingCronNotices() {
       return orm

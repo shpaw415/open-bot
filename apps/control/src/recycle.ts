@@ -54,6 +54,8 @@ for (const userId of db.desktopUserIds()) {
       viking,
       db.getImageProvider(userId),
       db.getSystem1(userId),
+      db.getVideoProvider(userId),
+      db.getModel3dProvider(userId),
     )
     db.touchDesktop(userId)
     restarted += 1

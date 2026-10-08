@@ -60,7 +60,16 @@ export function toolStuck(
 /** Desktop nav runs many Laya decisions in one bash call; they get longer. */
 export function toolLimit(messages: unknown): number {
   const tool = newestTool(messages)
-  if (tool && /^ob-(nav|vnc|cron)\b/.test(tool.command.trim())) {
+  const command = tool?.command.trim() ?? ""
+  if (/^blender-team\b/.test(command)) {
+    // blender-team pipelines run LLM worker stages (15 min each) back to back.
+    return 60 * STUCK_TOOL_MS
+  }
+  if (/^blender\s/.test(command)) {
+    // headless bpy one-offs with Cycles renders can run for minutes
+    return 10 * STUCK_TOOL_MS
+  }
+  if (/^ob-(nav|vnc|cron)\b/.test(command)) {
     return 5 * STUCK_TOOL_MS
   }
   return STUCK_TOOL_MS

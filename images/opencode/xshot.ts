@@ -94,6 +94,25 @@ async function main() {
   if (!file || !Number.isInteger(port))
     throw new Error("usage: xshot.ts PORT FILE RESOLUTION")
   const socket = await pageSocket(port)
+  let ox = 0
+  let oy = 0
+  let origin = true
+  try {
+    const probe = (await socket.call("Runtime.evaluate", {
+      expression:
+        "({x: Math.round(window.screenX + (window.outerWidth - window.innerWidth) / 2), y: Math.round(window.screenY + (window.outerHeight - window.innerHeight))})",
+      returnByValue: true,
+    })) as { result?: { value?: { x?: number; y?: number } } }
+    const value = probe.result?.value
+    if (value && Number.isFinite(value.x) && Number.isFinite(value.y)) {
+      ox = Math.round(value.x)
+      oy = Math.round(value.y)
+    } else {
+      origin = false
+    }
+  } catch {
+    origin = false
+  }
   try {
     await socket.call("Page.enable")
     const current = layout(await socket.call("Page.getLayoutMetrics"))
@@ -115,12 +134,15 @@ async function main() {
     })) as { data?: string }
     if (!shot.data) throw new Error("empty screenshot")
     await Bun.write(file, Buffer.from(shot.data, "base64"))
-    console.log(`${width * scale}x${height * scale}`)
-    if (scale !== 1) {
-      console.log(
-        `clicks use the live screen. divide image x and y by ${scale}`,
-      )
-    }
+    const statePath = `/home/agent/.open-bot/capture-${port}.json`
+    await Bun.write(
+      statePath,
+      `${JSON.stringify({ factor: scale, ox, oy, ts: Date.now(), origin })}\n`,
+    )
+    const offsetText = origin ? `offset ${ox},${oy}` : "offset unknown"
+    console.log(
+      `capture ${width * scale}x${height * scale} live ${current.width}x${current.height} factor ${scale} ${offsetText}`,
+    )
   } finally {
     await socket
       .call("Emulation.clearDeviceMetricsOverride")

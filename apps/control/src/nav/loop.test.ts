@@ -187,6 +187,73 @@ test("a false user handoff is retried, then hands off", async () => {
   expect(result.fallback).toBe("vnc")
 })
 
+test("a server redirect is reported, not a false handoff", async () => {
+  let current: Snapshot = {
+    ...page,
+    url: "about:blank",
+    title: "",
+    text: "",
+    elements: [],
+  }
+  const result = await runNav({
+    goal: "Open https://buyapi.test/search?q=orange%20pi",
+    ask: async () =>
+      decision({
+        operation: "CLICK",
+        target: "1",
+        confidence: 0.9,
+        needsUser: 0.9,
+      }),
+    driver: {
+      async probe() {
+        return current
+      },
+      async navigate(_url) {
+        current = { ...page, url: "https://pishop.test/search", text: "shop" }
+      },
+      async act() {},
+    },
+  })
+  expect(result.status).toBe("low_confidence")
+  expect(result.detail).toBe("redirected to pishop.test")
+  expect(result.requested_url).toBe("https://buyapi.test/search?q=orange%20pi")
+  expect(result.motive).toBe("redirect")
+})
+
+test("a stray handoff retries the goal url once in the same run", async () => {
+  const opened: string[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "Open https://buyapi.test/search",
+    maxSteps: 10,
+    ask: async () => {
+      asked += 1
+      return decision({
+        operation: "CLICK",
+        target: "1",
+        confidence: 0.9,
+        needsUser: 0.9,
+      })
+    },
+    driver: {
+      async probe() {
+        return { ...page, url: "https://pishop.test/search" }
+      },
+      async navigate(url) {
+        opened.push(url)
+      },
+      async act() {},
+    },
+  })
+  expect(opened).toEqual([
+    "https://buyapi.test/search",
+    "https://buyapi.test/search",
+  ])
+  expect(result.status).toBe("low_confidence")
+  expect(result.requested_url).toBe("https://buyapi.test/search")
+  expect(asked).toBe(6)
+})
+
 test("a password field stops without asking", async () => {
   let asked = false
   const result = await runNav({
@@ -236,6 +303,27 @@ test("the same site is not opened again", async () => {
     },
   })
   expect(opened).toEqual([])
+  expect(result.status).toBe("done")
+})
+
+test("a new url on the same site is opened, not refused", async () => {
+  const opened: string[] = []
+  let current: Snapshot = page
+  const result = await runNav({
+    goal: "Open https://example.test/search?q=orange+pi",
+    ask: async () => decision({ operation: "DONE" }),
+    driver: {
+      async probe() {
+        return current
+      },
+      async navigate(url) {
+        opened.push(url)
+        current = { ...page, url }
+      },
+      async act() {},
+    },
+  })
+  expect(opened).toEqual(["https://example.test/search?q=orange+pi"])
   expect(result.status).toBe("done")
 })
 
@@ -331,4 +419,95 @@ test("headers keep the gateway token off the provider key", () => {
       {},
     ),
   ).toEqual({ state: "{}", questions: {} })
+})
+
+test("an error page exits blocked, not a false handoff", async () => {
+  let asked = 0
+  let current: Snapshot = {
+    ...page,
+    url: "about:blank",
+    title: "",
+    text: "",
+    elements: [],
+  }
+  const result = await runNav({
+    goal: "Open https://ebay.ca/ and search",
+    ask: async () => {
+      asked += 1
+      return decision({
+        operation: "CLICK",
+        target: "1",
+        confidence: 0.9,
+        needsUser: 0.9,
+      })
+    },
+    driver: {
+      async probe() {
+        return current
+      },
+      async navigate() {
+        current = {
+          ...page,
+          url: "https://ebay.test/",
+          title: "Error Page | eBay",
+          text: "",
+        }
+      },
+      async act() {},
+    },
+  })
+  expect(result.status).toBe("blocked")
+  expect(result.detail).toBe("error page: Error Page | eBay")
+  expect(result.fallback).toBe("vnc")
+  expect(result.requested_url).toBe("https://ebay.ca/")
+  expect(asked).toBe(0)
+})
+
+test("a page-world throw hands off with the real message", async () => {
+  let current: Snapshot = {
+    ...page,
+    url: "about:blank",
+    title: "",
+    text: "",
+    elements: [],
+  }
+  const result = await runNav({
+    goal: "Open https://ebay.test/search?q=pi",
+    ask: async () =>
+      decision({ operation: "CLICK", target: "1", confidence: 0.9 }),
+    driver: {
+      async probe() {
+        return current
+      },
+      async navigate(url) {
+        current = { ...page, url, title: "Search" }
+      },
+      async act() {
+        throw new Error("page error: SecurityError: blocked by site script")
+      },
+    },
+  })
+  expect(result.status).toBe("blocked")
+  expect(result.detail).toBe(
+    "page error: SecurityError: blocked by site script",
+  )
+  expect(result.requested_url).toBe("https://ebay.test/search?q=pi")
+  expect(result.fallback).toBe("vnc")
+})
+
+test("a throw before the page opens keeps the requested url", async () => {
+  const result = await runNav({
+    goal: "Open https://ebay.test/search?q=pi",
+    ask: async () => decision({ operation: "DONE" }),
+    driver: {
+      async probe() {
+        throw new Error("page error: context destroyed")
+      },
+      async navigate() {},
+      async act() {},
+    },
+  })
+  expect(result.status).toBe("error")
+  expect(result.detail).toBe("page error: context destroyed")
+  expect(result.requested_url).toBe("https://ebay.test/search?q=pi")
 })

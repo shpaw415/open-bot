@@ -17,9 +17,13 @@ const SCRIPT_STORE_LIMIT = 16_000
 const MESSAGE_LIMIT = 4_000
 
 const PUBLISH_LINE =
-  "Do this work in this temporary session. End with what you did and what you found. Do not create another thread. This session is deleted after the result is copied to the user's Cron tab."
+  "Do this work in this temporary session. End with what you did and what you found. Do not create another thread. This session is deleted after the result is copied to the job's thread."
 
 export const CRON_RUN_TITLE = "cron-run:"
+
+export function cronResultMessage(name: string, summary: string): string {
+  return `[cron-result: ${name}]\n\n${summary}`
+}
 
 type CronFields = {
   minute: Set<number>
@@ -420,7 +424,7 @@ export function publishDecision(input: PublishInput): "wait" | "settle" {
 }
 
 function clip(text: string): string {
-  const trimmed = text.replace(/\s+/g, " ").trim()
+  const trimmed = text.replace(/\r\n?/g, "\n").trim()
   if (trimmed.length <= SUMMARY_LIMIT) return trimmed
   return `${trimmed.slice(0, SUMMARY_LIMIT - 1)}…`
 }
@@ -542,19 +546,63 @@ async function createSession(
   base: string,
   headers: Record<string, string>,
   title: string,
+  parentID?: string,
 ) {
   const created = await opencodeJson(`${base}/session`, headers, {
     method: "POST",
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(parentID ? { parentID, title } : { title }),
   })
   if (!created.ok) throw new Error(`session create failed (${created.status})`)
   const body = (await created.json()) as { id?: string }
   if (!body.id) throw new Error("session create returned no id")
-  await opencodeJson(`${base}/session/${body.id}`, headers, {
-    method: "PATCH",
-    body: JSON.stringify({ title }),
-  })
+  if (!parentID) {
+    await opencodeJson(`${base}/session/${body.id}`, headers, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    })
+  }
   return body.id
+}
+
+async function sessionLive(
+  base: string,
+  headers: Record<string, string>,
+  sessionId: string,
+) {
+  const check = await opencodeJson(`${base}/session/${sessionId}`, headers)
+  return check.ok
+}
+
+async function ensureDeliveryThread(
+  base: string,
+  headers: Record<string, string>,
+  sessionId: string | null,
+  title: string,
+) {
+  if (sessionId && (await sessionLive(base, headers, sessionId)))
+    return sessionId
+  return createSession(base, headers, title)
+}
+
+async function postCronResult(
+  base: string,
+  headers: Record<string, string>,
+  sessionId: string,
+  name: string,
+  summary: string,
+) {
+  const posted = await opencodeJson(
+    `${base}/session/${sessionId}/prompt_async`,
+    headers,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        noReply: true,
+        parts: [{ type: "text", text: cronResultMessage(name, summary) }],
+      }),
+    },
+  )
+  if (!posted.ok) throw new Error(`result post failed (${posted.status})`)
 }
 
 async function deleteRunSession(
@@ -633,12 +681,23 @@ async function settleCronNotice(
         db.getVikingProvider(current.userId),
         db.getImageProvider(current.userId),
         db.getSystem1(current.userId),
+        db.getVideoProvider(current.userId),
+        db.getModel3dProvider(current.userId),
       )
       desktopUp = true
       await readRun()
     }
     const text = noticeText({ summary, sessionMissing: missing })
     const base = await endpoint(current.userId, "opencode", 4096)
+    const job = db.cronJobById(current.jobId, current.userId)
+    const delivery = await ensureDeliveryThread(
+      base,
+      headers,
+      job?.sessionId ?? null,
+      current.jobName,
+    )
+    if (job && delivery !== job.sessionId) db.setCronSession(job.id, delivery)
+    await postCronResult(base, headers, delivery, current.jobName, text)
     if (current.runSessionId) {
       await deleteRunSession(
         db,
@@ -711,6 +770,8 @@ export async function fireCronJob(
       db.getVikingProvider(job.userId),
       db.getImageProvider(job.userId),
       db.getSystem1(job.userId),
+      db.getVideoProvider(job.userId),
+      db.getModel3dProvider(job.userId),
     )
     db.touchDesktop(job.userId)
     const headers = {
@@ -719,6 +780,13 @@ export async function fireCronJob(
     }
     const base = await endpoint(job.userId, "opencode", 4096)
 
+    const sessionId = await ensureDeliveryThread(
+      base,
+      headers,
+      job.sessionId,
+      job.name,
+    )
+    if (sessionId !== job.sessionId) db.setCronSession(job.id, sessionId)
     const runKind =
       job.runKind === "script" || job.runKind === "both"
         ? job.runKind
@@ -737,13 +805,15 @@ export async function fireCronJob(
         await opencodeScript(job.userId, job.script, SCRIPT_TIMEOUT_MS),
       )
       if (runKind === "script" || scriptBlocksAgent(ran)) {
+        const text = scriptThreadText(ran)
+        await postCronResult(base, headers, sessionId, job.name, text)
         db.createCronNotice({
           id: crypto.randomUUID(),
           userId: job.userId,
           jobId: job.id,
           jobName: job.name,
           runSessionId: null,
-          summary: clip(scriptThreadText(ran)),
+          summary: clip(text),
           createdAt: Date.now(),
           viewedAt: null,
         })
@@ -759,6 +829,7 @@ export async function fireCronJob(
         base,
         headers,
         `${CRON_RUN_TITLE} ${job.name}`,
+        sessionId,
       )
       const screen = await ensureThreadScreen(db, job.userId, runSessionId)
       const prompt = await opencodeJson(

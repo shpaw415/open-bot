@@ -4,6 +4,7 @@ import {
   cronModelFields,
   cronPersonaFields,
   cronPrompt,
+  cronResultMessage,
   cronRunBody,
   interpretScriptRun,
   nextCronTime,
@@ -22,11 +23,14 @@ const T = (iso: string) => Date.parse(iso)
 describe("cron publish", () => {
   const started = T("2026-10-06T10:00:00Z")
 
-  test("prompt runs in a temporary session and the result lands in the Cron tab", () => {
+  test("prompt runs in a temporary session and the full result lands in the job thread", () => {
     const text = cronPrompt({ name: "daily", message: "Check the log" })
     expect(text).toContain("[cron: daily]")
     expect(text).toContain("Check the log")
     expect(text).toContain("temporary session")
+    expect(cronResultMessage("daily", "found 3")).toBe(
+      "[cron-result: daily]\n\nfound 3",
+    )
   })
 
   test("summary is the latest finished assistant reply after the fire", () => {
@@ -203,6 +207,7 @@ describe("nextRunMs", () => {
           atMs: null,
           enabled: true,
           deleteAfterRun: false,
+          sessionId: null,
           createdAt: 0,
           lastRunAt: null,
           nextRunAt: null,
@@ -233,6 +238,7 @@ describe("nextRunMs", () => {
           atMs: 123_456,
           enabled: true,
           deleteAfterRun: true,
+          sessionId: null,
           createdAt: 0,
           lastRunAt: null,
           nextRunAt: null,

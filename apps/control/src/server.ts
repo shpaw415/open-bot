@@ -7,8 +7,10 @@ import {
   type CronScheduleKind,
   type Db,
   type ImageProvider,
+  type Model3dProvider,
   type System1Provider,
   type User,
+  type VideoProvider,
   type VikingProvider,
   vikingProviderReady,
 } from "@open-bot/db"
@@ -23,6 +25,7 @@ import {
   parseRunKind,
 } from "./cron"
 import {
+  blenderStatus,
   desktopPhase,
   endpoint,
   isRunning,
@@ -32,9 +35,13 @@ import {
   startDesktop,
   startError,
   stopDesktop,
+  syncBlenderMcp,
   syncImageAuth,
+  syncModel3dAuth,
   syncSystem1,
+  syncVideoAuth,
   writeAgentUpload,
+  writeProjectFile,
 } from "./docker"
 import { cookieSecure, devMode, names, webDist } from "./env"
 import type { EventHub, EventsSocketData, Upstream } from "./events"
@@ -48,6 +55,12 @@ import {
 import { handleImprovementPost } from "./improvements"
 import { JOINED_REPLY, prepareJoinedPrompt } from "./join-file"
 import { handleLlm } from "./llm"
+import {
+  model3dAuthReady,
+  model3dProviderById,
+  model3dProviderPublic,
+  model3dProviders,
+} from "./model3d-providers"
 import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords"
 import {
   ASSISTANT_ID,
@@ -56,6 +69,13 @@ import {
   personaSystem,
   resolvePersona,
 } from "./personas"
+import {
+  projectDir,
+  projectName,
+  projectSubpath,
+  slugifyName,
+} from "./projects"
+import { resolveReferenceLine } from "./references"
 import {
   ensureThreadScreen,
   holdSystemLine,
@@ -74,6 +94,14 @@ import {
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
 import {
+  videoAuthReady,
+  videoModelCatalog,
+  videoModelLooksLikeImage,
+  videoProviderById,
+  videoProviderPublic,
+  videoProviders,
+} from "./video-providers"
+import {
   assertSkillInput,
   createVikingSkills,
   skillNameError,
@@ -84,6 +112,16 @@ import {
   workspaceImagePath,
   workspaceImageResponse,
 } from "./workspace-image"
+import {
+  MODEL3D_REPLY,
+  workspaceModel3dPath,
+  workspaceModel3dResponse,
+} from "./workspace-model3d"
+import {
+  VIDEO_REPLY,
+  workspaceVideoPath,
+  workspaceVideoResponse,
+} from "./workspace-video"
 
 type ProxySocket = {
   kind: "proxy"
@@ -118,6 +156,8 @@ type LoginSession = {
 }
 
 const logins = new Map<string, LoginSession>()
+
+const MAX_PROJECT_FILE_CHARS = 4 * 1024 * 1024
 
 function json(body: unknown, status = 200, headers?: HeadersInit) {
   return Response.json(body, { status, headers })
@@ -280,6 +320,44 @@ async function applyImageAuth(userId: string, value: ImageProvider) {
   }
 }
 
+async function applyVideoAuth(userId: string, value: VideoProvider) {
+  try {
+    const applied = await syncVideoAuth(userId, {
+      provider: value.provider,
+      accountId: value.accountId,
+      token: value.apiKey,
+      model: value.model,
+    })
+    return { ok: true, applied }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "apply failed"
+    throw new HttpError(
+      502,
+      `Saved, but the desktop did not receive credentials: ${message}`,
+      "video_auth_apply",
+    )
+  }
+}
+
+async function applyModel3dAuth(userId: string, value: Model3dProvider) {
+  try {
+    const applied = await syncModel3dAuth(userId, {
+      provider: value.provider,
+      accountId: value.accountId,
+      token: value.apiKey,
+      model: value.model,
+    })
+    return { ok: true, applied }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "apply failed"
+    throw new HttpError(
+      502,
+      `Saved, but the desktop did not receive credentials: ${message}`,
+      "model3d_auth_apply",
+    )
+  }
+}
+
 async function skillsClient(user: User, db: Db) {
   const desktop = await ensure(user, db)
   const base = await endpoint(user.id, "viking", 1933)
@@ -298,6 +376,8 @@ async function ensure(user: User, db: Db) {
     db.getVikingProvider(user.id),
     db.getImageProvider(user.id),
     db.getSystem1(user.id),
+    db.getVideoProvider(user.id),
+    db.getModel3dProvider(user.id),
   )
   db.touchDesktop(user.id)
   return desktop
@@ -310,6 +390,9 @@ const types: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".json": "application/json",
+  ".ttf": "font/ttf",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
 }
 
 async function staticFile(pathname: string) {
@@ -479,6 +562,56 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     if (!agent) return json({ error: "unauthorized" }, 401)
     return handleImprovementPost(req, db, agent)
   }
+  if (url.pathname === "/api/agent-config" && req.method === "PUT") {
+    const agent = userFromLlmToken(req, db)
+    if (!agent) return json({ error: "unauthorized" }, 401)
+    const body = await readJson(req)
+    const kind = String(body.kind ?? "")
+    const model = String(body.model ?? "").trim()
+    if (!model) return json({ error: "model is required" }, 400)
+    if (kind === "image") {
+      const current = db.getImageProvider(agent.id)
+      if (!current) return json({ error: "no image provider configured" }, 400)
+      const next = { ...current, model }
+      db.setImageProvider(agent.id, next)
+      return json({
+        provider: next.provider,
+        model: next.model,
+        ...(await applyImageAuth(agent.id, next)),
+      })
+    }
+    if (kind === "video") {
+      const current = db.getVideoProvider(agent.id)
+      if (!current) return json({ error: "no video provider configured" }, 400)
+      if (videoModelLooksLikeImage(model)) {
+        return json(
+          { error: `${model} is an image model, not a video model` },
+          400,
+        )
+      }
+      const next = { ...current, model }
+      db.setVideoProvider(agent.id, next)
+      return json({
+        provider: next.provider,
+        model: next.model,
+        ...(await applyVideoAuth(agent.id, next)),
+      })
+    }
+    if (kind === "model3d") {
+      const current = db.getModel3dProvider(agent.id)
+      if (!current) {
+        return json({ error: "no 3d model provider configured" }, 400)
+      }
+      const next = { ...current, model }
+      db.setModel3dProvider(agent.id, next)
+      return json({
+        provider: next.provider,
+        model: next.model,
+        ...(await applyModel3dAuth(agent.id, next)),
+      })
+    }
+    return json({ error: "kind must be image, video, or model3d" }, 400)
+  }
   const isCronPath =
     url.pathname === "/api/cron" || url.pathname.startsWith("/api/cron/")
   const isPersonaPath =
@@ -573,6 +706,8 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
         db.getVikingProvider(user.id),
         db.getImageProvider(user.id),
         db.getSystem1(user.id),
+        db.getVideoProvider(user.id),
+        db.getModel3dProvider(user.id),
       ).catch(() => {})
       db.touchDesktop(user.id)
     }
@@ -725,6 +860,124 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     }
     return json({ ok: true })
   }
+  if (url.pathname === "/api/video" && req.method === "GET") {
+    const saved = db.getVideoProvider(user.id)
+    const selected =
+      videoProviderById(saved?.provider ?? "") ?? videoProviders[0]
+    return json({
+      providers: videoProviderPublic(),
+      provider: saved?.provider ?? selected?.id ?? "",
+      accountId: saved?.accountId ?? "",
+      model: saved?.model ?? selected?.defaultModel ?? "",
+      hasKey: Boolean(saved?.apiKey),
+    })
+  }
+  if (url.pathname === "/api/video" && req.method === "PUT") {
+    const body = await readJson(req)
+    const current = db.getVideoProvider(user.id)
+    const spec = videoProviderById(String(body.provider ?? "").trim())
+    if (!spec) return json({ error: "unsupported video provider" }, 400)
+    const typedKey = String(body.apiKey ?? "").trim()
+    const next: VideoProvider = {
+      provider: spec.id,
+      accountId: String(body.accountId ?? "").trim(),
+      apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
+      model: String(body.model ?? "").trim() || spec.defaultModel,
+    }
+    if (!videoAuthReady(next)) {
+      return json(
+        { error: "the fields required by this provider are missing" },
+        400,
+      )
+    }
+    if (videoModelLooksLikeImage(next.model)) {
+      return json(
+        {
+          error: `${next.model} is an image model, not a video model. Pick a video model for ${spec.label} (examples: ${(videoModelCatalog[spec.id] ?? []).join(", ")}).`,
+        },
+        400,
+      )
+    }
+    db.setVideoProvider(user.id, next)
+    return json(await applyVideoAuth(user.id, next))
+  }
+  if (url.pathname === "/api/video" && req.method === "DELETE") {
+    db.clearVideoProvider(user.id)
+    try {
+      await syncVideoAuth(user.id, null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing video setup")) {
+        return json(
+          {
+            error: message || "removed, but the desktop still has credentials",
+          },
+          502,
+        )
+      }
+    }
+    return json({ ok: true })
+  }
+  if (url.pathname === "/api/mcp" && req.method === "GET") {
+    return json(await blenderStatus(user.id))
+  }
+  if (url.pathname === "/api/mcp" && req.method === "PUT") {
+    const body = await readJson(req)
+    const enabled = Boolean(body.enabled)
+    const applied = await syncBlenderMcp(user.id, enabled)
+    if (applied) await restartOpencode(user.id)
+    return json({ applied, ...(await blenderStatus(user.id)) })
+  }
+  if (url.pathname === "/api/model3d" && req.method === "GET") {
+    const saved = db.getModel3dProvider(user.id)
+    const selected =
+      model3dProviderById(saved?.provider ?? "") ?? model3dProviders[0]
+    return json({
+      providers: model3dProviderPublic(),
+      provider: saved?.provider ?? selected?.id ?? "",
+      accountId: saved?.accountId ?? "",
+      model: saved?.model ?? selected?.defaultModel ?? "",
+      hasKey: Boolean(saved?.apiKey),
+    })
+  }
+  if (url.pathname === "/api/model3d" && req.method === "PUT") {
+    const body = await readJson(req)
+    const current = db.getModel3dProvider(user.id)
+    const spec = model3dProviderById(String(body.provider ?? "").trim())
+    if (!spec) return json({ error: "unsupported 3d model provider" }, 400)
+    const typedKey = String(body.apiKey ?? "").trim()
+    const next: Model3dProvider = {
+      provider: spec.id,
+      accountId: String(body.accountId ?? "").trim(),
+      apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
+      model: String(body.model ?? "").trim() || spec.defaultModel,
+    }
+    if (!model3dAuthReady(next)) {
+      return json(
+        { error: "the fields required by this provider are missing" },
+        400,
+      )
+    }
+    db.setModel3dProvider(user.id, next)
+    return json(await applyModel3dAuth(user.id, next))
+  }
+  if (url.pathname === "/api/model3d" && req.method === "DELETE") {
+    db.clearModel3dProvider(user.id)
+    try {
+      await syncModel3dAuth(user.id, null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing model3d setup")) {
+        return json(
+          {
+            error: message || "removed, but the desktop still has credentials",
+          },
+          502,
+        )
+      }
+    }
+    return json({ ok: true })
+  }
   if (url.pathname === "/api/system1" && req.method === "GET") {
     const saved = db.getSystem1(user.id)
     const selected =
@@ -797,6 +1050,136 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       }
     }
     return json({ ok: true })
+  }
+  if (url.pathname === "/api/projects" && req.method === "GET") {
+    return json({
+      projects: db
+        .projects(user.id)
+        .map(({ id, name, path, createdAt }) => ({ id, name, path, createdAt })),
+    })
+  }
+  if (url.pathname === "/api/projects" && req.method === "POST") {
+    const body = await readJson(req)
+    const name = projectName(body.name)
+    if (!name) return json({ error: "a project name is required" }, 400)
+    const slug = slugifyName(name)
+    if (!slug) return json({ error: "a project name is required" }, 400)
+    if (db.projectByName(user.id, name))
+      return json({ error: "a project with this name already exists" }, 409)
+    const path = projectDir(slug)
+    await ensure(user, db)
+    const made = await opencodeExec(user.id, ["mkdir", "-p", "--", path])
+    if (made.code !== 0)
+      return json({ error: "could not create the project directory" }, 502)
+    const project = {
+      id: crypto.randomUUID(),
+      userId: user.id,
+      name,
+      path,
+      createdAt: Date.now(),
+    }
+    db.createProject(project)
+    return json({
+      project: {
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        createdAt: project.createdAt,
+      },
+    })
+  }
+  const projectIdMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/)
+  if (projectIdMatch && req.method === "DELETE") {
+    const id = decodeURIComponent(projectIdMatch[1] ?? "")
+    if (!db.deleteProject(id, user.id)) return json({ error: "not found" }, 404)
+    return json({ ok: true })
+  }
+  const projectRef = url.pathname.match(/^\/api\/projects\/([^/]+)\/(files|file)$/)
+  if (projectRef && (req.method === "GET" || req.method === "PUT")) {
+    const project = db.projectById(
+      decodeURIComponent(projectRef[1] ?? ""),
+      user.id,
+    )
+    if (!project) return json({ error: "not found" }, 404)
+    const kind = projectRef[2]
+    if (kind === "files" && req.method === "GET") {
+      const path = projectSubpath(
+        project.path,
+        url.searchParams.get("path") || project.path,
+      )
+      if (!path) return json({ error: "not found" }, 404)
+      const desktop = await ensure(user, db)
+      const base = await endpoint(user.id, "opencode", 4096)
+      const upstream = await fetch(
+        `${base}/file?path=${encodeURIComponent(path)}`,
+        { headers: basic(desktop.opencodePassword) },
+      )
+      if (!upstream.ok) return json({ error: "listing failed" }, 502)
+      return new Response(upstream.body, {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        },
+      })
+    }
+    if (kind === "file" && req.method === "GET") {
+      const path = projectSubpath(
+        project.path,
+        url.searchParams.get("path") ?? "",
+      )
+      if (!path) return json({ error: "not found" }, 404)
+      const desktop = await ensure(user, db)
+      const base = await endpoint(user.id, "opencode", 4096)
+      const upstream = await fetch(
+        `${base}/file/content?path=${encodeURIComponent(path)}`,
+        { headers: basic(desktop.opencodePassword) },
+      )
+      if (!upstream.ok) return json({ error: "not found" }, 404)
+      const body = (await upstream.json().catch(() => null)) as {
+        type?: unknown
+        encoding?: unknown
+        content?: unknown
+      } | null
+      if (!body || typeof body.content !== "string")
+        return json({ error: "not found" }, 404)
+      if (body.content.length > MAX_PROJECT_FILE_CHARS)
+        return json({ error: "file is too large to open" }, 413)
+      return json({ type: body.type, encoding: body.encoding, content: body.content })
+    }
+    if (kind === "file" && req.method === "PUT") {
+      const path = projectSubpath(
+        project.path,
+        url.searchParams.get("path") ?? "",
+      )
+      if (!path) return json({ error: "not found" }, 404)
+      const raw = await req.text()
+      if (raw.length > MAX_PROJECT_FILE_CHARS)
+        return json({ error: "file is too large to save" }, 413)
+      if (raw.includes("\0"))
+        return json({ error: "binary files cannot be saved here" }, 400)
+      await ensure(user, db)
+      await writeProjectFile(user.id, path, new TextEncoder().encode(raw))
+      return json({ ok: true })
+    }
+  }
+  const projectSearch = url.pathname.match(/^\/api\/projects\/([^/]+)\/search$/)
+  if (projectSearch && req.method === "GET") {
+    const project = db.projectById(
+      decodeURIComponent(projectSearch[1] ?? ""),
+      user.id,
+    )
+    if (!project) return json({ error: "not found" }, 404)
+    await ensure(user, db)
+    const find = await opencodeExec(user.id, [
+      "sh",
+      "-c",
+      `find ${shellQuote(project.path)} -type f -not -path '*/.git/*' -not -path '*/node_modules/*' 2>/dev/null | head -n 2000`,
+    ])
+    const files = find.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith(`${project.path}/`))
+    return json({ files })
   }
   if (url.pathname === "/api/skills" && req.method === "GET") {
     const name = url.searchParams.get("name")?.trim() ?? ""
@@ -933,6 +1316,38 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     if (!image) return json({ error: "not found" }, 404)
     return image
   }
+  if (url.pathname === "/api/workspace/video" && req.method === "GET") {
+    const path = workspaceVideoPath(url.searchParams.get("path") ?? "")
+    if (!path) return json({ error: "not found" }, 404)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const upstream = await fetch(
+      `${base}/file/content?path=${encodeURIComponent(path)}`,
+      { headers: basic(desktop.opencodePassword) },
+    )
+    if (!upstream.ok) return json({ error: "not found" }, 404)
+    const video = workspaceVideoResponse(
+      await upstream.json().catch(() => null),
+    )
+    if (!video) return json({ error: "not found" }, 404)
+    return video
+  }
+  if (url.pathname === "/api/workspace/model3d" && req.method === "GET") {
+    const path = workspaceModel3dPath(url.searchParams.get("path") ?? "")
+    if (!path) return json({ error: "not found" }, 404)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const upstream = await fetch(
+      `${base}/file/content?path=${encodeURIComponent(path)}`,
+      { headers: basic(desktop.opencodePassword) },
+    )
+    if (!upstream.ok) return json({ error: "not found" }, 404)
+    const model = workspaceModel3dResponse(
+      await upstream.json().catch(() => null),
+    )
+    if (!model) return json({ error: "not found" }, 404)
+    return model
+  }
   if (url.pathname.startsWith("/api/opencode/")) {
     const desktop = await ensure(user, db)
     const base = await endpoint(user.id, "opencode", 4096)
@@ -1017,6 +1432,9 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
           : "",
         prepared.uploads.length ? JOINED_REPLY : "",
         IMAGE_REPLY,
+        VIDEO_REPLY,
+        MODEL3D_REPLY,
+        await resolveReferenceLine(db, user, text),
       ]
         .filter((item): item is string => Boolean(item))
         .join("\n\n")
@@ -1181,6 +1599,7 @@ async function handleCron(
       atMs,
       enabled: true,
       deleteAfterRun,
+      sessionId: null,
       createdAt: Date.now(),
       lastRunAt: null,
       nextRunAt: null,

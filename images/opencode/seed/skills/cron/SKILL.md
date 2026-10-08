@@ -5,7 +5,7 @@ description: Schedule recurring or one-time tasks with ob-cron. Use when the use
 
 # Cron jobs
 
-Use the `ob-cron` CLI to manage scheduled jobs. Jobs live in the control plane: they survive desktop restarts and wake the desktop when they fire. A prompt job runs in a temporary session. The result is stored in the Cron tab as a notification, then that temporary session is deleted; no job thread is created. A script job runs a shell command and stores its output the same way. A job with both runs the script first and adds that output to the prompt.
+Use the `ob-cron` CLI to manage scheduled jobs. Jobs live in the control plane: they survive desktop restarts and wake the desktop when they fire. A prompt job runs in a temporary session. The full result is copied into the job's thread and kept as a notification in the Cron tab, then that temporary session is deleted. A script job runs a shell command and posts its output to the thread the same way. A job with both runs the script first and adds that output to the prompt. Each run pushes into the same job thread; if that thread was deleted, the next run creates another and pushes there.
 
 List jobs:
 
@@ -26,14 +26,14 @@ ob-cron add --name "one-shot" --message "Review the PR and leave notes" --at 202
 How a job runs:
 
 - `--message` alone is a prompt. The agent runs it in a temporary session.
-- `--script` alone runs that shell command as you in `/home/agent/workspace`. Stdout and stderr are stored as the job's result. No agent runs.
-- Both flags run the script first, add its output and exit code to the prompt, then the agent runs. Only the agent's result is stored.
+- `--script` alone runs that shell command as you in `/home/agent/workspace`. Stdout and stderr are posted to the job thread. No agent runs.
+- Both flags run the script first, add its output and exit code to the prompt, then the agent runs. Only the agent's result is posted.
 - A script can be a command or a file path, such as `bash /home/agent/workspace/check.sh`.
 
 Optional run choice:
 
 - `--model PROVIDER/MODEL` selects the model for the temporary session. Omit it to use the desktop default. List connected models with `ob-cron models`. Ignored for script-only jobs.
-- `--persona ID` selects the personality that runs the job. Omit it, or pass `assistant`, for Assistant. List ids with `ob-persona list`. Ignored for script-only jobs.
+- `--persona ID` selects the personality that runs the job. Omit it, or pass `assistant`, for Assistant. List ids with `ob-persona list`. This does not change the job thread. Ignored for script-only jobs.
 
 Change a job later. `--script` does not change the mode by itself; pass `--run`.
 
@@ -57,7 +57,7 @@ Rules:
 - Cron expressions are 5-field UTC (`minute hour day-of-month month day-of-week`), so `0 13 * * 1-5` is weekdays at 13:00 UTC.
 - `--every` is seconds, minimum 60.
 - The message is the full prompt delivered at fire time; make it self-contained.
-- The script runs on the desktop, not on the host. Keep it under a couple of minutes. Output stored as the result is capped.
-- The chosen model and personality apply only to the temporary run.
-- When a message starts with `[cron: name]`, do the work in that temporary session and end with what you did and found. Do not create another thread. The result is stored in the Cron tab, you are not asked to post it, and the temporary session is deleted. The user is notified when the result lands, and the notice clears once they view the result.
+- The script runs on the desktop, not on the host. Keep it under a couple of minutes. Output posted to the thread is capped.
+- The chosen model and personality apply only to the temporary run. The result copied into the job thread is the agent's own final answer, in full.
+- When a message starts with `[cron: name]`, do the work in that temporary session and end with what you did and found. Do not create another thread. The result is copied to the job thread, you are not asked to post it, and the temporary session is deleted. The user is notified when the result lands, and the notice clears once they open the thread or view the result.
 - Do not use system crontab, `at`, or background loops for scheduling — only `ob-cron`.

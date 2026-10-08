@@ -1,12 +1,12 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Paper from "@shpaw415/mui-lite/Paper"
 import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
-import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useState } from "react"
 import { api } from "./api"
+import { ConfigSection } from "./ConfigSection"
+import { NavigationIcon } from "./icons"
 
 type System1Spec = {
   id: string
@@ -37,6 +37,12 @@ function composeEndpoint(accountId: string, gatewayId: string, slug: string) {
   if (!/^[A-Za-z0-9_-]+$/.test(gateway)) return ""
   if (!/^[A-Za-z0-9_-]+$/.test(name)) return ""
   return `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}/custom-${name}/v1/systemone`
+}
+
+function composeClefEndpoint(accountId: string) {
+  const account = accountId.trim()
+  if (!/^[A-Za-z0-9_-]+$/.test(account)) return ""
+  return `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/@cf/cloudflare/clef`
 }
 
 export function System1() {
@@ -181,16 +187,19 @@ export function System1() {
   }
 
   return (
-    <Paper variant="outlined" sx={{ p: 1.5 }}>
-      <Typography variant="subtitle1">Desktop navigation</Typography>
-      <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-        System 1 endpoint for page navigation. Cloudflare Jev is an AI Gateway
-        custom provider. Self-hosted Laya uses the same POST path. Page text is
-        sent to this endpoint.
-      </Typography>
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {saved ? <Alert severity="success">{saved}</Alert> : null}
-      <Stack spacing={1.5} sx={{ mt: 1 }}>
+    <ConfigSection
+      icon={<NavigationIcon />}
+      title="Desktop navigation"
+      description="System 1 endpoint for page navigation. Cloudflare Jev is an AI Gateway custom provider. Self-hosted Laya uses the same POST path. Page text is sent to this endpoint."
+      status={
+        hasKey || hasGatewayToken || endpoint.trim()
+          ? { label: spec?.label ?? "Configured", color: "success" }
+          : { label: "Not set" }
+      }
+    >
+      <Stack spacing={1.5}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {saved ? <Alert severity="success">{saved}</Alert> : null}
         <Select
           name="system1-provider"
           label="Provider"
@@ -290,6 +299,6 @@ export function System1() {
           ) : null}
         </Stack>
       </Stack>
-    </Paper>
+    </ConfigSection>
   )
 }

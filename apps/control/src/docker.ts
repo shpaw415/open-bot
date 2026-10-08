@@ -4,7 +4,9 @@ import { join } from "node:path"
 import {
   type Desktop,
   type ImageProvider,
+  type Model3dProvider,
   type System1Provider,
+  type VideoProvider,
   type VikingProvider,
   vikingProviderReady,
 } from "@open-bot/db"
@@ -21,7 +23,9 @@ import {
 import { HttpError } from "./http-error"
 import { imageAuthReady } from "./image-providers"
 import { isUploadPath } from "./join-file"
+import { model3dAuthReady } from "./model3d-providers"
 import { docker, sh } from "./shell"
+import { videoAuthReady } from "./video-providers"
 import { ensureVikingUser, vikingUserKey } from "./viking-user"
 
 const starting = new Map<string, Promise<void>>()
@@ -237,11 +241,21 @@ export async function startDesktop(
   viking: VikingProvider | null,
   image: ImageProvider | null = null,
   system1: System1Provider | null = null,
+  video: VideoProvider | null = null,
+  model3d: Model3dProvider | null = null,
 ) {
   const existing = starting.get(userId)
   if (existing) return existing
   startErrors.delete(userId)
-  const job = startDesktopInner(userId, desktop, viking, image, system1)
+  const job = startDesktopInner(
+    userId,
+    desktop,
+    viking,
+    image,
+    system1,
+    video,
+    model3d,
+  )
     .catch((error: unknown) => {
       startErrors.set(
         userId,
@@ -260,6 +274,8 @@ async function startDesktopInner(
   viking: VikingProvider | null,
   image: ImageProvider | null,
   system1: System1Provider | null,
+  video: VideoProvider | null,
+  model3d: Model3dProvider | null,
 ) {
   const n = names(userId)
   if (
@@ -429,6 +445,38 @@ async function startDesktopInner(
     } catch (error) {
       const message = error instanceof Error ? error.message : ""
       if (!message.includes("missing cf-ai setup")) throw error
+    }
+    try {
+      await syncVideoAuth(
+        userId,
+        video && videoAuthReady(video)
+          ? {
+              provider: video.provider,
+              accountId: video.accountId,
+              token: video.apiKey,
+              model: video.model,
+            }
+          : null,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing video setup")) throw error
+    }
+    try {
+      await syncModel3dAuth(
+        userId,
+        model3d && model3dAuthReady(model3d)
+          ? {
+              provider: model3d.provider,
+              accountId: model3d.accountId,
+              token: model3d.apiKey,
+              model: model3d.model,
+            }
+          : null,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing model3d setup")) throw error
     }
     try {
       await syncSystem1(userId, system1)
@@ -631,6 +679,100 @@ export async function syncImageAuth(
   return true
 }
 
+export async function syncVideoAuth(
+  userId: string,
+  value: {
+    provider: string
+    accountId: string
+    token: string
+    model: string
+  } | null,
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const payload = JSON.stringify(
+    value
+      ? {
+          provider: value.provider,
+          accountId: value.accountId,
+          token: value.token,
+          model: value.model,
+        }
+      : {},
+  )
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-video-auth.sh",
+    ],
+    payload,
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing video setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write video auth")
+  }
+  return true
+}
+
+export async function syncModel3dAuth(
+  userId: string,
+  value: {
+    provider: string
+    accountId: string
+    token: string
+    model: string
+  } | null,
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const payload = JSON.stringify(
+    value
+      ? {
+          provider: value.provider,
+          accountId: value.accountId,
+          token: value.token,
+          model: value.model,
+        }
+      : {},
+  )
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-model3d-auth.sh",
+    ],
+    payload,
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing model3d setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write model3d auth")
+  }
+  return true
+}
+
 export async function syncSystem1(
   userId: string,
   value: System1Provider | null,
@@ -672,6 +814,69 @@ export async function syncSystem1(
     throw new Error(detail || "could not write system1 config")
   }
   return true
+}
+
+export async function syncBlenderMcp(userId: string, enabled: boolean) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-blender-mcp.sh",
+    ],
+    JSON.stringify({ enabled }),
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing blender setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not update blender mcp")
+  }
+  return true
+}
+
+export type BlenderMcpStatus = {
+  installed: boolean
+  enabled: boolean
+  running: boolean
+}
+
+export async function blenderStatus(userId: string): Promise<BlenderMcpStatus> {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) {
+    return { installed: false, enabled: false, running: false }
+  }
+  const result = await sh([
+    "docker",
+    "exec",
+    "-u",
+    "agent",
+    "-e",
+    "HOME=/home/agent",
+    n.opencode,
+    "sh",
+    "-c",
+    `if command -v blender >/dev/null 2>&1; then echo -n "installed=yes "; else echo -n "installed=no "; fi; if [ -f /home/agent/.open-bot/blender-mcp-disabled ]; then echo -n "enabled=no "; else echo -n "enabled=yes "; fi; if pgrep -f blender-serve.py >/dev/null 2>&1; then echo "running=yes"; else echo "running=no"; fi`,
+  ])
+  if (result.code !== 0) {
+    return { installed: false, enabled: false, running: false }
+  }
+  const parse = (key: string) => result.stdout.includes(`${key}=yes`)
+  return {
+    installed: parse("installed"),
+    enabled: parse("enabled"),
+    running: parse("running"),
+  }
 }
 
 export async function desktopExec(
@@ -741,6 +946,53 @@ export async function opencodeExec(userId: string, args: string[]) {
     n.opencode,
     ...args,
   ])
+}
+
+export async function writeProjectFile(
+  userId: string,
+  path: string,
+  bytes: Uint8Array,
+) {
+  if (!path.startsWith("/home/agent/workspace/"))
+    throw new HttpError(400, "invalid project path", "invalid_path")
+  const n = names(userId)
+  const dir = mkdtempSync(join(tmpdir(), "ob-project-"))
+  const local = join(dir, "file")
+  try {
+    writeFileSync(local, bytes)
+    const parent = path.slice(0, path.lastIndexOf("/")) || "/"
+    const made = await sh([
+      "docker",
+      "exec",
+      "-u",
+      "agent",
+      n.opencode,
+      "mkdir",
+      "-p",
+      "--",
+      parent,
+    ])
+    if (made.code !== 0)
+      throw new HttpError(502, "could not save the file", "write_failed")
+    const copied = await sh(["docker", "cp", local, `${n.opencode}:${path}`])
+    if (copied.code !== 0)
+      throw new HttpError(502, "could not save the file", "write_failed")
+    const owned = await sh([
+      "docker",
+      "exec",
+      "-u",
+      "root",
+      n.opencode,
+      "chown",
+      "agent:agent",
+      "--",
+      path,
+    ])
+    if (owned.code !== 0)
+      throw new HttpError(502, "could not save the file", "write_failed")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 const SCRIPT_READ_LIMIT = 16_001

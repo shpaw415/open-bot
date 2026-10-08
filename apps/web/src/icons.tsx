@@ -132,3 +132,48 @@ export const NotificationsOffIcon = createIcon(
 export const DarkModeIcon = createIcon(
   "M12.1 22H12c-5.52 0-10-4.48-10-10s4.48-10 10-10h.1c.39 0 .72.34.66.74-.32 2.24-.29 4.63.48 6.74 1.32 3.61 4.76 5.87 8.55 5.87 1 0 1.95-.11 2.86-.32.41-.1.77.28.66.69C25.06 20.04 19.1 22 12.1 22zM12 4C7.58 4 4 7.58 4 12s3.58 8 8 8c.74 0 1.47-.12 2.19-.34.05-.75.34-1.45.86-1.97l2.71-2.71c.52-.52 1.22-.81 1.97-.85.22-.72.34-1.45.34-2.19C20.07 7.58 16.42 4 12 4z",
 )
+export const MemoryIcon = createIcon(
+  "M15 9H9v6h6V9zm-2 4h-2v-2h2v2zm8-2V9h-2V7c0-1.1-.9-2-2-2h-2V3h-2v2h-2V3H9v2H7c-1.1 0-2 .9-2 2v2H3v2h2v2H3v2h2v2c0 1.1.9 2 2 2h2v2h2v-2h2v2h2v-2h2c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2zm-4 6H7V7h10v10z",
+)
+export const ImageIcon = createIcon(
+  "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z",
+)
+export const VideoIcon = createIcon(
+  "M18 10.48V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4.48l4 3.98v-11l-4 3.98zm-2-.79V18H4V6h12v3.69z",
+)
+export const Model3dIcon = createIcon(
+  "M18.25 7.6l-5.5-3.18a1.5 1.5 0 0 0-1.5 0L5.75 7.6a1.5 1.5 0 0 0-.75 1.3v6.2c0 .54.28 1.04.75 1.3l5.5 3.18c.46.27 1.04.27 1.5 0l5.5-3.18c.47-.26.75-.76.75-1.3V8.9c0-.54-.28-1.04-.75-1.3zM7.9 9.15L12 6.77l4.1 2.38L12 11.53 7.9 9.15zm5.1 7.85v-4.47l4-2.31v4.47l-4 2.31zm-2 0l-4-2.31v-4.47l4 2.31V17z",
+)
+export const PersonIcon = createIcon(
+  "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z",
+)
+export const ExtensionIcon = createIcon(
+  "M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7 1.49 0 2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z",
+)
+export const NavigationIcon = createIcon(
+  "M12 2 4.5 20.29l.71.71L12 18l6.79 3 .71-.71z",
+)
+export const FolderIcon = createIcon(
+  "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z",
+)
+export const FolderOpenIcon = createIcon(
+  "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z",
+)
+export const ChevronRightIcon = createIcon(
+  "M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z",
+)
+export const CloseIcon = createIcon(
+  "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
+)
+export const SearchIcon = createIcon(
+  "M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z",
+)
+export const SaveIcon = createIcon(
+  "M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z",
+)
+export const DescriptionIcon = createIcon(
+  "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 2 2h8c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z",
+)
+export const ArrowBackIcon = createIcon(
+  "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z",
+)
