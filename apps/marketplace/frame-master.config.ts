@@ -9,12 +9,14 @@ import AssetsToBuild from "frame-master-plugin-assets-to-build"
 import AutoSiteMap from "frame-master-plugin-auto-sitemap"
 import SSRPlugin from "frame-master-plugin-cloudflare-pages-dynamic-ssr"
 import CFActionPlugin from "frame-master-plugin-cloudflare-pages-functions-action"
+import CloudflareUpdateManager from "frame-master-plugin-cloudflare-update-manager"
 import CloudflareRouteFilePlugin from "frame-master-plugin-cloudflare-route-file-generator"
 import NodePolyfills from "frame-master-plugin-node-polyfills"
 import ReactToHTML from "frame-master-plugin-react-to-html"
 import SEOPlugin from "frame-master-plugin-seo"
 import ServeFromBuild from "frame-master-plugin-serve-from-build"
 import TailwindPlugin from "frame-master-plugin-tailwind"
+import { createElement } from "react"
 import { renderToString } from "react-dom/server"
 import SiteConfig from "./site.config"
 import NotFound from "./src/components/404"
@@ -128,6 +130,13 @@ export default {
           actionBasePath: "src/actions",
           outDir: ".frame-master/build",
           serverPort: WranglerServerPort,
+        }),
+        CloudflareUpdateManager({
+          paths: {
+            notFound: () => renderToString(createElement(NotFound)),
+            actionBasePath: "src/actions",
+          },
+          autoInjectCheckVersion: true,
         }),
         SSRPlugin({
           actionBasePath: "src/actions",

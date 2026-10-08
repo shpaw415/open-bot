@@ -1,4 +1,5 @@
 import { RouterHost, type router } from "frame-master-plugin-apply-react/router"
+import "frame-master-plugin-cloudflare-update-manager/client"
 import { SSRPropsProvider } from "frame-master-plugin-cloudflare-pages-dynamic-ssr/client/context"
 import type { PropsData } from "frame-master-plugin-cloudflare-pages-dynamic-ssr/provider/utils"
 import { type JSX, StrictMode, useCallback, useRef, useState } from "react"

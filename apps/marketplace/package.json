@@ -21,6 +21,7 @@
     "frame-master-plugin-cloudflare-pages-dynamic-ssr": "^0.3.1",
     "frame-master-plugin-cloudflare-pages-functions-action": "^4.0.1",
     "frame-master-plugin-cloudflare-route-file-generator": "^0.1.2",
+    "frame-master-plugin-cloudflare-update-manager": "^0.1.2",
     "frame-master-plugin-node-polyfills": "^0.1.0",
     "frame-master-plugin-react-to-html": "^1.0.7",
     "frame-master-plugin-seo": "^0.1.1",
