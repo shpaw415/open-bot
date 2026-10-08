@@ -52,6 +52,22 @@ type GlmRunner = {
   run: (model: string, inputs: Record<string, unknown>) => Promise<unknown>
 }
 
+function responseText(result: unknown): string {
+  if (!result || typeof result !== "object") return ""
+  const record = result as Record<string, unknown>
+  if (typeof record.response === "string") return record.response
+  const choices = record.choices
+  if (Array.isArray(choices) && choices.length > 0) {
+    const message = (choices[0] as { message?: { content?: unknown; reasoning_content?: unknown } })
+      ?.message
+    if (typeof message?.content === "string" && message.content.trim())
+      return message.content
+    if (typeof message?.reasoning_content === "string")
+      return message.reasoning_content
+  }
+  return ""
+}
+
 const SYSTEM_PROMPT = `You are a security reviewer for open-bot plugins. A plugin manifest installs skills, personas, cron jobs, desktop tools, and configs into a user's self-hosted agent desktop. Analyze the package and reply with ONLY a JSON object, no markdown fences, in this exact shape:
 {"verdict":"pass","severity":"low","findings":[]}
 or
@@ -255,9 +271,9 @@ async function runGlmReview(
       ],
       max_tokens: 2048,
       temperature: 0.1,
-    })) as { response?: string }
-    const text = typeof result?.response === "string" ? result.response : ""
-    const parsed = extractJson(text)
+      chat_template_kwargs: { enable_thinking: false },
+    })) as unknown
+    const parsed = extractJson(responseText(result))
     const verdict = normalizeVerdict(parsed)
     return {
       verdict: verdict ?? "invalid",
