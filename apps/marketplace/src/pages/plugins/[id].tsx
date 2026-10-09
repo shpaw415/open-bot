@@ -1,62 +1,78 @@
-import { useCallback, useEffect, useState } from "react"
-import type { MarketComment, MarketDetail } from "../../lib/db"
+"use dynamic"
+import { useLoader } from "frame-master-plugin-cloudflare-pages-dynamic-ssr/client/hooks"
+import {
+  createLoader,
+  createPageConfig,
+  type PluginEventContext,
+} from "frame-master-plugin-cloudflare-pages-dynamic-ssr/server"
+import {
+  detailFromRows,
+  getComments,
+  getPluginRow,
+  getVersions,
+  type MarketComment,
+  type MarketDetail,
+} from "../../lib/db"
 
-function usePluginId(): string {
-  const match =
-    typeof window === "undefined"
-      ? null
-      : window.location.pathname.match(/^\/plugins\/([^/]+)$/)
-  return match ? decodeURIComponent(match[1] ?? "") : ""
+type PluginPageData =
+  | { ok: false; error: string }
+  | { ok: true; detail: MarketDetail; comments: MarketComment[] }
+
+function pluginId(params: { id?: string | string[] }) {
+  const raw = params.id
+  const id = Array.isArray(raw) ? raw[0] : raw
+  return decodeURIComponent(id ?? "")
 }
 
-export default function PluginDetail() {
-  const id = usePluginId()
-  const [detail, setDetail] = useState<MarketDetail | null>(null)
-  const [error, setError] = useState("")
-  const [comments, setComments] = useState<MarketComment[]>([])
+export const ssr_configs = createPageConfig({
+  callback() {
+    return { ttl: 60 }
+  },
+})
 
-  const loadComments = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/comments`)
-      const body = (await res.json()) as { comments?: MarketComment[] }
-      setComments(body.comments ?? [])
-    } catch {
-      setComments([])
+export const loader_plugin = createLoader({
+  name: "plugin",
+  async callback(ctx): Promise<PluginPageData> {
+    const event = ctx as PluginEventContext<Env, "id", unknown>
+    const id = pluginId(event.params)
+    if (!id) return { ok: false, error: "plugin id is required" }
+    const row = await getPluginRow(event.env.DB, id)
+    if (!row || row.status === "rejected") {
+      return { ok: false, error: "plugin not found" }
     }
-  }, [id])
+    if (row.status !== "approved") {
+      return { ok: false, error: "plugin is pending review" }
+    }
+    const versions = await getVersions(event.env.DB, id)
+    const detail = detailFromRows(row, versions)
+    if (!detail) return { ok: false, error: "version not found" }
+    const comments = await getComments(event.env.DB, id)
+    return { ok: true, detail, comments }
+  },
+})
 
-  useEffect(() => {
-    if (!id) return
-    fetch(`/api/plugins/${encodeURIComponent(id)}`)
-      .then(async (res) => {
-        const body = (await res.json()) as MarketDetail & { error?: string }
-        if (!res.ok) throw new Error(body.error ?? "not found")
-        setDetail(body)
-      })
-      .catch((caught: unknown) => {
-        setError(caught instanceof Error ? caught.message : "failed to load")
-      })
-    void loadComments()
-  }, [id, loadComments])
+export default function PluginDetail() {
+  const data = useLoader<PluginPageData>(loader_plugin)
 
-  if (error) {
-    return (
-      <div className="container mx-auto max-w-3xl px-4 py-16 text-center">
-        <p className="text-2xl font-semibold">{error}</p>
-        <a href="/" className="mt-4 inline-block text-blue-400 hover:underline">
-          Browse plugins
-        </a>
-      </div>
-    )
-  }
-  if (!detail) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-24">
         <span className="h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-blue-500" />
       </div>
     )
   }
+  if (!data.ok) {
+    return (
+      <div className="container mx-auto max-w-3xl px-4 py-16 text-center">
+        <p className="text-2xl font-semibold">{data.error}</p>
+        <a href="/" className="mt-4 inline-block text-blue-400 hover:underline">
+          Browse plugins
+        </a>
+      </div>
+    )
+  }
 
+  const { detail, comments } = data
   const { plugin, manifest, versions, security } = detail
 
   const securityBadge =
@@ -121,8 +137,10 @@ export default function PluginDetail() {
             </span>
             {security.findings.length > 0 ? (
               <ul className="mt-2 space-y-1 text-xs text-slate-400">
-                {security.findings.map((finding, index) => (
-                  <li key={index}>
+                {security.findings.map((finding) => (
+                  <li
+                    key={`${finding.severity}:${finding.path ?? ""}:${finding.title}`}
+                  >
                     [{finding.severity}] {finding.title}
                     {finding.path ? ` (${finding.path})` : ""}
                   </li>

@@ -32,6 +32,7 @@ import { hashPassword, randomToken, verifyPassword } from "./passwords"
 import { reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStuckWatch } from "./stuck"
+import { onUpstreamEvent } from "./workspace-snapshots"
 
 applyPendingRestore()
 
@@ -75,7 +76,10 @@ if (db.userCount() === 0) {
   }
 }
 
-const hub = new EventHub((userId) => eventTarget(db, userId))
+const hub = new EventHub(
+  (userId) => eventTarget(db, userId),
+  (userId, event) => onUpstreamEvent(db, userId, event),
+)
 onDesktopReady((userId) => reapplyPluginSetup(db, userId))
 setFileWatchSink((userId, files) => {
   hub.emit(userId, { type: "project.files", properties: { files } })

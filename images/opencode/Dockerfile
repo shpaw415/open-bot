@@ -3,7 +3,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl gh git jq libatomic1 procps sudo unzip \
     xvfb openbox chromium sqlite3 \
-    python3 python3-pip python3-venv \
+    python3 python3-pip python3-venv python3-pil \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \
     && arch=$(dpkg --print-architecture) \
@@ -71,8 +71,10 @@ COPY images/opencode/entrypoint.sh /opt/open-bot/entrypoint.sh
 COPY images/opencode/apply-model.sh /opt/open-bot/apply-model.sh
 COPY images/opencode/apply-image-auth.sh /opt/open-bot/apply-image-auth.sh
 COPY images/opencode/gen-image.ts /opt/open-bot/gen-image.ts
+COPY images/opencode/defringe.py /opt/open-bot/defringe.py
 RUN ln -sf /opt/open-bot/gen-image.ts /usr/local/bin/gen-image \
-    && chmod 755 /opt/open-bot/gen-image.ts
+    && ln -sf /opt/open-bot/defringe.py /usr/local/bin/defringe \
+    && chmod 755 /opt/open-bot/gen-image.ts /opt/open-bot/defringe.py
 COPY images/opencode/apply-video-auth.sh /opt/open-bot/apply-video-auth.sh
 COPY images/opencode/gen-video.ts /opt/open-bot/gen-video.ts
 RUN ln -sf /opt/open-bot/gen-video.ts /usr/local/bin/gen-video \

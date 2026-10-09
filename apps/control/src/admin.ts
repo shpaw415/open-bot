@@ -3,6 +3,13 @@ import { desktopPhase, destroyDesktop, stopDesktop } from "./docker"
 import { handleAdminImprovements } from "./improvements"
 import { randomToken } from "./passwords"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
+import {
+  deleteUserMedia,
+  MAX_MEDIA_CAP_MB,
+  MEDIA_CAP_KEY,
+  mediaCapMb,
+  pruneWorkspaceMedia,
+} from "./workspace-snapshots"
 
 const kinds = ["chat", "small", "embed", "vlm"] as const
 
@@ -38,6 +45,31 @@ function emptyKind() {
 
 export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
   if (actor.role !== "admin") return json({ error: "admin only" }, 403)
+  if (url.pathname === "/api/admin/settings" && req.method === "GET") {
+    return json({
+      mediaSnapshotCapMb: mediaCapMb(db),
+      mediaSnapshotUsedBytes: db.workspaceMediaUsedBytes(),
+    })
+  }
+  if (url.pathname === "/api/admin/settings" && req.method === "PUT") {
+    const body = await readJson(req)
+    const raw = body.mediaSnapshotCapMb
+    const value =
+      typeof raw === "number" && Number.isInteger(raw) ? raw : Number.NaN
+    if (!Number.isFinite(value) || value < 0 || value > MAX_MEDIA_CAP_MB)
+      return json(
+        {
+          error: `mediaSnapshotCapMb must be an integer between 0 and ${MAX_MEDIA_CAP_MB}`,
+        },
+        400,
+      )
+    db.setSetting(MEDIA_CAP_KEY, String(value))
+    pruneWorkspaceMedia(db)
+    return json({
+      mediaSnapshotCapMb: value,
+      mediaSnapshotUsedBytes: db.workspaceMediaUsedBytes(),
+    })
+  }
   if (url.pathname === "/api/admin/users" && req.method === "GET") {
     const users = db.listUsers()
     const phases = await Promise.all(
@@ -180,6 +212,7 @@ export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
     )
     if (error) return json({ error }, 400)
     await destroyDesktop(target.id)
+    deleteUserMedia(db, target.id)
     db.deleteUser(target.id)
     return json({ ok: true })
   }

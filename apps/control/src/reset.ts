@@ -17,6 +17,7 @@ import { dataDir } from "./env"
 import type { EventHub } from "./events"
 import { resolveDesktopProviders } from "./key-vault"
 import { randomToken } from "./passwords"
+import { deleteUserMedia } from "./workspace-snapshots"
 
 export type ControlOp = {
   id: string
@@ -80,6 +81,7 @@ export async function resetDesktop(
   }
   const wasRunning = (await desktopPhase(userId)) === "running"
   await destroyDesktop(userId)
+  deleteUserMedia(db, userId)
   db.resetDesktopState(userId)
   db.rotateDesktopTokens(userId, {
     llmToken: randomToken(),
@@ -184,6 +186,7 @@ export async function factoryResetControl(db: Db): Promise<string> {
     }
   }
   db.close()
+  rmSync(join(dataDir, "workspace-media"), { force: true, recursive: true })
   for (const name of [
     "open-bot.sqlite",
     "open-bot.sqlite-wal",

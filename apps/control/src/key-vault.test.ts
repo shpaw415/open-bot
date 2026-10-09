@@ -62,6 +62,7 @@ test("vault catalog covers the provider catalogs", () => {
   expect(system1VaultSlug("cloudflare-jev")).toBe("cloudflare")
   expect(system1VaultSlug("cloudflare-clef")).toBe("cloudflare")
   expect(system1VaultSlug("laya")).toBe("laya")
+  expect(system1VaultSlug("selfhosted-clef")).toBe("")
   expect(system1VaultSlug("unknown")).toBe("")
 })
 

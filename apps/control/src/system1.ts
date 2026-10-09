@@ -15,6 +15,9 @@ export const CLEF_ENDPOINT_PLACEHOLDER =
 
 export const LAYA_ENDPOINT_PLACEHOLDER = "http://laya.example:8000/v1/systemone"
 
+export const SELFCLEF_ENDPOINT_PLACEHOLDER =
+  "http://clef.example:8011/v1/systemone"
+
 export const system1Providers: System1Spec[] = [
   {
     id: "cloudflare-jev",
@@ -37,6 +40,14 @@ export const system1Providers: System1Spec[] = [
     label: "Self-hosted Laya",
     defaultModel: "",
     endpointPlaceholder: LAYA_ENDPOINT_PLACEHOLDER,
+    keyRequired: false,
+    gatewayToken: false,
+  },
+  {
+    id: "selfhosted-clef",
+    label: "Self-hosted Clef",
+    defaultModel: "clef-flash",
+    endpointPlaceholder: SELFCLEF_ENDPOINT_PLACEHOLDER,
     keyRequired: false,
     gatewayToken: false,
   },
@@ -97,7 +108,7 @@ export function system1EndpointError(provider: string, endpoint: string) {
     return null
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return "Laya endpoint must be http or https"
+    return `${spec.label} endpoint must be http or https`
   }
   return null
 }

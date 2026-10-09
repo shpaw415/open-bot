@@ -5,6 +5,7 @@ export const reservedSkillNames = new Set([
   "cron",
   "cf-ai",
   "shortcut",
+  "refine",
 ])
 const skillNamePattern = /^[A-Za-z0-9_-]{1,64}$/
 const maxDescription = 1024

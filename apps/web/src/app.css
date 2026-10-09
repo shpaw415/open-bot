@@ -155,6 +155,51 @@ body,
   border-radius: 12px;
 }
 
+.ob-media-wrap {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0.4em 0;
+}
+
+.ob-media-wrap img {
+  margin: 0;
+}
+
+.ob-dl-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 2;
+}
+
+.ob-media-wrap:hover .ob-dl-btn,
+.ob-media-wrap:focus-within .ob-dl-btn,
+.ob-media-box:hover .ob-dl-btn,
+.ob-media-box:focus-within .ob-dl-btn {
+  opacity: 1;
+}
+
+.ob-dl-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+@media (hover: none) {
+  .ob-dl-btn {
+    opacity: 1;
+  }
+}
+
 .ob-md table {
   border-collapse: collapse;
   display: block;

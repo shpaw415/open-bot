@@ -7,6 +7,7 @@ import {
 } from "@open-bot/plugin-kit"
 import { apiKeyAuth, touchApiKey } from "../../lib/auth"
 import { addComment, getPluginRow, pluginFromRow } from "../../lib/db"
+import { revalidatePluginPage } from "../../lib/page-cache"
 import { findingsComment, reviewPublish } from "../../lib/security"
 
 function authorized(request: Request, token: string | undefined) {
@@ -159,6 +160,7 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     ).catch(() => undefined)
   }
   const row = await getPluginRow(DB, manifest.id)
+  await revalidatePluginPage(manifest.id, context).catch(() => undefined)
   return Response.json({
     ok: true,
     plugin: row ? pluginFromRow(row) : null,

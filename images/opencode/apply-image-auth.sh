@@ -60,7 +60,7 @@ case "$provider" in
       clear_all
       exit 0
     fi
-    model="${model:-grok-2-image-1212}"
+    model="${model:-grok-imagine-image}"
     clear_all
     mkdir -p "$marker_dir"
     write_key_auth

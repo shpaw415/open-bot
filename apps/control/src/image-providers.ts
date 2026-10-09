@@ -33,7 +33,7 @@ export const imageProviders: ImageProviderSpec[] = [
   {
     id: "xai",
     label: "xAI (Grok image)",
-    defaultModel: "grok-2-image-1212",
+    defaultModel: "grok-imagine-image",
     account: null,
     secret: {
       label: "API key",
@@ -44,7 +44,7 @@ export const imageProviders: ImageProviderSpec[] = [
   {
     id: "xai-gateway",
     label: "xAI (Cloudflare Gateway)",
-    defaultModel: "grok-2-image-1212",
+    defaultModel: "grok-imagine-image",
     account: {
       label: "Account ID",
       placeholder: "Cloudflare account ID",

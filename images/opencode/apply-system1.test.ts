@@ -99,3 +99,27 @@ test("cloudflare-clef writes the workers-ai endpoint and api key only", async ()
   )
   expect(auth).toEqual({ apiKey: "cf-token", gatewayToken: "" })
 })
+
+test("selfhosted-clef writes the local endpoint without a key", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-s1-"))
+  const result = await run(
+    home,
+    JSON.stringify({
+      provider: "selfhosted-clef",
+      endpoint: "http://clef:8011/v1/systemone",
+      model: "clef-flash",
+      apiKey: "",
+      gatewayToken: "",
+    }),
+  )
+  expect(result.code).toBe(0)
+  const marker = JSON.parse(
+    readFileSync(join(home, ".config/open-bot/system1.json"), "utf8"),
+  )
+  expect(marker).toEqual({
+    provider: "selfhosted-clef",
+    endpoint: "http://clef:8011/v1/systemone",
+    model: "clef-flash",
+  })
+  expect(JSON.stringify(marker)).not.toContain("apiKey")
+})

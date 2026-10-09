@@ -39,8 +39,10 @@ Create:
 curl -sS -X POST http://viking:1933/api/v1/skills \
   -H "X-API-Key: $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"data":{"name":"shortcut-open-mail","description":"when to use it, one line","content":"# Open mail\n\nfast path\n\nReplaces: the slow path"},"wait":true}'
+  -d '{"data":{"name":"shortcut-open-mail","description":"when to use it, one line","content":"# Open mail\n\nfast path\n\nReplaces: the slow path"}}'
 ```
+
+Do not pass `wait`. The call returns fast with a `uri`, and the content is already written. Confirm with `openviking_read`. If the request times out, read the skill before retrying, or you will create a duplicate.
 
 Replace an existing one with PUT `http://viking:1933/api/v1/skills/<name>` and the same body.
 

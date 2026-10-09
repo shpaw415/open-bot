@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs"
+import { createReadStream, readFileSync } from "node:fs"
 import { stat } from "node:fs/promises"
 import { join, normalize } from "node:path"
 import type { AiConfig } from "@open-bot/ai"
@@ -156,6 +156,11 @@ import {
   workspaceModel3dPath,
   workspaceModel3dResponse,
 } from "./workspace-model3d"
+import {
+  deleteSessionMedia,
+  MEDIA_DIR,
+  snapshotUrlFor,
+} from "./workspace-snapshots"
 import {
   VIDEO_REPLY,
   workspaceVideoPath,
@@ -1920,6 +1925,39 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     if (!model) return json({ error: "not found" }, 404)
     return model
   }
+  if (url.pathname === "/api/workspace/snapshots" && req.method === "GET") {
+    const sessionId = url.searchParams.get("sessionId") ?? ""
+    if (!sessionId) return json({ error: "sessionId required" }, 400)
+    const media = db
+      .workspaceMediaForSession(user.id, sessionId)
+      .map((row) => ({
+        messageId: row.messageId,
+        path: row.path,
+        url: snapshotUrlFor(row),
+      }))
+    return json({ media })
+  }
+  const snapshotRef = url.pathname.match(
+    /^\/api\/workspace\/snapshot\/([^/]+)(?:\/.*)?$/,
+  )
+  if (snapshotRef && req.method === "GET") {
+    const id = decodeURIComponent(snapshotRef[1] ?? "")
+    const row = id ? db.workspaceMedia(id, user.id) : null
+    if (!row) return json({ error: "not found" }, 404)
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(join(MEDIA_DIR, id))
+    } catch {
+      return json({ error: "not found" }, 404)
+    }
+    return new Response(bytes as unknown as BodyInit, {
+      headers: {
+        "content-type": row.mime,
+        "cache-control": "private, max-age=31536000, immutable",
+        "x-content-type-options": "nosniff",
+      },
+    })
+  }
   if (url.pathname.startsWith("/api/opencode/")) {
     const desktop = await ensure(user, db)
     const base = await endpoint(user.id, "opencode", 4096)
@@ -1933,6 +1971,7 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       if (res.ok) {
         db.clearThreadPersona(user.id, id)
         db.clearThreadTitle(user.id, id)
+        deleteSessionMedia(db, user.id, id)
         await stopThreadScreen(db, user.id, id)
       }
       return res

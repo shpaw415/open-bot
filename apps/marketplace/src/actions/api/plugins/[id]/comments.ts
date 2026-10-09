@@ -1,6 +1,7 @@
 "no action"
 
 import { addComment, getComments, getPluginRow } from "../../../../lib/db"
+import { revalidatePluginPage } from "../../../../lib/page-cache"
 
 function unauthorized(request: Request) {
   // Commenting goes through open-bot instances carrying the shared token.
@@ -42,5 +43,6 @@ export async function onRequestPost(context: EventContext<Env, "id", never>) {
       : "open-bot agent"
   const authorKind = body.authorKind === "human" ? "human" : "agent"
   const comment = await addComment(context.env.DB, id, author, authorKind, text)
+  await revalidatePluginPage(id, context).catch(() => undefined)
   return Response.json({ comment })
 }

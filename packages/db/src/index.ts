@@ -4,10 +4,12 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   and,
+  asc,
   count,
   desc,
   eq,
   gte,
+  inArray,
   isNotNull,
   isNull,
   lt,
@@ -36,6 +38,7 @@ import {
   userKeys,
   users,
   vikingProvider,
+  workspaceMedia,
 } from "./schema"
 
 export type Role = "admin" | "user"
@@ -327,6 +330,17 @@ export type PluginSetting = {
   updatedAt: number
 }
 
+export type WorkspaceMedia = {
+  id: string
+  userId: string
+  sessionId: string
+  messageId: string
+  path: string
+  mime: string
+  bytes: number
+  createdAt: number
+}
+
 export function emptyAppliedLog(): PluginAppliedLog {
   return {
     personaIds: [],
@@ -500,6 +514,7 @@ export function openDatabase(path: string) {
       installedPlugins,
       pluginSettings,
       appSettings,
+      workspaceMedia,
     },
   })
 
@@ -1596,6 +1611,78 @@ export function openDatabase(path: string) {
         })
         .run()
     },
+    createWorkspaceMedia(row: WorkspaceMedia): boolean {
+      const existing = orm
+        .select({ id: workspaceMedia.id })
+        .from(workspaceMedia)
+        .where(
+          and(
+            eq(workspaceMedia.messageId, row.messageId),
+            eq(workspaceMedia.path, row.path),
+          ),
+        )
+        .get()
+      if (existing) return false
+      orm.insert(workspaceMedia).values(row).run()
+      return true
+    },
+    workspaceMedia(id: string, userId: string): WorkspaceMedia | null {
+      const row = orm
+        .select()
+        .from(workspaceMedia)
+        .where(
+          and(eq(workspaceMedia.id, id), eq(workspaceMedia.userId, userId)),
+        )
+        .get()
+      return row ?? null
+    },
+    workspaceMediaForSession(
+      userId: string,
+      sessionId: string,
+    ): WorkspaceMedia[] {
+      return orm
+        .select()
+        .from(workspaceMedia)
+        .where(
+          and(
+            eq(workspaceMedia.userId, userId),
+            eq(workspaceMedia.sessionId, sessionId),
+          ),
+        )
+        .all()
+    },
+    workspaceMediaForUser(userId: string): WorkspaceMedia[] {
+      return orm
+        .select()
+        .from(workspaceMedia)
+        .where(eq(workspaceMedia.userId, userId))
+        .all()
+    },
+    workspaceMediaUsedBytes(): number {
+      const row = orm
+        .select({ total: sum(workspaceMedia.bytes) })
+        .from(workspaceMedia)
+        .get()
+      return Number(row?.total ?? 0)
+    },
+    workspaceMediaOldest(limit: number): WorkspaceMedia[] {
+      return orm
+        .select()
+        .from(workspaceMedia)
+        .orderBy(asc(workspaceMedia.createdAt), asc(workspaceMedia.id))
+        .limit(limit)
+        .all()
+    },
+    deleteWorkspaceMedia(ids: string[]): WorkspaceMedia[] {
+      if (ids.length === 0) return []
+      const rows = orm
+        .select()
+        .from(workspaceMedia)
+        .where(inArray(workspaceMedia.id, ids))
+        .all()
+      orm.delete(workspaceMedia).where(inArray(workspaceMedia.id, ids)).run()
+      return rows
+    },
     cronJobsByPlugin(userId: string, pluginId: string) {
       return this.cronJobs(userId).filter((job) =>
         job.name.startsWith(`plugin:${pluginId}:`),
@@ -1671,6 +1758,7 @@ export function openDatabase(path: string) {
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
         tx.delete(projects).where(eq(projects.userId, userId)).run()
+        tx.delete(workspaceMedia).where(eq(workspaceMedia.userId, userId)).run()
       })
     },
     deleteUser(userId: string) {
@@ -1689,6 +1777,7 @@ export function openDatabase(path: string) {
           .where(eq(installedPlugins.userId, userId))
           .run()
         tx.delete(pluginSettings).where(eq(pluginSettings.userId, userId)).run()
+        tx.delete(workspaceMedia).where(eq(workspaceMedia.userId, userId)).run()
         tx.delete(users).where(eq(users.id, userId)).run()
       })
     },

@@ -1,6 +1,6 @@
 ---
 name: improve
-description: File a product bug, repeated friction, or missing capability in open-bot when you observe it during real work. Use ob-improve. Do not use for user mistakes, secrets, one-offs, or a faster path a shortcut can cover.
+description: File a product bug, repeated friction, or missing capability in open-bot when you observe it during real work. Use ob-improve. Do not use for user mistakes, secrets, one-offs, a faster path a shortcut can cover, or a finish the refine skill should save.
 ---
 
 # Product reports
@@ -22,7 +22,7 @@ File when all of these are true:
 
 - You observed a product defect, repeated friction, or a missing capability while doing real work.
 - It is about this bot product (chat, desktop, nav, cron, persona, config), not the user's task content.
-- A shortcut cannot cover it.
+- A shortcut cannot cover it, and the refine skill cannot save it.
 - It is not a secret, not a user mistake, and not a one-off.
 
 Do not ask first. File, then one sentence in the final reply that it was filed. Before the final reply of a multi-step task, check the improvement proposals you described in chat: they must be filed here, not just described.

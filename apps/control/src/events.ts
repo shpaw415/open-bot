@@ -84,6 +84,7 @@ export class EventHub {
 
   constructor(
     private readonly resolve: (userId: string) => Promise<Upstream | null>,
+    private readonly observe?: (userId: string, event: HubEvent) => void,
   ) {}
 
   attach(ws: HubSocket, userId: string) {
@@ -178,7 +179,14 @@ export class EventHub {
           connected = true
           pump.attempts = 0
           this.markUp(pump)
-          const parser = createSseParser((event) => this.deliver(userId, event))
+          const parser = createSseParser((event) => {
+            try {
+              this.observe?.(userId, event)
+            } catch {
+              // observers are best-effort; forwarding never depends on them
+            }
+            this.deliver(userId, event)
+          })
           for await (const chunk of response.body) {
             parser.push(decoder.decode(chunk, { stream: true }))
           }

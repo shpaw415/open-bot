@@ -37,6 +37,8 @@ import {
   chatImageUrl,
   eventTouchesSession,
   handoffStamp,
+  type MediaMap,
+  mediaKey,
   modelActivity,
   nearBottom,
   type PluginCardBlock,
@@ -91,6 +93,7 @@ import {
   promptParts,
   readJoinedFile,
 } from "./join-file"
+import { MediaDownloadButton } from "./MediaDownload"
 import { Model3dView } from "./Model3dView"
 import {
   OPEN_THREAD_EVENT,
@@ -293,7 +296,12 @@ const markdownComponents: Components = {
     if (src.startsWith("/api/workspace/model3d") || /\.glb$/i.test(src)) {
       return <Model3dView src={src} alt={alt ?? ""} />
     }
-    return <img src={src} alt={alt ?? ""} />
+    return (
+      <div className="ob-media-wrap">
+        <img src={src} alt={alt ?? ""} />
+        <MediaDownloadButton src={src} />
+      </div>
+    )
   },
 }
 
@@ -302,7 +310,7 @@ const ChatMarkdown = memo(function ChatMarkdown({ text }: { text: string }) {
   const plugins = useMemo(
     () =>
       refs.length
-        ? [...markdownPlugins, remarkProjectRefs(refs)]
+        ? [...markdownPlugins, () => remarkProjectRefs(refs)]
         : markdownPlugins,
     [refs],
   )
@@ -536,7 +544,10 @@ const MessageBubble = memo(function MessageBubble({
           <PluginSegments text={message.text} renderers={renderers} />
         ) : null}
         {message.images.map((src) => (
-          <img key={src} src={src} alt="" />
+          <div key={src} className="ob-media-wrap">
+            <img src={src} alt="" />
+            <MediaDownloadButton src={src} />
+          </div>
         ))}
         {message.handoff ? (
           <div className={watching ? "ob-screen" : undefined}>
@@ -1592,6 +1603,7 @@ export function Workspace({ me }: { me: Me }) {
   const [sessionId, setSessionId] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
+  const [mediaMap, setMediaMap] = useState<MediaMap>(new Map())
   const draftRef = useRef("")
   const draftSessionRef = useRef("")
   const joinedStore = useRef(new Map<string, JoinedFile[]>())
@@ -1773,8 +1785,9 @@ export function Workspace({ me }: { me: Me }) {
       transcriptBubbles(
         messages,
         receipts.filter((item) => item.sessionId === sessionId),
+        mediaMap,
       ),
-    [messages, receipts, sessionId],
+    [messages, receipts, sessionId, mediaMap],
   )
   const turnIssue = useMemo(() => turnError(messages), [messages])
   const activity = modelActivity({
@@ -2155,7 +2168,37 @@ export function Workspace({ me }: { me: Me }) {
   useEffect(() => {
     messagesJsonRef.current = ""
     stickRef.current = true
+    setMediaMap(new Map())
   }, [sessionId, running])
+
+  const loadMedia = useCallback(async () => {
+    if (!sessionId || !running) {
+      setMediaMap(new Map())
+      return
+    }
+    try {
+      const res = await fetch(
+        `/api/workspace/snapshots?sessionId=${encodeURIComponent(sessionId)}`,
+      )
+      if (!res.ok) return
+      const body = (await res.json()) as {
+        media?: { messageId: string; path: string; url: string }[]
+      }
+      const next = new Map<string, string>()
+      for (const row of body.media ?? [])
+        next.set(mediaKey(row.messageId, row.path), row.url)
+      setMediaMap(next)
+    } catch {
+      // keep the previous map; live paths still render
+    }
+  }, [sessionId, running])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
+  useEffect(() => {
+    void loadMedia()
+  }, [loadMedia, live])
+
+  const scheduleMediaLoad = useDebounced(() => void loadMedia(), 500)
 
   const tick = useCallback(async () => {
     if (!sessionId || !running) return
@@ -2243,8 +2286,11 @@ export function Workspace({ me }: { me: Me }) {
       ) {
         scheduleTick()
       }
+      if (type === "session.idle" && eventTouchesSession(event, sessionId)) {
+        scheduleMediaLoad()
+      }
     })
-  }, [running, subscribe, sessionId, scheduleTick])
+  }, [running, subscribe, sessionId, scheduleTick, scheduleMediaLoad])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
   useEffect(() => {

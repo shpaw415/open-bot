@@ -141,7 +141,7 @@ export function CustomSkills() {
     <ConfigSection
       icon={<ExtensionIcon />}
       title="Custom skills"
-      description="Stored in this desktop's OpenViking. The agent can create the same skills. desktop, cron, persona, cf-ai, and shortcut stay built in and are not edited here."
+      description="Stored in this desktop's OpenViking. The agent can create the same skills. desktop, cron, persona, cf-ai, shortcut, and refine stay built in and are not edited here."
       status={
         !loading && skills.length > 0
           ? {

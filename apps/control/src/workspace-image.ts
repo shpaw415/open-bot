@@ -3,7 +3,7 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 export const IMAGE_REPLY =
-  "When you generate or show an image, save a unique PNG under /home/agent/workspace and include ![short description](/home/agent/workspace/name.png) in the final message. The chat renders that image. Do not paste base64 or only name the path."
+  "When you generate or show an image, save a unique PNG under /home/agent/workspace and include ![short description](/home/agent/workspace/name.png) in the final message. The chat renders that image. Never overwrite a file you already showed in chat — when modifying an image, save the result under a NEW filename (e.g. name-v2.png) and embed that. Do not paste base64 or only name the path."
 
 export function workspaceImagePath(raw: string): string | null {
   let path = raw.trim()
@@ -62,7 +62,7 @@ export function workspaceImageResponse(payload: unknown): Response | null {
   return new Response(decoded.bytes as unknown as BodyInit, {
     headers: {
       "content-type": decoded.mime,
-      "cache-control": "private, max-age=60",
+      "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
     },
   })

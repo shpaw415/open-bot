@@ -29,7 +29,7 @@ test("catalog starts with Cloudflare Workers AI and can grow", () => {
       provider: "xai",
       accountId: "",
       apiKey: "tok",
-      model: "grok-2-image-1212",
+      model: "grok-imagine-image",
     }),
   ).toBe(true)
   expect(
@@ -37,7 +37,7 @@ test("catalog starts with Cloudflare Workers AI and can grow", () => {
       provider: "xai-gateway",
       accountId: "acct",
       apiKey: "tok",
-      model: "grok-2-image-1212",
+      model: "grok-imagine-image",
     }),
   ).toBe(true)
   expect(

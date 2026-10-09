@@ -216,15 +216,35 @@ export function workspaceModel3dSrc(path: string): string {
   return `/api/workspace/model3d?path=${encodeURIComponent(path)}`
 }
 
+/** Pins message media to immutable snapshot URLs, keyed `${messageId}\n${path}`. */
+export type MediaMap = ReadonlyMap<string, string>
+
+export function mediaKey(messageId: string, path: string): string {
+  return `${messageId}\n${path}`
+}
+
+export function pinMediaUrls(
+  text: string,
+  messageId: string,
+  media: MediaMap | undefined,
+): string {
+  if (!media || media.size === 0 || !messageId) return text
+  return text.replace(/\]\(([^)\s]+)\)/g, (whole, target: string) => {
+    const pinned = media.get(mediaKey(messageId, target))
+    return pinned ? `](${pinned})` : whole
+  })
+}
+
 export function chatImageUrl(url: string): string {
+  const trimmedUrl = url.trim()
+  if (trimmedUrl.startsWith("/api/workspace/")) return trimmedUrl
   const local = workspaceImagePath(url)
   if (local) return workspaceImageSrc(local)
   const video = workspaceVideoPath(url)
   if (video) return workspaceVideoSrc(video)
   const model = workspaceModel3dPath(url)
   if (model) return workspaceModel3dSrc(model)
-  const trimmed = url.trim()
-  if (/^https:\/\//i.test(trimmed)) return trimmed
+  if (/^https:\/\//i.test(trimmedUrl)) return trimmedUrl
   return ""
 }
 
@@ -242,8 +262,12 @@ export function embedWorkspaceImages(text: string): string {
     .join("\n")
 }
 
-export function visibleImages(message: ChatMessage): string[] {
+export function visibleImages(
+  message: ChatMessage,
+  media?: MediaMap,
+): string[] {
   if (isCompaction(message)) return []
+  const messageId = typeof message.info?.id === "string" ? message.info.id : ""
   const out: string[] = []
   for (const part of message.parts ?? []) {
     if (part.synthetic || part.ignored || part.type !== "file" || !part.url)
@@ -254,7 +278,8 @@ export function visibleImages(message: ChatMessage): string[] {
       continue
     }
     const path = workspaceImagePath(part.url)
-    if (path) out.push(workspaceImageSrc(path))
+    if (!path) continue
+    out.push(media?.get(mediaKey(messageId, path)) ?? workspaceImageSrc(path))
   }
   return out
 }
@@ -267,13 +292,22 @@ function safeDataImage(url: string, mime?: string): string | null {
   return compact
 }
 
-export function visibleMessages(messages: ChatMessage[]): VisibleMessage[] {
+export function visibleMessages(
+  messages: ChatMessage[],
+  media?: MediaMap,
+): VisibleMessage[] {
   const out: VisibleMessage[] = []
   for (const message of messages) {
+    const messageId =
+      typeof message.info?.id === "string" ? message.info.id : ""
     const parsed = splitScreenHandoff(
-      embedWorkspaceImages(visibleText(message)),
+      pinMediaUrls(
+        embedWorkspaceImages(visibleText(message)),
+        messageId,
+        media,
+      ),
     )
-    const images = visibleImages(message)
+    const images = visibleImages(message, media)
     if (!parsed.text.trim() && images.length === 0 && !parsed.handoff) continue
     out.push({
       ...message,
@@ -452,8 +486,9 @@ function receiptBubbleIndex(
 export function transcriptBubbles(
   messages: ChatMessage[],
   receipts: SendReceipt[],
+  media?: MediaMap,
 ): TranscriptEntry[] {
-  const shown = threadBubbles(messages)
+  const shown = threadBubbles(messages, media)
   const marks = new Map<number, SendStatus>()
   const pending: SendReceipt[] = []
   for (const receipt of receipts) {
@@ -493,10 +528,13 @@ export function transcriptBubbles(
   return out
 }
 
-export function threadBubbles(messages: ChatMessage[]): VisibleMessage[] {
+export function threadBubbles(
+  messages: ChatMessage[],
+  media?: MediaMap,
+): VisibleMessage[] {
   const out: VisibleMessage[] = []
   const burstAt = new Map<VisibleMessage, number | null>()
-  for (const message of visibleMessages(messages)) {
+  for (const message of visibleMessages(messages, media)) {
     const result = cronResultBody(message.text)
     if (result !== null) {
       const bubble: VisibleMessage = {

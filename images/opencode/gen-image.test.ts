@@ -38,6 +38,7 @@ test("prints usage without a prompt", async () => {
   const result = await run(home)
   expect(result.code).toBe(1)
   expect(result.stderr).toContain("usage")
+  expect(result.stderr).toContain("--cutout")
 })
 
 test("fails with a clear message when nothing is configured", async () => {
@@ -57,7 +58,7 @@ test("rejects an unsupported provider", async () => {
 
 test("fails without credentials on a key-only provider", async () => {
   const home = mkdtempSync(join(tmpdir(), "gen-image-"))
-  seed(home, { provider: "xai", model: "grok-2-image-1212" })
+  seed(home, { provider: "xai", model: "grok-imagine-image" })
   const result = await run(home, "a koi")
   expect(result.code).toBe(1)
   expect(result.stderr).toContain("missing image credentials")

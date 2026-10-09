@@ -35,6 +35,9 @@
       "frame-master-plugin-cloudflare-pages-dynamic-ssr/client/context": [
         "./src/types/vendor/client-context.d.ts"
       ],
+      "frame-master-plugin-cloudflare-pages-dynamic-ssr/client/hooks": [
+        "./src/types/vendor/client-hooks.d.ts"
+      ],
       "@static/*": ["./static/*"],
       "@api/*": ["./src/actions/api/*"],
       "@components/*": ["./src/components/*"]

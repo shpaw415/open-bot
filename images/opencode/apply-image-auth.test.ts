@@ -64,7 +64,7 @@ test("writes key-only auth for xai without an account", async () => {
       provider: "xai",
       accountId: "",
       token: "xai-key",
-      model: "grok-2-image-1212",
+      model: "grok-imagine-image",
     }),
   )
   expect(result.code).toBe(0)
@@ -78,7 +78,7 @@ test("writes key-only auth for xai without an account", async () => {
   ).toBe(0o600)
   expect(
     JSON.parse(readFileSync(join(home, ".config/open-bot/image.json"), "utf8")),
-  ).toEqual({ provider: "xai", model: "grok-2-image-1212" })
+  ).toEqual({ provider: "xai", model: "grok-imagine-image" })
 })
 
 test("writes account auth for xai-gateway and defaults its model", async () => {
@@ -99,7 +99,7 @@ test("writes account auth for xai-gateway and defaults its model", async () => {
   expect(auth).toEqual({ accountId: "acct", token: "cf-token" })
   expect(
     JSON.parse(readFileSync(join(home, ".config/open-bot/image.json"), "utf8")),
-  ).toEqual({ provider: "xai-gateway", model: "grok-2-image-1212" })
+  ).toEqual({ provider: "xai-gateway", model: "grok-imagine-image" })
 })
 
 test("switching providers removes the cloudflare cf-ai files", async () => {

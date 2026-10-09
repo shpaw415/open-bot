@@ -4,6 +4,7 @@ import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useRef, useState } from "react"
 import type { Mesh, Object3D } from "three"
+import { MediaDownloadButton } from "./MediaDownload"
 
 export function Model3dView({ src, alt }: { src: string; alt?: string }) {
   const holder = useRef<HTMLDivElement | null>(null)
@@ -147,6 +148,7 @@ export function Model3dView({ src, alt }: { src: string; alt?: string }) {
 
   return (
     <Box
+      className="ob-media-box"
       sx={{
         position: "relative",
         width: "100%",
@@ -166,6 +168,7 @@ export function Model3dView({ src, alt }: { src: string; alt?: string }) {
         aria-label={alt || "3D model"}
         role="img"
       />
+      <MediaDownloadButton src={src} />
       {state === "loading" ? (
         <Stack
           alignItems="center"

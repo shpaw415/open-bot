@@ -64,4 +64,5 @@ test("decodes binary image bytes and rejects other files", () => {
   })
   expect(response?.headers.get("content-type")).toBe("image/png")
   expect(response?.headers.get("x-content-type-options")).toBe("nosniff")
+  expect(response?.headers.get("cache-control")).toBe("private, no-store")
 })

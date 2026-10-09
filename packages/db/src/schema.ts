@@ -304,3 +304,22 @@ export const appSettings = sqliteTable("app_settings", {
   value: text("value").notNull(),
   updatedAt: integer("updated_at").notNull(),
 })
+
+export const workspaceMedia = sqliteTable(
+  "workspace_media",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    messageId: text("message_id").notNull(),
+    path: text("path").notNull(),
+    mime: text("mime").notNull(),
+    bytes: integer("bytes").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("workspace_media_message_path").on(table.messageId, table.path),
+    index("workspace_media_session").on(table.userId, table.sessionId),
+    index("workspace_media_created").on(table.createdAt),
+  ],
+)

@@ -2,9 +2,13 @@ import { expect, test } from "bun:test"
 import {
   chatImageUrl,
   embedWorkspaceImages,
+  mediaKey,
+  pinMediaUrls,
   speakableText,
   splitPluginCards,
+  transcriptBubbles,
   turnError,
+  visibleMessages,
   workspaceModel3dPath,
   workspaceModel3dSrc,
 } from "./chat-view"
@@ -22,6 +26,96 @@ test("routes workspace glb paths to the model3d endpoint", () => {
   expect(chatImageUrl("https://example.com/mesh.glb")).toBe(
     "https://example.com/mesh.glb",
   )
+  expect(chatImageUrl("/api/workspace/snapshot/abc/owl.glb")).toBe(
+    "/api/workspace/snapshot/abc/owl.glb",
+  )
+  expect(chatImageUrl("/api/workspace/snapshot/abc/owl.png")).toBe(
+    "/api/workspace/snapshot/abc/owl.png",
+  )
+})
+
+test("pinMediaUrls swaps only matching workspace targets", () => {
+  const media = new Map([
+    [
+      mediaKey("a1", "/home/agent/workspace/koi.png"),
+      "/api/workspace/snapshot/s1/koi.png",
+    ],
+  ])
+  const text =
+    "![koi](/home/agent/workspace/koi.png)\n![other](/home/agent/workspace/o.png)"
+  expect(pinMediaUrls(text, "a1", media)).toBe(
+    "![koi](/api/workspace/snapshot/s1/koi.png)\n![other](/home/agent/workspace/o.png)",
+  )
+  expect(pinMediaUrls(text, "a2", media)).toBe(text)
+  expect(pinMediaUrls(text, "a1", new Map())).toBe(text)
+})
+
+test("visibleMessages pins snapshot URLs for text and file parts", () => {
+  const media = new Map([
+    [
+      mediaKey("a1", "/home/agent/workspace/koi.png"),
+      "/api/workspace/snapshot/s1/koi.png",
+    ],
+    [
+      mediaKey("a1", "/home/agent/workspace/part.png"),
+      "/api/workspace/snapshot/s1/part.png",
+    ],
+  ])
+  const messages = [
+    {
+      info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 } },
+      parts: [
+        { type: "text", text: "![koi](/home/agent/workspace/koi.png)" },
+        {
+          type: "file",
+          url: "/home/agent/workspace/part.png",
+          mime: "image/png",
+        },
+      ],
+    },
+  ]
+  const pinned = visibleMessages(messages, media)
+  expect(pinned[0]?.text).toContain("/api/workspace/snapshot/s1/koi.png")
+  expect(pinned[0]?.images).toEqual(["/api/workspace/snapshot/s1/part.png"])
+  const live = visibleMessages(messages)
+  expect(live[0]?.text).toContain("/home/agent/workspace/koi.png")
+  expect(live[0]?.images).toEqual([
+    "/api/workspace/image?path=%2Fhome%2Fagent%2Fworkspace%2Fpart.png",
+  ])
+})
+
+test("transcriptBubbles keeps pinned URLs through bubble merging", () => {
+  const media = new Map([
+    [
+      mediaKey("a1", "/home/agent/workspace/koi.png"),
+      "/api/workspace/snapshot/s1/koi.png",
+    ],
+  ])
+  const messages = [
+    { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "hi" }] },
+    {
+      info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 } },
+      parts: [
+        { type: "text", text: "first ![koi](/home/agent/workspace/koi.png)" },
+      ],
+    },
+    {
+      info: { id: "a2", role: "assistant", time: { created: 3, completed: 4 } },
+      parts: [
+        { type: "text", text: "second ![koi](/home/agent/workspace/koi.png)" },
+      ],
+    },
+  ]
+  const bubbles = transcriptBubbles(messages, [], media)
+  const texts = bubbles.map((entry) => entry.message.text)
+  expect(
+    texts.some((text) => text.includes("/api/workspace/snapshot/s1/koi.png")),
+  ).toBe(true)
+  expect(
+    texts.some((text) =>
+      text.includes("second ![koi](/home/agent/workspace/koi.png)"),
+    ),
+  ).toBe(true)
 })
 
 test("embeds a bare glb path line like a workspace image", () => {

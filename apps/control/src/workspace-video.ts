@@ -3,7 +3,7 @@ const VIDEO_EXT = /\.(mp4|webm)$/i
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 export const VIDEO_REPLY =
-  "When you generate a video, save it under /home/agent/workspace and include ![short description](/home/agent/workspace/name.mp4) in the final message. The chat embeds that video. Do not paste base64 or only name the path."
+  "When you generate a video, save it under /home/agent/workspace and include ![short description](/home/agent/workspace/name.mp4) in the final message. The chat embeds that video. Never overwrite a file you already showed in chat — when regenerating, save the result under a NEW filename (e.g. name-v2.mp4) and embed that. Do not paste base64 or only name the path."
 
 export function workspaceVideoPath(raw: string): string | null {
   let path = raw.trim()
@@ -62,7 +62,7 @@ export function workspaceVideoResponse(payload: unknown): Response | null {
   return new Response(decoded.bytes as unknown as BodyInit, {
     headers: {
       "content-type": decoded.mime,
-      "cache-control": "private, max-age=60",
+      "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
       "accept-ranges": "none",
     },

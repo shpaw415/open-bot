@@ -7,11 +7,12 @@ import {
   system1Providers,
 } from "./system1"
 
-test("system1 providers are Cloudflare Jev, Cloudflare Clef, and self-hosted Laya", () => {
+test("system1 providers are Cloudflare Jev, Cloudflare Clef, self-hosted Laya, and self-hosted Clef", () => {
   expect(system1Providers.map((item) => item.id)).toEqual([
     "cloudflare-jev",
     "cloudflare-clef",
     "laya",
+    "selfhosted-clef",
   ])
   expect(composeCloudflareEndpoint("acct", "home-ai", "jev")).toBe(
     "https://gateway.ai.cloudflare.com/v1/acct/home-ai/custom-jev/v1/systemone",
@@ -54,6 +55,12 @@ test("system1 providers are Cloudflare Jev, Cloudflare Clef, and self-hosted Lay
   expect(
     system1EndpointError("laya", "http://user:pass@laya.example/v1/systemone"),
   ).toBe("endpoint must not include a username or password")
+  expect(
+    system1EndpointError("selfhosted-clef", "http://clef:8011/v1/systemone"),
+  ).toBeNull()
+  expect(
+    system1EndpointError("selfhosted-clef", "ftp://clef:8011/v1/systemone"),
+  ).toBe("Self-hosted Clef endpoint must be http or https")
   expect(system1FieldError("slug", "jev")).toBeNull()
   expect(system1FieldError("slug", "bad slug")).toContain("slug")
 })

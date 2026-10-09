@@ -176,6 +176,9 @@ describe("viking skills", () => {
     expect(() => assertSkillInput({ ...skill, name: "shortcut" })).toThrow(
       "shortcut is a built-in skill",
     )
+    expect(() => assertSkillInput({ ...skill, name: "refine" })).toThrow(
+      "refine is a built-in skill",
+    )
     expect(() =>
       assertSkillInput({ ...skill, name: "shortcut-open-mail" }),
     ).not.toThrow()

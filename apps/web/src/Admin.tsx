@@ -77,6 +77,115 @@ function formatTokens(value: number) {
   return String(value)
 }
 
+function formatBytes(value: number) {
+  if (value >= 1024 * 1024 * 1024)
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
+  return `${Math.max(0, Math.round(value / 1024))} KB`
+}
+
+type AdminSettings = {
+  mediaSnapshotCapMb: number
+  mediaSnapshotUsedBytes: number
+}
+
+function MediaSettings() {
+  const [capGb, setCapGb] = useState("")
+  const [usedBytes, setUsedBytes] = useState(0)
+  const [savedCapMb, setSavedCapMb] = useState<number | null>(null)
+  const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState("")
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const body = await api<AdminSettings>("/api/admin/settings")
+        setUsedBytes(body.mediaSnapshotUsedBytes)
+        setSavedCapMb(body.mediaSnapshotCapMb)
+        setCapGb((body.mediaSnapshotCapMb / 1024).toString())
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "failed to load")
+      }
+    })()
+  }, [])
+
+  async function save() {
+    setError("")
+    setNotice("")
+    const gb = Number.parseFloat(capGb)
+    if (!Number.isFinite(gb) || gb < 0 || gb > 100) {
+      setError("Enter a size between 0 and 100 GB")
+      return
+    }
+    const capMb = Math.round(gb * 1024)
+    setBusy(true)
+    try {
+      const body = await api<AdminSettings>("/api/admin/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mediaSnapshotCapMb: capMb }),
+      })
+      setUsedBytes(body.mediaSnapshotUsedBytes)
+      setSavedCapMb(body.mediaSnapshotCapMb)
+      setCapGb((body.mediaSnapshotCapMb / 1024).toString())
+      setNotice("Media cap saved")
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "save failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Typography variant="subtitle1">Chat media snapshots</Typography>
+      <Typography variant="caption" color="textSecondary">
+        Images, videos, and 3D models shown in chat are snapshotted per message
+        so older replies keep the exact version that was generated. Snapshots
+        live while their thread exists. 0 GB turns snapshots off and clears the
+        store.
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
+      >
+        <TextField
+          label="Max size (GB)"
+          value={capGb}
+          onChange={(event) => setCapGb(event.currentTarget.value)}
+          sx={{ width: 140 }}
+        />
+        <Button
+          variant="contained"
+          disabled={busy || capGb === ""}
+          onClick={() => void save()}
+        >
+          Save
+        </Button>
+        <Chip size="small" sx={{ ml: "auto" }}>
+          {formatBytes(usedBytes)} used
+          {savedCapMb != null
+            ? ` of ${formatBytes(savedCapMb * 1024 * 1024)}`
+            : ""}
+        </Chip>
+      </Stack>
+      {error ? (
+        <Alert severity="error" sx={{ mt: 1 }} onClose={() => setError("")}>
+          {error}
+        </Alert>
+      ) : null}
+      {notice ? (
+        <Alert severity="success" sx={{ mt: 1 }} onClose={() => setNotice("")}>
+          {notice}
+        </Alert>
+      ) : null}
+    </Paper>
+  )
+}
+
 function formatAgo(ts: number | null) {
   if (!ts) return "—"
   const minutes = Math.round((Date.now() - ts) / 60_000)
@@ -339,6 +448,7 @@ export function Admin({ meId }: { meId: string }) {
           </Chip>
           <Chip size="small">{usage?.totals.calls ?? 0} calls</Chip>
         </Stack>
+        <MediaSettings />
         <Paper variant="outlined" sx={{ p: 1.5 }}>
           <Typography variant="subtitle1">Proxy tokens by user</Typography>
           <Typography variant="caption" color="textSecondary">

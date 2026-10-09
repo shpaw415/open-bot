@@ -1,6 +1,7 @@
 "no action"
 
 import { getPluginRow, pluginFromRow, searchPlugins } from "../../../lib/db"
+import { revalidatePluginPage } from "../../../lib/page-cache"
 
 function authorized(request: Request, token: string | undefined) {
   if (!token) return false
@@ -42,6 +43,7 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     .bind(id, status, Date.now())
     .run()
   const updated = await getPluginRow(context.env.DB, id)
+  await revalidatePluginPage(id, context).catch(() => undefined)
   return Response.json({
     ok: true,
     plugin: updated ? pluginFromRow(updated) : null,

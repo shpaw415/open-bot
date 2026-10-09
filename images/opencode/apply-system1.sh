@@ -23,7 +23,7 @@ if [ -z "$provider" ] || [ -z "$endpoint" ]; then
 fi
 
 case "$provider" in
-  cloudflare-jev|cloudflare-clef|laya) ;;
+  cloudflare-jev|cloudflare-clef|laya|selfhosted-clef) ;;
   *)
     echo "unsupported system1 provider: $provider" >&2
     exit 1

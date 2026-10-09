@@ -3,7 +3,7 @@ const MODEL3D_EXT = /\.glb$/i
 const MAX_MODEL3D_BYTES = 50 * 1024 * 1024
 
 export const MODEL3D_REPLY =
-  "When you generate a 3D model, save it under /home/agent/workspace and include ![short description](/home/agent/workspace/name.glb) in the final message. The chat embeds an interactive 3D viewer for it. Do not paste base64 or only name the path."
+  "When you generate a 3D model, save it under /home/agent/workspace and include ![short description](/home/agent/workspace/name.glb) in the final message. The chat embeds an interactive 3D viewer for it. Never overwrite a file you already showed in chat — when regenerating, save the result under a NEW filename (e.g. name-v2.glb) and embed that. Do not paste base64 or only name the path."
 
 export function workspaceModel3dPath(raw: string): string | null {
   let path = raw.trim()
@@ -61,7 +61,7 @@ export function workspaceModel3dResponse(payload: unknown): Response | null {
   return new Response(decoded.bytes as unknown as BodyInit, {
     headers: {
       "content-type": decoded.mime,
-      "cache-control": "private, max-age=60",
+      "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
       "accept-ranges": "none",
     },

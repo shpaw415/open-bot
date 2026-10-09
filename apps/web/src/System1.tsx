@@ -216,7 +216,7 @@ export function System1() {
     <ConfigSection
       icon={<NavigationIcon />}
       title="Desktop navigation"
-      description="System 1 endpoint for page navigation. Cloudflare Jev is an AI Gateway custom provider. Cloudflare Clef runs on Workers AI and answers the same typed questions. Self-hosted Laya uses the same POST path. Page text is sent to this endpoint."
+      description="System 1 endpoint for page navigation. Cloudflare Jev is an AI Gateway custom provider. Cloudflare Clef runs on Workers AI and answers the same typed questions. Self-hosted Laya and Self-hosted Clef (open weights on llama.cpp) use the same POST path. Page text is sent to this endpoint."
       status={
         hasKey || hasGatewayToken || endpoint.trim()
           ? { label: spec?.label ?? "Configured", color: "success" }

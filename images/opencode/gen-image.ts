@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
-import { mkdirSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
+import { unlink } from "node:fs/promises"
+import { join } from "node:path"
 
 const home = process.env.HOME ?? "/home/agent"
 const configDir = `${home}/.config/open-bot`
 const gatewayId = process.env.OPEN_BOT_IMAGE_GATEWAY ?? "home-ai"
+let cutout = false
 
 type Marker = { provider: string; model: string }
 type Auth = { accountId?: string | null; token: string }
@@ -44,7 +47,7 @@ async function saveImage(bytes: Uint8Array, ext: string, out: string) {
     target = `${home}/workspace/gen-image-${Date.now()}.${ext}`
   }
   await Bun.write(target, bytes)
-  console.log(`saved ${target}`)
+  await deliver(target)
 }
 
 async function postJson(
@@ -96,10 +99,51 @@ async function viaCfAi(prompt: string, model: string, out: string) {
   const target = out || `${home}/workspace/gen-image-${Date.now()}.${ext}`
   const proc = Bun.spawn(
     ["cf-ai", "image", prompt, "--model", model, "-o", target],
-    { stdout: "inherit", stderr: "inherit" },
+    {
+      stdout: cutout ? "pipe" : "inherit",
+      stderr: "inherit",
+    },
   )
-  const code = await proc.exited
+  const [code] = await Promise.all([
+    proc.exited,
+    cutout ? new Response(proc.stdout).text() : Promise.resolve(""),
+  ])
   if (code !== 0) fail(`cf-ai image failed (${code})`)
+  await deliver(target)
+}
+
+function pngOut(path: string) {
+  if (path.toLowerCase().endsWith(".png")) return path
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
+  const dot = path.lastIndexOf(".")
+  if (dot > slash) return `${path.slice(0, dot)}.png`
+  return `${path}.png`
+}
+
+function defringeCommand() {
+  const beside = join(import.meta.dir, "defringe.py")
+  if (existsSync(beside)) return ["python3", beside]
+  return ["defringe"]
+}
+
+async function applyCutout(path: string) {
+  const target = pngOut(path)
+  const proc = Bun.spawn([...defringeCommand(), path, "-o", target], {
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stderr, code] = await Promise.all([
+    new Response(proc.stderr).text(),
+    proc.exited,
+    new Response(proc.stdout).text(),
+  ])
+  if (code !== 0) fail(stderr.trim() || `defringe failed (${code})`)
+  if (target !== path) await unlink(path).catch(() => {})
+  return target
+}
+
+async function deliver(path: string) {
+  const target = cutout ? await applyCutout(path) : path
   console.log(`saved ${target}`)
 }
 
@@ -108,14 +152,16 @@ async function main() {
   let prompt = ""
   let out = ""
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "-o" || args[i] === "--output") {
+    if (args[i] === "--cutout") {
+      cutout = true
+    } else if (args[i] === "-o" || args[i] === "--output") {
       out = args[++i] ?? ""
     } else if (prompt === "") {
       prompt = args[i]
     }
   }
   if (prompt.trim() === "") {
-    fail('usage: gen-image "prompt" [-o out.png]')
+    fail('usage: gen-image "prompt" [-o out.png] [--cutout]')
   }
   const marker = await readJson<Marker>(`${configDir}/image.json`)
   if (!marker?.provider || !marker.model) {
