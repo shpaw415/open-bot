@@ -92,7 +92,9 @@ export function createVikingSkills(
           "x-api-key": apiKey,
           ...init?.headers,
         },
-        signal: AbortSignal.timeout(60_000),
+        // Skill saves embed server-side and can take minutes on a loaded
+        // OpenViking; keep the budget well above that.
+        signal: AbortSignal.timeout(240_000),
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : "request failed"
