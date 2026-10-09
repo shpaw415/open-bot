@@ -96,6 +96,7 @@ import {
   projectDir,
   projectName,
   projectSubpath,
+  resolveCustomProjectPath,
   slugifyName,
 } from "./projects"
 import { resolveReferenceLine } from "./references"
@@ -1376,13 +1377,23 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
   }
   if (url.pathname === "/api/projects" && req.method === "POST") {
     const body = await readJson(req)
-    const name = projectName(body.name)
+    let name = projectName(body.name)
+    const customPath = resolveCustomProjectPath(body.path)
+    if (!customPath && body.path !== undefined && body.path !== "")
+      return json({ error: "the folder must be under /home/agent" }, 400)
+    if (!name && customPath) name = projectName(customPath.split("/").pop())
     if (!name) return json({ error: "a project name is required" }, 400)
     const slug = slugifyName(name)
     if (!slug) return json({ error: "a project name is required" }, 400)
     if (db.projectByName(user.id, name))
       return json({ error: "a project with this name already exists" }, 409)
-    const path = projectDir(slug)
+    const path = customPath ?? projectDir(slug)
+    if (
+      db
+        .projects(user.id)
+        .some((project) => project.path.replace(/\/+$/g, "") === path)
+    )
+      return json({ error: "this folder is already a project" }, 409)
     await ensure(user, db)
     const made = await opencodeExec(user.id, ["mkdir", "-p", "--", path])
     if (made.code !== 0)

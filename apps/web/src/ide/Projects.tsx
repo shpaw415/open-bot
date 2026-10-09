@@ -49,6 +49,7 @@ export function Projects({
   const [selected, setSelected] = useState<ProjectInfo | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [name, setName] = useState("")
+  const [folder, setFolder] = useState("")
   const [busy, setBusy] = useState(false)
   const [removing, setRemoving] = useState<ProjectInfo | null>(null)
 
@@ -66,17 +67,23 @@ export function Projects({
 
   async function create() {
     const trimmed = name.trim()
-    if (!trimmed || busy) return
+    if (busy) return
+    const folderPath = folder.trim()
+    if (!trimmed && !folderPath) return
     setBusy(true)
     setError("")
     try {
       const body = await api<{ project: ProjectInfo }>("/api/projects", {
         method: "POST",
-        body: JSON.stringify({ name: trimmed }),
+        body: JSON.stringify({
+          name: trimmed,
+          ...(folderPath ? { path: folderPath } : {}),
+        }),
       })
       setProjects((current) => [...(current ?? []), body.project])
       setCreateOpen(false)
       setName("")
+      setFolder("")
       setSelected(body.project)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "create failed")
@@ -259,13 +266,26 @@ export function Projects({
                 if (event.key === "Enter") void create()
               }}
               helpText={
-                slug
-                  ? `Files live in /home/agent/workspace/${slug} on the desktop`
-                  : "Letters, numbers and dashes"
+                folder.trim()
+                  ? "Registers this existing folder"
+                  : slug
+                    ? `Files live in /home/agent/workspace/${slug} on the desktop`
+                    : "Letters, numbers and dashes"
               }
             />
+            <TextField
+              label="Existing folder (optional)"
+              value={folder}
+              sx={{ width: "100%" }}
+              disabled={busy}
+              placeholder="/home/agent/plugins-create/my-plugin"
+              onChange={(event) => setFolder(event.currentTarget.value)}
+              helpText="Point the project at a folder that already exists on the desktop"
+            />
             <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              The folder is created on the desktop if it does not exist yet.
+              {folder.trim()
+                ? "The folder must exist under /home/agent; the name defaults to its last segment."
+                : "The folder is created on the desktop if it does not exist yet."}{" "}
               Mention the project in chat with{" "}
               <Box Element="code">@projects/{slug || "name"}</Box>.
             </Typography>
@@ -277,7 +297,7 @@ export function Projects({
           </Button>
           <Button
             variant="contained"
-            disabled={busy || !slug}
+            disabled={busy || (!slug && !folder.trim())}
             startIcon={busy ? <CircularProgress size={1.1} /> : undefined}
             onClick={() => void create()}
           >

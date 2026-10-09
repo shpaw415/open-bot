@@ -38,3 +38,21 @@ export function projectName(raw: unknown): string | null {
   if (!name || !slugifyName(name)) return null
   return name
 }
+
+// Projects may also point at an existing desktop folder outside the
+// workspace (e.g. ~/plugins-create/<slug>), so the dashboard can manage
+// plugin projects and other pre-existing folders.
+export function resolveCustomProjectPath(raw: unknown): string | null {
+  if (typeof raw !== "string") return null
+  const path = raw.trim().replace(/\/+$/g, "")
+  if (!path || path.length > 256) return null
+  if (path.includes("\0") || path.includes("\\")) return null
+  if (!path.startsWith("/home/agent/")) return null
+  const segments = path.slice("/home/agent/".length).split("/")
+  if (
+    segments.length === 0 ||
+    segments.some((seg) => seg === "" || seg === "." || seg === "..")
+  )
+    return null
+  return path
+}

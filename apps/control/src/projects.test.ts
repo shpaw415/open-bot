@@ -4,6 +4,7 @@ import {
   projectDir,
   projectName,
   projectSubpath,
+  resolveCustomProjectPath,
   slugifyName,
 } from "./projects"
 
@@ -70,5 +71,29 @@ describe("project name", () => {
     expect(projectName("///")).toBeNull()
     expect(projectName("")).toBeNull()
     expect(projectName(7)).toBeNull()
+  })
+})
+
+describe("resolve custom project path", () => {
+  test("accepts absolute folders under /home/agent", () => {
+    expect(resolveCustomProjectPath("/home/agent/plugins-create/blender")).toBe(
+      "/home/agent/plugins-create/blender",
+    )
+    expect(resolveCustomProjectPath("/home/agent/workspace/my-app")).toBe(
+      "/home/agent/workspace/my-app",
+    )
+    expect(resolveCustomProjectPath("/home/agent/x/")).toBe("/home/agent/x")
+  })
+
+  test("rejects everything outside /home/agent or unsafe", () => {
+    expect(resolveCustomProjectPath("/etc/passwd")).toBeNull()
+    expect(resolveCustomProjectPath("/home/agent/../etc")).toBeNull()
+    expect(resolveCustomProjectPath("/home/agent/a//b")).toBeNull()
+    expect(resolveCustomProjectPath("/home/agent/")).toBeNull()
+    expect(resolveCustomProjectPath("relative/path")).toBeNull()
+    expect(resolveCustomProjectPath("/home/agent/a\\b")).toBeNull()
+    expect(resolveCustomProjectPath(null)).toBeNull()
+    expect(resolveCustomProjectPath(42)).toBeNull()
+    expect(resolveCustomProjectPath(undefined)).toBeNull()
   })
 })
