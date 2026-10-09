@@ -196,10 +196,12 @@ export function createVikingSkills(
           .join("; ")
         throw new HttpError(400, message || "skill is invalid", "skill_invalid")
       }
+      // wait:true keeps installs deterministic; the timeout must cover
+      // server-side embedding, which can take minutes on a loaded OpenViking.
       const payload = JSON.stringify({
         data: data(input),
         wait: true,
-        timeout: 45,
+        timeout: 240,
       })
       if (!previousName || previousName !== input.name) {
         await call("/api/v1/skills", { method: "POST", body: payload })
