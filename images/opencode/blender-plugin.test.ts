@@ -17,10 +17,22 @@ const seedAgents = readFileSync(join(import.meta.dir, "seed/AGENTS.md"), "utf8")
 describe("blender is plugin-only", () => {
   test("the image no longer installs or wires blender", () => {
     expect(dockerfile).not.toContain("blender")
-    expect(entrypoint).not.toContain("blender")
+    // the entrypoint keeps a migration that strips old built-in leftovers
+    expect(entrypoint).not.toContain("blender-up.sh")
+    expect(entrypoint).not.toContain("seed/skills/blender")
+    expect(entrypoint).not.toContain("$seed[0].agent[\"blender-worker\"]")
+    expect(entrypoint).not.toContain("apply-blender-mcp")
+    expect(entrypoint).not.toContain("blender-mcp-venv")
     expect(seedConfig).not.toContain("blender")
     expect(seedAgents).not.toContain("blender")
     expect(dockerfile.includes("xauth")).toBe(false)
+  })
+
+  test("the entrypoint migration strips built-in leftovers", () => {
+    expect(entrypoint).toContain("skills/blender")
+    expect(entrypoint).toContain("rm -f /usr/local/bin/blender-team")
+    expect(entrypoint).toContain('del(."blender-worker")')
+    expect(entrypoint).toContain("del(.blender)")
   })
 
   test("no blender seed skill directory ships", () => {

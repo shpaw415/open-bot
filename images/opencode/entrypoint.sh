@@ -51,6 +51,10 @@ cp /opt/open-bot/seed/skills/stress-test/SKILL.md /home/agent/.config/opencode/s
 mkdir -p /home/agent/.config/opencode/skills/gpio-3d
 cp /opt/open-bot/seed/skills/gpio-3d/SKILL.md /home/agent/.config/opencode/skills/gpio-3d/SKILL.md
 cp /opt/open-bot/seed/skills/gpio-3d/validate-manifest.ts /home/agent/.config/opencode/skills/gpio-3d/validate-manifest.ts
+# migration: the built-in blender feature moved to the marketplace plugin.
+# Strip its leftovers from persistent volumes; the plugin re-adds its own.
+rm -rf /home/agent/.config/opencode/skills/blender
+rm -f /usr/local/bin/blender-team
 if [ -f /opt/open-bot/dev-mode ]; then
   mkdir -p /home/agent/.config/opencode/skills/improve
   cp /opt/open-bot/seed/skills/improve/SKILL.md /home/agent/.config/opencode/skills/improve/SKILL.md
@@ -66,7 +70,7 @@ if [ ! -f /home/agent/.config/opencode/opencode.json ]; then
 fi
 prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. While you work, send no text messages: no plan, no status, no progress notes, no step summaries. Tool calls are silent. Send exactly one message, when the whole job is finished, containing only the final result and any deliverable images. Before that final message on a multi-step job, run the closing checklist: file a product defect or friction with ob-improve when this desktop has it, save a found shortcut with the shortcut skill, remember durable facts with openviking_remember, and record promised follow-ups. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command hangs, kill it and move on. Never end the turn while ob-vnc can still advance the task; finish it yourself. Only stop for the user when the screen needs them.'
 jq --arg prompt "$prompt" --slurpfile seed /opt/open-bot/seed/opencode.json \
-  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 96 | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer' \
+  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 96 | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
   /home/agent/.config/opencode/opencode.json > /tmp/oc-perm.json
 mv /tmp/oc-perm.json /home/agent/.config/opencode/opencode.json
 cp /opt/open-bot/seed/openviking-config.json /home/agent/.config/opencode/openviking-config.json
