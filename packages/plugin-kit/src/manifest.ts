@@ -6,6 +6,37 @@ export const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\dA-Za-z.-]+)?$/
 export const GITHUB_REPO_PATTERN = /^[A-Za-z0-9.-]+\/[A-Za-z0-9._-]+$/
 export const COMMAND_PATTERN = /^\/?[a-z0-9][a-z0-9-]{0,31}$/
+export const FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/
+export const AGENT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/
+export const TOOL_GLOB_PATTERN = /^[\w*_-]{1,64}$/
+// Agent definitions shipped by the platform itself; plugins add new agents
+// and must not shadow these (use agentTools to adjust their tools).
+export const RESERVED_AGENT_NAMES = new Set([
+  "build",
+  "plan",
+  "general",
+  "title",
+  "namer",
+])
+
+// Repo-relative path inside the release tarball: no leading slash, no "..",
+// no backslashes, each segment a safe name.
+export function isValidFileSource(source: string): boolean {
+  if (!source || source.length > 200 || source.includes("\\")) return false
+  if (source.startsWith("/")) return false
+  const segments = source.split("/")
+  return (
+    segments.length > 0 &&
+    segments.length <= 8 &&
+    segments.every(
+      (segment) =>
+        segment !== "" &&
+        segment !== "." &&
+        segment !== ".." &&
+        /^[\w.-]{1,64}$/.test(segment),
+    )
+  )
+}
 export const CARD_KINDS = [
   "markdown",
   "stat",
@@ -49,6 +80,14 @@ export type PluginCron = {
 export type PluginTool = {
   name: string
   content: string
+  exec?: boolean
+}
+
+// A payload file shipped in the plugin's release tarball (not inline in the
+// manifest). Installed next to tools as /usr/local/bin/ob-plugin-<id>-<name>.
+export type PluginFile = {
+  name: string
+  source: string
   exec?: boolean
 }
 
@@ -119,6 +158,7 @@ export type PluginManifest = {
   personas?: PluginPersona[]
   cron?: PluginCron[]
   tools?: PluginTool[]
+  files?: PluginFile[]
   configs?: PluginConfig[]
   setup?: PluginSetup
   dashboard?: {
@@ -128,6 +168,13 @@ export type PluginManifest = {
   opencode?: {
     plugin?: string[]
     mcp?: Record<string, unknown>
+    // New agent definitions, deep-merged into opencode.json's agent map.
+    // Built-in agent names are rejected — patch an existing agent's tools
+    // with agentTools instead.
+    agents?: Record<string, Record<string, unknown>>
+    // Tool enable/disable globs patched into existing agents,
+    // e.g. { "build": { "blender_*": false } }.
+    agentTools?: Record<string, Record<string, boolean>>
   }
 }
 
@@ -175,6 +222,12 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push(`Adds vault keys: ${perms.vaultCreate.join(", ")}`)
   if (perms.desktopTools || manifest.tools?.length)
     summary.push("Installs tools in the desktop container")
+  if ((manifest.files?.length ?? 0) > 0)
+    summary.push(
+      `Installs ${manifest.files?.length} payload file${
+        (manifest.files?.length ?? 0) === 1 ? "" : "s"
+      } from the reviewed release into the desktop`,
+    )
   const setupCommands = manifest.setup?.commands?.length ?? 0
   if (setupCommands > 0)
     summary.push(
@@ -184,6 +237,12 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push("Runs shell commands on uninstall")
   if (manifest.dashboard?.tabs?.length) summary.push("Adds dashboard tabs")
   if (manifest.textbox) summary.push("Extends the chat composer")
+  const agents = Object.keys(manifest.opencode?.agents ?? {})
+  if (agents.length > 0)
+    summary.push(`Adds agent workers: ${agents.join(", ")}`)
+  const agentTools = Object.keys(manifest.opencode?.agentTools ?? {})
+  if (agentTools.length > 0)
+    summary.push(`Adjusts agent tools for: ${agentTools.join(", ")}`)
   if (perms.opencode || manifest.opencode)
     summary.push("Extends the agent (OpenCode plugins / MCP)")
   return summary
@@ -538,6 +597,39 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     }
   }
 
+  const files = input.files === undefined ? [] : input.files
+  if (!Array.isArray(files) || files.length > 32) {
+    issues.push({ path: "files", message: "files must be a list (max 32)" })
+  } else {
+    const seenFiles = new Set<string>()
+    for (const [index, file] of files.entries()) {
+      const path = `files[${index}]`
+      const fileName = str(file?.name)
+      if (!fileName || !FILE_NAME_PATTERN.test(fileName)) {
+        issues.push({
+          path,
+          message:
+            "file.name must match a file name (lowercase letters, digits, dot, hyphen, underscore)",
+        })
+      } else if (seenFiles.has(fileName)) {
+        issues.push({ path, message: "file.name must be unique" })
+      } else {
+        seenFiles.add(fileName)
+      }
+      const source = str(file?.source)
+      if (!source || !isValidFileSource(source)) {
+        issues.push({
+          path,
+          message:
+            "file.source must be a repo-relative path inside the release tarball (no leading /, no ..)",
+        })
+      }
+      if (file?.exec !== undefined && typeof file.exec !== "boolean") {
+        issues.push({ path, message: "file.exec must be a boolean" })
+      }
+    }
+  }
+
   const setupCommands = validateSetupCommands(input.setup, "commands", issues)
   const setupUninstall = validateSetupCommands(input.setup, "uninstall", issues)
 
@@ -639,6 +731,103 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       ) {
         issues.push({ path: "opencode.mcp", message: "too many mcp servers" })
       }
+      if (opencode.agents !== undefined) {
+        if (!isRecord(opencode.agents)) {
+          issues.push({
+            path: "opencode.agents",
+            message: "agents must be an object",
+          })
+        } else {
+          const names = Object.keys(opencode.agents)
+          if (names.length > 8) {
+            issues.push({
+              path: "opencode.agents",
+              message: "too many agents (max 8)",
+            })
+          }
+          for (const agentName of names) {
+            const path = `opencode.agents.${agentName}`
+            if (!AGENT_NAME_PATTERN.test(agentName)) {
+              issues.push({
+                path,
+                message:
+                  "agent name must be 1-32 lowercase letters, digits, or hyphens",
+              })
+            } else if (RESERVED_AGENT_NAMES.has(agentName)) {
+              issues.push({
+                path,
+                message: `agent name ${agentName} is reserved; use opencode.agentTools to adjust built-in agents`,
+              })
+            }
+            const def = opencode.agents[agentName]
+            if (!isRecord(def)) {
+              issues.push({
+                path,
+                message: "agent definition must be an object",
+              })
+            } else if (JSON.stringify(def).length > 8 * 1024) {
+              issues.push({ path, message: "agent definition is too large" })
+            }
+          }
+        }
+      }
+      if (opencode.agentTools !== undefined) {
+        if (!isRecord(opencode.agentTools)) {
+          issues.push({
+            path: "opencode.agentTools",
+            message: "agentTools must be an object",
+          })
+        } else {
+          const names = Object.keys(opencode.agentTools)
+          if (names.length > 8) {
+            issues.push({
+              path: "opencode.agentTools",
+              message: "too many agents (max 8)",
+            })
+          }
+          for (const agentName of names) {
+            const path = `opencode.agentTools.${agentName}`
+            if (!AGENT_NAME_PATTERN.test(agentName)) {
+              issues.push({
+                path,
+                message:
+                  "agent name must be 1-32 lowercase letters, digits, or hyphens",
+              })
+            }
+            const globs = opencode.agentTools[agentName]
+            if (!isRecord(globs)) {
+              issues.push({
+                path,
+                message:
+                  "agentTools entry must be an object of glob -> boolean",
+              })
+              continue
+            }
+            const globKeys = Object.keys(globs)
+            if (globKeys.length > 16) {
+              issues.push({
+                path,
+                message: "too many tool globs (max 16 per agent)",
+              })
+            }
+            for (const glob of globKeys) {
+              if (!TOOL_GLOB_PATTERN.test(glob)) {
+                issues.push({
+                  path,
+                  message:
+                    "tool glob must be 1-64 letters, digits, underscore, hyphen, or *",
+                })
+              }
+              if (typeof globs[glob] !== "boolean") {
+                issues.push({
+                  path,
+                  message: "tool glob value must be a boolean",
+                })
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -667,6 +856,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     personas: personas as PluginPersona[],
     cron: cron as PluginCron[],
     tools: tools as PluginTool[],
+    files: files as PluginFile[],
     configs: configs as PluginConfig[],
     setup: isRecord(input.setup)
       ? {

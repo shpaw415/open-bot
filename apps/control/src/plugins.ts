@@ -7,6 +7,7 @@ import {
   SEMVER_PATTERN,
 } from "@open-bot/plugin-kit"
 import { nextRunMs } from "./cron"
+import { restartOpencode, syncOpencodePlugin } from "./docker"
 import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 import {
@@ -344,7 +345,7 @@ export function handlePlugins(
       .json()
       .then((body: Record<string, unknown>) => {
         const key = String(body.key ?? "").trim()
-        if (!/^obm_[A-Za-z0-9_-]{40,120}$/.test(key)) {
+        if (!/^obm_[A-Za-z0-9_-]{24,120}$/.test(key)) {
           return json(
             { error: "that does not look like a marketplace API key" },
             400,
@@ -549,6 +550,51 @@ export function handlePlugins(
       pluginId,
       what === "enable",
     )
+    // Disable/enable also toggles the plugin's OpenCode surfaces (plugin
+    // packages, MCP servers, agent workers, tool overrides) so a disabled
+    // plugin leaves the running agent alone.
+    const oc = (row.manifest as PluginManifest).opencode
+    if (oc && (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools)) {
+      const patch =
+        what === "enable"
+          ? {
+              addPlugins: oc.plugin ?? [],
+              removePlugins: [],
+              addMcp: (oc.mcp ?? {}) as Record<string, unknown>,
+              removeMcp: [],
+              addAgents: oc.agents ?? {},
+              removeAgents: [],
+              addAgentTools: oc.agentTools ?? {},
+              removeAgentTools: {},
+            }
+          : {
+              addPlugins: [],
+              removePlugins: oc.plugin ?? [],
+              addMcp: {},
+              removeMcp: Object.keys((oc.mcp ?? {}) as object),
+              addAgents: {},
+              removeAgents: Object.keys(oc.agents ?? {}),
+              addAgentTools: {},
+              removeAgentTools: oc.agentTools ?? {},
+            }
+      return syncOpencodePlugin(user.id, patch)
+        .then(async () => restartOpencode(user.id).catch(() => {}))
+        .then(() => {
+          hub.emit(user.id, { type: "plugins.changed" })
+          return json({ plugin: updated ? publicInstalled(updated) : null })
+        })
+        .catch((error: unknown) =>
+          json(
+            {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "could not toggle the agent surfaces",
+            },
+            502,
+          ),
+        )
+    }
     hub.emit(user.id, { type: "plugins.changed" })
     return json({ plugin: updated ? publicInstalled(updated) : null })
   }

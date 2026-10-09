@@ -196,4 +196,79 @@ describe("plugin manifest", () => {
     )
     expect(renderTemplate("Keep {missing}", {})).toBe("Keep {missing}")
   })
+
+  test("accepts payload files and reports them", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      files: [
+        { name: "addon.py", source: "files/addon.py" },
+        { name: "runner", source: "files/runner.sh", exec: true },
+      ],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.files).toHaveLength(2)
+      const summary = pluginPermissionSummary(result.manifest)
+      expect(summary).toContain(
+        "Installs 2 payload files from the reviewed release into the desktop",
+      )
+    }
+  })
+
+  test("rejects bad file names and sources", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      files: [
+        { name: "Addon", source: "files/addon.py" },
+        { name: "ok.py", source: "/etc/passwd" },
+        { name: "ok2.py", source: "../secrets" },
+        { name: "dup.py", source: "files/dup.py" },
+        { name: "dup.py", source: "files/other.py" },
+      ],
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      const text = manifestIssuesText(result.issues)
+      expect(text).toContain("files[0]")
+      expect(text).toContain("files[1]")
+      expect(text).toContain("files[2]")
+      expect(text).toContain("files[4]")
+    }
+  })
+
+  test("accepts opencode agents and agentTools", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      opencode: {
+        agents: {
+          "worker-x": { mode: "all", hidden: true, prompt: "Work." },
+        },
+        agentTools: { build: { "workerx_*": false } },
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const summary = pluginPermissionSummary(result.manifest)
+      expect(summary).toContain("Adds agent workers: worker-x")
+      expect(summary).toContain("Adjusts agent tools for: build")
+    }
+  })
+
+  test("rejects reserved agent names and bad globs", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      opencode: {
+        agents: { build: { prompt: "hijack" } },
+        agentTools: { build: { "bad glob!!": true, ok_glob: "yes" } },
+      },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      const text = manifestIssuesText(result.issues)
+      expect(text).toContain("reserved")
+      expect(text).toContain("opencode.agentTools.build")
+      expect(text.match(/tool glob must be/g) ?? []).toHaveLength(1)
+      expect(text.match(/must be a boolean/g) ?? []).toHaveLength(1)
+    }
+  })
 })

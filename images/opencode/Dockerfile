@@ -57,21 +57,6 @@ RUN python3 -m venv /opt/gpio-3d/venv \
     && chmod 755 /usr/local/bin/gpio-3d \
     && chmod -R a+rX /opt/gpio-3d
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends blender xauth \
-    && rm -rf /var/lib/apt/lists/* \
-    && grep -rl "np\.bool\b" /usr/share/blender/scripts/addons/io_scene_gltf2 \
-      | xargs -r sed -i "s/np\.bool\b/bool/g" \
-    && python3 -m pip install --no-cache-dir --no-binary=:all: --target /opt/blender-requests requests \
-    && python3 -m venv /opt/blender-mcp-venv \
-    && /opt/blender-mcp-venv/bin/pip install --no-cache-dir blender-mcp \
-    && test -x /opt/blender-mcp-venv/bin/blender-mcp \
-    && chmod -R a+rX /opt/blender-requests /opt/blender-mcp-venv
-
-COPY images/opencode/blender-mcp /opt/open-bot/blender-mcp
-COPY images/opencode/blender-up.sh /opt/open-bot/blender-up.sh
-COPY images/opencode/apply-blender-mcp.sh /opt/open-bot/apply-blender-mcp.sh
-
 COPY images/opencode/seed /opt/open-bot/seed
 COPY scripts/opencode-auth.sh /opt/open-bot/opencode-auth.sh
 COPY scripts/ob-cron.sh /usr/local/bin/ob-cron
@@ -95,9 +80,6 @@ COPY images/opencode/apply-model3d-auth.sh /opt/open-bot/apply-model3d-auth.sh
 COPY images/opencode/gen-3d.ts /opt/open-bot/gen-3d.ts
 RUN ln -sf /opt/open-bot/gen-3d.ts /usr/local/bin/gen-3d \
     && chmod 755 /opt/open-bot/gen-3d.ts
-COPY images/opencode/blender-team.ts /opt/open-bot/blender-team.ts
-RUN ln -sf /opt/open-bot/blender-team.ts /usr/local/bin/blender-team \
-    && chmod 755 /opt/open-bot/blender-team.ts
 COPY images/opencode/apply-system1.sh /opt/open-bot/apply-system1.sh
 COPY images/opencode/apply-chat-auth.sh /opt/open-bot/apply-chat-auth.sh
 COPY apps/control/src/nav /opt/open-bot/nav
@@ -134,7 +116,7 @@ RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-blender-mcp.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/blender-up.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset \
+      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset \
     && touch /opt/open-bot/instance
 
 USER root

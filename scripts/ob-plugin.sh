@@ -114,12 +114,14 @@ Manifest quick reference:
 - personas[]: {name, instruction} — personalities the thread picker can choose
 - cron[]: {name, message, everySeconds | cronExpr} — scheduled jobs
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
+- files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools
 - configs[]: {key, label, def} — settings shown on the Plugins page
 - setup: {commands: [...], uninstall: [...]} — shell commands run as root in the desktop at install and on every desktop start (commands must be idempotent, e.g. "apt-get install -y figlet"); uninstall runs at uninstall; the user sees them in the consent prompt, log at ~/.open-bot/plugin-init/<id>.log
 - permissions.vaultRead / vaultCreate: vault key slugs
 - dashboard.tabs[]: {id, title, kind: page|iframe, url?, cards?}
 - textbox: renderers, commands, buttons, validators, attachments
-- opencode: {plugin: [npm...], mcp: {...}}
+- opencode: {plugin: [npm...], mcp: {...}, agents: {...new agent defs...}, agentTools: {agent: {glob: bool}}}
+- Helper sessions your plugin spawns must be titled with the "worker:" prefix so they stay out of the dashboard thread list.
 EOF
     echo "scaffolded $dir"
     ;;

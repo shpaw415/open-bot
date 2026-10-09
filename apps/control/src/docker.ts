@@ -1220,7 +1220,9 @@ export async function syncPluginAuth(
 }
 
 // Merge (patch non-null) or remove (patch null) a plugin's OpenCode plugin
-// packages and MCP servers in the desktop's opencode.json.
+// packages, MCP servers, agent definitions, and agent tool overrides in the
+// desktop's opencode.json. agents/agentTools use deep merges so patches to
+// existing agents (e.g. tool denies on build) compose with each other.
 export async function syncOpencodePlugin(
   userId: string,
   patch: {
@@ -1228,6 +1230,10 @@ export async function syncOpencodePlugin(
     removePlugins: string[]
     addMcp: Record<string, unknown>
     removeMcp: string[]
+    addAgents?: Record<string, Record<string, unknown>>
+    removeAgents?: string[]
+    addAgentTools?: Record<string, Record<string, boolean>>
+    removeAgentTools?: Record<string, Record<string, boolean>>
   } | null,
 ) {
   const n = names(userId)
@@ -1236,14 +1242,25 @@ export async function syncOpencodePlugin(
     (patch.addPlugins.length === 0 &&
       patch.removePlugins.length === 0 &&
       Object.keys(patch.addMcp).length === 0 &&
-      patch.removeMcp.length === 0)
+      patch.removeMcp.length === 0 &&
+      Object.keys(patch.addAgents ?? {}).length === 0 &&
+      (patch.removeAgents ?? []).length === 0 &&
+      Object.keys(patch.addAgentTools ?? {}).length === 0 &&
+      Object.keys(patch.removeAgentTools ?? {}).length === 0)
   if (empty) return false
   if (!(await isRunning(n.opencode))) return false
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
+  const program = [
+    ".plugin = (((.plugin // []) + $addP) - $rmP | unique)",
+    ".mcp = (((.mcp // {}) + $addM) | with_entries(select(.key as $k | ($rmM | index($k)) | not)))",
+    ".agent = (((.agent // {}) * $addA) | with_entries(select(.key as $k | ($rmA | index($k)) | not)))",
+    "reduce ($addT | keys_unsorted[]) as $n (.; (.agent[$n].tools) = (((.agent[$n].tools) // {}) + $addT[$n]))",
+    "reduce ($rmT | keys_unsorted[]) as $n (.; if .agent[$n].tools then .agent[$n].tools = ((.agent[$n].tools) | with_entries(select(.key as $k | ($rmT[$n] | index($k)) | not))) | if (.agent[$n].tools | length) == 0 then del(.agent[$n].tools) else . end else . end)",
+  ].join(" | ")
   const script = [
     "sh",
     "-c",
-    `jq --argjson addP ${quote(JSON.stringify(patch.addPlugins))} --argjson rmP ${quote(JSON.stringify(patch.removePlugins))} --argjson addM ${quote(JSON.stringify(patch.addMcp))} --argjson rmM ${quote(JSON.stringify(patch.removeMcp))} '.plugin = (((.plugin // []) + $addP) - $rmP | unique) | .mcp = (((.mcp // {}) + $addM) | with_entries(select(.key as $k | ($rmM | index($k)) | not)))' $HOME/.config/opencode/opencode.json > /tmp/oc-plugin.json && mv /tmp/oc-plugin.json $HOME/.config/opencode/opencode.json`,
+    `jq --argjson addP ${quote(JSON.stringify(patch.addPlugins))} --argjson rmP ${quote(JSON.stringify(patch.removePlugins))} --argjson addM ${quote(JSON.stringify(patch.addMcp))} --argjson rmM ${quote(JSON.stringify(patch.removeMcp))} --argjson addA ${quote(JSON.stringify(patch.addAgents ?? {}))} --argjson rmA ${quote(JSON.stringify(patch.removeAgents ?? []))} --argjson addT ${quote(JSON.stringify(patch.addAgentTools ?? {}))} --argjson rmT ${quote(JSON.stringify(patch.removeAgentTools ?? {}))} '${program}' $HOME/.config/opencode/opencode.json > /tmp/oc-plugin.json && mv /tmp/oc-plugin.json $HOME/.config/opencode/opencode.json`,
   ]
   const result = await sh([
     "docker",
@@ -1265,69 +1282,6 @@ export async function syncOpencodePlugin(
     )
   }
   return true
-}
-
-export async function syncBlenderMcp(userId: string, enabled: boolean) {
-  const n = names(userId)
-  if (!(await isRunning(n.opencode))) return false
-  const result = await sh(
-    [
-      "docker",
-      "exec",
-      "-i",
-      "-u",
-      "agent",
-      "-e",
-      "HOME=/home/agent",
-      n.opencode,
-      "/opt/open-bot/apply-blender-mcp.sh",
-    ],
-    JSON.stringify({ enabled }),
-  )
-  if (result.code !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim()
-    if (/not found|No such file/i.test(detail)) {
-      throw new Error(
-        "desktop image is missing blender setup. Rebuild images, then sleep and start the desktop.",
-      )
-    }
-    throw new Error(detail || "could not update blender mcp")
-  }
-  return true
-}
-
-export type BlenderMcpStatus = {
-  installed: boolean
-  enabled: boolean
-  running: boolean
-}
-
-export async function blenderStatus(userId: string): Promise<BlenderMcpStatus> {
-  const n = names(userId)
-  if (!(await isRunning(n.opencode))) {
-    return { installed: false, enabled: false, running: false }
-  }
-  const result = await sh([
-    "docker",
-    "exec",
-    "-u",
-    "agent",
-    "-e",
-    "HOME=/home/agent",
-    n.opencode,
-    "sh",
-    "-c",
-    `if command -v blender >/dev/null 2>&1; then echo -n "installed=yes "; else echo -n "installed=no "; fi; if [ -f /home/agent/.open-bot/blender-mcp-disabled ]; then echo -n "enabled=no "; else echo -n "enabled=yes "; fi; if pgrep -f blender-serve.py >/dev/null 2>&1; then echo "running=yes"; else echo "running=no"; fi`,
-  ])
-  if (result.code !== 0) {
-    return { installed: false, enabled: false, running: false }
-  }
-  const parse = (key: string) => result.stdout.includes(`${key}=yes`)
-  return {
-    installed: parse("installed"),
-    enabled: parse("enabled"),
-    running: parse("running"),
-  }
 }
 
 export async function desktopExec(

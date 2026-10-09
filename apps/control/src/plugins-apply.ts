@@ -17,6 +17,7 @@ import {
   syncPluginAuth,
   syncPluginTools,
 } from "./docker"
+import { extractPluginFiles, fetchPluginArtifact } from "./plugin-artifact"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
@@ -95,6 +96,28 @@ export function pluginConfigPayload(
     payload.vault = vault
   }
   return payload
+}
+
+// Resolves the manifest's payload files into installable binaries by pulling
+// the reviewed release tarball from the marketplace.
+async function resolvePluginFiles(
+  db: Db,
+  pluginId: string,
+  version: string,
+  manifest: PluginManifest,
+): Promise<PluginToolFile[]> {
+  const declared = manifest.files ?? []
+  if (declared.length === 0) return []
+  const artifact = await fetchPluginArtifact(db, pluginId, version)
+  return extractPluginFiles(artifact.tarballPath, declared)
+}
+
+function inlineToolFiles(manifest: PluginManifest): PluginToolFile[] {
+  return (manifest.tools ?? []).map((tool) => ({
+    name: tool.name,
+    content: tool.content,
+    exec: tool.exec !== false,
+  }))
 }
 
 // Creates personas, cron jobs, skills, vault entries, desktop tools, and
@@ -217,11 +240,10 @@ export async function applyPluginInstall(
       }
     }
 
-    const toolFiles: PluginToolFile[] = (manifest.tools ?? []).map((tool) => ({
-      name: tool.name,
-      content: tool.content,
-      exec: tool.exec !== false,
-    }))
+    const toolFiles: PluginToolFile[] = [
+      ...inlineToolFiles(manifest),
+      ...(await resolvePluginFiles(db, manifest.id, entry.version, manifest)),
+    ]
     if (toolFiles.length > 0) {
       await syncPluginTools(user.id, manifest.id, toolFiles)
       for (const file of toolFiles) applied.tools.push(file.name)
@@ -248,12 +270,22 @@ export async function applyPluginInstall(
     }
 
     const opencode = manifest.opencode
-    if (opencode && (opencode.plugin?.length || opencode.mcp)) {
+    if (
+      opencode &&
+      (opencode.plugin?.length ||
+        opencode.mcp ||
+        opencode.agents ||
+        opencode.agentTools)
+    ) {
       await syncOpencodePlugin(user.id, {
         addPlugins: opencode.plugin ?? [],
         removePlugins: [],
         addMcp: (opencode.mcp ?? {}) as Record<string, unknown>,
         removeMcp: [],
+        addAgents: opencode.agents ?? {},
+        removeAgents: [],
+        addAgentTools: opencode.agentTools ?? {},
+        removeAgentTools: {},
       })
       applied.opencode = true
       await restartOpencode(user.id).catch(() => {})
@@ -330,6 +362,10 @@ async function revertApplied(
       removePlugins: manifest?.opencode?.plugin ?? [],
       addMcp: {},
       removeMcp: Object.keys((manifest?.opencode?.mcp ?? {}) as object),
+      addAgents: {},
+      removeAgents: Object.keys(manifest?.opencode?.agents ?? {}),
+      addAgentTools: {},
+      removeAgentTools: manifest?.opencode?.agentTools ?? {},
     }).catch(() => {})
   }
 }
@@ -372,35 +408,66 @@ export async function reapplyPluginConfig(
   )
 }
 
-// Re-run every installed plugin's setup commands after a desktop recreate.
-// Registered as the docker onDesktopReady hook; never throws.
+// Re-apply every enabled plugin after a desktop recreate: setup commands,
+// then binary tools and payload files (fixes installs that ran while the
+// desktop was asleep). Registered as the docker onDesktopReady hook; never
+// throws.
 export async function reapplyPluginSetup(db: Db, userId: string) {
   for (const row of db.installedPlugins(userId)) {
     if (!row.enabled) continue
-    const commands = (row.manifest as PluginManifest).setup?.commands ?? []
-    if (commands.length === 0) continue
-    try {
-      const result = await runPluginInitCommands(
-        userId,
-        row.pluginId,
-        commands,
-        "boot",
-      )
-      db.setInstalledPluginApplied(userId, row.pluginId, {
-        ...row.applied,
-        init: initLogEntry(result) ?? row.applied.init,
-      })
-      if (!result.ok) {
+    const manifest = row.manifest as PluginManifest
+    const commands = manifest.setup?.commands ?? []
+    if (commands.length > 0) {
+      try {
+        const result = await runPluginInitCommands(
+          userId,
+          row.pluginId,
+          commands,
+          "boot",
+        )
+        db.setInstalledPluginApplied(userId, row.pluginId, {
+          ...row.applied,
+          init: initLogEntry(result) ?? row.applied.init,
+        })
+        if (!result.ok) {
+          console.error(
+            `plugin ${row.pluginId} boot setup failed: ${result.output.slice(0, 500)}`,
+          )
+        }
+      } catch (error) {
         console.error(
-          `plugin ${row.pluginId} boot setup failed: ${result.output.slice(0, 500)}`,
+          `plugin ${row.pluginId} boot setup errored: ${
+            error instanceof Error ? error.message : error
+          }`,
         )
       }
-    } catch (error) {
-      console.error(
-        `plugin ${row.pluginId} boot setup errored: ${
-          error instanceof Error ? error.message : error
-        }`,
-      )
+    }
+    const toolFiles = inlineToolFiles(manifest)
+    if (toolFiles.length > 0) {
+      await syncPluginTools(userId, row.pluginId, toolFiles).catch((error) => {
+        console.error(
+          `plugin ${row.pluginId} boot tool sync failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      })
+    }
+    if ((manifest.files?.length ?? 0) > 0) {
+      try {
+        const files = await resolvePluginFiles(
+          db,
+          row.pluginId,
+          row.version,
+          manifest,
+        )
+        await syncPluginTools(userId, row.pluginId, files)
+      } catch (error) {
+        console.error(
+          `plugin ${row.pluginId} boot file sync failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      }
     }
   }
 }

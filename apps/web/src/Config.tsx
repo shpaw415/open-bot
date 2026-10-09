@@ -8,7 +8,6 @@ import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api, type Me } from "./api"
 import { Backup } from "./Backup"
-import { BlenderMcp } from "./BlenderMcp"
 import { ConfigSection } from "./ConfigSection"
 import { CustomSkills } from "./CustomSkills"
 import { useMobile } from "./hooks"
@@ -235,7 +234,6 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
         {tab === "media" ? <ImageProvider /> : null}
         {tab === "media" ? <VideoProvider /> : null}
         {tab === "media" ? <Model3dProvider /> : null}
-        {tab === "media" ? <BlenderMcp /> : null}
         {tab === "personas" ? <Personalities /> : null}
         {tab === "skills" ? <CustomSkills /> : null}
         {tab === "backup" ? <Backup me={me} /> : null}

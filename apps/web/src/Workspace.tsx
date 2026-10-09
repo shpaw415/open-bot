@@ -21,8 +21,8 @@ import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import Markdown, { defaultUrlTransform } from "react-markdown"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import Markdown, { type Components, defaultUrlTransform } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
   api,
@@ -45,6 +45,7 @@ import {
   samePayload,
   showLiveScreen,
   splitPluginCards,
+  type TranscriptEntry,
   transcriptBubbles,
   userMessageCount,
   visibleText,
@@ -106,6 +107,10 @@ import {
   type SkillSummary,
   type Suggestion,
 } from "./references"
+
+// the IDE keeps its own state; memo keeps workspace renders (streaming ticks,
+// status polls) from re-rendering its whole tree
+const MemoProjects = memo(Projects)
 
 const BUILTIN_PERSONA_NAMES: Record<string, string> = {
   assistant: "Assistant",
@@ -251,31 +256,37 @@ function chatUrl(url: string, key: string): string {
   return defaultUrlTransform(url)
 }
 
-function ChatMarkdown({ text }: { text: string }) {
+// Stable module-level identities so memoized markdown skips re-parsing when
+// only surrounding state (e.g. the composer draft) changes.
+const markdownPlugins = [remarkGfm]
+
+const markdownComponents: Components = {
+  img: ({ src, alt }) => {
+    if (!src) return null
+    if (/\.(mp4|webm)$/i.test(src)) {
+      return (
+        // biome-ignore lint/a11y/useMediaCaption: generated clips ship without captions
+        <video src={src} controls preload="metadata" />
+      )
+    }
+    if (src.startsWith("/api/workspace/model3d") || /\.glb$/i.test(src)) {
+      return <Model3dView src={src} alt={alt ?? ""} />
+    }
+    return <img src={src} alt={alt ?? ""} />
+  },
+}
+
+const ChatMarkdown = memo(function ChatMarkdown({ text }: { text: string }) {
   return (
     <Markdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={markdownPlugins}
       urlTransform={chatUrl}
-      components={{
-        img: ({ src, alt }) => {
-          if (!src) return null
-          if (/\.(mp4|webm)$/i.test(src)) {
-            return (
-              // biome-ignore lint/a11y/useMediaCaption: generated clips ship without captions
-              <video src={src} controls preload="metadata" />
-            )
-          }
-          if (src.startsWith("/api/workspace/model3d") || /\.glb$/i.test(src)) {
-            return <Model3dView src={src} alt={alt ?? ""} />
-          }
-          return <img src={src} alt={alt ?? ""} />
-        },
-      }}
+      components={markdownComponents}
     >
       {text}
     </Markdown>
   )
-}
+})
 
 type PluginRenderer = { title: string; spec: PluginCardSpec[] }
 
@@ -313,7 +324,7 @@ function PluginCardBlockView({
   )
 }
 
-function PluginSegments({
+const PluginSegments = memo(function PluginSegments({
   text,
   renderers,
 }: {
@@ -348,7 +359,7 @@ function PluginSegments({
       )}
     </>
   )
-}
+})
 
 function threadTime(session: SessionInfo): number {
   return session.time?.updated ?? session.time?.created ?? 0
@@ -423,6 +434,879 @@ function cronSchedule(job: CronJobInfo): string {
   return `once at ${formatWhen(job.atMs)}`
 }
 
+type BubbleViewProps = {
+  entry: TranscriptEntry
+  index: number
+  lastHandoff: number
+  held: boolean
+  dismissedHandoff: string
+  screenLive: boolean
+  screenPath: string
+  screenError: string
+  running: boolean
+  sending: boolean
+  stopping: boolean
+  controlBusy: boolean
+  renderers: Map<string, PluginRenderer>
+  onTakeControl: () => void
+  onScreenDone: () => void
+}
+
+const MessageBubble = memo(function MessageBubble({
+  entry,
+  index,
+  lastHandoff,
+  held,
+  dismissedHandoff,
+  screenLive,
+  screenPath,
+  screenError,
+  running,
+  sending,
+  stopping,
+  controlBusy,
+  renderers,
+  onTakeControl,
+  onScreenDone,
+}: BubbleViewProps) {
+  const message = entry.message
+  const role = message.info?.role ?? "message"
+  const mine = role === "user"
+  const stamp = handoffStamp(message)
+  const watching =
+    showLiveScreen({
+      handoff: Boolean(message.handoff),
+      isLast: index === lastHandoff,
+      held,
+      dismissed: stamp === dismissedHandoff,
+    }) && screenLive
+  return (
+    <Box
+      title={mine ? "You" : "Agent"}
+      className={`ob-bubble ${mine ? "ob-bubble-user" : "ob-bubble-assistant"}`}
+      sx={{
+        bgcolor: mine ? "primary.main" : undefined,
+        color: mine ? "primary.contrastText" : "text.primary",
+        border: mine ? "none" : "1px solid",
+        borderColor: mine ? undefined : "divider",
+      }}
+    >
+      {mine && entry.mark ? <SendMark mark={entry.mark} /> : null}
+      <div className="ob-md">
+        {message.text.trim() ? (
+          <PluginSegments text={message.text} renderers={renderers} />
+        ) : null}
+        {message.images.map((src) => (
+          <img key={src} src={src} alt="" />
+        ))}
+        {message.handoff ? (
+          <div className={watching ? "ob-screen" : undefined}>
+            {watching ? (
+              <VncFrame
+                title="thread screen"
+                path={screenPath}
+                interactive={false}
+              />
+            ) : (
+              <Typography variant="body2" color="textSecondary">
+                {index !== lastHandoff
+                  ? "Screen was shared in a later reply."
+                  : held
+                    ? "You have the screen below."
+                    : stamp === dismissedHandoff
+                      ? "Screen closed."
+                      : screenError || "Opening this screen…"}
+              </Typography>
+            )}
+            {index === lastHandoff && !held && stamp !== dismissedHandoff ? (
+              <Stack direction="row" spacing={1}>
+                <Button
+                  size="small"
+                  variant="contained"
+                  disabled={!running || sending || stopping || controlBusy}
+                  onClick={onTakeControl}
+                >
+                  Take control
+                </Button>
+                <Button
+                  size="small"
+                  variant="text"
+                  disabled={!running || sending || stopping}
+                  onClick={onScreenDone}
+                >
+                  Done
+                </Button>
+              </Stack>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      {message.sentAt ? (
+        <time
+          className="ob-bubble-time"
+          dateTime={new Date(message.sentAt).toISOString()}
+        >
+          {formatWhen(message.sentAt)}
+        </time>
+      ) : null}
+    </Box>
+  )
+})
+
+const ThreadsPanel = memo(function ThreadsPanel({
+  sessions,
+  sessionId,
+  loading,
+  mobile,
+  open,
+  personaLabel,
+  busyIds,
+  unread,
+  actionBusy,
+  actions,
+}: {
+  sessions: SessionInfo[]
+  sessionId: string
+  loading: boolean
+  mobile: boolean
+  open: boolean
+  personaLabel: (id: string) => string
+  busyIds: ReadonlySet<string>
+  unread: ReadonlySet<string>
+  actionBusy: boolean
+  actions: {
+    select: (id: string) => void
+    menu: (item: SessionInfo, anchor: HTMLElement) => void
+    create: () => void
+  }
+}) {
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        width: mobile ? "100%" : 280,
+        flexShrink: 0,
+        minHeight: 0,
+        display: mobile && !open ? "none" : "flex",
+        flexDirection: "column",
+      }}
+    >
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ px: 1.5, py: 0.75 }}
+      >
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>
+          Threads
+        </Typography>
+        <ToolTip title="New thread">
+          <IconButton
+            size="small"
+            aria-label="New thread"
+            disabled={actionBusy}
+            onClick={actions.create}
+          >
+            <AddIcon width={18} height={18} />
+          </IconButton>
+        </ToolTip>
+      </Stack>
+      <Divider />
+      <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+        {loading && sessions.length === 0 ? (
+          <Stack spacing={1} sx={{ p: 1 }}>
+            <Skeleton height={36} />
+            <Skeleton height={36} />
+            <Skeleton height={36} />
+          </Stack>
+        ) : sessions.length === 0 ? (
+          <Typography variant="body2" color="textSecondary" sx={{ p: 1.5 }}>
+            No threads yet — send a message or press +.
+          </Typography>
+        ) : (
+          <List dense disablePadding>
+            {sessions.map((item) => (
+              <Box
+                key={item.id}
+                sx={{
+                  position: "relative",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <ListItemButton
+                  selected={item.id === sessionId}
+                  onClick={() => actions.select(item.id)}
+                  sx={{ flex: 1, minWidth: 0, pr: 5 }}
+                >
+                  <ListItemText
+                    primary={
+                      <span className="ob-thread-label">
+                        {unread.has(item.id) &&
+                        !(item.id === sessionId && !document.hidden) ? (
+                          <span
+                            className="ob-unread-dot"
+                            role="img"
+                            aria-label="Unread"
+                          />
+                        ) : null}
+                        <span className="ob-thread-title">
+                          {threadTitle(item)}
+                        </span>
+                      </span>
+                    }
+                    secondary={`${personaLabel(item.id)} · ${formatAgo(threadTime(item))}`}
+                    SlotProps={{
+                      primary: {
+                        className: "ob-thread-primary",
+                      } as never,
+                      secondary: { noWrap: true } as never,
+                    }}
+                  />
+                  {busyIds.has(item.id) ? (
+                    <CircularProgress size={1.2} sx={{ mr: 1 }} />
+                  ) : null}
+                </ListItemButton>
+                <IconButton
+                  size="small"
+                  aria-label={`Actions for ${threadTitle(item)}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    actions.menu(item, event.currentTarget)
+                  }}
+                  sx={{
+                    position: "absolute",
+                    right: 4,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                  }}
+                >
+                  <MoreVertIcon width={18} height={18} />
+                </IconButton>
+              </Box>
+            ))}
+          </List>
+        )}
+      </Box>
+    </Paper>
+  )
+})
+
+type ComposerCommand = {
+  plugin: string
+  command: string
+  title: string
+  template: string
+}
+
+type ComposerButton = {
+  plugin: string
+  id: string
+  label: string
+  template: string
+}
+
+type ComposerValidator = {
+  plugin: string
+  pattern: string
+  message: string
+}
+
+const DRAFT_WRITE_DELAY = 400
+
+// Owns the composer draft and mention/slash popup state so every keystroke
+// re-renders only this subtree, not the whole workspace.
+function Composer({
+  sessionId,
+  running,
+  sending,
+  stopping,
+  stopBusy,
+  canStop,
+  mobile,
+  joined,
+  rememberJoined,
+  onError,
+  onSubmit,
+  onStop,
+  baseSections,
+  pluginButtons,
+  pluginCommands,
+  pluginValidators,
+  pluginAccept,
+  sharedDraftRef,
+  migrateDraft,
+}: {
+  sessionId: string
+  running: boolean
+  sending: boolean
+  stopping: boolean
+  stopBusy: boolean
+  canStop: boolean
+  mobile: boolean
+  joined: JoinedFile[]
+  rememberJoined: (next: JoinedFile[]) => void
+  onError: (message: string) => void
+  onSubmit: (text: string, files: JoinedFile[]) => Promise<boolean>
+  onStop: () => void
+  baseSections: RefSectionView[]
+  pluginButtons: ComposerButton[]
+  pluginCommands: ComposerCommand[]
+  pluginValidators: ComposerValidator[]
+  pluginAccept: string
+  sharedDraftRef: { current: string }
+  migrateDraft: string
+}) {
+  const [draft, setDraft] = useState(() => {
+    const stored = readDraft(localStorage, sessionId)
+    if (stored) return stored
+    // adopt a draft typed before this thread existed
+    if (sessionId && migrateDraft) {
+      writeDraft(localStorage, sessionId, migrateDraft)
+      return migrateDraft
+    }
+    return ""
+  })
+  const [caret, setCaret] = useState(0)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const [mentionHidden, setMentionHidden] = useState(false)
+  const [slashHidden, setSlashHidden] = useState(false)
+  const [slashIndex, setSlashIndex] = useState(0)
+  const [skillList, setSkillList] = useState<SkillSummary[]>([])
+  const [projectList, setProjectList] = useState<ProjectMention[]>([])
+  const [joinOpen, setJoinOpen] = useState(false)
+  const draftRef = useRef(draft)
+  const writeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const joinAnchor = useRef<HTMLElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const messageInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingCaretRef = useRef<number | null>(null)
+  const skillsRequestedRef = useRef(false)
+  const projectsRequestedRef = useRef(false)
+
+  function persistDraftNow(text: string) {
+    if (writeTimer.current) {
+      clearTimeout(writeTimer.current)
+      writeTimer.current = null
+    }
+    writeDraft(localStorage, sessionId, text)
+  }
+
+  function updateDraft(text: string) {
+    draftRef.current = text
+    sharedDraftRef.current = text
+    setDraft(text)
+    if (writeTimer.current) clearTimeout(writeTimer.current)
+    writeTimer.current = setTimeout(() => {
+      writeTimer.current = null
+      writeDraft(localStorage, sessionId, text)
+    }, DRAFT_WRITE_DELAY)
+  }
+
+  // flush a pending draft write when leaving the thread or the page
+  useEffect(() => {
+    return () => {
+      if (writeTimer.current) {
+        clearTimeout(writeTimer.current)
+        writeTimer.current = null
+        writeDraft(localStorage, sessionId, draftRef.current)
+      }
+    }
+  }, [sessionId])
+
+  function ensureSkills() {
+    if (skillsRequestedRef.current) return
+    skillsRequestedRef.current = true
+    api<{ skills?: SkillSummary[] }>("/api/skills")
+      .then((body) => setSkillList(body.skills ?? []))
+      .catch(() => setSkillList([]))
+  }
+
+  function ensureProjects() {
+    if (projectsRequestedRef.current) return
+    projectsRequestedRef.current = true
+    api<{ projects?: ProjectMention[] }>("/api/projects")
+      .then((body) => setProjectList(body.projects ?? []))
+      .catch(() => setProjectList([]))
+  }
+
+  const mentionSections = useMemo<RefSectionView[]>(
+    () => [
+      ...baseSections,
+      ...(skillList.length
+        ? [
+            {
+              key: "skills",
+              label: "Skills",
+              items: skillList.map(
+                (skill): RefItemView => ({
+                  id: skill.name,
+                  name: skill.name,
+                  description: skill.description,
+                }),
+              ),
+            },
+          ]
+        : []),
+      ...(projectList.length
+        ? [
+            {
+              key: "projects",
+              label: "Projects",
+              items: projectList.map(
+                (project): RefItemView => ({
+                  id: project.id,
+                  name: project.name,
+                  description: project.path,
+                }),
+              ),
+            },
+          ]
+        : []),
+    ],
+    [baseSections, skillList, projectList],
+  )
+  const mentionKeys = useMemo(
+    () => mentionSections.map((section) => section.key),
+    [mentionSections],
+  )
+  const mention = useMemo(
+    () => detectMention(draft, caret, mentionKeys),
+    [draft, caret, mentionKeys],
+  )
+  const suggestions = useMemo(
+    () => (mention ? mentionSuggestions(mention, mentionSections) : []),
+    [mention, mentionSections],
+  )
+  const slashActive = useMemo(() => {
+    if (!draft.startsWith("/") || draft.includes(" ") || draft.includes("\n")) {
+      return null
+    }
+    const typed = draft.slice(1).toLowerCase()
+    const matches = pluginCommands.filter((command) =>
+      command.command.startsWith(typed),
+    )
+    return matches.length > 0 ? matches : null
+  }, [draft, pluginCommands])
+
+  function rememberDraft(text: string) {
+    setMentionIndex(0)
+    updateDraft(text)
+  }
+
+  function restoreCaret() {
+    requestAnimationFrame(() => {
+      const pos = pendingCaretRef.current
+      if (pos === null) return
+      pendingCaretRef.current = null
+      const el = messageInputRef.current
+      if (el) {
+        el.focus()
+        el.setSelectionRange(pos, pos)
+      }
+      setCaret(pos)
+    })
+  }
+
+  function acceptSuggestion(suggestion: Suggestion) {
+    const el = messageInputRef.current
+    const pos = el?.selectionStart ?? draftRef.current.length
+    const active = detectMention(draftRef.current, pos, mentionKeys)
+    if (!active) return
+    const next =
+      draftRef.current.slice(0, active.start) +
+      suggestion.complete +
+      draftRef.current.slice(pos)
+    pendingCaretRef.current = active.start + suggestion.complete.length
+    setMentionHidden(false)
+    ensureSkills()
+    ensureProjects()
+    rememberDraft(next)
+    restoreCaret()
+  }
+
+  function acceptCommand(command: {
+    command: string
+    title: string
+    template: string
+  }) {
+    setSlashHidden(false)
+    const marker = "{input}"
+    const at = command.template.indexOf(marker)
+    if (at === -1) {
+      rememberDraft("")
+      persistDraftNow("")
+      void submitFlow(command.template)
+      return
+    }
+    const rendered = command.template.replace(marker, "")
+    rememberDraft(rendered)
+    pendingCaretRef.current = at
+    restoreCaret()
+  }
+
+  async function submitFlow(textOverride?: string) {
+    const text = (textOverride ?? draft).trim()
+    if (!text && joined.length === 0) return
+    for (const validator of pluginValidators) {
+      try {
+        if (new RegExp(validator.pattern).test(text)) {
+          onError(validator.message)
+          return
+        }
+      } catch {
+        // ignore malformed plugin patterns
+      }
+    }
+    const sentText = text
+    rememberDraft("")
+    persistDraftNow("")
+    const accepted = await onSubmit(sentText, joined)
+    if (!accepted) {
+      rememberDraft(sentText)
+      persistDraftNow(sentText)
+    }
+  }
+
+  async function addJoined(list: FileList | null) {
+    if (!list?.length) return
+    const next = [...joined]
+    for (const file of list) {
+      const problem = joinFileError(file, next.length)
+      if (problem) {
+        onError(problem)
+        break
+      }
+      try {
+        next.push(await readJoinedFile(file))
+      } catch (caught) {
+        onError(
+          caught instanceof Error ? caught.message : "could not read that file",
+        )
+        break
+      }
+    }
+    rememberJoined(next)
+  }
+
+  return (
+    <>
+      <Stack spacing={1} className="ob-input-row" sx={{ p: mobile ? 0.75 : 1 }}>
+        {joined.length ? (
+          <Stack
+            direction="row"
+            spacing={0.5}
+            sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+          >
+            {joined.map((file) => {
+              const image = joinedImage(file)
+              return (
+                <Chip
+                  key={file.id}
+                  className={
+                    image ? "ob-join-chip ob-join-chip-image" : "ob-join-chip"
+                  }
+                  title={file.name}
+                  aria-label={file.name}
+                  avatar={
+                    image ? (
+                      <img className="ob-join-thumb" src={file.url} alt="" />
+                    ) : undefined
+                  }
+                  onDelete={() =>
+                    rememberJoined(joined.filter((item) => item.id !== file.id))
+                  }
+                >
+                  {image ? null : file.name}
+                </Chip>
+              )
+            })}
+          </Stack>
+        ) : null}
+        {pluginButtons.length > 0 && running && !sending ? (
+          <Stack
+            direction="row"
+            spacing={0.5}
+            sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+          >
+            {pluginButtons.map((button) => (
+              <Chip
+                key={`${button.plugin}:${button.id}`}
+                label={button.label}
+                size="small"
+                variant="outlined"
+                disabled={!running || sending || stopping}
+                onClick={() => {
+                  const template = button.template.replace(/\{input\}/g, "")
+                  void submitFlow(template)
+                }}
+              />
+            ))}
+          </Stack>
+        ) : null}
+        <Stack direction="row" spacing={1} alignItems="flex-end">
+          <IconButton
+            size="medium"
+            aria-label="Attach file"
+            disabled={!running || sending || stopping}
+            onClick={(event) => {
+              joinAnchor.current = event.currentTarget
+              setJoinOpen(true)
+            }}
+            sx={{ flexShrink: 0 }}
+          >
+            <AttachFileIcon />
+          </IconButton>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            accept={pluginAccept || undefined}
+            onChange={(event) => {
+              void addJoined(event.currentTarget.files)
+              event.currentTarget.value = ""
+            }}
+          />
+          <Box sx={{ position: "relative", flex: 1, minWidth: 0 }}>
+            <TextField
+              label="Message"
+              value={draft}
+              multiline
+              ref={messageInputRef}
+              disabled={!running || sending || stopping}
+              onChange={(event) => {
+                const el = event.currentTarget
+                setMentionHidden(false)
+                setSlashHidden(false)
+                if (slashIndex !== 0) setSlashIndex(0)
+                if (mentionIndex !== 0) setMentionIndex(0)
+                if (el.value.includes("@")) {
+                  ensureSkills()
+                  ensureProjects()
+                }
+                rememberDraft(el.value)
+                setCaret(el.selectionStart ?? el.value.length)
+              }}
+              onClick={(event) =>
+                setCaret(event.currentTarget.selectionStart ?? 0)
+              }
+              onKeyUp={(event) =>
+                setCaret(event.currentTarget.selectionStart ?? 0)
+              }
+              onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+                if (slashActive && !slashHidden) {
+                  const last = slashActive.length - 1
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault()
+                    setSlashIndex((index) => (index + 1 > last ? 0 : index + 1))
+                    return
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault()
+                    setSlashIndex((index) => (index - 1 < 0 ? last : index - 1))
+                    return
+                  }
+                  if (event.key === "Tab" || event.key === "Enter") {
+                    event.preventDefault()
+                    const picked = slashActive[Math.min(slashIndex, last)]
+                    if (picked) acceptCommand(picked)
+                    return
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault()
+                    setSlashHidden(true)
+                    return
+                  }
+                }
+                if (mention && !mentionHidden && suggestions.length) {
+                  const last = suggestions.length - 1
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault()
+                    setMentionIndex((index) =>
+                      index + 1 > last ? 0 : index + 1,
+                    )
+                    return
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault()
+                    setMentionIndex((index) =>
+                      index - 1 < 0 ? last : index - 1,
+                    )
+                    return
+                  }
+                  if (event.key === "Tab" || event.key === "Enter") {
+                    event.preventDefault()
+                    const picked = suggestions[Math.min(mentionIndex, last)]
+                    if (picked) acceptSuggestion(picked)
+                    return
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault()
+                    setMentionHidden(true)
+                    return
+                  }
+                }
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault()
+                  if (canStop) onStop()
+                  else void submitFlow()
+                }
+              }}
+              sx={{ flex: 1 }}
+            />
+            {mention && !mentionHidden && !sending && !stopping ? (
+              <Paper
+                elevation={8}
+                sx={{
+                  position: "absolute",
+                  bottom: "calc(100% + 8px)",
+                  left: 0,
+                  right: 0,
+                  maxHeight: 264,
+                  overflowY: "auto",
+                  zIndex: 3,
+                }}
+              >
+                <List dense disablePadding>
+                  {suggestions.length ? (
+                    suggestions.map((suggestion, index) => (
+                      <ListItemButton
+                        key={suggestion.key}
+                        selected={index === mentionIndex}
+                        onClick={() => acceptSuggestion(suggestion)}
+                      >
+                        <ListItemText
+                          primary={suggestion.primary}
+                          secondary={suggestion.secondary}
+                        />
+                      </ListItemButton>
+                    ))
+                  ) : (
+                    <ListItemButton disabled>
+                      <ListItemText
+                        primary={
+                          mention.stage === "name"
+                            ? `No ${mention.section} match`
+                            : "No section match"
+                        }
+                      />
+                    </ListItemButton>
+                  )}
+                </List>
+              </Paper>
+            ) : null}
+            {slashActive && !slashHidden && !sending && !stopping ? (
+              <Paper
+                elevation={8}
+                sx={{
+                  position: "absolute",
+                  bottom: "calc(100% + 8px)",
+                  left: 0,
+                  right: 0,
+                  maxHeight: 264,
+                  overflowY: "auto",
+                  zIndex: 3,
+                }}
+              >
+                <List dense disablePadding>
+                  {slashActive.map((command, index) => (
+                    <ListItemButton
+                      key={`${command.plugin}:${command.command}`}
+                      selected={index === slashIndex}
+                      onClick={() => acceptCommand(command)}
+                    >
+                      <ListItemText
+                        primary={`/${command.command}`}
+                        secondary={`${command.title} — ${command.plugin}`}
+                      />
+                    </ListItemButton>
+                  ))}
+                </List>
+              </Paper>
+            ) : null}
+          </Box>
+          {canStop ? (
+            mobile ? (
+              <IconButton
+                size="medium"
+                aria-label="Stop"
+                disabled={stopping || stopBusy}
+                onClick={onStop}
+                sx={{
+                  flexShrink: 0,
+                  bgcolor: "error.main",
+                  color: "error.contrastText",
+                }}
+              >
+                <StopIcon />
+              </IconButton>
+            ) : (
+              <Button
+                variant="contained"
+                color="error"
+                startIcon={<StopIcon />}
+                disabled={stopping || stopBusy}
+                onClick={onStop}
+              >
+                Stop
+              </Button>
+            )
+          ) : mobile ? (
+            <IconButton
+              size="medium"
+              aria-label="Send message"
+              disabled={
+                !running ||
+                sending ||
+                stopping ||
+                (!draft.trim() && joined.length === 0)
+              }
+              onClick={() => void submitFlow()}
+              sx={{
+                flexShrink: 0,
+                bgcolor: "primary.main",
+                color: "primary.contrastText",
+              }}
+            >
+              {sending ? "…" : <SendIcon />}
+            </IconButton>
+          ) : (
+            <Button
+              variant="contained"
+              startIcon={<SendIcon />}
+              onClick={() => void submitFlow()}
+              disabled={
+                !running ||
+                sending ||
+                stopping ||
+                (!draft.trim() && joined.length === 0)
+              }
+            >
+              {sending ? "…" : "Send"}
+            </Button>
+          )}
+        </Stack>
+      </Stack>
+      <Menu
+        open={joinOpen}
+        anchorEl={joinAnchor}
+        onClose={() => setJoinOpen(false)}
+      >
+        <ListItemButton
+          onClick={() => {
+            setJoinOpen(false)
+            fileInputRef.current?.click()
+          }}
+        >
+          <AttachFileIcon />
+          <ListItemText primary="Join a file" />
+        </ListItemButton>
+      </Menu>
+    </>
+  )
+}
+
 export function Workspace({ me }: { me: Me }) {
   const [phase, setPhase] = useState<Phase>(me.desktop ?? "sleeping")
   const [stopping, setStopping] = useState(false)
@@ -431,16 +1315,12 @@ export function Workspace({ me }: { me: Me }) {
   const [sessionId, setSessionId] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
-  const [draft, setDraft] = useState("")
   const draftRef = useRef("")
   const draftSessionRef = useRef("")
   const joinedStore = useRef(new Map<string, JoinedFile[]>())
   const joinedSessionRef = useRef("")
   const joinedRef = useRef<JoinedFile[]>([])
   const [joined, setJoined] = useState<JoinedFile[]>([])
-  const joinAnchor = useRef<HTMLElement | null>(null)
-  const [joinOpen, setJoinOpen] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const [sending, setSending] = useState(false)
   const [stopBusy, setStopBusy] = useState(false)
   const [receipts, setReceipts] = useState<LocalReceipt[]>([])
@@ -556,18 +1436,6 @@ export function Workspace({ me }: { me: Me }) {
     }
     return ""
   }, [installedPlugins])
-  const [slashHidden, setSlashHidden] = useState(false)
-  const [slashIndex, setSlashIndex] = useState(0)
-  const slashActive = useMemo(() => {
-    if (!draft.startsWith("/") || draft.includes(" ") || draft.includes("\n")) {
-      return null
-    }
-    const typed = draft.slice(1).toLowerCase()
-    const matches = pluginCommands.filter((command) =>
-      command.command.startsWith(typed),
-    )
-    return matches.length > 0 ? matches : null
-  }, [draft, pluginCommands])
   const unread = useUnreadThreads()
   const outputRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
@@ -575,19 +1443,10 @@ export function Workspace({ me }: { me: Me }) {
   const menuAnchor = useRef<HTMLElement | null>(null)
   const restoredRef = useRef(false)
   const stoppingRef = useRef(false)
-  const messageInputRef = useRef<HTMLInputElement | null>(null)
-  const pendingCaretRef = useRef<number | null>(null)
-  const skillsRequestedRef = useRef(false)
-  const projectsRequestedRef = useRef(false)
-  const [caret, setCaret] = useState(0)
-  const [mentionIndex, setMentionIndex] = useState(0)
-  const [mentionHidden, setMentionHidden] = useState(false)
-  const [skillList, setSkillList] = useState<SkillSummary[]>([])
-  const [projectList, setProjectList] = useState<ProjectMention[]>([])
 
   const running = phase === "running"
   const { live, subscribe } = useEventStream(running)
-  const mentionSections = useMemo<RefSectionView[]>(
+  const baseSections = useMemo<RefSectionView[]>(
     () => [
       {
         key: "personas",
@@ -613,65 +1472,9 @@ export function Workspace({ me }: { me: Me }) {
           }),
         ),
       },
-      ...(skillList.length
-        ? [
-            {
-              key: "skills",
-              label: "Skills",
-              items: skillList.map(
-                (skill): RefItemView => ({
-                  id: skill.name,
-                  name: skill.name,
-                  description: skill.description,
-                }),
-              ),
-            },
-          ]
-        : []),
-      ...(projectList.length
-        ? [
-            {
-              key: "projects",
-              label: "Projects",
-              items: projectList.map(
-                (project): RefItemView => ({
-                  id: project.id,
-                  name: project.name,
-                  description: project.path,
-                }),
-              ),
-            },
-          ]
-        : []),
     ],
-    [personas, cronJobs, skillList, projectList],
+    [personas, cronJobs],
   )
-  const mentionKeys = useMemo(
-    () => mentionSections.map((section) => section.key),
-    [mentionSections],
-  )
-  const mention = useMemo(
-    () => detectMention(draft, caret, mentionKeys),
-    [draft, caret, mentionKeys],
-  )
-  const suggestions = useMemo(
-    () => (mention ? mentionSuggestions(mention, mentionSections) : []),
-    [mention, mentionSections],
-  )
-  function ensureSkills() {
-    if (skillsRequestedRef.current) return
-    skillsRequestedRef.current = true
-    api<{ skills?: SkillSummary[] }>("/api/skills")
-      .then((body) => setSkillList(body.skills ?? []))
-      .catch(() => setSkillList([]))
-  }
-  function ensureProjects() {
-    if (projectsRequestedRef.current) return
-    projectsRequestedRef.current = true
-    api<{ projects?: ProjectMention[] }>("/api/projects")
-      .then((body) => setProjectList(body.projects ?? []))
-      .catch(() => setProjectList([]))
-  }
   const activeThread = sessions.find((item) => item.id === sessionId)
   const unreadNotices = useMemo(
     () => notices.filter((notice) => !notice.viewedAt),
@@ -718,6 +1521,87 @@ export function Workspace({ me }: { me: Me }) {
   const canStop = Boolean(
     sessionId && running && !stopping && (sending || threadBusy(sessionId)),
   )
+  const busyIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const item of sessions) {
+      if (threadBusy(item.id)) set.add(item.id)
+    }
+    return set
+  }, [sessions, threadBusy])
+  const personaLabel = useCallback(
+    (id: string) => {
+      const pid = threadPersona[id]
+      if (!pid || pid === "assistant") return "Assistant"
+      return (
+        personas.find((item) => item.id === pid)?.name ??
+        BUILTIN_PERSONA_NAMES[pid] ??
+        pid
+      )
+    },
+    [threadPersona, personas],
+  )
+  const bubbleKeys = useMemo(
+    () =>
+      shown.map(
+        (entry, index) => entry.pendingId ?? messageKey(entry.message, index),
+      ),
+    [shown],
+  )
+  const lastHandoff = useMemo(
+    () =>
+      shown.reduce(
+        (at, item, index) => (item.message.handoff ? index : at),
+        -1,
+      ),
+    [shown],
+  )
+  const screenLive = screen?.sessionId === sessionId
+  // a draft typed before any thread existed, handed to the composer on mount
+  const migrateDraft =
+    sessionId && !draftSessionRef.current ? draftRef.current : ""
+
+  // stable identities so memoized bubbles skip re-renders while the
+  // underlying handlers stay fresh
+  const bubbleActionsRef = useRef({
+    takeControl: () => {},
+    screenDone: () => {},
+  })
+  const bubbleActions = useMemo(
+    () => ({
+      takeControl: () => bubbleActionsRef.current.takeControl(),
+      screenDone: () => bubbleActionsRef.current.screenDone(),
+    }),
+    [],
+  )
+  const threadActionsRef = useRef({
+    select: (_id: string) => {},
+    menu: (_item: SessionInfo, _anchor: HTMLElement) => {},
+    create: () => {},
+  })
+  const threadActions = useMemo(
+    () => ({
+      select: (id: string) => threadActionsRef.current.select(id),
+      menu: (item: SessionInfo, anchor: HTMLElement) =>
+        threadActionsRef.current.menu(item, anchor),
+      create: () => threadActionsRef.current.create(),
+    }),
+    [],
+  )
+  bubbleActionsRef.current = {
+    takeControl: () => void takeControl(),
+    screenDone: () => void prompt("Done on the screen."),
+  }
+  threadActionsRef.current = {
+    select: selectThread,
+    menu: (item, anchor) => {
+      menuAnchor.current = anchor
+      setMenuThread(item)
+    },
+    create: () => {
+      setNewPersonaId("assistant")
+      setNewThreadOpen(true)
+    },
+  }
 
   const loadThreads = useCallback(async () => {
     try {
@@ -734,7 +1618,10 @@ export function Workspace({ me }: { me: Me }) {
       setSessions(
         (Array.isArray(list) ? (list as SessionInfo[]) : [])
           .filter(
-            (item) => !item.parentID && !item.title?.startsWith("cron-run:"),
+            (item) =>
+              !item.parentID &&
+              !item.title?.startsWith("cron-run:") &&
+              !item.title?.startsWith("worker:"),
           )
           .sort((a, b) => threadCreated(b) - threadCreated(a)),
       )
@@ -894,7 +1781,7 @@ export function Workspace({ me }: { me: Me }) {
     void tick()
   }, [tick, live])
 
-  const scheduleTick = useDebounced(() => void tick(), 150)
+  const scheduleTick = useDebounced(() => void tick(), 250)
 
   useEffect(() => {
     if (!running) return
@@ -1032,23 +1919,10 @@ export function Workspace({ me }: { me: Me }) {
     return () => window.removeEventListener(OPEN_THREAD_EVENT, onOpen)
   }, [mobile])
 
+  // the composer owns the draft text; track which thread it belongs to so a
+  // draft typed before a thread exists can migrate to the first thread
   useEffect(() => {
-    if (draftSessionRef.current === sessionId) return
-    const previous = draftSessionRef.current
-    const pending = draftRef.current
     draftSessionRef.current = sessionId
-    if (
-      !previous &&
-      pending &&
-      sessionId &&
-      !readDraft(localStorage, sessionId)
-    ) {
-      writeDraft(localStorage, sessionId, pending)
-      return
-    }
-    const next = readDraft(localStorage, sessionId)
-    draftRef.current = next
-    setDraft(next)
   }, [sessionId])
 
   useEffect(() => {
@@ -1217,27 +2091,6 @@ export function Workspace({ me }: { me: Me }) {
     setJoined(next)
   }
 
-  async function addJoined(list: FileList | null) {
-    if (!list?.length) return
-    const next = [...joinedRef.current]
-    for (const file of list) {
-      const problem = joinFileError(file, next.length)
-      if (problem) {
-        setError(problem)
-        break
-      }
-      try {
-        next.push(await readJoinedFile(file))
-      } catch (caught) {
-        setError(
-          caught instanceof Error ? caught.message : "could not read that file",
-        )
-        break
-      }
-    }
-    rememberJoined(next)
-  }
-
   async function prompt(text: string, files: JoinedFile[] = []) {
     if ((!text && files.length === 0) || sending) return false
     if (!running || stopping) {
@@ -1328,104 +2181,12 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
-  function rememberDraft(text: string) {
-    draftRef.current = text
-    setMentionIndex(0)
-    setDraft(text)
-    writeDraft(localStorage, draftSessionRef.current, text)
-  }
-
-  function restoreCaret() {
-    requestAnimationFrame(() => {
-      const pos = pendingCaretRef.current
-      if (pos === null) return
-      pendingCaretRef.current = null
-      const el = messageInputRef.current
-      if (el) {
-        el.focus()
-        el.setSelectionRange(pos, pos)
-      }
-      setCaret(pos)
-    })
-  }
-
-  function acceptSuggestion(suggestion: Suggestion) {
-    const el = messageInputRef.current
-    const pos = el?.selectionStart ?? draftRef.current.length
-    const active = detectMention(draftRef.current, pos, mentionKeys)
-    if (!active) return
-    const next =
-      draftRef.current.slice(0, active.start) +
-      suggestion.complete +
-      draftRef.current.slice(pos)
-    pendingCaretRef.current = active.start + suggestion.complete.length
-    setMentionHidden(false)
-    ensureSkills()
-    ensureProjects()
-    rememberDraft(next)
-    restoreCaret()
-  }
-
-  function acceptCommand(command: {
-    command: string
-    title: string
-    template: string
-  }) {
-    setSlashHidden(false)
-    const marker = "{input}"
-    const at = command.template.indexOf(marker)
-    if (at === -1) {
-      setDraft("")
-      draftRef.current = ""
-      writeDraft(localStorage, draftSessionRef.current, "")
-      void send(command.template)
-      return
-    }
-    const rendered = command.template.replace(marker, "")
-    rememberDraft(rendered)
-    pendingCaretRef.current = at
-    restoreCaret()
-  }
-
-  async function send(textOverride?: string) {
-    const text = (textOverride ?? draft).trim()
-    const files = joinedRef.current
-    if (!text && files.length === 0) return
-    for (const validator of pluginValidators) {
-      try {
-        if (new RegExp(validator.pattern).test(text)) {
-          setError(validator.message)
-          return
-        }
-      } catch {
-        // ignore malformed plugin patterns
-      }
-    }
-    if (!running || stopping || sending) {
-      setError(
-        stopping
-          ? "Desktop is stopping. Wait, then send again."
-          : sending
-            ? "Still sending the previous message."
-            : "Desktop is not ready. Wait until it is running, then send again.",
-      )
-      return
-    }
-    writeDraft(localStorage, draftSessionRef.current, "")
-    draftRef.current = ""
-    setDraft("")
+  // sends one message; the composer owns draft/joined restore on failure
+  async function submit(text: string, files: JoinedFile[]): Promise<boolean> {
     rememberJoined([])
-    try {
-      const accepted = await prompt(text, files)
-      if (!accepted) {
-        rememberDraft(text)
-        rememberJoined(files)
-      }
-    } catch (caught) {
-      rememberDraft(text)
-      rememberJoined(files)
-      setError(caught instanceof Error ? caught.message : "send failed")
-    }
+    const accepted = await prompt(text, files)
+    if (!accepted) rememberJoined(files)
+    return accepted
   }
 
   function viewJobThreadNotices(id: string) {
@@ -1970,121 +2731,18 @@ export function Workspace({ me }: { me: Me }) {
           }}
         >
           {running ? (
-            <Paper
-              variant="outlined"
-              sx={{
-                width: mobile ? "100%" : 280,
-                flexShrink: 0,
-                minHeight: 0,
-                display: mobile && !threadsOpen ? "none" : "flex",
-                flexDirection: "column",
-              }}
-            >
-              <Stack
-                direction="row"
-                spacing={1}
-                alignItems="center"
-                sx={{ px: 1.5, py: 0.75 }}
-              >
-                <Typography variant="subtitle2" sx={{ flex: 1 }}>
-                  Threads
-                </Typography>
-                <ToolTip title="New thread">
-                  <IconButton
-                    size="small"
-                    aria-label="New thread"
-                    disabled={actionBusy}
-                    onClick={() => {
-                      setNewPersonaId("assistant")
-                      setNewThreadOpen(true)
-                    }}
-                  >
-                    <AddIcon width={18} height={18} />
-                  </IconButton>
-                </ToolTip>
-              </Stack>
-              <Divider />
-              <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-                {sessionsLoading && sessions.length === 0 ? (
-                  <Stack spacing={1} sx={{ p: 1 }}>
-                    <Skeleton height={36} />
-                    <Skeleton height={36} />
-                    <Skeleton height={36} />
-                  </Stack>
-                ) : sessions.length === 0 ? (
-                  <Typography
-                    variant="body2"
-                    color="textSecondary"
-                    sx={{ p: 1.5 }}
-                  >
-                    No threads yet — send a message or press +.
-                  </Typography>
-                ) : (
-                  <List dense disablePadding>
-                    {sessions.map((item) => (
-                      <Box
-                        key={item.id}
-                        sx={{
-                          position: "relative",
-                          display: "flex",
-                          alignItems: "center",
-                        }}
-                      >
-                        <ListItemButton
-                          selected={item.id === sessionId}
-                          onClick={() => selectThread(item.id)}
-                          sx={{ flex: 1, minWidth: 0, pr: 5 }}
-                        >
-                          <ListItemText
-                            primary={
-                              <span className="ob-thread-label">
-                                {showUnread(item.id) ? (
-                                  <span
-                                    className="ob-unread-dot"
-                                    role="img"
-                                    aria-label="Unread"
-                                  />
-                                ) : null}
-                                <span className="ob-thread-title">
-                                  {threadTitle(item)}
-                                </span>
-                              </span>
-                            }
-                            secondary={`${personaName(threadPersona[item.id])} · ${formatAgo(threadTime(item))}`}
-                            SlotProps={{
-                              primary: {
-                                className: "ob-thread-primary",
-                              } as never,
-                              secondary: { noWrap: true } as never,
-                            }}
-                          />
-                          {threadBusy(item.id) ? (
-                            <CircularProgress size={1.2} sx={{ mr: 1 }} />
-                          ) : null}
-                        </ListItemButton>
-                        <IconButton
-                          size="small"
-                          aria-label={`Actions for ${threadTitle(item)}`}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            menuAnchor.current = event.currentTarget
-                            setMenuThread(item)
-                          }}
-                          sx={{
-                            position: "absolute",
-                            right: 4,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                          }}
-                        >
-                          <MoreVertIcon width={18} height={18} />
-                        </IconButton>
-                      </Box>
-                    ))}
-                  </List>
-                )}
-              </Box>
-            </Paper>
+            <ThreadsPanel
+              sessions={sessions}
+              sessionId={sessionId}
+              loading={sessionsLoading}
+              mobile={mobile}
+              open={threadsOpen}
+              personaLabel={personaLabel}
+              busyIds={busyIds}
+              unread={unread}
+              actionBusy={actionBusy}
+              actions={threadActions}
+            />
           ) : null}
           <Paper
             variant="outlined"
@@ -2256,110 +2914,26 @@ export function Workspace({ me }: { me: Me }) {
                   </Typography>
                 </Stack>
               ) : (
-                shown.map((entry, index) => {
-                  const message = entry.message
-                  const role = message.info?.role ?? "message"
-                  const mine = role === "user"
-                  const lastHandoff = shown.reduce(
-                    (at, item, itemIndex) =>
-                      item.message.handoff ? itemIndex : at,
-                    -1,
-                  )
-                  const stamp = handoffStamp(message)
-                  const watching =
-                    showLiveScreen({
-                      handoff: Boolean(message.handoff),
-                      isLast: index === lastHandoff,
-                      held,
-                      dismissed: stamp === dismissedHandoff,
-                    }) && screen?.sessionId === sessionId
-                  return (
-                    <Box
-                      key={entry.pendingId ?? messageKey(message, index)}
-                      title={mine ? "You" : "Agent"}
-                      className={`ob-bubble ${mine ? "ob-bubble-user" : "ob-bubble-assistant"}`}
-                      sx={{
-                        bgcolor: mine ? "primary.main" : undefined,
-                        color: mine ? "primary.contrastText" : "text.primary",
-                        border: mine ? "none" : "1px solid",
-                        borderColor: mine ? undefined : "divider",
-                      }}
-                    >
-                      {mine && entry.mark ? (
-                        <SendMark mark={entry.mark} />
-                      ) : null}
-                      <div className="ob-md">
-                        {message.text.trim() ? (
-                          <PluginSegments
-                            text={message.text}
-                            renderers={pluginRenderers}
-                          />
-                        ) : null}
-                        {message.images.map((src) => (
-                          <img key={src} src={src} alt="" />
-                        ))}
-                        {message.handoff ? (
-                          <div className={watching ? "ob-screen" : undefined}>
-                            {watching ? (
-                              <VncFrame
-                                title="thread screen"
-                                path={screen.path}
-                                interactive={false}
-                              />
-                            ) : (
-                              <Typography variant="body2" color="textSecondary">
-                                {index !== lastHandoff
-                                  ? "Screen was shared in a later reply."
-                                  : held
-                                    ? "You have the screen below."
-                                    : stamp === dismissedHandoff
-                                      ? "Screen closed."
-                                      : screenError || "Opening this screen…"}
-                              </Typography>
-                            )}
-                            {index === lastHandoff &&
-                            !held &&
-                            stamp !== dismissedHandoff ? (
-                              <Stack direction="row" spacing={1}>
-                                <Button
-                                  size="small"
-                                  variant="contained"
-                                  disabled={
-                                    !running ||
-                                    sending ||
-                                    stopping ||
-                                    controlBusy
-                                  }
-                                  onClick={() => void takeControl()}
-                                >
-                                  Take control
-                                </Button>
-                                <Button
-                                  size="small"
-                                  variant="text"
-                                  disabled={!running || sending || stopping}
-                                  onClick={() =>
-                                    void prompt("Done on the screen.")
-                                  }
-                                >
-                                  Done
-                                </Button>
-                              </Stack>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                      {message.sentAt ? (
-                        <time
-                          className="ob-bubble-time"
-                          dateTime={new Date(message.sentAt).toISOString()}
-                        >
-                          {formatWhen(message.sentAt)}
-                        </time>
-                      ) : null}
-                    </Box>
-                  )
-                })
+                shown.map((entry, index) => (
+                  <MessageBubble
+                    key={bubbleKeys[index]}
+                    entry={entry}
+                    index={index}
+                    lastHandoff={lastHandoff}
+                    held={held}
+                    dismissedHandoff={dismissedHandoff}
+                    screenLive={screenLive}
+                    screenPath={screen?.path ?? ""}
+                    screenError={screenError}
+                    running={running}
+                    sending={sending}
+                    stopping={stopping}
+                    controlBusy={controlBusy}
+                    renderers={pluginRenderers}
+                    onTakeControl={bubbleActions.takeControl}
+                    onScreenDone={bubbleActions.screenDone}
+                  />
+                ))
               )}
             </Box>
             {held &&
@@ -2383,328 +2957,28 @@ export function Workspace({ me }: { me: Me }) {
               </div>
             ) : null}
             <Divider />
-            <Stack
-              spacing={1}
-              className="ob-input-row"
-              sx={{ p: mobile ? 0.75 : 1 }}
-            >
-              {joined.length ? (
-                <Stack
-                  direction="row"
-                  spacing={0.5}
-                  sx={{ flexWrap: "wrap", rowGap: 0.5 }}
-                >
-                  {joined.map((file) => {
-                    const image = joinedImage(file)
-                    return (
-                      <Chip
-                        key={file.id}
-                        className={
-                          image
-                            ? "ob-join-chip ob-join-chip-image"
-                            : "ob-join-chip"
-                        }
-                        title={file.name}
-                        aria-label={file.name}
-                        avatar={
-                          image ? (
-                            <img
-                              className="ob-join-thumb"
-                              src={file.url}
-                              alt=""
-                            />
-                          ) : undefined
-                        }
-                        onDelete={() =>
-                          rememberJoined(
-                            joinedRef.current.filter(
-                              (item) => item.id !== file.id,
-                            ),
-                          )
-                        }
-                      >
-                        {image ? null : file.name}
-                      </Chip>
-                    )
-                  })}
-                </Stack>
-              ) : null}
-              {pluginButtons.length > 0 && running && !sending ? (
-                <Stack
-                  direction="row"
-                  spacing={0.5}
-                  sx={{ flexWrap: "wrap", rowGap: 0.5 }}
-                >
-                  {pluginButtons.map((button) => (
-                    <Chip
-                      key={`${button.plugin}:${button.id}`}
-                      label={button.label}
-                      size="small"
-                      variant="outlined"
-                      disabled={!running || sending || stopping}
-                      onClick={() => {
-                        const template = button.template.replace(
-                          /\{input\}/g,
-                          "",
-                        )
-                        void send(template)
-                      }}
-                    />
-                  ))}
-                </Stack>
-              ) : null}
-              <Stack direction="row" spacing={1} alignItems="flex-end">
-                <IconButton
-                  size="medium"
-                  aria-label="Attach file"
-                  disabled={!running || sending || stopping}
-                  onClick={(event) => {
-                    joinAnchor.current = event.currentTarget
-                    setJoinOpen(true)
-                  }}
-                  sx={{ flexShrink: 0 }}
-                >
-                  <AttachFileIcon />
-                </IconButton>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  hidden
-                  accept={pluginAccept || undefined}
-                  onChange={(event) => {
-                    void addJoined(event.currentTarget.files)
-                    event.currentTarget.value = ""
-                  }}
-                />
-                <Box sx={{ position: "relative", flex: 1, minWidth: 0 }}>
-                  <TextField
-                    label="Message"
-                    value={draft}
-                    multiline
-                    ref={messageInputRef}
-                    disabled={!running || sending || stopping}
-                    onChange={(event) => {
-                      setMentionHidden(false)
-                      setSlashHidden(false)
-                      setSlashIndex(0)
-                      if (event.currentTarget.value.includes("@")) {
-                        ensureSkills()
-                        ensureProjects()
-                      }
-                      rememberDraft(event.currentTarget.value)
-                      setCaret(
-                        event.currentTarget.selectionStart ??
-                          event.currentTarget.value.length,
-                      )
-                    }}
-                    onClick={(event) =>
-                      setCaret(event.currentTarget.selectionStart ?? 0)
-                    }
-                    onKeyUp={(event) =>
-                      setCaret(event.currentTarget.selectionStart ?? 0)
-                    }
-                    onKeyDown={(
-                      event: React.KeyboardEvent<HTMLInputElement>,
-                    ) => {
-                      if (slashActive && !slashHidden) {
-                        const last = slashActive.length - 1
-                        if (event.key === "ArrowDown") {
-                          event.preventDefault()
-                          setSlashIndex((index) =>
-                            index + 1 > last ? 0 : index + 1,
-                          )
-                          return
-                        }
-                        if (event.key === "ArrowUp") {
-                          event.preventDefault()
-                          setSlashIndex((index) =>
-                            index - 1 < 0 ? last : index - 1,
-                          )
-                          return
-                        }
-                        if (event.key === "Tab" || event.key === "Enter") {
-                          event.preventDefault()
-                          const picked = slashActive[Math.min(slashIndex, last)]
-                          if (picked) acceptCommand(picked)
-                          return
-                        }
-                        if (event.key === "Escape") {
-                          event.preventDefault()
-                          setSlashHidden(true)
-                          return
-                        }
-                      }
-                      if (mention && !mentionHidden && suggestions.length) {
-                        const last = suggestions.length - 1
-                        if (event.key === "ArrowDown") {
-                          event.preventDefault()
-                          setMentionIndex((index) =>
-                            index + 1 > last ? 0 : index + 1,
-                          )
-                          return
-                        }
-                        if (event.key === "ArrowUp") {
-                          event.preventDefault()
-                          setMentionIndex((index) =>
-                            index - 1 < 0 ? last : index - 1,
-                          )
-                          return
-                        }
-                        if (event.key === "Tab" || event.key === "Enter") {
-                          event.preventDefault()
-                          const picked =
-                            suggestions[Math.min(mentionIndex, last)]
-                          if (picked) acceptSuggestion(picked)
-                          return
-                        }
-                        if (event.key === "Escape") {
-                          event.preventDefault()
-                          setMentionHidden(true)
-                          return
-                        }
-                      }
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault()
-                        if (canStop) void stopThread()
-                        else void send()
-                      }
-                    }}
-                    sx={{ flex: 1 }}
-                  />
-                  {mention && !mentionHidden && !sending && !stopping ? (
-                    <Paper
-                      elevation={8}
-                      sx={{
-                        position: "absolute",
-                        bottom: "calc(100% + 8px)",
-                        left: 0,
-                        right: 0,
-                        maxHeight: 264,
-                        overflowY: "auto",
-                        zIndex: 3,
-                      }}
-                    >
-                      <List dense disablePadding>
-                        {suggestions.length ? (
-                          suggestions.map((suggestion, index) => (
-                            <ListItemButton
-                              key={suggestion.key}
-                              selected={index === mentionIndex}
-                              onClick={() => acceptSuggestion(suggestion)}
-                            >
-                              <ListItemText
-                                primary={suggestion.primary}
-                                secondary={suggestion.secondary}
-                              />
-                            </ListItemButton>
-                          ))
-                        ) : (
-                          <ListItemButton disabled>
-                            <ListItemText
-                              primary={
-                                mention.stage === "name"
-                                  ? `No ${mention.section} match`
-                                  : "No section match"
-                              }
-                            />
-                          </ListItemButton>
-                        )}
-                      </List>
-                    </Paper>
-                  ) : null}
-                  {slashActive && !slashHidden && !sending && !stopping ? (
-                    <Paper
-                      elevation={8}
-                      sx={{
-                        position: "absolute",
-                        bottom: "calc(100% + 8px)",
-                        left: 0,
-                        right: 0,
-                        maxHeight: 264,
-                        overflowY: "auto",
-                        zIndex: 3,
-                      }}
-                    >
-                      <List dense disablePadding>
-                        {slashActive.map((command, index) => (
-                          <ListItemButton
-                            key={`${command.plugin}:${command.command}`}
-                            selected={index === slashIndex}
-                            onClick={() => acceptCommand(command)}
-                          >
-                            <ListItemText
-                              primary={`/${command.command}`}
-                              secondary={`${command.title} — ${command.plugin}`}
-                            />
-                          </ListItemButton>
-                        ))}
-                      </List>
-                    </Paper>
-                  ) : null}
-                </Box>
-                {canStop ? (
-                  mobile ? (
-                    <IconButton
-                      size="medium"
-                      aria-label="Stop"
-                      disabled={stopping || stopBusy}
-                      onClick={() => void stopThread()}
-                      sx={{
-                        flexShrink: 0,
-                        bgcolor: "error.main",
-                        color: "error.contrastText",
-                      }}
-                    >
-                      <StopIcon />
-                    </IconButton>
-                  ) : (
-                    <Button
-                      variant="contained"
-                      color="error"
-                      startIcon={<StopIcon />}
-                      disabled={stopping || stopBusy}
-                      onClick={() => void stopThread()}
-                    >
-                      Stop
-                    </Button>
-                  )
-                ) : mobile ? (
-                  <IconButton
-                    size="medium"
-                    aria-label="Send message"
-                    disabled={
-                      !running ||
-                      sending ||
-                      stopping ||
-                      (!draft.trim() && joined.length === 0)
-                    }
-                    onClick={() => void send()}
-                    sx={{
-                      flexShrink: 0,
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                    }}
-                  >
-                    {sending ? "…" : <SendIcon />}
-                  </IconButton>
-                ) : (
-                  <Button
-                    variant="contained"
-                    startIcon={<SendIcon />}
-                    onClick={() => void send()}
-                    disabled={
-                      !running ||
-                      sending ||
-                      stopping ||
-                      (!draft.trim() && joined.length === 0)
-                    }
-                  >
-                    {sending ? "…" : "Send"}
-                  </Button>
-                )}
-              </Stack>
-            </Stack>
+            <Composer
+              key={sessionId}
+              sessionId={sessionId}
+              running={running}
+              sending={sending}
+              stopping={stopping}
+              stopBusy={stopBusy}
+              canStop={canStop}
+              mobile={mobile}
+              joined={joined}
+              rememberJoined={rememberJoined}
+              onError={setError}
+              onSubmit={submit}
+              onStop={() => void stopThread()}
+              baseSections={baseSections}
+              pluginButtons={pluginButtons}
+              pluginCommands={pluginCommands}
+              pluginValidators={pluginValidators}
+              pluginAccept={pluginAccept}
+              sharedDraftRef={draftRef}
+              migrateDraft={migrateDraft}
+            />
           </Paper>
         </Box>
       </Box>
@@ -2816,196 +3090,202 @@ export function Workspace({ me }: { me: Me }) {
         )}
       </Box>
 
-      {/* Cron */}
-      <Box
-        sx={{
-          flex: 1,
-          minHeight: 0,
-          display: tab === "cron" ? "flex" : "none",
-          flexDirection: "column",
-          gap: 1,
-        }}
-      >
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Typography variant="caption" color="textSecondary" sx={{ flex: 1 }}>
-            Prompt runs the agent. Script posts command output. Script then
-            prompt gives that output to the agent.
-          </Typography>
-          <ToolTip title="Reload jobs">
-            <IconButton
-              size="small"
-              aria-label="Reload jobs"
-              onClick={() => void loadCron()}
+      {/* Cron — mounted only while visible; jobs live in workspace state */}
+      {tab === "cron" ? (
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            gap: 1,
+          }}
+        >
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography
+              variant="caption"
+              color="textSecondary"
+              sx={{ flex: 1 }}
             >
-              <RefreshIcon />
-            </IconButton>
-          </ToolTip>
-        </Stack>
-        <Box className="ob-cron-list" sx={{ flex: 1, minHeight: 0 }}>
-          {cronJobs.length === 0 ? (
-            <Stack
-              alignItems="center"
-              justifyContent="center"
-              sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
-              spacing={1}
-            >
-              <Typography variant="subtitle1">No scheduled jobs</Typography>
-              <Typography variant="body2" color="textSecondary">
-                Add one here, or ask the agent to schedule work with ob-cron.
-              </Typography>
-            </Stack>
-          ) : (
-            cronJobs.map((job) => (
-              <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  sx={{ flexWrap: "wrap", rowGap: 1 }}
-                >
+              Prompt runs the agent. Script posts command output. Script then
+              prompt gives that output to the agent.
+            </Typography>
+            <ToolTip title="Reload jobs">
+              <IconButton
+                size="small"
+                aria-label="Reload jobs"
+                onClick={() => void loadCron()}
+              >
+                <RefreshIcon />
+              </IconButton>
+            </ToolTip>
+          </Stack>
+          <Box className="ob-cron-list" sx={{ flex: 1, minHeight: 0 }}>
+            {cronJobs.length === 0 ? (
+              <Stack
+                alignItems="center"
+                justifyContent="center"
+                sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
+                spacing={1}
+              >
+                <Typography variant="subtitle1">No scheduled jobs</Typography>
+                <Typography variant="body2" color="textSecondary">
+                  Add one here, or ask the agent to schedule work with ob-cron.
+                </Typography>
+              </Stack>
+            ) : (
+              cronJobs.map((job) => (
+                <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    sx={{ flexWrap: "wrap", rowGap: 1 }}
+                  >
+                    <Typography
+                      variant="subtitle2"
+                      sx={{
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {job.name}
+                    </Typography>
+                    <Chip size="small" label={cronSchedule(job)} />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={cronRunLabel(job.runKind)}
+                    />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={cronModelLabel(job, models)}
+                    />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={personaName(job.personaId ?? undefined)}
+                    />
+                    {notices.some(
+                      (notice) => notice.jobId === job.id && !notice.viewedAt,
+                    ) ? (
+                      <Chip size="small" color="primary" label="new result" />
+                    ) : null}
+                    <Box sx={{ flex: 1 }} />
+                    {cronBusyId === job.id ? (
+                      <CircularProgress size={1.2} />
+                    ) : (
+                      <Switch
+                        size="small"
+                        checked={job.enabled}
+                        aria-label={`Toggle ${job.name}`}
+                        onChange={() => void toggleCronJob(job)}
+                      />
+                    )}
+                  </Stack>
                   <Typography
-                    variant="subtitle2"
+                    variant="body2"
+                    color="textSecondary"
                     sx={{
-                      minWidth: 0,
+                      mt: 0.5,
                       overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
                     }}
                   >
-                    {job.name}
+                    {job.runKind === "script" ? job.script : job.message}
                   </Typography>
-                  <Chip size="small" label={cronSchedule(job)} />
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={cronRunLabel(job.runKind)}
-                  />
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={cronModelLabel(job, models)}
-                  />
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={personaName(job.personaId ?? undefined)}
-                  />
-                  {notices.some(
-                    (notice) => notice.jobId === job.id && !notice.viewedAt,
-                  ) ? (
-                    <Chip size="small" color="primary" label="new result" />
-                  ) : null}
-                  <Box sx={{ flex: 1 }} />
-                  {cronBusyId === job.id ? (
-                    <CircularProgress size={1.2} />
-                  ) : (
-                    <Switch
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
+                  >
+                    <Chip
                       size="small"
-                      checked={job.enabled}
-                      aria-label={`Toggle ${job.name}`}
-                      onChange={() => void toggleCronJob(job)}
+                      variant="outlined"
+                      label={
+                        job.enabled
+                          ? `next ${formatWhen(job.nextRunAt)}`
+                          : "paused"
+                      }
                     />
-                  )}
-                </Stack>
-                <Typography
-                  variant="body2"
-                  color="textSecondary"
-                  sx={{
-                    mt: 0.5,
-                    overflow: "hidden",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                  }}
-                >
-                  {job.runKind === "script" ? job.script : job.message}
-                </Typography>
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
-                >
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={
-                      job.enabled
-                        ? `next ${formatWhen(job.nextRunAt)}`
-                        : "paused"
-                    }
-                  />
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    color={
-                      job.lastError
-                        ? "error"
-                        : job.lastRunAt
-                          ? "success"
-                          : undefined
-                    }
-                    label={
-                      job.lastError
-                        ? "error"
-                        : job.lastRunAt
-                          ? `ran ${formatAgo(job.lastRunAt)}`
-                          : "never ran"
-                    }
-                  />
-                  <Box sx={{ flex: 1 }} />
-                  <Button
-                    size="small"
-                    variant="text"
-                    startIcon={<EditIcon />}
-                    disabled={Boolean(cronBusyId)}
-                    onClick={() => openCronForm(job)}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    startIcon={<PlayArrowIcon />}
-                    disabled={Boolean(cronBusyId)}
-                    onClick={() => void runCronJob(job)}
-                  >
-                    Run now
-                  </Button>
-                  {notices.some((notice) => notice.jobId === job.id) ? (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={
+                        job.lastError
+                          ? "error"
+                          : job.lastRunAt
+                            ? "success"
+                            : undefined
+                      }
+                      label={
+                        job.lastError
+                          ? "error"
+                          : job.lastRunAt
+                            ? `ran ${formatAgo(job.lastRunAt)}`
+                            : "never ran"
+                      }
+                    />
+                    <Box sx={{ flex: 1 }} />
                     <Button
                       size="small"
                       variant="text"
-                      startIcon={<ChatIcon />}
+                      startIcon={<EditIcon />}
                       disabled={Boolean(cronBusyId)}
-                      onClick={() => openJobResult(job)}
+                      onClick={() => openCronForm(job)}
                     >
-                      Result
+                      Edit
                     </Button>
+                    <Button
+                      size="small"
+                      variant="text"
+                      startIcon={<PlayArrowIcon />}
+                      disabled={Boolean(cronBusyId)}
+                      onClick={() => void runCronJob(job)}
+                    >
+                      Run now
+                    </Button>
+                    {notices.some((notice) => notice.jobId === job.id) ? (
+                      <Button
+                        size="small"
+                        variant="text"
+                        startIcon={<ChatIcon />}
+                        disabled={Boolean(cronBusyId)}
+                        onClick={() => openJobResult(job)}
+                      >
+                        Result
+                      </Button>
+                    ) : null}
+                    <IconButton
+                      size="small"
+                      aria-label={`Delete ${job.name}`}
+                      disabled={Boolean(cronBusyId)}
+                      onClick={() => setCronDeleteTarget(job)}
+                    >
+                      <DeleteIcon width={18} height={18} />
+                    </IconButton>
+                  </Stack>
+                  {job.lastError ? (
+                    <Typography
+                      variant="caption"
+                      color="error"
+                      sx={{ display: "block", mt: 0.5 }}
+                    >
+                      {job.lastError}
+                    </Typography>
                   ) : null}
-                  <IconButton
-                    size="small"
-                    aria-label={`Delete ${job.name}`}
-                    disabled={Boolean(cronBusyId)}
-                    onClick={() => setCronDeleteTarget(job)}
-                  >
-                    <DeleteIcon width={18} height={18} />
-                  </IconButton>
-                </Stack>
-                {job.lastError ? (
-                  <Typography
-                    variant="caption"
-                    color="error"
-                    sx={{ display: "block", mt: 0.5 }}
-                  >
-                    {job.lastError}
-                  </Typography>
-                ) : null}
-              </Paper>
-            ))
-          )}
+                </Paper>
+              ))
+            )}
+          </Box>
         </Box>
-      </Box>
+      ) : null}
 
       {/* Projects */}
       <Box
@@ -3016,7 +3296,7 @@ export function Workspace({ me }: { me: Me }) {
           flexDirection: "column",
         }}
       >
-        <Projects subscribe={subscribe} />
+        <MemoProjects subscribe={subscribe} />
       </Box>
 
       <Drawer
@@ -3163,21 +3443,6 @@ export function Workspace({ me }: { me: Me }) {
       </Drawer>
 
       <Menu
-        open={joinOpen}
-        anchorEl={joinAnchor}
-        onClose={() => setJoinOpen(false)}
-      >
-        <ListItemButton
-          onClick={() => {
-            setJoinOpen(false)
-            fileInputRef.current?.click()
-          }}
-        >
-          <AttachFileIcon />
-          <ListItemText primary="Join a file" />
-        </ListItemButton>
-      </Menu>
-      <Menu
         open={Boolean(menuThread)}
         anchorEl={menuAnchor}
         onClose={() => setMenuThread(null)}
@@ -3213,342 +3478,349 @@ export function Workspace({ me }: { me: Me }) {
         ) : null}
       </Menu>
 
-      <Dialog open={newThreadOpen} onClose={() => setNewThreadOpen(false)}>
-        <DialogTitle>New thread</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-            The personality stays for this thread. It cannot be changed later.
-          </Typography>
-          <Select
-            name="persona"
-            label="Personality"
-            value={newPersonaId}
-            disabled={actionBusy}
-            sx={{ width: "100%", mt: 1 }}
-            onSelect={setNewPersonaId}
-          >
-            {(personas.length
-              ? personas
-              : [
-                  {
-                    id: "assistant",
-                    name: "Assistant",
-                    instruction: "",
-                    builtin: true,
-                  },
-                ]
-            ).map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </Select>
-        </DialogContent>
-        <DialogActions>
-          <Button variant="text" onClick={() => setNewThreadOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={actionBusy}
-            onClick={() => void newThread()}
-          >
-            Start
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(renameTarget)}
-        onClose={() => setRenameTarget(null)}
-      >
-        <DialogTitle>Rename thread</DialogTitle>
-        <DialogContent>
-          <TextField
-            label="Title"
-            value={renameTitle}
-            autoFocus
-            sx={{ width: "100%", mt: 1 }}
-            disabled={actionBusy}
-            onChange={(event) => setRenameTitle(event.currentTarget.value)}
-            onKeyDown={(event: React.KeyboardEvent) => {
-              if (event.key === "Enter") {
-                event.preventDefault()
-                void saveRename()
-              }
-            }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button variant="text" onClick={() => setRenameTarget(null)}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={actionBusy || !renameTitle.trim()}
-            onClick={() => void saveRename()}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(deleteTarget)}
-        onClose={() => setDeleteTarget(null)}
-      >
-        <DialogTitle>Delete thread?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            Deletes “{deleteTarget ? threadTitle(deleteTarget) : ""}” and all of
-            its messages. This cannot be undone.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button variant="text" onClick={() => setDeleteTarget(null)}>
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={actionBusy}
-            startIcon={<DeleteIcon />}
-            onClick={() => void deleteThread()}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={cronAddOpen} onClose={() => setCronAddOpen(false)}>
-        <DialogTitle>
-          {cronEditId ? "Edit cron job" : "Add cron job"}
-        </DialogTitle>
-        <DialogContent>
-          <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
-            <TextField
-              label="Name"
-              value={cronName}
-              autoFocus
-              onChange={(event) => setCronName(event.currentTarget.value)}
-            />
+      {newThreadOpen ? (
+        <Dialog open onClose={() => setNewThreadOpen(false)}>
+          <DialogTitle>New thread</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
+              The personality stays for this thread. It cannot be changed later.
+            </Typography>
             <Select
-              name="run"
-              label="Run as"
-              value={cronRunKind}
-              onSelect={(value) =>
-                setCronRunKind(value as "prompt" | "script" | "both")
-              }
+              name="persona"
+              label="Personality"
+              value={newPersonaId}
+              disabled={actionBusy}
+              sx={{ width: "100%", mt: 1 }}
+              onSelect={setNewPersonaId}
             >
-              <option value="prompt">Prompt</option>
-              <option value="script">Script</option>
-              <option value="both">Script then prompt</option>
+              {(personas.length
+                ? personas
+                : [
+                    {
+                      id: "assistant",
+                      name: "Assistant",
+                      instruction: "",
+                      builtin: true,
+                    },
+                  ]
+              ).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
             </Select>
-            {cronRunKind !== "script" ? (
+          </DialogContent>
+          <DialogActions>
+            <Button variant="text" onClick={() => setNewThreadOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              disabled={actionBusy}
+              onClick={() => void newThread()}
+            >
+              Start
+            </Button>
+          </DialogActions>
+        </Dialog>
+      ) : null}
+
+      {renameTarget ? (
+        <Dialog open onClose={() => setRenameTarget(null)}>
+          <DialogTitle>Rename thread</DialogTitle>
+          <DialogContent>
+            <TextField
+              label="Title"
+              value={renameTitle}
+              autoFocus
+              sx={{ width: "100%", mt: 1 }}
+              disabled={actionBusy}
+              onChange={(event) => setRenameTitle(event.currentTarget.value)}
+              onKeyDown={(event: React.KeyboardEvent) => {
+                if (event.key === "Enter") {
+                  event.preventDefault()
+                  void saveRename()
+                }
+              }}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button variant="text" onClick={() => setRenameTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              disabled={actionBusy || !renameTitle.trim()}
+              onClick={() => void saveRename()}
+            >
+              Save
+            </Button>
+          </DialogActions>
+        </Dialog>
+      ) : null}
+
+      {deleteTarget ? (
+        <Dialog open onClose={() => setDeleteTarget(null)}>
+          <DialogTitle>Delete thread?</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">
+              Deletes “{deleteTarget ? threadTitle(deleteTarget) : ""}” and all
+              of its messages. This cannot be undone.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button variant="text" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              color="error"
+              variant="contained"
+              disabled={actionBusy}
+              startIcon={<DeleteIcon />}
+              onClick={() => void deleteThread()}
+            >
+              Delete
+            </Button>
+          </DialogActions>
+        </Dialog>
+      ) : null}
+
+      {cronAddOpen ? (
+        <Dialog open onClose={() => setCronAddOpen(false)}>
+          <DialogTitle>
+            {cronEditId ? "Edit cron job" : "Add cron job"}
+          </DialogTitle>
+          <DialogContent>
+            <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
               <TextField
-                label="Message sent to the agent"
-                value={cronMessage}
-                multiline
-                rows={3}
-                onChange={(event) => setCronMessage(event.currentTarget.value)}
+                label="Name"
+                value={cronName}
+                autoFocus
+                onChange={(event) => setCronName(event.currentTarget.value)}
               />
-            ) : null}
-            {cronRunKind !== "prompt" ? (
-              <TextField
-                label="Script"
-                value={cronScript}
-                multiline
-                rows={4}
-                placeholder="bash /home/agent/workspace/check.sh"
-                onChange={(event) => setCronScript(event.currentTarget.value)}
-              />
-            ) : null}
-            {cronEditId ? (
-              <Typography variant="caption" color="textSecondary">
-                Schedule stays {editingSchedule(cronJobs, cronEditId)}.
-              </Typography>
-            ) : (
-              <>
+              <Select
+                name="run"
+                label="Run as"
+                value={cronRunKind}
+                onSelect={(value) =>
+                  setCronRunKind(value as "prompt" | "script" | "both")
+                }
+              >
+                <option value="prompt">Prompt</option>
+                <option value="script">Script</option>
+                <option value="both">Script then prompt</option>
+              </Select>
+              {cronRunKind !== "script" ? (
+                <TextField
+                  label="Message sent to the agent"
+                  value={cronMessage}
+                  multiline
+                  rows={3}
+                  onChange={(event) =>
+                    setCronMessage(event.currentTarget.value)
+                  }
+                />
+              ) : null}
+              {cronRunKind !== "prompt" ? (
+                <TextField
+                  label="Script"
+                  value={cronScript}
+                  multiline
+                  rows={4}
+                  placeholder="bash /home/agent/workspace/check.sh"
+                  onChange={(event) => setCronScript(event.currentTarget.value)}
+                />
+              ) : null}
+              {cronEditId ? (
+                <Typography variant="caption" color="textSecondary">
+                  Schedule stays {editingSchedule(cronJobs, cronEditId)}.
+                </Typography>
+              ) : (
+                <>
+                  <Select
+                    name="schedule"
+                    label="Schedule"
+                    value={cronKind}
+                    onSelect={(value) => setCronKind(value as CronKind)}
+                  >
+                    <option value="every">Interval</option>
+                    <option value="cron">Cron expression (UTC)</option>
+                    <option value="at">One time</option>
+                  </Select>
+                  {cronKind === "every" ? (
+                    <TextField
+                      label="Every (seconds, min 60)"
+                      value={cronEvery}
+                      inputMode="numeric"
+                      onChange={(event) =>
+                        setCronEvery(event.currentTarget.value)
+                      }
+                    />
+                  ) : cronKind === "cron" ? (
+                    <TextField
+                      label="Cron expression"
+                      value={cronExpr}
+                      placeholder="0 9 * * 1-5"
+                      onChange={(event) =>
+                        setCronExpr(event.currentTarget.value)
+                      }
+                    />
+                  ) : (
+                    <TextField
+                      label="Run at"
+                      value={cronAt}
+                      type="datetime-local"
+                      onChange={(event) => setCronAt(event.currentTarget.value)}
+                    />
+                  )}
+                </>
+              )}
+              {cronRunKind !== "script" ? (
                 <Select
-                  name="schedule"
-                  label="Schedule"
-                  value={cronKind}
-                  onSelect={(value) => setCronKind(value as CronKind)}
+                  name="cron-model"
+                  label="Model"
+                  value={cronModel}
+                  disabled={!running && models.length === 0 && !cronModel}
+                  onSelect={setCronModel}
                 >
-                  <option value="every">Interval</option>
-                  <option value="cron">Cron expression (UTC)</option>
-                  <option value="at">One time</option>
+                  {[
+                    <option key="default" value="">
+                      Desktop default
+                    </option>,
+                    ...(cronModel &&
+                    !models.some(
+                      (item) =>
+                        `${item.providerID}/${item.modelID}` === cronModel,
+                    )
+                      ? [
+                          <option key={cronModel} value={cronModel}>
+                            {cronModel}
+                          </option>,
+                        ]
+                      : []),
+                    ...modelOptions,
+                  ]}
                 </Select>
-                {cronKind === "every" ? (
-                  <TextField
-                    label="Every (seconds, min 60)"
-                    value={cronEvery}
-                    inputMode="numeric"
-                    onChange={(event) =>
-                      setCronEvery(event.currentTarget.value)
-                    }
-                  />
-                ) : cronKind === "cron" ? (
-                  <TextField
-                    label="Cron expression"
-                    value={cronExpr}
-                    placeholder="0 9 * * 1-5"
-                    onChange={(event) => setCronExpr(event.currentTarget.value)}
-                  />
-                ) : (
-                  <TextField
-                    label="Run at"
-                    value={cronAt}
-                    type="datetime-local"
-                    onChange={(event) => setCronAt(event.currentTarget.value)}
-                  />
-                )}
-              </>
+              ) : null}
+              {cronRunKind !== "script" ? (
+                <Select
+                  name="cron-persona"
+                  label="Personality"
+                  value={cronPersona}
+                  onSelect={setCronPersona}
+                >
+                  {[
+                    ...(personas.length
+                      ? personas
+                      : [
+                          {
+                            id: "assistant",
+                            name: "Assistant",
+                            instruction: "",
+                            builtin: true,
+                          },
+                        ]
+                    ).map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    )),
+                    ...(cronPersona &&
+                    !personas.some((item) => item.id === cronPersona) &&
+                    cronPersona !== "assistant"
+                      ? [
+                          <option key={cronPersona} value={cronPersona}>
+                            {personaName(cronPersona)}
+                          </option>,
+                        ]
+                      : []),
+                  ]}
+                </Select>
+              ) : null}
+              <Typography variant="caption" color="textSecondary">
+                {cronRunKind === "script"
+                  ? "Runs on the desktop in /home/agent/workspace. Output is posted to this job's thread."
+                  : cronRunKind === "both"
+                    ? "The script runs first. Its output is added to the prompt. The agent's result is posted to this job's thread."
+                    : "The model and personality run the temporary session. The result is still posted to this job's thread."}
+                {cronRunKind !== "script" && !running
+                  ? " Start the desktop to choose a model other than the desktop default."
+                  : ""}
+              </Typography>
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button variant="text" onClick={() => setCronAddOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              disabled={
+                cronSaving ||
+                !cronName.trim() ||
+                (cronRunKind !== "script" && !cronMessage.trim()) ||
+                (cronRunKind !== "prompt" && !cronScript.trim()) ||
+                (!cronEditId &&
+                  ((cronKind === "every" && !(Number(cronEvery) >= 60)) ||
+                    (cronKind === "cron" &&
+                      cronExpr.trim().split(/\s+/).length !== 5) ||
+                    (cronKind === "at" && !cronAt)))
+              }
+              onClick={() => void saveCronJob()}
+            >
+              {cronSaving ? "…" : cronEditId ? "Save" : "Add"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+      ) : null}
+
+      {cronDeleteTarget ? (
+        <Dialog open onClose={() => setCronDeleteTarget(null)}>
+          <DialogTitle>Delete cron job?</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">
+              Deletes “{cronDeleteTarget?.name ?? ""}” and its past results. It
+              will never run again. This cannot be undone.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button variant="text" onClick={() => setCronDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              color="error"
+              variant="contained"
+              disabled={Boolean(cronBusyId)}
+              startIcon={<DeleteIcon />}
+              onClick={() => void removeCronJob()}
+            >
+              Delete
+            </Button>
+          </DialogActions>
+        </Dialog>
+      ) : null}
+
+      {cronResult ? (
+        <Dialog open onClose={() => setCronResult(null)}>
+          <DialogTitle>{cronResult.jobName ?? ""}</DialogTitle>
+          <DialogContent>
+            {cronResult.summary?.trim() ? (
+              <div className="ob-md">
+                <ChatMarkdown text={cronResult.summary} />
+              </div>
+            ) : (
+              <Typography variant="body2" color="textSecondary">
+                No output.
+              </Typography>
             )}
-            {cronRunKind !== "script" ? (
-              <Select
-                name="cron-model"
-                label="Model"
-                value={cronModel}
-                disabled={!running && models.length === 0 && !cronModel}
-                onSelect={setCronModel}
-              >
-                {[
-                  <option key="default" value="">
-                    Desktop default
-                  </option>,
-                  ...(cronModel &&
-                  !models.some(
-                    (item) =>
-                      `${item.providerID}/${item.modelID}` === cronModel,
-                  )
-                    ? [
-                        <option key={cronModel} value={cronModel}>
-                          {cronModel}
-                        </option>,
-                      ]
-                    : []),
-                  ...modelOptions,
-                ]}
-              </Select>
-            ) : null}
-            {cronRunKind !== "script" ? (
-              <Select
-                name="cron-persona"
-                label="Personality"
-                value={cronPersona}
-                onSelect={setCronPersona}
-              >
-                {[
-                  ...(personas.length
-                    ? personas
-                    : [
-                        {
-                          id: "assistant",
-                          name: "Assistant",
-                          instruction: "",
-                          builtin: true,
-                        },
-                      ]
-                  ).map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  )),
-                  ...(cronPersona &&
-                  !personas.some((item) => item.id === cronPersona) &&
-                  cronPersona !== "assistant"
-                    ? [
-                        <option key={cronPersona} value={cronPersona}>
-                          {personaName(cronPersona)}
-                        </option>,
-                      ]
-                    : []),
-                ]}
-              </Select>
-            ) : null}
-            <Typography variant="caption" color="textSecondary">
-              {cronRunKind === "script"
-                ? "Runs on the desktop in /home/agent/workspace. Output is posted to this job's thread."
-                : cronRunKind === "both"
-                  ? "The script runs first. Its output is added to the prompt. The agent's result is posted to this job's thread."
-                  : "The model and personality run the temporary session. The result is still posted to this job's thread."}
-              {cronRunKind !== "script" && !running
-                ? " Start the desktop to choose a model other than the desktop default."
-                : ""}
-            </Typography>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button variant="text" onClick={() => setCronAddOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={
-              cronSaving ||
-              !cronName.trim() ||
-              (cronRunKind !== "script" && !cronMessage.trim()) ||
-              (cronRunKind !== "prompt" && !cronScript.trim()) ||
-              (!cronEditId &&
-                ((cronKind === "every" && !(Number(cronEvery) >= 60)) ||
-                  (cronKind === "cron" &&
-                    cronExpr.trim().split(/\s+/).length !== 5) ||
-                  (cronKind === "at" && !cronAt)))
-            }
-            onClick={() => void saveCronJob()}
-          >
-            {cronSaving ? "…" : cronEditId ? "Save" : "Add"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(cronDeleteTarget)}
-        onClose={() => setCronDeleteTarget(null)}
-      >
-        <DialogTitle>Delete cron job?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            Deletes “{cronDeleteTarget?.name ?? ""}” and its past results. It
-            will never run again. This cannot be undone.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button variant="text" onClick={() => setCronDeleteTarget(null)}>
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={Boolean(cronBusyId)}
-            startIcon={<DeleteIcon />}
-            onClick={() => void removeCronJob()}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={Boolean(cronResult)} onClose={() => setCronResult(null)}>
-        <DialogTitle>{cronResult?.jobName ?? ""}</DialogTitle>
-        <DialogContent>
-          {cronResult?.summary?.trim() ? (
-            <div className="ob-md">
-              <ChatMarkdown text={cronResult.summary} />
-            </div>
-          ) : (
-            <Typography variant="body2" color="textSecondary">
-              No output.
-            </Typography>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button variant="text" onClick={() => setCronResult(null)}>
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
+          </DialogContent>
+          <DialogActions>
+            <Button variant="text" onClick={() => setCronResult(null)}>
+              Close
+            </Button>
+          </DialogActions>
+        </Dialog>
+      ) : null}
     </Stack>
   )
 }

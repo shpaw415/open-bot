@@ -27,7 +27,6 @@ import {
   parseRunKind,
 } from "./cron"
 import {
-  blenderStatus,
   type ChatKeyEntry,
   desktopPhase,
   endpoint,
@@ -39,7 +38,6 @@ import {
   startDesktop,
   startError,
   stopDesktop,
-  syncBlenderMcp,
   syncChatAuth,
   syncImageAuth,
   syncModel3dAuth,
@@ -1223,16 +1221,6 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
       }
     }
     return json({ ok: true })
-  }
-  if (url.pathname === "/api/mcp" && req.method === "GET") {
-    return json(await blenderStatus(user.id))
-  }
-  if (url.pathname === "/api/mcp" && req.method === "PUT") {
-    const body = await readJson(req)
-    const enabled = Boolean(body.enabled)
-    const applied = await syncBlenderMcp(user.id, enabled)
-    if (applied) await restartOpencode(user.id)
-    return json({ applied, ...(await blenderStatus(user.id)) })
   }
   if (url.pathname === "/api/model3d" && req.method === "GET") {
     const saved = db.getModel3dProvider(user.id)
