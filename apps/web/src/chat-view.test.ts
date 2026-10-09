@@ -188,6 +188,28 @@ test("detects a dead turn from the provider connect error", () => {
   expect(issue?.retryable).toBe(true)
 })
 
+test("surfaces provider limit rejections instead of a connection drop", () => {
+  const issue = turnError([
+    {
+      info: {
+        id: "a6",
+        role: "assistant",
+        error: {
+          name: "APIError",
+          data: {
+            message:
+              "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-10 06:18:27",
+            isRetryable: true,
+          },
+        },
+      },
+      parts: [],
+    },
+  ])
+  expect(issue?.retryable).toBe(false)
+  expect(issue?.detail).toContain("Limit Exhausted")
+})
+
 test("ignores completed turns and user-stopped turns", () => {
   expect(
     turnError([

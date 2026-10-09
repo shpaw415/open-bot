@@ -1,14 +1,12 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "open-bot-marketplace",
-  "pages_build_output_dir": ".frame-master/build",
+  "name": "open-bot-marketplace-review",
+  "main": "src/review-consumer.ts",
   "compatibility_date": "2026-02-17",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": {
-    "BUN_VERSION": "1.4.2",
-    "SKIP_DEPENDENCY_INSTALL": "true",
-    "OPENAUTH_ISSUER_URL": "https://ef328c08c4d04075a0fd1e7f175983de-auth.webcreas.com",
-    "OPENAUTH_CLIENT_ID": "__open_bot_18f8d590"
+  "workers_dev": false,
+  "observability": {
+    "enabled": true
   },
   "d1_databases": [
     {
@@ -33,10 +31,14 @@
     }
   ],
   "queues": {
-    "producers": [
+    "consumers": [
       {
-        "binding": "SECURITY_REVIEW",
-        "queue": "open-bot-marketplace-security"
+        "queue": "open-bot-marketplace-security",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 2,
+        "dead_letter_queue": "open-bot-marketplace-security-dlq"
       }
     ]
   }

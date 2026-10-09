@@ -46,6 +46,55 @@ function marketplaceConfigured(db: Db) {
   return marketplaceUrl !== "" && marketToken(db) !== ""
 }
 
+const REVIEW_WAIT_MS = 180_000
+const REVIEW_POLL_MS = 2_000
+
+function securityStatus(payload: Record<string, unknown>): string {
+  const security = payload.security
+  if (!security || typeof security !== "object") return ""
+  const status = (security as { status?: unknown }).status
+  return typeof status === "string" ? status : ""
+}
+
+function reviewStillPending(status: string): boolean {
+  return status === "queued" || status === "running"
+}
+
+async function awaitSecurityReview(
+  db: Db,
+  pluginId: string,
+  version: string,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + REVIEW_WAIT_MS
+  let current = payload
+  while (reviewStillPending(securityStatus(current)) && Date.now() < deadline) {
+    await Bun.sleep(REVIEW_POLL_MS)
+    try {
+      const query = new URLSearchParams({ version })
+      const response = await marketplace(
+        db,
+        `/api/plugins/${encodeURIComponent(pluginId)}/review?${query}`,
+      )
+      const body = (await response.json()) as Record<string, unknown>
+      const security = body.security
+      if (security && typeof security === "object") {
+        current = {
+          ...current,
+          status:
+            typeof body.pluginStatus === "string"
+              ? body.pluginStatus
+              : current.status,
+          security,
+        }
+      }
+    } catch {
+      // keep the last payload and try again until the deadline
+    }
+  }
+  return current
+}
+
 async function marketplace(
   db: Db,
   path: string,
@@ -309,6 +358,7 @@ export function handlePlugins(
   db: Db,
   user: User,
   hub: { emit: (userId: string, event: { type: string }) => void },
+  holdOpen?: () => void,
 ): Response | Promise<Response> | null {
   const path = url.pathname
 
@@ -665,26 +715,50 @@ export function handlePlugins(
       .catch(() => json({ error: "invalid json" }, 400))
   }
 
+  const reviewPoll = path === "/api/plugins/review" && req.method === "GET"
+  if (reviewPoll) {
+    const id = url.searchParams.get("id")?.trim() ?? ""
+    const version = url.searchParams.get("version")?.trim() ?? ""
+    if (!id || !version) {
+      return json({ error: "id and version are required" }, 400)
+    }
+    const query = new URLSearchParams({ version })
+    return marketplace(
+      db,
+      `/api/plugins/${encodeURIComponent(id)}/review?${query}`,
+    ).then(async (response) => json(await response.json()))
+  }
+
   if (path === "/api/plugins/publish" && req.method === "POST") {
     return req
       .json()
       .then(async (body: Record<string, unknown>) => {
         const manifest = parsePublishBody(body)
+        holdOpen?.()
         const response = await marketplace(db, "/api/publish", {
           method: "POST",
           json: { manifest },
         })
-        const payload = (await response.json().catch(() => ({}))) as Record<
-          string,
-          unknown
-        >
+        const payload = await awaitSecurityReview(
+          db,
+          manifest.id,
+          manifest.version,
+          (await response.json().catch(() => ({}))) as Record<string, unknown>,
+        )
         const guardJobId = ensureGuardCron(db, user, manifest)
+        const reviewQuery = new URLSearchParams({
+          id: manifest.id,
+          version: manifest.version,
+        })
         return json({
           ok: true,
           pluginId: manifest.id,
           version: manifest.version,
           marketplace: payload,
           guardCronId: guardJobId,
+          review: {
+            poll: `/api/plugins/review?${reviewQuery}`,
+          },
         })
       })
       .catch((error: unknown) => {

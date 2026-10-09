@@ -1,11 +1,10 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { api, type Me } from "./api"
 import { Backup } from "./Backup"
 import { ConfigSection } from "./ConfigSection"
@@ -25,6 +24,7 @@ import {
 } from "./icons"
 import { KeyVault } from "./KeyVault"
 import { Model3dProvider } from "./Model3dProvider"
+import { ModelSelect } from "./ModelSelect"
 import { Personalities } from "./Personalities"
 import { System1 } from "./System1"
 import { VideoProvider } from "./VideoProvider"
@@ -84,21 +84,6 @@ function DefaultModelSection({
     void loadModels()
   }, [loadModels])
 
-  const options = useMemo(
-    () =>
-      models.map((item) => (
-        <option
-          key={`${item.providerID}/${item.modelID}`}
-          value={`${item.providerID}/${item.modelID}`}
-        >
-          {item.name
-            ? `${item.name} (${item.providerID})`
-            : `${item.providerID}/${item.modelID}`}
-        </option>
-      )),
-    [models],
-  )
-
   async function save() {
     setError("")
     setSaved(false)
@@ -151,18 +136,18 @@ function DefaultModelSection({
             Loading models — this starts your desktop if it was asleep…
           </Typography>
         ) : (
-          <Select
+          <ModelSelect
             name="default-model"
             label="Default model"
+            models={models}
             value={selected}
             disabled={models.length === 0}
+            userId={me.id}
             onSelect={(value) => {
               setSelected(value)
               setSaved(false)
             }}
-          >
-            {options}
-          </Select>
+          />
         )}
         <Stack direction="row" spacing={1}>
           <Button

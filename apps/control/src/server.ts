@@ -657,7 +657,7 @@ export function createServer(
           return await termUpgrade(req, url, db, server)
         }
         if (url.pathname.startsWith("/api/"))
-          return await api(req, url, db, hub)
+          return await api(req, url, db, hub, () => server.timeout(req, 0))
         if (url.pathname.startsWith("/desktop/"))
           return await desktopProxy(req, url, server, db)
         return await staticFile(url.pathname)
@@ -731,7 +731,13 @@ export function createServer(
   })
 }
 
-async function api(req: Request, url: URL, db: Db, hub: EventHub) {
+async function api(
+  req: Request,
+  url: URL,
+  db: Db,
+  hub: EventHub,
+  holdOpen?: () => void,
+) {
   if (url.pathname === "/api/health") return json({ ok: true })
   if (url.pathname === "/api/auth/login" && req.method === "POST") {
     const body = await readJson(req)
@@ -869,7 +875,7 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
         return json({ error: "not found" }, 404)
       }
       if (isPluginPath) {
-        const handled = handlePlugins(req, url, db, agent, hub)
+        const handled = handlePlugins(req, url, db, agent, hub, holdOpen)
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -884,7 +890,7 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     return json({ error: "not found" }, 404)
   }
   if (isPluginPath) {
-    const handled = handlePlugins(req, url, db, user, hub)
+    const handled = handlePlugins(req, url, db, user, hub, holdOpen)
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }

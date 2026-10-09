@@ -1,53 +1,40 @@
 "no action"
 
 import {
-  isDevVersion,
   type PluginManifest,
   validatePluginManifest,
 } from "@open-bot/plugin-kit"
-import { apiKeyAuth, touchApiKey } from "../../lib/auth"
-import { addComment, getPluginRow, pluginFromRow } from "../../lib/db"
+import { marketplaceWriteAuth, touchApiKey } from "../../lib/auth"
+import { getPluginRow, getVersionRow, pluginFromRow } from "../../lib/db"
 import { revalidatePluginPage } from "../../lib/page-cache"
-import { findingsComment, reviewPublish } from "../../lib/security"
+import { shouldQueueReview } from "../../lib/review-state"
+import {
+  applySecurityReview,
+  enqueueSecurityReview,
+  queuedPublishBody,
+  reviewViewFromRow,
+} from "../../lib/review-store"
+import { fetchReadme, reviewPublish } from "../../lib/security"
 
-function authorized(request: Request, token: string | undefined) {
-  if (!token) return false
-  const header = request.headers.get("authorization") ?? ""
-  return header.replace(/^Bearer\s+/i, "") === token
-}
-
-async function fetchReadme(
-  repo: string,
-  tag: string,
-  githubToken?: string,
-): Promise<string | null> {
-  try {
-    const response = await fetch(
-      `https://raw.githubusercontent.com/${repo}/${tag}/README.md`,
-      {
-        headers: githubToken
-          ? { authorization: `Bearer ${githubToken}` }
-          : undefined,
-        signal: AbortSignal.timeout(10_000),
-      },
-    )
-    if (!response.ok) return null
-    const text = await response.text()
-    return text.slice(0, 200_000)
-  } catch {
-    return null
-  }
+const enqueueError = {
+  status: "error" as const,
+  findings: [],
+  severity: null,
+  artifactKey: null,
+  artifactSha256: null,
+  issueUrl: null,
+  error: "failed to enqueue security review",
 }
 
 export async function onRequestPost(context: EventContext<Env, never, never>) {
-  const { DB, MARKETPLACE_TOKEN, GITHUB_TOKEN } = context.env
-  const apiKey = await apiKeyAuth(DB, context.request)
-  if (apiKey) void touchApiKey(DB, apiKey.keyId).catch(() => undefined)
-  const authed =
-    authorized(context.request, MARKETPLACE_TOKEN) || apiKey !== null
-  if (!authed) {
-    return Response.json({ error: "unauthorized" }, { status: 401 })
-  }
+  const { DB, MARKETPLACE_TOKEN } = context.env
+  const writer = await marketplaceWriteAuth(
+    DB,
+    context.request,
+    MARKETPLACE_TOKEN,
+  )
+  if (!writer) return Response.json({ error: "unauthorized" }, { status: 401 })
+  if (writer.keyId) void touchApiKey(DB, writer.keyId).catch(() => undefined)
   let body: { manifest?: unknown; notes?: unknown }
   try {
     body = (await context.request.json()) as typeof body
@@ -62,118 +49,65 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     )
   }
   const manifest: PluginManifest = result.manifest
-  const tag = `v${manifest.version}`
-  const readme = await fetchReadme(manifest.repo, tag, GITHUB_TOKEN)
-  const now = Date.now()
-  const existing = await getPluginRow(DB, manifest.id)
-  const security = await reviewPublish(context.env, manifest, readme)
-  const status =
-    security.status === "pass"
-      ? "approved"
-      : security.status === "concern"
-        ? "rejected"
-        : existing?.status === "approved"
-          ? "approved"
-          : "pending"
-  // Dev tags and prereleases stay out of search: only stable publishes move
-  // latest_version (what the marketplace listing and default installs use).
-  const listedVersion =
-    existing && isDevVersion(manifest.version)
-      ? (existing.latest_version ?? manifest.version)
-      : manifest.version
-  if (existing) {
-    await DB.prepare(
-      `UPDATE plugins SET name = ?2, description = ?3, author = ?4, repo = ?5, category = ?6,
-       tags = ?7, latest_version = ?8, status = ?9, security_status = ?10, readme = ?11, updated_at = ?12 WHERE id = ?1`,
-    )
-      .bind(
-        manifest.id,
-        manifest.name,
-        manifest.description,
-        manifest.author,
-        manifest.repo,
-        manifest.category,
-        JSON.stringify(manifest.tags ?? []),
-        listedVersion,
-        status,
-        security.status,
-        readme ?? existing.readme,
-        now,
-      )
-      .run()
-  } else {
-    await DB.prepare(
-      `INSERT INTO plugins (id, name, description, author, repo, category, tags, latest_version, status, security_status, downloads, readme, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13)`,
-    )
-      .bind(
-        manifest.id,
-        manifest.name,
-        manifest.description,
-        manifest.author,
-        manifest.repo,
-        manifest.category,
-        JSON.stringify(manifest.tags ?? []),
-        manifest.version,
-        status,
-        security.status,
-        readme,
-        now,
-        now,
-      )
-      .run()
-  }
-  await DB.prepare(
-    `INSERT INTO plugin_versions (plugin_id, version, manifest, notes, security_status, security_findings, artifact_key, artifact_sha256, analyzed_at, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-     ON CONFLICT (plugin_id, version) DO UPDATE SET
-       manifest = excluded.manifest,
-       notes = excluded.notes,
-       security_status = excluded.security_status,
-       security_findings = excluded.security_findings,
-       artifact_key = excluded.artifact_key,
-       artifact_sha256 = excluded.artifact_sha256,
-       analyzed_at = excluded.analyzed_at`,
+  const notes =
+    typeof body.notes === "string" ? body.notes.slice(0, 4000) : null
+  const readme = await fetchReadme(
+    manifest.repo,
+    `v${manifest.version}`,
+    context.env.GITHUB_TOKEN,
   )
-    .bind(
-      manifest.id,
-      manifest.version,
-      JSON.stringify(manifest),
-      typeof body.notes === "string"
-        ? (body.notes as string).slice(0, 4000)
-        : null,
-      security.status,
-      JSON.stringify(security.findings),
-      security.artifactKey,
-      security.artifactSha256,
-      now,
-      now,
+  const queued = await enqueueSecurityReview(
+    context.env,
+    manifest,
+    readme,
+    notes,
+  )
+  const queue = shouldQueueReview(
+    Boolean(context.env.SECURITY_REVIEW),
+    new URL(context.request.url).hostname,
+    context.env.SECURITY_REVIEW_ASYNC,
+  )
+  if (queue && context.env.SECURITY_REVIEW) {
+    try {
+      await context.env.SECURITY_REVIEW.send({
+        pluginId: manifest.id,
+        version: manifest.version,
+        enqueuedAt: queued.enqueuedAt,
+      })
+    } catch (error) {
+      console.error("security review enqueue failed", error)
+      await applySecurityReview(
+        context.env,
+        manifest,
+        enqueueError,
+        queued.enqueuedAt,
+        readme,
+      )
+      return Response.json(
+        { error: "failed to enqueue security review" },
+        { status: 503 },
+      )
+    }
+  } else {
+    const review = await reviewPublish(context.env, manifest, readme)
+    await applySecurityReview(
+      context.env,
+      manifest,
+      review,
+      queued.enqueuedAt,
+      readme,
     )
-    .run()
-  if (security.status === "concern" && security.findings.length > 0) {
-    await addComment(
-      DB,
-      manifest.id,
-      "security-bot",
-      "agent",
-      findingsComment(security.findings),
-    ).catch(() => undefined)
   }
   const row = await getPluginRow(DB, manifest.id)
+  const version = await getVersionRow(DB, manifest.id, manifest.version)
   await revalidatePluginPage(manifest.id, context).catch(() => undefined)
-  return Response.json({
-    ok: true,
-    plugin: row ? pluginFromRow(row) : null,
-    status,
-    readme: readme !== null,
-    security: {
-      status: security.status,
-      severity: security.severity,
-      findings: security.findings,
-      issueUrl: security.issueUrl,
-      artifactKey: security.artifactKey,
-      artifactSha256: security.artifactSha256,
-      error: security.error,
-    },
-  })
+  return Response.json(
+    queuedPublishBody(
+      manifest,
+      row?.status ?? "pending",
+      readme !== null,
+      row ? pluginFromRow(row) : null,
+      version ? reviewViewFromRow(version) : queued.review,
+    ),
+  )
 }

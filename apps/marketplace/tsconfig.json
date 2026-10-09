@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "target": "ESNext",
     "module": "preserve",
     "moduleDetection": "force",
@@ -18,7 +22,9 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false,
-    "types": ["@cloudflare/workers-types"],
+    "types": [
+      "@cloudflare/workers-types"
+    ],
     "paths": {
       "frame-master-plugin-apply-react/router": [
         "./src/types/apply-react-router.d.ts"
@@ -38,11 +44,25 @@
       "frame-master-plugin-cloudflare-pages-dynamic-ssr/client/hooks": [
         "./src/types/vendor/client-hooks.d.ts"
       ],
-      "@static/*": ["./static/*"],
-      "@api/*": ["./src/actions/api/*"],
-      "@components/*": ["./src/components/*"]
+      "@static/*": [
+        "./static/*"
+      ],
+      "@api/*": [
+        "./src/actions/api/*"
+      ],
+      "@components/*": [
+        "./src/components/*"
+      ]
     }
   },
-  "include": ["./src", "./types.d.ts", "./site.config.ts"],
-  "exclude": [".frame-master"]
+  "include": [
+    "./src",
+    "./types.d.ts",
+    "./site.config.ts",
+    "../workers/review-worker/src/review-consumer.ts"
+  ],
+  "exclude": [
+    ".frame-master",
+    "**/*.test.ts"
+  ]
 }

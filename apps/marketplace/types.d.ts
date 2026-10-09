@@ -3,6 +3,12 @@ interface Env {
   DYNAMIC_PAGE_KV: KVNamespace
   AI?: Ai
   RELEASES?: R2Bucket
+  SECURITY_REVIEW?: Queue<{
+    pluginId: string
+    version: string
+    enqueuedAt: number
+  }>
+  SECURITY_REVIEW_ASYNC?: string
   OPENAUTH_ISSUER_URL?: string
   OPENAUTH_CLIENT_ID?: string
   MARKETPLACE_TOKEN?: string

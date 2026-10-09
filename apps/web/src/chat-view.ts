@@ -416,6 +416,8 @@ export type TurnError = {
  * Detects a dead turn: the last message is an assistant reply that ended with
  * an error instead of completing (provider outage, aborted stream, storage
  * failure). Aborted-by-user turns are not turn errors.
+ * Auto-retry is only for connection drops. SDK `isRetryable` is not enough:
+ * quota and spend rejections (HTTP 429) are marked retryable and must be shown.
  */
 export function turnError(messages: ChatMessage[]): TurnError | null {
   const last = messages[messages.length - 1]
@@ -433,7 +435,7 @@ export function turnError(messages: ChatMessage[]): TurnError | null {
   return {
     messageId: typeof info.id === "string" ? info.id : "",
     detail: raw.length > 160 ? `${raw.slice(0, 159)}…` : raw,
-    retryable: error.data?.isRetryable === true || NETWORK_ERROR.test(raw),
+    retryable: NETWORK_ERROR.test(raw),
   }
 }
 

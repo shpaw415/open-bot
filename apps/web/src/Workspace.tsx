@@ -95,6 +95,7 @@ import {
 } from "./join-file"
 import { MediaDownloadButton } from "./MediaDownload"
 import { Model3dView } from "./Model3dView"
+import { ModelSelect } from "./ModelSelect"
 import {
   OPEN_THREAD_EVENT,
   seenThread,
@@ -1887,20 +1888,6 @@ export function Workspace({ me }: { me: Me }) {
     if (Date.now() - found.completed > 30_000) return
     void speakText(found.id, found.text)
   }, [messages, readAloud, speakText])
-  const modelOptions = useMemo(
-    () =>
-      models.map((item) => (
-        <option
-          key={`${item.providerID}/${item.modelID}`}
-          value={`${item.providerID}/${item.modelID}`}
-        >
-          {item.name
-            ? `${item.name} (${item.providerID})`
-            : `${item.providerID}/${item.modelID}`}
-        </option>
-      )),
-    [models],
-  )
 
   const threadBusy = useCallback(
     (id: string) => {
@@ -1912,10 +1899,10 @@ export function Workspace({ me }: { me: Me }) {
   const canStop = Boolean(
     sessionId && running && !stopping && (sending || threadBusy(sessionId)),
   )
-  // Auto-resume: when a turn dies with a retryable provider error, resend a
-  // continue prompt once the thread is idle again. One automatic attempt per
-  // dead turn, throttled so a long outage cannot create a retry loop; the
-  // banner keeps a manual Resume button for everything else.
+  // Auto-resume: only when a turn dies from a dropped connection. Provider
+  // rejections (quota, spend caps) stay on the banner with their own text.
+  // One automatic attempt per dead turn, throttled so a long outage cannot
+  // create a retry loop; the banner keeps a manual Resume button.
   const resumeTriedRef = useRef<string | null>(null)
   const resumeBlockRef = useRef(0)
   const resumePromptRef = useRef<((text: string) => Promise<boolean>) | null>(
@@ -3887,16 +3874,15 @@ export function Workspace({ me }: { me: Me }) {
             {modelsLoading && models.length === 0 ? (
               <Skeleton width="100%" height={40} />
             ) : (
-              <Select
+              <ModelSelect
                 name="model-drawer"
                 label={running ? "Model" : "Model (start desktop)"}
+                models={models}
                 value={model}
                 disabled={!running || models.length === 0}
-                sx={{ width: "100%" }}
-                onSelect={(value) => selectModel(value)}
-              >
-                {modelOptions}
-              </Select>
+                userId={me.id}
+                onSelect={selectModel}
+              />
             )}
             {modelsError ? (
               <ToolTip title={modelsError}>
@@ -4184,31 +4170,16 @@ export function Workspace({ me }: { me: Me }) {
                   </>
                 )}
                 {cronRunKind !== "script" ? (
-                  <Select
+                  <ModelSelect
                     name="cron-model"
                     label="Model"
+                    models={models}
                     value={cronModel}
                     disabled={!running && models.length === 0 && !cronModel}
+                    userId={me.id}
+                    leading={{ id: "", title: "Desktop default" }}
                     onSelect={setCronModel}
-                  >
-                    {[
-                      <option key="default" value="">
-                        Desktop default
-                      </option>,
-                      ...(cronModel &&
-                      !models.some(
-                        (item) =>
-                          `${item.providerID}/${item.modelID}` === cronModel,
-                      )
-                        ? [
-                            <option key={cronModel} value={cronModel}>
-                              {cronModel}
-                            </option>,
-                          ]
-                        : []),
-                      ...modelOptions,
-                    ]}
-                  </Select>
+                  />
                 ) : null}
                 {cronRunKind !== "script" ? (
                   <Select

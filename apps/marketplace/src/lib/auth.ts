@@ -248,6 +248,22 @@ export async function generateApiKey(): Promise<{
   return { key, hash: await sha256Hex(key), hint: key.slice(-4) }
 }
 
+export function bearerToken(request: Request): string {
+  return (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "")
+}
+
+export async function marketplaceWriteAuth(
+  db: D1Database,
+  request: Request,
+  instanceToken: string | undefined,
+): Promise<{ keyId: string | null } | null> {
+  const apiKey = await apiKeyAuth(db, request)
+  if (apiKey) return { keyId: apiKey.keyId }
+  const token = bearerToken(request)
+  if (instanceToken && token === instanceToken) return { keyId: null }
+  return null
+}
+
 export async function apiKeyAuth(
   db: D1Database,
   request: Request,

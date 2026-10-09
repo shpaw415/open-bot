@@ -27,6 +27,9 @@ export type VersionRow = {
   artifact_key: string | null
   artifact_sha256: string | null
   analyzed_at: number | null
+  review_enqueued_at: number | null
+  security_error: string | null
+  issue_url: string | null
   created_at: number
 }
 
@@ -213,6 +216,19 @@ export async function getPluginRow(
     .prepare("SELECT * FROM plugins WHERE id = ?1")
     .bind(id)
     .first<PluginRow>()) as PluginRow | null
+}
+
+export async function getVersionRow(
+  db: D1Database,
+  id: string,
+  version: string,
+): Promise<VersionRow | null> {
+  return (await db
+    .prepare(
+      "SELECT * FROM plugin_versions WHERE plugin_id = ?1 AND version = ?2",
+    )
+    .bind(id, version)
+    .first<VersionRow>()) as VersionRow | null
 }
 
 export async function getVersions(
