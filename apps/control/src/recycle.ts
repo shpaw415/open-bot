@@ -1,9 +1,16 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { openDatabase } from "@open-bot/db"
-import { endpoint, isRunning, startDesktop, stopDesktop } from "./docker"
+import {
+  endpoint,
+  isRunning,
+  onDesktopReady,
+  startDesktop,
+  stopDesktop,
+} from "./docker"
 import { dataDir, names } from "./env"
 import { resolveDesktopProviders } from "./key-vault"
+import { reapplyPluginSetup } from "./plugins-apply"
 
 if (!existsSync("/.dockerenv") && process.env.OPEN_BOT_IN_DOCKER !== "1") {
   console.error("recycle runs inside the open-bot container")
@@ -11,6 +18,7 @@ if (!existsSync("/.dockerenv") && process.env.OPEN_BOT_IN_DOCKER !== "1") {
 }
 
 const db = openDatabase(join(dataDir, "open-bot.sqlite"))
+onDesktopReady((userId) => reapplyPluginSetup(db, userId))
 
 function busyIds(status: unknown): string[] {
   if (!status || typeof status !== "object") return []

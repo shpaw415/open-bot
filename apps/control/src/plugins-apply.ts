@@ -12,12 +12,28 @@ import {
   type PluginToolFile,
   removePluginTools,
   restartOpencode,
+  runPluginInitCommands,
   syncOpencodePlugin,
   syncPluginAuth,
   syncPluginTools,
 } from "./docker"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
+
+const INIT_OUTPUT_LIMIT = 8 * 1024
+
+function initLogEntry(result: {
+  ran: boolean
+  ok: boolean
+  output: string
+}): PluginAppliedLog["init"] {
+  if (!result.ran) return undefined
+  return {
+    ranAt: Date.now(),
+    ok: result.ok,
+    output: result.output.slice(0, INIT_OUTPUT_LIMIT),
+  }
+}
 
 export type MarketplaceEntry = {
   id: string
@@ -214,6 +230,23 @@ export async function applyPluginInstall(
     const payload = pluginConfigPayload(db, user.id, manifest, wantedSettings)
     await syncPluginAuth(user.id, manifest.id, payload)
 
+    const setupCommands = manifest.setup?.commands ?? []
+    if (setupCommands.length > 0) {
+      const result = await runPluginInitCommands(
+        user.id,
+        manifest.id,
+        setupCommands,
+      )
+      applied.init = initLogEntry(result)
+      if (!result.ok) {
+        console.error(
+          `plugin ${manifest.id} setup commands failed${
+            result.timedOut ? " (timed out)" : ""
+          }: ${result.output.slice(0, 500)}`,
+        )
+      }
+    }
+
     const opencode = manifest.opencode
     if (opencode && (opencode.plugin?.length || opencode.mcp)) {
       await syncOpencodePlugin(user.id, {
@@ -306,6 +339,16 @@ export async function applyPluginUninstall(
   user: User,
   row: InstalledPlugin,
 ) {
+  // Best-effort environment cleanup before the managed artifacts disappear.
+  const cleanup = (row.manifest as PluginManifest).setup?.uninstall ?? []
+  if (cleanup.length > 0) {
+    await runPluginInitCommands(
+      user.id,
+      row.pluginId,
+      cleanup,
+      "uninstall",
+    ).catch(() => {})
+  }
   await revertApplied(db, user, row.pluginId, row.applied)
   await syncPluginAuth(user.id, row.pluginId, null).catch(() => {})
   db.deleteInstalledPlugin(user.id, row.pluginId)
@@ -327,4 +370,37 @@ export async function reapplyPluginConfig(
     row.pluginId,
     pluginConfigPayload(db, user.id, manifest, settings),
   )
+}
+
+// Re-run every installed plugin's setup commands after a desktop recreate.
+// Registered as the docker onDesktopReady hook; never throws.
+export async function reapplyPluginSetup(db: Db, userId: string) {
+  for (const row of db.installedPlugins(userId)) {
+    if (!row.enabled) continue
+    const commands = (row.manifest as PluginManifest).setup?.commands ?? []
+    if (commands.length === 0) continue
+    try {
+      const result = await runPluginInitCommands(
+        userId,
+        row.pluginId,
+        commands,
+        "boot",
+      )
+      db.setInstalledPluginApplied(userId, row.pluginId, {
+        ...row.applied,
+        init: initLogEntry(result) ?? row.applied.init,
+      })
+      if (!result.ok) {
+        console.error(
+          `plugin ${row.pluginId} boot setup failed: ${result.output.slice(0, 500)}`,
+        )
+      }
+    } catch (error) {
+      console.error(
+        `plugin ${row.pluginId} boot setup errored: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
+  }
 }

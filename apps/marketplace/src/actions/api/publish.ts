@@ -5,8 +5,8 @@ import {
   type PluginManifest,
   validatePluginManifest,
 } from "@open-bot/plugin-kit"
-import { addComment, getPluginRow, pluginFromRow } from "../../lib/db"
 import { apiKeyAuth, touchApiKey } from "../../lib/auth"
+import { addComment, getPluginRow, pluginFromRow } from "../../lib/db"
 import { findingsComment, reviewPublish } from "../../lib/security"
 
 function authorized(request: Request, token: string | undefined) {

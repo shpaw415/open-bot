@@ -245,9 +245,7 @@ async function streamFromFile(args: string[], filePath: string) {
       .join("\n")
       .split(/\r?\n/)
       .filter((line) => line.trim())
-    throw new Error(
-      lines[lines.length - 1] || `${args[0]} failed (${code})`,
-    )
+    throw new Error(lines[lines.length - 1] || `${args[0]} failed (${code})`)
   }
 }
 

@@ -4,11 +4,12 @@ import { type AiConfigInput, defineAi } from "@open-bot/ai"
 import { openDatabase } from "@open-bot/db"
 import { applyPendingRestore, startBackupScheduler } from "./backup"
 import { startCronScheduler } from "./cron"
-import { desktopPhase, stopDesktop } from "./docker"
+import { desktopPhase, onDesktopReady, stopDesktop } from "./docker"
 import { aiConfigPath, bindHosts, dataDir, idleMinutes, port } from "./env"
 import { EventHub } from "./events"
 import { setFileWatchSink } from "./file-watch"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
+import { reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStuckWatch } from "./stuck"
 
@@ -55,6 +56,7 @@ if (db.userCount() === 0) {
 }
 
 const hub = new EventHub((userId) => eventTarget(db, userId))
+onDesktopReady((userId) => reapplyPluginSetup(db, userId))
 setFileWatchSink((userId, files) => {
   hub.emit(userId, { type: "project.files", properties: { files } })
 })

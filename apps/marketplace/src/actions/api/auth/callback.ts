@@ -23,18 +23,19 @@ export async function onRequestGet(context: EventContext<Env, never, never>) {
   const url = new URL(context.request.url)
   const error = url.searchParams.get("error")
   if (error)
-    return redirect(`/?loginError=${encodeURIComponent(error)}`, clearOAuthCookie())
+    return redirect(
+      `/?loginError=${encodeURIComponent(error)}`,
+      clearOAuthCookie(),
+    )
   const code = url.searchParams.get("code")
   const saved = readOAuthCookie(context.request)
   if (!code || !saved || saved.state !== url.searchParams.get("state")) {
     return redirect("/?loginError=state", clearOAuthCookie())
   }
   const accessToken = await exchangeCode(config, code, saved.verifier)
-  if (!accessToken)
-    return redirect("/?loginError=exchange", clearOAuthCookie())
+  if (!accessToken) return redirect("/?loginError=exchange", clearOAuthCookie())
   const identity = await verifyAccessToken(config, accessToken)
-  if (!identity)
-    return redirect("/?loginError=verify", clearOAuthCookie())
+  if (!identity) return redirect("/?loginError=verify", clearOAuthCookie())
   const { DB } = context.env
   await upsertUser(DB, identity)
   const token = await createSession(DB, identity.id)

@@ -115,6 +115,7 @@ Manifest quick reference:
 - cron[]: {name, message, everySeconds | cronExpr} — scheduled jobs
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
 - configs[]: {key, label, def} — settings shown on the Plugins page
+- setup: {commands: [...], uninstall: [...]} — shell commands run as root in the desktop at install and on every desktop start (commands must be idempotent, e.g. "apt-get install -y figlet"); uninstall runs at uninstall; the user sees them in the consent prompt, log at ~/.open-bot/plugin-init/<id>.log
 - permissions.vaultRead / vaultCreate: vault key slugs
 - dashboard.tabs[]: {id, title, kind: page|iframe, url?, cards?}
 - textbox: renderers, commands, buttons, validators, attachments
@@ -190,6 +191,10 @@ EOF
     if printf '%s' "$out" | jq -e '.needsConfirm == true' >/dev/null 2>&1; then
       echo "this plugin needs confirmation (policy: manual):"
       printf '%s' "$out" | jq -r '.permissions[] | " - " + .'
+      if printf '%s' "$out" | jq -e '.setupCommands | length > 0' >/dev/null 2>&1; then
+        echo "setup commands (run as root in this desktop at install and on every desktop start):"
+        printf '%s' "$out" | jq -r '.setupCommands[] | "   $ \(.)"'
+      fi
       printf 'install? [y/N] '
       read -r answer
       case "$answer" in

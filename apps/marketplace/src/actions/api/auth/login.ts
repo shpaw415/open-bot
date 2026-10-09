@@ -1,6 +1,11 @@
 "no action"
 
-import { createPkcePair, oauthConfig, oauthCookie, randomToken } from "../../../lib/auth"
+import {
+  createPkcePair,
+  oauthConfig,
+  oauthCookie,
+  randomToken,
+} from "../../../lib/auth"
 
 export async function onRequestGet(context: EventContext<Env, never, never>) {
   const config = oauthConfig(context.env, context.request)

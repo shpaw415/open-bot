@@ -112,6 +112,54 @@ describe("plugin manifest", () => {
     expect(result.ok).toBe(false)
   })
 
+  test("accepts setup commands and reports them", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      setup: {
+        commands: [
+          "sudo apt-get install -y figlet",
+          "pip install --user cowsay",
+        ],
+        uninstall: ["sudo apt-get remove -y figlet"],
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.setup?.commands).toHaveLength(2)
+      expect(result.manifest.setup?.uninstall).toEqual([
+        "sudo apt-get remove -y figlet",
+      ])
+      const summary = pluginPermissionSummary(result.manifest)
+      expect(summary).toContain(
+        "Runs 2 shell commands as root in the desktop at install and on every desktop start",
+      )
+      expect(summary).toContain("Runs shell commands on uninstall")
+    }
+  })
+
+  test("rejects bad setup commands", () => {
+    const empty = validatePluginManifest({
+      ...valid,
+      setup: { commands: ["   "] },
+    })
+    expect(empty.ok).toBe(false)
+    const tooLong = validatePluginManifest({
+      ...valid,
+      setup: { commands: ["x".repeat(501)] },
+    })
+    expect(tooLong.ok).toBe(false)
+    const tooMany = validatePluginManifest({
+      ...valid,
+      setup: { commands: Array.from({ length: 17 }, () => "true") },
+    })
+    expect(tooMany.ok).toBe(false)
+    const notStrings = validatePluginManifest({
+      ...valid,
+      setup: { uninstall: [42] },
+    })
+    expect(notStrings.ok).toBe(false)
+  })
+
   test("parses raw JSON", () => {
     const result = parsePluginManifest(JSON.stringify(valid))
     expect(result.ok).toBe(true)

@@ -52,6 +52,11 @@ export type PluginTool = {
   exec?: boolean
 }
 
+export type PluginSetup = {
+  commands?: string[]
+  uninstall?: string[]
+}
+
 export type PluginConfig = {
   key: string
   label: string
@@ -115,6 +120,7 @@ export type PluginManifest = {
   cron?: PluginCron[]
   tools?: PluginTool[]
   configs?: PluginConfig[]
+  setup?: PluginSetup
   dashboard?: {
     tabs?: PluginTab[]
   }
@@ -169,6 +175,13 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push(`Adds vault keys: ${perms.vaultCreate.join(", ")}`)
   if (perms.desktopTools || manifest.tools?.length)
     summary.push("Installs tools in the desktop container")
+  const setupCommands = manifest.setup?.commands?.length ?? 0
+  if (setupCommands > 0)
+    summary.push(
+      `Runs ${setupCommands} shell command${setupCommands === 1 ? "" : "s"} as root in the desktop at install and on every desktop start`,
+    )
+  if ((manifest.setup?.uninstall?.length ?? 0) > 0)
+    summary.push("Runs shell commands on uninstall")
   if (manifest.dashboard?.tabs?.length) summary.push("Adds dashboard tabs")
   if (manifest.textbox) summary.push("Extends the chat composer")
   if (perms.opencode || manifest.opencode)
@@ -319,6 +332,24 @@ function validateTextbox(textbox: unknown, issues: ManifestIssue[]) {
       }
     }
   }
+}
+
+function validateSetupCommands(
+  setup: unknown,
+  key: "commands" | "uninstall",
+  issues: ManifestIssue[],
+): string[] {
+  if (!isRecord(setup) || setup[key] === undefined) return []
+  const list = strArray(setup[key], 16)
+  if (!list || list.some((item) => !item.trim() || item.length > 500)) {
+    issues.push({
+      path: `setup.${key}`,
+      message:
+        "must be a list of shell commands (max 16, each 1-500 chars, non-empty)",
+    })
+    return []
+  }
+  return list
 }
 
 export function validatePluginManifest(input: unknown): ManifestValidation {
@@ -507,6 +538,9 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     }
   }
 
+  const setupCommands = validateSetupCommands(input.setup, "commands", issues)
+  const setupUninstall = validateSetupCommands(input.setup, "uninstall", issues)
+
   const configs = input.configs === undefined ? [] : input.configs
   if (!Array.isArray(configs) || configs.length > 64) {
     issues.push({ path: "configs", message: "configs must be a list (max 64)" })
@@ -634,6 +668,12 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     cron: cron as PluginCron[],
     tools: tools as PluginTool[],
     configs: configs as PluginConfig[],
+    setup: isRecord(input.setup)
+      ? {
+          commands: setupCommands,
+          uninstall: setupUninstall,
+        }
+      : undefined,
     dashboard: isRecord(input.dashboard)
       ? { tabs: (input.dashboard.tabs ?? []) as PluginTab[] }
       : undefined,

@@ -291,6 +291,7 @@ export type PluginAppliedLog = {
   keys: string[]
   tools: string[]
   opencode: boolean
+  init?: { ranAt: number; ok: boolean; output: string }
 }
 
 export type InstalledPlugin = {

@@ -1,4 +1,4 @@
-import type { CronJob, Db, User } from "@open-bot/db"
+import type { CronJob, Db, PluginAppliedLog, User } from "@open-bot/db"
 import {
   manifestIssuesText,
   type PluginManifest,
@@ -123,10 +123,14 @@ function publicInstalled(row: {
   manifest: Record<string, unknown>
   readme: string | null
   enabled: boolean
+  applied?: PluginAppliedLog
   createdAt: number
   updatedAt: number
 }) {
   const manifest = row.manifest as PluginManifest
+  const setupCommands = Array.isArray(manifest.setup?.commands)
+    ? manifest.setup.commands
+    : []
   return {
     id: row.id,
     pluginId: row.pluginId,
@@ -138,6 +142,8 @@ function publicInstalled(row: {
     repo: typeof manifest.repo === "string" ? manifest.repo : "",
     enabled: row.enabled,
     permissions: pluginPermissionSummary(manifest),
+    setupCommands,
+    init: row.applied?.init ?? null,
     manifest,
     readme: row.readme,
     createdAt: row.createdAt,
@@ -339,7 +345,10 @@ export function handlePlugins(
       .then((body: Record<string, unknown>) => {
         const key = String(body.key ?? "").trim()
         if (!/^obm_[A-Za-z0-9_-]{40,120}$/.test(key)) {
-          return json({ error: "that does not look like a marketplace API key" }, 400)
+          return json(
+            { error: "that does not look like a marketplace API key" },
+            400,
+          )
         }
         db.setSetting(MARKET_KEY_SETTING, key)
         return json({ ok: true, hint: key.slice(-4) })
@@ -404,10 +413,14 @@ export function handlePlugins(
         if (!text || text.length > 4000) {
           return json({ error: "comment body is required (max 4000)" }, 400)
         }
-        return marketplace(db, `/api/plugins/${encodeURIComponent(id)}/comments`, {
-          method: "POST",
-          json: { body: text, authorKind: "agent", author: "open-bot agent" },
-        }).then(
+        return marketplace(
+          db,
+          `/api/plugins/${encodeURIComponent(id)}/comments`,
+          {
+            method: "POST",
+            json: { body: text, authorKind: "agent", author: "open-bot agent" },
+          },
+        ).then(
           (response) =>
             new Response(response.body, {
               status: response.status,
@@ -440,6 +453,7 @@ export function handlePlugins(
               needsConfirm: true,
               policy: currentPolicy,
               permissions: pluginPermissionSummary(detail.manifest),
+              setupCommands: detail.manifest.setup?.commands ?? [],
               name: detail.plugin.name,
               version: detail.plugin.version,
             },

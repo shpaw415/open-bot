@@ -2,9 +2,7 @@
 
 import { getSessionUser } from "../../../lib/auth"
 
-export async function onRequestDelete(
-  context: EventContext<Env, "id", never>,
-) {
+export async function onRequestDelete(context: EventContext<Env, "id", never>) {
   const user = await getSessionUser(context.env.DB, context.request)
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 })
   const id = decodeURIComponent(context.params.id as string)

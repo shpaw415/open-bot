@@ -48,6 +48,8 @@ mkdir -p /home/agent/.config/opencode/skills/research
 cp /opt/open-bot/seed/skills/research/SKILL.md /home/agent/.config/opencode/skills/research/SKILL.md
 mkdir -p /home/agent/.config/opencode/skills/plugin
 cp /opt/open-bot/seed/skills/plugin/SKILL.md /home/agent/.config/opencode/skills/plugin/SKILL.md
+mkdir -p /home/agent/.config/opencode/skills/stress-test
+cp /opt/open-bot/seed/skills/stress-test/SKILL.md /home/agent/.config/opencode/skills/stress-test/SKILL.md
 mkdir -p /home/agent/.config/opencode/skills/gpio-3d
 cp /opt/open-bot/seed/skills/gpio-3d/SKILL.md /home/agent/.config/opencode/skills/gpio-3d/SKILL.md
 cp /opt/open-bot/seed/skills/gpio-3d/validate-manifest.ts /home/agent/.config/opencode/skills/gpio-3d/validate-manifest.ts

@@ -55,6 +55,8 @@ export type InstalledPluginInfo = {
   repo: string
   enabled: boolean
   permissions: string[]
+  setupCommands?: string[]
+  init?: { ranAt: number; ok: boolean; output: string } | null
   manifest: {
     configs?: { key: string; label: string; def: string }[]
     dashboard?: {

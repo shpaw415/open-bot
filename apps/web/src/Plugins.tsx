@@ -61,7 +61,13 @@ function InstallDialog({
   onClose,
   onInstalled,
 }: {
-  target: { id: string; name: string; version: string; permissions: string[] }
+  target: {
+    id: string
+    name: string
+    version: string
+    permissions: string[]
+    setupCommands: string[]
+  }
   onClose: () => void
   onInstalled: () => void
 }) {
@@ -93,6 +99,30 @@ function InstallDialog({
           v{target.version} · id {target.id}
         </Typography>
         <PluginBadges permissions={target.permissions} />
+        {target.setupCommands.length > 0 ? (
+          <>
+            <Typography variant="caption" color="textSecondary">
+              Setup — these shell commands run as root in your desktop at
+              install and again on every desktop start:
+            </Typography>
+            <Box
+              Element="pre"
+              sx={{
+                m: 0,
+                p: 1.5,
+                maxHeight: 200,
+                overflow: "auto",
+                borderRadius: 1,
+                bgcolor: "action.hover",
+                fontSize: 12,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {target.setupCommands.join("\n")}
+            </Box>
+          </>
+        ) : null}
         <Typography variant="caption" color="textSecondary">
           Plugins can add skills, personalities, scheduled jobs, dashboard tabs,
           and desktop tools. Remove them any time from this page.
@@ -178,6 +208,13 @@ function InstalledCard({
           >
             Settings
           </Button>
+        ) : null}
+        {plugin.init && !plugin.init.ok ? (
+          <Alert severity="warning" sx={{ py: 0.5 }}>
+            Setup commands failed on the last run. Check{" "}
+            <code>~/.open-bot/plugin-init/{plugin.pluginId}.log</code> on the
+            desktop.
+          </Alert>
         ) : null}
       </Stack>
     </Paper>
@@ -503,6 +540,7 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     name: string
     version: string
     permissions: string[]
+    setupCommands: string[]
   } | null>(null)
   const [settingsFor, setSettingsFor] = useState<InstalledPluginInfo | null>(
     null,
@@ -589,9 +627,8 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         {!configured ? (
           <Alert severity="info">
             The marketplace is not configured on this instance. Paste a
-            marketplace API key below (admin), or set
-            OPEN_BOT_MARKETPLACE_URL and OPEN_BOT_MARKETPLACE_TOKEN on the
-            control plane.
+            marketplace API key below (admin), or set OPEN_BOT_MARKETPLACE_URL
+            and OPEN_BOT_MARKETPLACE_TOKEN on the control plane.
           </Alert>
         ) : null}
         <MarketplaceAccount isAdmin={isAdmin} />
@@ -675,6 +712,7 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
                 const probe = await api<{
                   needsConfirm?: boolean
                   permissions?: string[]
+                  setupCommands?: string[]
                 }>("/api/plugins/install", {
                   method: "POST",
                   body: JSON.stringify({ pluginId: target.id }),
@@ -685,6 +723,7 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
                     name: target.name,
                     version: target.version,
                     permissions: probe.permissions ?? [],
+                    setupCommands: probe.setupCommands ?? [],
                   })
                   return
                 }

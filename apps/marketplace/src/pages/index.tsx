@@ -76,7 +76,9 @@ export default function Home() {
   return (
     <div className="container mx-auto max-w-4xl px-4 py-10">
       <div className="flex items-start justify-between gap-4">
-        <h1 className="text-3xl font-bold tracking-tight">Plugin marketplace</h1>
+        <h1 className="text-3xl font-bold tracking-tight">
+          Plugin marketplace
+        </h1>
         <a
           href="/account"
           className="mt-1 rounded-full border border-slate-700 px-4 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800"
@@ -93,7 +95,9 @@ export default function Home() {
       {typeof window !== "undefined" &&
       new URLSearchParams(window.location.search).has("loginError") ? (
         <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
-          Sign-in failed ({new URLSearchParams(window.location.search).get("loginError")}). Try again.
+          Sign-in failed (
+          {new URLSearchParams(window.location.search).get("loginError")}). Try
+          again.
         </p>
       ) : null}
 

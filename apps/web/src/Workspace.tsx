@@ -354,6 +354,10 @@ function threadTime(session: SessionInfo): number {
   return session.time?.updated ?? session.time?.created ?? 0
 }
 
+function threadCreated(session: SessionInfo): number {
+  return session.time?.created ?? 0
+}
+
 function threadTitle(session: SessionInfo): string {
   return session.title?.trim() || "New thread"
 }
@@ -732,7 +736,7 @@ export function Workspace({ me }: { me: Me }) {
           .filter(
             (item) => !item.parentID && !item.title?.startsWith("cron-run:"),
           )
-          .sort((a, b) => threadTime(b) - threadTime(a)),
+          .sort((a, b) => threadCreated(b) - threadCreated(a)),
       )
       setSessionStatus(
         status && typeof status === "object"

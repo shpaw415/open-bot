@@ -500,6 +500,15 @@ async function startDesktopInner(
       }
     }
   }
+  if (createdOpencode && desktopReadyHook) {
+    desktopReadyHook(userId).catch((error: unknown) => {
+      console.error(
+        `plugin setup after ${n.opencode} start failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    })
+  }
 
   if (!(await isRunning(n.computer))) {
     await sh(["docker", "rm", "-f", n.computer])
@@ -1028,6 +1037,151 @@ export async function removePluginTools(
     ])
   }
   return true
+}
+
+// Fires after a desktop's opencode container is (re)created. Registered by the
+// control server so plugins can re-apply their init commands; the container
+// filesystem is wiped on recreate, so anything a plugin installed outside the
+// /usr/local and /home volumes has to be redone.
+let desktopReadyHook: ((userId: string) => Promise<void>) | null = null
+
+export function onDesktopReady(hook: (userId: string) => Promise<void>) {
+  desktopReadyHook = hook
+}
+
+export type PluginInitResult = {
+  ran: boolean
+  ok: boolean
+  timedOut: boolean
+  output: string
+}
+
+const PLUGIN_INIT_TIMEOUT_MS = 8 * 60_000
+const PLUGIN_INIT_OUTPUT_LIMIT = 32 * 1024
+
+// Run a plugin's setup commands as root inside the desktop. Output is appended
+// to /home/agent/.open-bot/plugin-init/<pluginId>.log (on the home volume, so
+// it survives desktop recreation). Commands must be idempotent: they run at
+// install and again after every desktop recreate.
+export async function runPluginInitCommands(
+  userId: string,
+  pluginId: string,
+  commands: string[],
+  label = "init",
+): Promise<PluginInitResult> {
+  if (commands.length === 0) {
+    return { ran: false, ok: true, timedOut: false, output: "" }
+  }
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(pluginId)) {
+    throw new HttpError(400, "invalid plugin id", "plugin_id")
+  }
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) {
+    return {
+      ran: false,
+      ok: false,
+      timedOut: false,
+      output: "desktop is not running",
+    }
+  }
+  const echoed = commands.map((command) => command.replaceAll("\n", " "))
+  const script = [
+    "set -e -o pipefail",
+    "mkdir -p /home/agent/.open-bot/plugin-init",
+    `log=/home/agent/.open-bot/plugin-init/${pluginId}.log`,
+    'exec > >(tee -a "$log") 2>&1',
+    `echo "=== plugin ${pluginId} ${label} at $(date -Is) ==="`,
+    ...commands.flatMap((command, index) => [
+      `echo "+ ${echoed[index]}"`,
+      command,
+    ]),
+    'echo "=== done ==="',
+    "",
+  ].join("\n")
+  let proc: ReturnType<typeof Bun.spawn>
+  try {
+    proc = Bun.spawn(
+      [
+        "docker",
+        "exec",
+        "-i",
+        "-e",
+        "HOME=/home/agent",
+        n.opencode,
+        "bash",
+        "-s",
+      ],
+      { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+    )
+  } catch (caught) {
+    return {
+      ran: true,
+      ok: false,
+      timedOut: false,
+      output:
+        caught instanceof Error ? caught.message : "plugin setup failed to run",
+    }
+  }
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    try {
+      proc.kill()
+    } catch {}
+  }, PLUGIN_INIT_TIMEOUT_MS)
+  let writeError: string | null = null
+  try {
+    const stdin = proc.stdin
+    if (!stdin || typeof stdin === "number") {
+      throw new Error("plugin setup failed to run")
+    }
+    stdin.write(script)
+    await stdin.end()
+  } catch (caught) {
+    writeError =
+      caught instanceof Error ? caught.message : "plugin setup failed to run"
+  }
+  try {
+    const outStream = typeof proc.stdout === "number" ? null : proc.stdout
+    const errStream = typeof proc.stderr === "number" ? null : proc.stderr
+    const finished = Promise.all([
+      readCapped(outStream, PLUGIN_INIT_OUTPUT_LIMIT),
+      readCapped(errStream, PLUGIN_INIT_OUTPUT_LIMIT),
+      proc.exited,
+    ])
+    const raced = await Promise.race([
+      finished.then((value) => ({ done: true as const, value })),
+      Bun.sleep(PLUGIN_INIT_TIMEOUT_MS + 5_000).then(() => ({
+        done: false as const,
+      })),
+    ])
+    if (!raced.done) {
+      timedOut = true
+      try {
+        proc.kill()
+      } catch {}
+      return { ran: true, ok: false, timedOut: true, output: "" }
+    }
+    const [stdout, stderr, code] = raced.value
+    const output = `${stdout}\n${stderr}`.trim()
+    return {
+      ran: true,
+      ok: code === 0,
+      timedOut,
+      output: writeError ? `${output}\n${writeError}`.trim() : output,
+    }
+  } catch (caught) {
+    return {
+      ran: true,
+      ok: false,
+      timedOut,
+      output:
+        writeError ??
+        (caught instanceof Error ? caught.message : "plugin setup failed"),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // Write the plugin's merged config (vault grants + settings) into the desktop,
