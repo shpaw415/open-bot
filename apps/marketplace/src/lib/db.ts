@@ -1,4 +1,4 @@
-import type { PluginManifest } from "@open-bot/plugin-kit"
+import { isDevVersion, type PluginManifest } from "@open-bot/plugin-kit"
 
 export type PluginRow = {
   id: string
@@ -75,6 +75,7 @@ export type MarketDetail = {
   security: SecuritySummary
   versions: {
     version: string
+    stability: "stable" | "dev"
     createdAt: number
     notes: string | null
     securityStatus: string | null
@@ -165,6 +166,9 @@ export function detailFromRows(
       .sort((a, b) => b.created_at - a.created_at)
       .map((item) => ({
         version: item.version,
+        stability: isDevVersion(item.version)
+          ? ("dev" as const)
+          : ("stable" as const),
         createdAt: item.created_at,
         notes: item.notes,
         securityStatus: item.security_status,

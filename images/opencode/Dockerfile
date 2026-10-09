@@ -58,6 +58,7 @@ RUN python3 -m venv /opt/gpio-3d/venv \
     && chmod -R a+rX /opt/gpio-3d
 
 COPY images/opencode/seed /opt/open-bot/seed
+COPY packages/plugin-kit/schema/open-bot.plugin.schema.json /opt/open-bot/seed/skills/plugin/open-bot.plugin.schema.json
 COPY scripts/opencode-auth.sh /opt/open-bot/opencode-auth.sh
 COPY scripts/ob-cron.sh /usr/local/bin/ob-cron
 COPY scripts/ob-persona.sh /usr/local/bin/ob-persona

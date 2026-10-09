@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import {
   detectMention,
+  findReferenceTokens,
   fuzzyScore,
   matchSuggestions,
   mentionSuggestions,
   type RefSectionView,
 } from "./references"
 
-const keys = ["personas", "cron", "skills"]
+const keys = ["personas", "cron", "skills", "projects"]
 
 describe("detect mention", () => {
   test("starts a section mention at the at sign", () => {
@@ -51,6 +52,76 @@ describe("detect mention", () => {
       stage: "section",
       query: "",
     })
+  })
+
+  test("singular @project opens the projects picker", () => {
+    expect(detectMention("@project/my", 11, keys)).toMatchObject({
+      stage: "name",
+      section: "projects",
+      query: "my",
+    })
+    expect(detectMention("@project", 8, keys)).toMatchObject({
+      stage: "section",
+      query: "project",
+    })
+  })
+})
+
+describe("find reference tokens", () => {
+  const projects = [
+    { name: "My App", path: "/home/agent/workspace/my-app" },
+    { name: "API client", path: "/home/agent/plugins-create/api-client" },
+  ]
+
+  test("finds plural and singular tokens with paths", () => {
+    const tokens = findReferenceTokens(
+      "work in @projects/My App and @project/api client",
+      projects,
+    )
+    expect(tokens).toHaveLength(2)
+    expect(tokens[0]).toMatchObject({
+      start: 8,
+      end: 24,
+      name: "My App",
+      path: "/home/agent/workspace/my-app",
+    })
+    expect(tokens[1]).toMatchObject({ name: "API client" })
+  })
+
+  test("ends the highlight at the project name, not trailing words", () => {
+    const tokens = findReferenceTokens(
+      "use @projects/My App today please",
+      projects,
+    )
+    expect(tokens[0]?.start).toBe(4)
+    expect(tokens[0]?.end).toBe(4 + "@projects/My App".length)
+    expect(
+      "use @projects/My App".slice(tokens[0]?.start ?? 0, tokens[0]?.end),
+    ).toBe("@projects/My App")
+  })
+
+  test("matches by slug-like prefix and unique first word", () => {
+    const slugProjects = [
+      { name: "My App", path: "/home/agent/workspace/my-app" },
+    ]
+    const tokens = findReferenceTokens("use @projects/my today", slugProjects)
+    expect(tokens[0]).toMatchObject({ name: "My App" })
+  })
+
+  test("unknown projects keep a span for the warning tint", () => {
+    const tokens = findReferenceTokens("use @projects/nope today", projects)
+    expect(tokens).toHaveLength(1)
+    expect(tokens[0]?.name).toBe("")
+    expect(
+      "use @projects/nope today".slice(tokens[0]?.start ?? 0, tokens[0]?.end),
+    ).toBe("@projects/nope")
+  })
+
+  test("ignores emails and empty mentions", () => {
+    expect(
+      findReferenceTokens("mail me@projects/x or @projects/", projects),
+    ).toEqual([])
+    expect(findReferenceTokens("no mentions here", projects)).toEqual([])
   })
 })
 

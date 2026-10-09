@@ -127,6 +127,19 @@ export type System1Provider = {
   slug: string
 }
 
+export type VoiceConfig = {
+  sttProvider: string
+  sttAccountId: string
+  sttApiKey: string
+  sttModel: string
+  ttsProvider: string
+  ttsAccountId: string
+  ttsApiKey: string
+  ttsModel: string
+  ttsVoice: string
+  language: string
+}
+
 export type VikingProvider = {
   baseURL: string
   apiKey: string
@@ -291,6 +304,7 @@ export type PluginAppliedLog = {
   keys: string[]
   tools: string[]
   opencode: boolean
+  agentsMd?: boolean
   init?: { ranAt: number; ok: boolean; output: string }
 }
 
@@ -866,6 +880,72 @@ export function openDatabase(path: string) {
         .where(eq(desktops.userId, userId))
         .run()
     },
+    getVoiceConfig(userId: string): VoiceConfig {
+      const row = orm
+        .select({
+          sttProvider: desktops.sttProvider,
+          sttAccountId: desktops.sttAccountId,
+          sttApiKey: desktops.sttApiKey,
+          sttModel: desktops.sttModel,
+          ttsProvider: desktops.ttsProvider,
+          ttsAccountId: desktops.ttsAccountId,
+          ttsApiKey: desktops.ttsApiKey,
+          ttsModel: desktops.ttsModel,
+          ttsVoice: desktops.ttsVoice,
+          language: desktops.voiceLanguage,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      return {
+        sttProvider: row?.sttProvider ?? "",
+        sttAccountId: row?.sttAccountId ?? "",
+        sttApiKey: row?.sttApiKey ?? "",
+        sttModel: row?.sttModel ?? "",
+        ttsProvider: row?.ttsProvider ?? "",
+        ttsAccountId: row?.ttsAccountId ?? "",
+        ttsApiKey: row?.ttsApiKey ?? "",
+        ttsModel: row?.ttsModel ?? "",
+        ttsVoice: row?.ttsVoice ?? "",
+        language: row?.language ?? "",
+      }
+    },
+    setVoiceConfig(userId: string, value: VoiceConfig) {
+      orm
+        .update(desktops)
+        .set({
+          sttProvider: value.sttProvider,
+          sttAccountId: value.sttAccountId,
+          sttApiKey: value.sttApiKey,
+          sttModel: value.sttModel,
+          ttsProvider: value.ttsProvider,
+          ttsAccountId: value.ttsAccountId,
+          ttsApiKey: value.ttsApiKey,
+          ttsModel: value.ttsModel,
+          ttsVoice: value.ttsVoice,
+          voiceLanguage: value.language,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    clearVoiceConfig(userId: string) {
+      orm
+        .update(desktops)
+        .set({
+          sttProvider: null,
+          sttAccountId: null,
+          sttApiKey: null,
+          sttModel: null,
+          ttsProvider: null,
+          ttsAccountId: null,
+          ttsApiKey: null,
+          ttsModel: null,
+          ttsVoice: null,
+          voiceLanguage: null,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
     desktopUserIds() {
       return orm
         .select({ userId: desktops.userId })
@@ -932,6 +1012,13 @@ export function openDatabase(path: string) {
         .select({ userId: desktops.userId })
         .from(desktops)
         .where(lt(desktops.lastActiveAt, before))
+        .all()
+    },
+    activeDesktops(since: number) {
+      return orm
+        .select({ userId: desktops.userId })
+        .from(desktops)
+        .where(gte(desktops.lastActiveAt, since))
         .all()
     },
     createPersona(persona: Persona) {

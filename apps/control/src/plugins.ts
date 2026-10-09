@@ -1,13 +1,18 @@
 import type { CronJob, Db, PluginAppliedLog, User } from "@open-bot/db"
 import {
   manifestIssuesText,
+  PLUGIN_VERSION_PATTERN,
   type PluginManifest,
   parsePluginManifest,
   pluginPermissionSummary,
-  SEMVER_PATTERN,
 } from "@open-bot/plugin-kit"
 import { nextRunMs } from "./cron"
-import { restartOpencode, syncOpencodePlugin } from "./docker"
+import {
+  pluginAgentsMdPath,
+  restartOpencode,
+  syncOpencodePlugin,
+  syncPluginAgentsMd,
+} from "./docker"
 import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 import {
@@ -440,8 +445,11 @@ export function handlePlugins(
         const version = String(body.version ?? "").trim()
         const confirm = body.confirm === true
         if (!pluginId) return json({ error: "pluginId is required" }, 400)
-        if (version && !SEMVER_PATTERN.test(version)) {
-          return json({ error: "version must be semver" }, 400)
+        if (version && !PLUGIN_VERSION_PATTERN.test(version)) {
+          return json(
+            { error: "version must be semver or a dev tag (e.g. beta-1)" },
+            400,
+          )
         }
         const detail = await fetchDetail(db, pluginId, version || undefined)
         if (version && detail.plugin.version !== version) {
@@ -551,33 +559,67 @@ export function handlePlugins(
       what === "enable",
     )
     // Disable/enable also toggles the plugin's OpenCode surfaces (plugin
-    // packages, MCP servers, agent workers, tool overrides) so a disabled
-    // plugin leaves the running agent alone.
+    // packages, MCP servers, agent workers, tool overrides, injected agent
+    // instructions) so a disabled plugin leaves the running agent alone.
     const oc = (row.manifest as PluginManifest).opencode
-    if (oc && (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools)) {
-      const patch =
-        what === "enable"
-          ? {
-              addPlugins: oc.plugin ?? [],
-              removePlugins: [],
-              addMcp: (oc.mcp ?? {}) as Record<string, unknown>,
-              removeMcp: [],
-              addAgents: oc.agents ?? {},
-              removeAgents: [],
-              addAgentTools: oc.agentTools ?? {},
-              removeAgentTools: {},
-            }
-          : {
-              addPlugins: [],
-              removePlugins: oc.plugin ?? [],
-              addMcp: {},
-              removeMcp: Object.keys((oc.mcp ?? {}) as object),
-              addAgents: {},
-              removeAgents: Object.keys(oc.agents ?? {}),
-              addAgentTools: {},
-              removeAgentTools: oc.agentTools ?? {},
-            }
-      return syncOpencodePlugin(user.id, patch)
+    if (
+      oc &&
+      (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools || oc.agentsMd)
+    ) {
+      const apply = async () => {
+        if (oc.agentsMd) {
+          const instructions = pluginAgentsMdPath(pluginId)
+          if (what === "enable") {
+            await syncPluginAgentsMd(user.id, pluginId, oc.agentsMd)
+          }
+          await syncOpencodePlugin(
+            user.id,
+            what === "enable"
+              ? {
+                  addPlugins: [],
+                  removePlugins: [],
+                  addMcp: {},
+                  removeMcp: [],
+                  addInstructions: [instructions],
+                  removeInstructions: [],
+                }
+              : {
+                  addPlugins: [],
+                  removePlugins: [],
+                  addMcp: {},
+                  removeMcp: [],
+                  addInstructions: [],
+                  removeInstructions: [instructions],
+                },
+          )
+        }
+        if (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools) {
+          const patch =
+            what === "enable"
+              ? {
+                  addPlugins: oc.plugin ?? [],
+                  removePlugins: [],
+                  addMcp: (oc.mcp ?? {}) as Record<string, unknown>,
+                  removeMcp: [],
+                  addAgents: oc.agents ?? {},
+                  removeAgents: [],
+                  addAgentTools: oc.agentTools ?? {},
+                  removeAgentTools: {},
+                }
+              : {
+                  addPlugins: [],
+                  removePlugins: oc.plugin ?? [],
+                  addMcp: {},
+                  removeMcp: Object.keys((oc.mcp ?? {}) as object),
+                  addAgents: {},
+                  removeAgents: Object.keys(oc.agents ?? {}),
+                  addAgentTools: {},
+                  removeAgentTools: oc.agentTools ?? {},
+                }
+          await syncOpencodePlugin(user.id, patch)
+        }
+      }
+      return apply()
         .then(async () => restartOpencode(user.id).catch(() => {}))
         .then(() => {
           hub.emit(user.id, { type: "plugins.changed" })

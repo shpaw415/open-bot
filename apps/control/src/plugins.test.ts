@@ -64,7 +64,7 @@ describe("plugins router", () => {
     expect(await goodRes?.json()).toMatchObject({ ok: true })
 
     const bad = route("/api/plugins/validate", "POST", {
-      manifest: { ...manifest, version: "nope" },
+      manifest: { ...manifest, version: "nope!" },
     })
     const badRes = await handlePlugins(bad.req, bad.url, db, user(), hub)
     expect(badRes?.status).toBe(400)
@@ -105,6 +105,32 @@ describe("plugins router", () => {
     const listed = route("/api/plugins/installed")
     const res = await handlePlugins(listed.req, listed.url, db, user(), hub)
     expect(await res?.json()).toMatchObject({ plugins: [], policy: "manual" })
+  })
+
+  test("install accepts dev tags and prereleases, rejects malformed versions", async () => {
+    const bad = route("/api/plugins/install", "POST", {
+      pluginId: "weather-pro",
+      version: "beta!",
+    })
+    const badRes = await handlePlugins(bad.req, bad.url, db, user(), hub)
+    expect(badRes?.status).toBe(400)
+    expect(await badRes?.json()).toMatchObject({
+      error: "version must be semver or a dev tag (e.g. beta-1)",
+    })
+
+    for (const version of ["beta-1", "staging.2", "1.2.3-beta.1"]) {
+      const dev = route("/api/plugins/install", "POST", {
+        pluginId: "weather-pro",
+        version,
+      })
+      let err: { status?: number } | null = null
+      try {
+        await handlePlugins(dev.req, dev.url, db, user(), hub)
+      } catch (caught) {
+        err = caught as { status?: number }
+      }
+      expect(err?.status).toBe(503)
+    }
   })
 
   test("ensureGuardCron creates and updates one daily job", () => {

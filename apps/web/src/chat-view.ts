@@ -16,9 +16,14 @@ export type ChatPart = {
 
 export type ChatMessage = {
   info?: {
+    id?: string
     role?: string
     summary?: boolean | { diffs?: unknown[] }
     time?: { created?: number; completed?: number }
+    error?: {
+      name?: string
+      data?: { message?: string; isRetryable?: boolean }
+    }
   }
   parts?: ChatPart[]
 }
@@ -57,6 +62,29 @@ export function visibleText(message: ChatMessage): string {
     )
     .map((part) => part.text ?? "")
     .join("\n\n")
+}
+
+// Speakable prose for read-aloud: plugin-card payloads, screen handoffs, code
+// blocks, inline code, images, and link URLs carry no voice — strip them and
+// flatten light markdown so the sentence sounds natural.
+export function speakableText(input: string): string {
+  const text = splitPluginCards(input)
+    .map((segment) => (segment.kind === "text" ? (segment.text ?? "") : ""))
+    .join("\n\n")
+  const clean = splitScreenHandoff(text)
+    .text.replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^\s*#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/(\*\*|__|~~)/g, "")
+    .replace(/\n{2,}/g, " ")
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+  return clean
 }
 
 const SCREEN_IMAGE = /!\[[^\]]*\]\(open-bot:\/\/screen\)/g
@@ -339,6 +367,40 @@ export function userMessageCount(messages: ChatMessage[]): number {
     (count, message) => (message.info?.role === "user" ? count + 1 : count),
     0,
   )
+}
+
+const NETWORK_ERROR =
+  /cannot connect|unable to connect|socket connection|typo in the url|econn\w*|etimedout|fetch failed|network error/i
+
+export type TurnError = {
+  messageId: string
+  detail: string
+  retryable: boolean
+}
+
+/**
+ * Detects a dead turn: the last message is an assistant reply that ended with
+ * an error instead of completing (provider outage, aborted stream, storage
+ * failure). Aborted-by-user turns are not turn errors.
+ */
+export function turnError(messages: ChatMessage[]): TurnError | null {
+  const last = messages[messages.length - 1]
+  const info = last?.info
+  if (!info || info.role !== "assistant" || info.summary === true) return null
+  const error = info.error
+  if (!error || typeof error !== "object") return null
+  const name = typeof error.name === "string" ? error.name : ""
+  const raw =
+    typeof error.data?.message === "string" && error.data.message
+      ? error.data.message
+      : name
+  if (!raw) return null
+  if (/abort/i.test(name) || /abort/i.test(raw)) return null
+  return {
+    messageId: typeof info.id === "string" ? info.id : "",
+    detail: raw.length > 160 ? `${raw.slice(0, 159)}…` : raw,
+    retryable: error.data?.isRetryable === true || NETWORK_ERROR.test(raw),
+  }
 }
 
 export function receiptMatches(

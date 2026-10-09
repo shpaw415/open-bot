@@ -4,10 +4,30 @@ import { type AiConfigInput, defineAi } from "@open-bot/ai"
 import { openDatabase } from "@open-bot/db"
 import { applyPendingRestore, startBackupScheduler } from "./backup"
 import { startCronScheduler } from "./cron"
-import { desktopPhase, onDesktopReady, stopDesktop } from "./docker"
-import { aiConfigPath, bindHosts, dataDir, idleMinutes, port } from "./env"
+import {
+  containerExists,
+  currentStart,
+  desktopBusy,
+  desktopPhase,
+  isRunning,
+  onDesktopReady,
+  runningCount,
+  sleptRecently,
+  startDesktop,
+  stopDesktop,
+} from "./docker"
+import {
+  aiConfigPath,
+  bindHosts,
+  dataDir,
+  idleMinutes,
+  maxDesktops,
+  names,
+  port,
+} from "./env"
 import { EventHub } from "./events"
 import { setFileWatchSink } from "./file-watch"
+import { resolveDesktopProviders } from "./key-vault"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
 import { reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
@@ -80,16 +100,66 @@ startCronScheduler(db, hub)
 startStuckWatch(db, hub)
 startBackupScheduler(db)
 
+const RESTART_COOLDOWN_MS = 5 * 60_000
+const restartAttempts = new Map<string, number>()
+
+// Every minute: stop desktops idle past the cutoff (never mid-turn), and
+// restart desktops whose containers crashed while the user was still active.
 setInterval(() => {
   void (async () => {
+    const cutoff = Date.now() - idleMinutes * 60 * 1000
     try {
-      const before = Date.now() - idleMinutes * 60 * 1000
-      for (const row of db.idleDesktops(before)) {
+      for (const row of db.idleDesktops(cutoff)) {
         if ((await desktopPhase(row.userId)) !== "running") continue
+        if (await desktopBusy(row.userId, db.desktop(row.userId))) continue
         await stopDesktop(row.userId)
       }
     } catch {
       return
+    }
+    try {
+      for (const row of db.activeDesktops(cutoff)) {
+        if (currentStart(row.userId)) continue
+        if (sleptRecently(row.userId)) continue
+        const last = restartAttempts.get(row.userId) ?? 0
+        if (Date.now() - last < RESTART_COOLDOWN_MS) continue
+        const n = names(row.userId)
+        // A stopped-but-existing container is a crash; a missing one was
+        // never started and must stay on demand.
+        if (
+          (await isRunning(n.opencode)) ||
+          !(await containerExists(n.opencode))
+        )
+          continue
+        const desktop = db.desktop(row.userId)
+        if (!desktop) continue
+        restartAttempts.set(row.userId, Date.now())
+        if ((await runningCount()) >= maxDesktops) continue
+        const auth = resolveDesktopProviders(db, row.userId)
+        console.log(`restarting crashed desktop for user ${row.userId}`)
+        startDesktop(
+          row.userId,
+          desktop,
+          auth.viking,
+          auth.image,
+          auth.system1,
+          auth.video,
+          auth.model3d,
+          auth.chatKeys,
+        ).catch((error: unknown) => {
+          console.error(
+            `desktop restart failed: ${
+              error instanceof Error ? error.message : error
+            }`,
+          )
+        })
+      }
+    } catch (error) {
+      console.error(
+        `desktop restart sweep failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
     }
   })()
 }, 60_000)

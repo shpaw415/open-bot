@@ -16,7 +16,7 @@ Usage:
   ob-plugin publish DIR              publish the plugin to the marketplace (repo + release must exist)
   ob-plugin search [QUERY]           search the marketplace
   ob-plugin info ID                  marketplace details for one plugin
-  ob-plugin install ID [--version X] [--yes]   install a plugin (--yes skips the consent prompt)
+  ob-plugin install ID [--version X] [--yes]   install a plugin (--version takes semver or a dev tag like beta-1; --yes skips the consent prompt)
   ob-plugin list                     list installed plugins
   ob-plugin remove ID                uninstall a plugin
   ob-plugin enable ID | disable ID   toggle a plugin
@@ -35,6 +35,15 @@ Publish checklist (run before ob-plugin publish):
   gh repo create OWNER/NAME --public --source . --push
   gh release create v1.0.0 -R OWNER/NAME --notes "First release"
   ob-plugin publish ~/plugins-create/NAME
+
+Staging a release (dev tags):
+  Set the manifest version to a dev tag (e.g. "beta-1"), move the tag, publish,
+  install pinned, stress-test, then bump to semver for the stable release:
+  git tag -f vbeta-1 && git push -f origin vbeta-1
+  ob-plugin publish ~/plugins-create/NAME
+  ob-plugin install NAME --version beta-1
+  Dev tags stay out of marketplace search; republishing the same tag overwrites
+  it, and reinstalling the pinned version updates the install in place.
 EOF
 }
 
@@ -78,8 +87,10 @@ case "$cmd" in
     [ ! -e "$dir" ] || { echo "ob-plugin: $dir already exists" >&2; exit 2; }
     mkdir -p "$dir"
     repo_hint="OWNER/$name"
-    jq -n --arg id "$name" --arg repo "$repo_hint" \
+    schema="/home/agent/.config/opencode/skills/plugin/open-bot.plugin.schema.json"
+    jq -n --arg id "$name" --arg repo "$repo_hint" --arg schema "$schema" \
       '{
+        "$schema": $schema,
         id: $id,
         name: $id,
         version: "0.1.0",
@@ -120,7 +131,7 @@ Manifest quick reference:
 - permissions.vaultRead / vaultCreate: vault key slugs
 - dashboard.tabs[]: {id, title, kind: page|iframe, url?, cards?}
 - textbox: renderers, commands, buttons, validators, attachments
-- opencode: {plugin: [npm...], mcp: {...}, agents: {...new agent defs...}, agentTools: {agent: {glob: bool}}}
+- opencode: {plugin: [npm...], mcp: {...}, agents: {...new agent defs...}, agentTools: {agent: {glob: bool}}, agentsMd: "standing instructions injected next to AGENTS.md (max 4000 chars, no secrets)"}
 - Helper sessions your plugin spawns must be titled with the "worker:" prefix so they stay out of the dashboard thread list.
 EOF
     echo "scaffolded $dir"
@@ -145,7 +156,7 @@ EOF
       :
     else
       echo "ob-plugin: warning: $MANIFEST_FILE for v$version is not on GitHub yet ($repo tag v$version)." >&2
-      echo "  Push the repo and create the release first — see ob-plugin help." >&2
+      echo "  Push the repo and create the tag first — see ob-plugin help (dev tags may be force-moved)." >&2
       printf 'publish anyway? [y/N] '
       read -r answer
       case "$answer" in y|Y|yes|Yes) ;; *) exit 1 ;; esac
@@ -170,7 +181,7 @@ EOF
     [ $# -eq 1 ] || { usage; exit 2; }
     out=$(request GET "/api/plugins/market/$(urlencode "$1")")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id: .plugin.id, name: .plugin.name, version: .plugin.version, status: .plugin.status, description: .plugin.description, author: .plugin.author, repo: .plugin.repo, category: .plugin.category, tags: .plugin.tags, downloads: .plugin.downloads, versions: [.versions[].version]}'
+    printf '%s' "$out" | jq '{id: .plugin.id, name: .plugin.name, version: .plugin.version, status: .plugin.status, description: .plugin.description, author: .plugin.author, repo: .plugin.repo, category: .plugin.category, tags: .plugin.tags, downloads: .plugin.downloads, versions: [.versions[].version | . + (if test("^[0-9]+\\.[0-9]+\\.[0-9]+$") then "" else " (dev)" end)]}'
     ;;
   install)
     [ $# -ge 1 ] || { usage; exit 2; }
@@ -201,7 +212,7 @@ EOF
       read -r answer
       case "$answer" in
         y|Y|yes|Yes)
-          body=$(jq -n --arg id "$id" '{pluginId: $id, confirm: true}')
+          body=$(jq -n --arg id "$id" --argjson v "$version_json" '{pluginId: $id, version: $v, confirm: true}')
           out=$(request POST /api/plugins/install "$body")
           fail_on_error "$out"
           ;;

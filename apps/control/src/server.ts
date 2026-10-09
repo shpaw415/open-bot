@@ -13,6 +13,7 @@ import {
   type UserKeyFields,
   type VideoProvider,
   type VikingProvider,
+  type VoiceConfig,
   vikingProviderReady,
 } from "@open-bot/db"
 import { handleAdmin } from "./admin"
@@ -134,6 +135,18 @@ import {
 } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 import {
+  resolveVoiceConfig,
+  runStt,
+  runTts,
+  STT_MAX_BYTES,
+  ttsMaxChars,
+  voiceConfigError,
+  voiceProviderById,
+  voiceProvidersPublic,
+  voiceReady,
+  voiceVaultSlug,
+} from "./voice-providers"
+import {
   IMAGE_REPLY,
   workspaceImagePath,
   workspaceImageResponse,
@@ -244,6 +257,16 @@ function basic(password: string) {
   }
 }
 
+// Give up if the desktop does not return response headers within this budget;
+// the body stream itself is unbounded once headers arrive.
+const PROXY_HEADERS_TIMEOUT = 10_000
+
+// Bun fetch connect failures. Only these are safe to retry: the request never
+// reached the desktop, so redelivery cannot duplicate work. "socket connection
+// was closed" is deliberately excluded — the request may have been delivered.
+const PROXY_CONNECT_ERROR =
+  /unable to connect|typo in the url|econnrefused|connection refused|fetch failed/i
+
 async function proxy(
   req: Request,
   targetBase: string,
@@ -264,17 +287,40 @@ async function proxy(
   if (extra) {
     for (const [key, value] of new Headers(extra)) headers.set(key, value)
   }
-  const upstream = await fetch(dest, {
-    method: req.method,
-    headers,
-    body:
-      body !== undefined
-        ? body
-        : req.method === "GET" || req.method === "HEAD"
-          ? undefined
-          : req.body,
-    duplex: body !== undefined ? undefined : "half",
-  } as RequestInit)
+  // A consumed request body stream cannot be reused, so only retry when the
+  // body is an in-memory string we can send again or there is no body at all.
+  const retryable =
+    body !== undefined || req.method === "GET" || req.method === "HEAD"
+  const send = () => {
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), PROXY_HEADERS_TIMEOUT)
+    return fetch(dest, {
+      method: req.method,
+      headers,
+      signal: abort.signal,
+      body:
+        body !== undefined
+          ? body
+          : req.method === "GET" || req.method === "HEAD"
+            ? undefined
+            : req.body,
+      duplex: body !== undefined ? undefined : "half",
+    } as RequestInit).finally(() => clearTimeout(timer))
+  }
+  let upstream: Response
+  try {
+    upstream = await send()
+  } catch (error) {
+    if (
+      !retryable ||
+      !(error instanceof Error) ||
+      !PROXY_CONNECT_ERROR.test(error.message)
+    ) {
+      throw error
+    }
+    await Bun.sleep(300)
+    upstream = await send()
+  }
   const out = new Headers(upstream.headers)
   out.delete("content-encoding")
   out.delete("content-length")
@@ -1111,13 +1157,19 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     const saved = db.getImageProvider(user.id)
     const selected =
       imageProviderById(saved?.provider ?? "") ?? imageProviders[0]
+    const resolved = resolveImageProvider(db, user.id)
     return json({
       providers: imageProviderPublic(),
       provider: saved?.provider ?? selected?.id ?? "",
-      accountId: saved?.accountId ?? "",
+      // When the vault fills the credentials, show its account id so the
+      // locked field displays what is actually used (not a secret).
+      accountId:
+        resolved?.keySource === "vault"
+          ? resolved.value.accountId
+          : (saved?.accountId ?? ""),
       model: saved?.model ?? selected?.defaultModel ?? "",
       hasKey: Boolean(saved?.apiKey),
-      keySource: resolveImageProvider(db, user.id)?.keySource ?? null,
+      keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/image" && req.method === "PUT") {
@@ -1163,17 +1215,199 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     }
     return json({ ok: true })
   }
+  if (url.pathname === "/api/voice" && req.method === "GET") {
+    const saved = db.getVoiceConfig(user.id)
+    const sttSpec = voiceProviderById(saved.sttProvider)
+    const ttsSpec = voiceProviderById(saved.ttsProvider)
+    const resolved = resolveVoiceConfig(db, user.id)
+    return json({
+      providers: voiceProvidersPublic(),
+      stt: {
+        provider: saved.sttProvider,
+        // When the vault fills the credentials, show its account id so the
+        // locked field displays what is actually used (account ids are not
+        // secret; the key itself never leaves the server).
+        accountId:
+          resolved.sttSource === "vault"
+            ? resolved.value.sttAccountId
+            : saved.sttAccountId,
+        model: saved.sttModel || sttSpec?.defaultModel || "",
+        hasKey: Boolean(saved.sttApiKey),
+        keySource: saved.sttProvider ? resolved.sttSource : null,
+      },
+      tts: {
+        provider: saved.ttsProvider,
+        accountId:
+          resolved.ttsSource === "vault"
+            ? resolved.value.ttsAccountId
+            : saved.ttsAccountId,
+        model: saved.ttsModel || ttsSpec?.defaultModel || "",
+        voice: saved.ttsVoice || ttsSpec?.defaultVoice || "",
+        hasKey: Boolean(saved.ttsApiKey),
+        keySource: saved.ttsProvider ? resolved.ttsSource : null,
+      },
+      language: saved.language,
+    })
+  }
+  if (url.pathname === "/api/voice" && req.method === "PUT") {
+    const body = (await readJson(req)) as Record<string, unknown>
+    const stt = (body.stt ?? {}) as Record<string, unknown>
+    const tts = (body.tts ?? {}) as Record<string, unknown>
+    const sttSpec = voiceProviderById(String(stt.provider ?? "").trim())
+    const ttsSpec = voiceProviderById(String(tts.provider ?? "").trim())
+    if (String(stt.provider ?? "").trim() && !sttSpec) {
+      return json({ error: "unsupported speech provider" }, 400)
+    }
+    if (String(tts.provider ?? "").trim() && !ttsSpec) {
+      return json({ error: "unsupported speech provider" }, 400)
+    }
+    const current = db.getVoiceConfig(user.id)
+    const sttId = sttSpec?.id ?? ""
+    const ttsId = ttsSpec?.id ?? ""
+    const next: VoiceConfig = {
+      sttProvider: sttId,
+      sttAccountId: String(stt.accountId ?? "").trim(),
+      sttApiKey:
+        String(stt.apiKey ?? "").trim() ||
+        (current.sttProvider === sttId ? current.sttApiKey : ""),
+      sttModel: String(stt.model ?? "").trim() || sttSpec?.defaultModel || "",
+      ttsProvider: ttsId,
+      ttsAccountId: String(tts.accountId ?? "").trim(),
+      ttsApiKey:
+        String(tts.apiKey ?? "").trim() ||
+        (current.ttsProvider === ttsId ? current.ttsApiKey : ""),
+      ttsModel: String(tts.model ?? "").trim() || ttsSpec?.defaultModel || "",
+      ttsVoice: String(tts.voice ?? "").trim() || ttsSpec?.defaultVoice || "",
+      language: String(body.language ?? "").trim(),
+    }
+    const sttVault = db.getUserKey(user.id, voiceVaultSlug(sttId))
+    const ttsVault = db.getUserKey(user.id, voiceVaultSlug(ttsId))
+    const filled: VoiceConfig = {
+      ...next,
+      sttApiKey: next.sttApiKey || sttVault?.apiKey || "",
+      sttAccountId: next.sttAccountId || sttVault?.accountId || "",
+      ttsApiKey: next.ttsApiKey || ttsVault?.apiKey || "",
+      ttsAccountId: next.ttsAccountId || ttsVault?.accountId || "",
+    }
+    if (
+      (sttId && !voiceReady(filled, "stt")) ||
+      (ttsId && !voiceReady(filled, "tts"))
+    ) {
+      return json(
+        { error: "the fields required by this provider are missing" },
+        400,
+      )
+    }
+    const configError = voiceConfigError(next)
+    if (configError) return json({ error: configError }, 400)
+    db.setVoiceConfig(user.id, next)
+    const resolved = resolveVoiceConfig(db, user.id)
+    return json({
+      sttKeySource: sttId ? resolved.sttSource : null,
+      ttsKeySource: ttsId ? resolved.ttsSource : null,
+      ok: true,
+    })
+  }
+  if (url.pathname === "/api/voice" && req.method === "DELETE") {
+    db.clearVoiceConfig(user.id)
+    return json({ ok: true })
+  }
+  if (url.pathname === "/api/stt" && req.method === "POST") {
+    const resolved = resolveVoiceConfig(db, user.id)
+    const spec = voiceProviderById(resolved.value.sttProvider)
+    if (!spec || spec.kind !== "stt") {
+      return json({ error: "configure a speech-to-text provider first" }, 400)
+    }
+    if (resolved.sttSource === "missing") {
+      return json({ error: "the speech-to-text provider has no API key" }, 400)
+    }
+    const form = await req.formData().catch(() => null)
+    const file = form?.get("audio")
+    if (!(file instanceof File)) {
+      return json({ error: "audio file is required" }, 400)
+    }
+    if (file.size > STT_MAX_BYTES) {
+      return json({ error: "the recording is too large" }, 413)
+    }
+    const audio = new Uint8Array(await file.arrayBuffer())
+    try {
+      const text = await runStt({
+        providerId: spec.id,
+        apiKey: resolved.value.sttApiKey,
+        accountId: resolved.value.sttAccountId,
+        model: resolved.value.sttModel || spec.defaultModel,
+        language: resolved.value.language,
+        audio,
+        mime: file.type,
+      })
+      return json({ text })
+    } catch (error) {
+      return json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "transcription failed, try again",
+        },
+        502,
+      )
+    }
+  }
+  if (url.pathname === "/api/tts" && req.method === "POST") {
+    const body = (await readJson(req)) as Record<string, unknown>
+    const text = String(body.text ?? "")
+    if (!text.trim()) return json({ error: "text is required" }, 400)
+    const resolved = resolveVoiceConfig(db, user.id)
+    const spec = voiceProviderById(resolved.value.ttsProvider)
+    if (!spec || spec.kind !== "tts") {
+      return json({ error: "configure a text-to-speech provider first" }, 400)
+    }
+    if (resolved.ttsSource === "missing") {
+      return json({ error: "the text-to-speech provider has no API key" }, 400)
+    }
+    try {
+      const audio = await runTts({
+        providerId: spec.id,
+        apiKey: resolved.value.ttsApiKey,
+        accountId: resolved.value.ttsAccountId,
+        model: resolved.value.ttsModel || spec.defaultModel,
+        voice: resolved.value.ttsVoice || spec.defaultVoice,
+        language: resolved.value.language,
+        text: ttsMaxChars(text),
+      })
+      return new Response(Buffer.from(audio.bytes), {
+        headers: {
+          "content-type": audio.mime,
+          "cache-control": "no-store",
+        },
+      })
+    } catch (error) {
+      return json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "speech synthesis failed, try again",
+        },
+        502,
+      )
+    }
+  }
   if (url.pathname === "/api/video" && req.method === "GET") {
     const saved = db.getVideoProvider(user.id)
     const selected =
       videoProviderById(saved?.provider ?? "") ?? videoProviders[0]
+    const resolved = resolveVideoProvider(db, user.id)
     return json({
       providers: videoProviderPublic(),
       provider: saved?.provider ?? selected?.id ?? "",
-      accountId: saved?.accountId ?? "",
+      accountId:
+        resolved?.keySource === "vault"
+          ? resolved.value.accountId
+          : (saved?.accountId ?? ""),
       model: saved?.model ?? selected?.defaultModel ?? "",
       hasKey: Boolean(saved?.apiKey),
-      keySource: resolveVideoProvider(db, user.id)?.keySource ?? null,
+      keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/video" && req.method === "PUT") {
@@ -1232,13 +1466,17 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     const saved = db.getModel3dProvider(user.id)
     const selected =
       model3dProviderById(saved?.provider ?? "") ?? model3dProviders[0]
+    const resolved = resolveModel3dProvider(db, user.id)
     return json({
       providers: model3dProviderPublic(),
       provider: saved?.provider ?? selected?.id ?? "",
-      accountId: saved?.accountId ?? "",
+      accountId:
+        resolved?.keySource === "vault"
+          ? resolved.value.accountId
+          : (saved?.accountId ?? ""),
       model: saved?.model ?? selected?.defaultModel ?? "",
       hasKey: Boolean(saved?.apiKey),
-      keySource: resolveModel3dProvider(db, user.id)?.keySource ?? null,
+      keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/model3d" && req.method === "PUT") {
@@ -1289,14 +1527,15 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     const selected =
       system1ProviderById(saved?.provider ?? "") ?? system1Providers[0]
     const resolved = resolveSystem1(db, user.id)
+    const vaulted = resolved?.keySource === "vault"
     return json({
       providers: system1ProviderPublic(),
       provider: saved?.provider ?? selected?.id ?? "",
       endpoint: saved?.endpoint ?? "",
       model: saved?.model ?? selected?.defaultModel ?? "",
-      accountId: saved?.accountId ?? "",
-      gatewayId: saved?.gatewayId ?? "",
-      slug: saved?.slug ?? "jev",
+      accountId: vaulted ? resolved.value.accountId : (saved?.accountId ?? ""),
+      gatewayId: vaulted ? resolved.value.gatewayId : (saved?.gatewayId ?? ""),
+      slug: vaulted ? resolved.value.slug || "jev" : (saved?.slug ?? "jev"),
       hasKey: Boolean(saved?.apiKey),
       hasGatewayToken: Boolean(saved?.gatewayToken),
       keySource: resolved?.keySource ?? null,

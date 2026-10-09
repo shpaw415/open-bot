@@ -1,0 +1,457 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "open-bot.plugin.schema.json",
+  "title": "open-bot plugin manifest",
+  "description": "Schema for open-bot.plugin.json — the single manifest that declares everything an open-bot plugin installs into a user's desktop agent: skills, personas, cron jobs, desktop tools, payload files, configs, setup commands, dashboard tabs, composer features, vault keys, and OpenCode surfaces (npm plugins, MCP servers, agent workers, tool overrides, standing agent instructions). The authoritative validator is packages/plugin-kit validatePluginManifest; this schema mirrors it for authoring (editors, agents). Field limits and patterns below are enforced at publish and install.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "version",
+    "description",
+    "author",
+    "repo",
+    "category"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional pointer to this schema file, e.g. /home/agent/.config/opencode/skills/plugin/open-bot.plugin.schema.json"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+      "description": "Plugin id: 2-63 lowercase letters, digits, or hyphens. Permanent — renames create a new plugin."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[\\dA-Za-z.-]+)?$|^[a-z][a-z0-9._-]{0,31}$",
+      "description": "semver X.Y.Z (optional -prerelease) or a dev tag (e.g. beta-1) for staging builds. Each version needs a matching v<version> git tag (dev tags may be force-moved). Dev and prerelease versions stay out of marketplace search until a stable version publishes."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9.-]+/[A-Za-z0-9._-]+$",
+      "description": "GitHub repo as owner/name. Holds the code and the v<version> release tags."
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "type": "string" }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vaultRead": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          },
+          "description": "Vault key slugs the plugin may read; values are injected into the plugin config, never into the manifest."
+        },
+        "vaultCreate": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          },
+          "description": "Vault key slugs the plugin adds (empty) for the user to fill on the Config page."
+        },
+        "desktopTools": { "type": "boolean" },
+        "opencode": { "type": "boolean" }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description", "body"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[^\\n]*$",
+            "description": "One line: when the agent should load this skill."
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "Markdown skill body (max 64k)."
+          }
+        }
+      }
+    },
+    "personas": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "instruction"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 48 },
+          "instruction": { "type": "string", "minLength": 1, "maxLength": 2000 }
+        }
+      }
+    },
+    "cron": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "message"],
+        "oneOf": [
+          { "required": ["everySeconds"] },
+          { "required": ["cronExpr"] }
+        ],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000,
+            "description": "Prompt the job runs. Installed jobs are named plugin:<id>:<name>."
+          },
+          "everySeconds": {
+            "type": "number",
+            "minimum": 60,
+            "maximum": 31536000
+          },
+          "cronExpr": {
+            "type": "string",
+            "description": "5-field cron expression, UTC."
+          }
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "content"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "Inline script installed as /usr/local/bin/ob-plugin-<id>-<name> (max 64k; larger payloads use files[])."
+          },
+          "exec": { "type": "boolean", "default": true }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "source"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "description": "Installed next to tools as ob-plugin-<id>-<name>. Names must be unique."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\]{1,200}$",
+            "description": "Repo-relative path inside the release tarball: 1-8 safe segments, no leading /, no .. segments, no backslashes. Text files only, max 10 MB each."
+          },
+          "exec": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    "configs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "label", "def"],
+        "properties": {
+          "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+          "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "def": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Default value; secrets render hidden on the Plugins page."
+          }
+        }
+      }
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commands": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "description": "Shell commands run as root in the desktop at install AND re-run after every desktop recreate — must be idempotent. Shown to the user in the consent dialog; security-reviewed."
+        },
+        "uninstall": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "description": "Best-effort cleanup run as root at uninstall."
+        }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tabs": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title", "kind"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "title": { "type": "string", "minLength": 1, "maxLength": 48 },
+              "kind": { "enum": ["page", "iframe"] },
+              "url": {
+                "type": "string",
+                "pattern": "^https?://",
+                "description": "Required for iframe tabs."
+              },
+              "cards": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 64,
+                "items": { "$ref": "#/$defs/card" },
+                "description": "Required for page tabs."
+              }
+            }
+          }
+        }
+      }
+    },
+    "textbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "renderers": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "title", "spec"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                "description": "Matches the type in a ```plugin-card fenced block."
+              },
+              "title": { "type": "string", "minLength": 1 },
+              "spec": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/card" }
+              }
+            }
+          }
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command", "title", "template"],
+            "properties": {
+              "command": {
+                "type": "string",
+                "pattern": "^/?[a-z0-9][a-z0-9-]{0,31}$",
+                "description": "Slash command in the composer; {input} in the template becomes the rest of the message."
+              },
+              "title": { "type": "string", "minLength": 1 },
+              "template": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            }
+          }
+        },
+        "buttons": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "label", "template"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "label": { "type": "string", "minLength": 1 },
+              "template": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            }
+          }
+        },
+        "validators": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pattern", "message"],
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "Regex; a match blocks sending."
+              },
+              "message": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "attachments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["accept"],
+          "properties": {
+            "accept": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": { "type": "string" },
+              "description": "Mime types or extensions, like the HTML accept attribute."
+            },
+            "maxFiles": { "type": "number", "minimum": 1, "maximum": 10 }
+          }
+        }
+      }
+    },
+    "opencode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plugin": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "pattern": "^[\\w@/.-]+$" },
+          "description": "npm package specs added to opencode.json's plugin list."
+        },
+        "mcp": {
+          "type": "object",
+          "maxProperties": 16,
+          "description": "MCP server map merged into opencode.json."
+        },
+        "agents": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "not": { "enum": ["build", "plan", "general", "title", "namer"] }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "description": "Agent definition deep-merged into opencode.json (mode, prompt, tools, model, ...; ~8k max). Built-in names are reserved — patch those with agentTools."
+          }
+        },
+        "agentTools": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+          "additionalProperties": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": { "pattern": "^[\\w*_-]{1,64}$" },
+            "additionalProperties": { "type": "boolean" },
+            "description": "Tool glob -> enabled/disabled, patched into an existing agent, e.g. {\"build\": {\"blender_*\": false}}."
+          }
+        },
+        "agentsMd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "Standing instructions injected next to AGENTS.md for as long as the plugin is installed. Durable behavioral rules only — never secrets, never per-task prompts. Security-reviewed as a prompt-injection surface."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "card": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["markdown", "stat", "table", "list", "link", "iframe"]
+        },
+        "text": { "type": "string" },
+        "label": { "type": "string" },
+        "value": { "type": "string" },
+        "hint": { "type": "string" },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://",
+          "description": "Required for link and iframe cards."
+        },
+        "columns": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "type": "string" },
+          "description": "Required for table cards."
+        },
+        "rows": {
+          "description": "Table rows: string[][] or \"$.path\" resolved from the card data."
+        },
+        "items": {
+          "description": "List items: string[] or \"$.path\"."
+        },
+        "height": { "type": "number" }
+      }
+    }
+  }
+}

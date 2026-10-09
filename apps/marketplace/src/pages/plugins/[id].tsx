@@ -143,6 +143,11 @@ export default function PluginDetail() {
               <span className="font-mono text-slate-300">
                 v{version.version}
               </span>
+              {version.stability === "dev" ? (
+                <span className="rounded border border-amber-700/60 px-1.5 text-xs uppercase tracking-wide text-amber-500">
+                  dev
+                </span>
+              ) : null}
               <span>{new Date(version.createdAt).toLocaleDateString()}</span>
               {version.notes ? (
                 <span className="text-slate-500">{version.notes}</span>

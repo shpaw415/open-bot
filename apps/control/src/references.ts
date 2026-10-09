@@ -1,6 +1,7 @@
 import type { CronJob, Db, User } from "@open-bot/db"
 import { endpoint } from "./docker"
 import { listPersonas } from "./personas"
+import { slugifyName } from "./projects"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
@@ -9,6 +10,8 @@ export type RefItem = {
   name: string
   detail: string
   hint: string
+  /** Extra names this item answers to (exact/partial/embedded like name). */
+  aliases?: string[]
 }
 
 export type RefSection = {
@@ -28,7 +31,6 @@ export const refSectionLabels: Record<string, string> = {
   skills: "skill",
   projects: "project",
 }
-
 async function skillItems(db: Db, userId: string): Promise<RefItem[]> {
   const desktop = db.desktop(userId)
   if (!desktop) return []
@@ -68,14 +70,28 @@ export const refSections: Record<string, RefSection> = {
   },
   skills: { items: skillItems },
   projects: {
-    items: async (db, userId) =>
-      db.projects(userId).map((project) => ({
-        id: project.id,
-        name: project.name,
-        detail: `project directory ${project.path}`,
-        hint: `all project files live under ${project.path} in the desktop container; create, read and edit files there`,
-      })),
+    items: projectItems,
   },
+  // "@project/<name>" (singular) resolves the same list as "@projects/<name>"
+  project: { items: projectItems },
+}
+
+async function projectItems(db: Db, userId: string): Promise<RefItem[]> {
+  return db.projects(userId).map((project) => {
+    const aliases = new Set<string>()
+    const base = project.path.replace(/\/+$/g, "").split("/").pop() ?? ""
+    if (base) aliases.add(base)
+    const slug = slugifyName(project.name)
+    if (slug) aliases.add(slug)
+    aliases.delete(project.name)
+    return {
+      id: project.id,
+      name: project.name,
+      aliases: [...aliases],
+      detail: `project directory ${project.path}`,
+      hint: `the project root directory is ${project.path} in the desktop container; create, read and edit files there`,
+    }
+  })
 }
 
 function compact(text: string, max = 200): string {
@@ -113,22 +129,32 @@ const nameBoundary = /[\s,.;:!?)\]}]/
 function tryMatch(items: RefItem[], candidate: string): RefMatch | null {
   const lower = candidate.toLowerCase()
   if (!lower) return null
-  const exact = items.find((item) => item.name.toLowerCase() === lower)
+  const namesOf = (item: RefItem): string[] => [
+    item.name,
+    ...(item.aliases ?? []),
+  ]
+  const exact = items.find((item) =>
+    namesOf(item).some((name) => name.toLowerCase() === lower),
+  )
   if (exact) return { status: "found", item: exact }
+  const matchesName = (item: RefItem, test: (name: string) => boolean) =>
+    namesOf(item).some(test)
   const partial = items.filter((item) =>
-    item.name.toLowerCase().startsWith(lower),
+    matchesName(item, (name) => name.toLowerCase().startsWith(lower)),
   )
   const only = partial.length === 1 ? partial[0] : undefined
   if (only) return { status: "found", item: only }
   if (partial.length > 1)
     return { status: "ambiguous", names: partial.map((item) => item.name) }
   const embedded = items
-    .filter((item) => {
-      const nameLower = item.name.toLowerCase()
-      if (!lower.startsWith(nameLower)) return false
-      const next = candidate.slice(nameLower.length, nameLower.length + 1)
-      return next === "" || nameBoundary.test(next)
-    })
+    .filter((item) =>
+      matchesName(item, (name) => {
+        const nameLower = name.toLowerCase()
+        if (!lower.startsWith(nameLower)) return false
+        const next = candidate.slice(nameLower.length, nameLower.length + 1)
+        return next === "" || nameBoundary.test(next)
+      }),
+    )
     .sort((a, b) => b.name.length - a.name.length)
   const best = embedded[0]
   return best ? { status: "found", item: best } : null

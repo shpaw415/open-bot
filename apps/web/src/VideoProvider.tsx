@@ -7,6 +7,7 @@ import { useEffect, useState } from "react"
 import { api } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { VideoIcon } from "./icons"
+import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
 
 type VideoField = {
   label: string
@@ -44,7 +45,7 @@ export function VideoProvider() {
   const [model, setModel] = useState("")
 
   const spec = providers.find((item) => item.id === provider) ?? providers[0]
-
+  const vault = useVaultOverride(keySource)
   useEffect(() => {
     void api<VideoForm>("/api/video")
       .then((body) => {
@@ -155,23 +156,37 @@ export function VideoProvider() {
         </Select>
         {spec?.account ? (
           <TextField
-            label={spec.account.label}
+            label={
+              vault.locked
+                ? `${spec.account.label} (from vault)`
+                : spec.account.label
+            }
             value={accountId}
             placeholder={spec.account.placeholder}
+            disabled={vault.locked}
             onChange={(event) => setAccountId(event.currentTarget.value)}
           />
         ) : null}
-        <TextField
-          label={
-            hasKey
-              ? `${spec?.secret.label ?? "API key"} (blank keeps the saved key)`
-              : (spec?.secret.label ?? "API key")
-          }
-          type="password"
-          value={apiKey}
-          placeholder={spec?.secret.placeholder}
-          onChange={(event) => setApiKey(event.currentTarget.value)}
-        />
+        <Stack direction="row" spacing={1} alignItems="center">
+          <TextField
+            label={
+              vault.locked
+                ? "Using the vault key"
+                : hasKey
+                  ? `${spec?.secret.label ?? "API key"} (blank keeps the saved key)`
+                  : (spec?.secret.label ?? "API key")
+            }
+            type={vault.locked ? undefined : "password"}
+            value={vault.locked ? "" : apiKey}
+            placeholder={vault.locked ? "••••••••" : spec?.secret.placeholder}
+            disabled={vault.locked}
+            sx={{ flex: 1 }}
+            onChange={(event) => setApiKey(event.currentTarget.value)}
+          />
+          {vault.locked ? (
+            <VaultOverrideButton onClick={vault.override} />
+          ) : null}
+        </Stack>
         <TextField
           label="Model"
           value={model}

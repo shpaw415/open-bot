@@ -51,7 +51,7 @@ export function detectMention(
   const slash = token.indexOf("/")
   if (slash < 0)
     return { stage: "section", section: "", query: token, start: anchor }
-  const section = token.slice(0, slash).toLowerCase()
+  const section = normalizeSectionKey(token.slice(0, slash).toLowerCase())
   if (!sectionKeys.includes(section)) return null
   return {
     stage: "name",
@@ -59,6 +59,103 @@ export function detectMention(
     query: token.slice(slash + 1),
     start: anchor,
   }
+}
+
+/** "@project/…" (singular) opens the same picker and resolves like "@projects/…". */
+export function normalizeSectionKey(section: string): string {
+  return section === "project" ? "projects" : section
+}
+
+export type ProjectRefItem = {
+  name: string
+  path?: string
+}
+
+export type ReferenceToken = {
+  start: number
+  end: number
+  /** Matched project name; empty when nothing known matches. */
+  name: string
+  path?: string
+}
+
+const projectTokenPattern = /@(projects?)\/([^\n@]*)/gi
+const nameBoundary = /[\s,.;:!?)\]}]/
+
+/**
+ * Locate `@projects/<name>` / `@project/<name>` tokens for highlighting.
+ * Mirrors the control-plane matcher: longest known name wins (exact or
+ * boundary-terminated prefix), else the first word (unique prefix match);
+ * unmatched tokens still return a span ending at the first word so the UI
+ * can flag them.
+ */
+export function findReferenceTokens(
+  text: string,
+  projects: ProjectRefItem[],
+): ReferenceToken[] {
+  const tokens: ReferenceToken[] = []
+  for (const match of text.matchAll(
+    new RegExp(projectTokenPattern.source, "gi"),
+  )) {
+    const start = match.index ?? 0
+    const prev = start > 0 ? (text[start - 1] ?? "") : ""
+    if (start > 0 && !/\s/.test(prev)) continue
+    const remainder = match[2] ?? ""
+    if (!remainder.trim()) continue
+    const prefixLength = match[0].length - remainder.length
+    const matched = matchProjectName(remainder, projects)
+    tokens.push({
+      start,
+      end: start + prefixLength + matched.length,
+      name: matched.name,
+      path: matched.path,
+    })
+  }
+  return tokens
+}
+
+function matchProjectName(
+  remainder: string,
+  projects: ProjectRefItem[],
+): { name: string; length: number; path?: string } {
+  const leading = remainder.length - remainder.trimStart().length
+  const lower = remainder.toLowerCase()
+  const sorted = [...projects].sort((a, b) => b.name.length - a.name.length)
+  for (const project of sorted) {
+    const nameLower = project.name.toLowerCase()
+    if (lower === nameLower)
+      return {
+        name: project.name,
+        length: leading + project.name.length,
+        path: project.path,
+      }
+    if (lower.startsWith(nameLower)) {
+      const next = remainder.slice(
+        leading + nameLower.length,
+        leading + nameLower.length + 1,
+      )
+      if (!next || nameBoundary.test(next))
+        return {
+          name: project.name,
+          length: leading + nameLower.length,
+          path: project.path,
+        }
+    }
+  }
+  const firstWord = remainder.trim().split(/\s+/)[0] ?? ""
+  if (firstWord) {
+    const wordLower = firstWord.toLowerCase()
+    const partial = sorted.filter((project) =>
+      project.name.toLowerCase().startsWith(wordLower),
+    )
+    if (partial.length === 1)
+      return {
+        name: partial[0].name,
+        length: leading + firstWord.length,
+        path: partial[0].path,
+      }
+  }
+  return { name: "", length: leading + firstWord.length }
 }
 
 function levenshteinWithin(a: string, b: string, max: number): number {

@@ -44,9 +44,11 @@ import {
   type SendStatus,
   samePayload,
   showLiveScreen,
+  speakableText,
   splitPluginCards,
   type TranscriptEntry,
   transcriptBubbles,
+  turnError,
   userMessageCount,
   visibleText,
   vncFrameSrc,
@@ -69,6 +71,7 @@ import {
   EditIcon,
   FolderIcon,
   MenuIcon,
+  MicIcon,
   MoreVertIcon,
   OpenInNewIcon,
   PauseIcon,
@@ -77,6 +80,8 @@ import {
   ScheduleIcon,
   SendIcon,
   StopIcon,
+  VolumeOffIcon,
+  VolumeUpIcon,
 } from "./icons"
 import { Projects } from "./ide/Projects"
 import {
@@ -99,6 +104,13 @@ import {
   PluginCards,
   useInstalledPlugins,
 } from "./plugin-ui"
+import {
+  ProjectRefLink,
+  ProjectRefsContext,
+  remarkProjectRefs,
+  useProjectRefs,
+} from "./project-refs"
+import ReferenceOverlay from "./ReferenceOverlay"
 import {
   detectMention,
   mentionSuggestions,
@@ -261,6 +273,15 @@ function chatUrl(url: string, key: string): string {
 const markdownPlugins = [remarkGfm]
 
 const markdownComponents: Components = {
+  a: ({ href, children, ...rest }) => {
+    if (href?.startsWith("#project-ref/"))
+      return <ProjectRefLink href={href}>{children}</ProjectRefLink>
+    return (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    )
+  },
   img: ({ src, alt }) => {
     if (!src) return null
     if (/\.(mp4|webm)$/i.test(src)) {
@@ -277,9 +298,17 @@ const markdownComponents: Components = {
 }
 
 const ChatMarkdown = memo(function ChatMarkdown({ text }: { text: string }) {
+  const refs = useProjectRefs()
+  const plugins = useMemo(
+    () =>
+      refs.length
+        ? [...markdownPlugins, remarkProjectRefs(refs)]
+        : markdownPlugins,
+    [refs],
+  )
   return (
     <Markdown
-      remarkPlugins={markdownPlugins}
+      remarkPlugins={plugins}
       urlTransform={chatUrl}
       components={markdownComponents}
     >
@@ -437,6 +466,9 @@ function cronSchedule(job: CronJobInfo): string {
 type BubbleViewProps = {
   entry: TranscriptEntry
   index: number
+  bubbleKey: string
+  speechKey: string | null
+  speechLoading: string | null
   lastHandoff: number
   held: boolean
   dismissedHandoff: string
@@ -450,11 +482,16 @@ type BubbleViewProps = {
   renderers: Map<string, PluginRenderer>
   onTakeControl: () => void
   onScreenDone: () => void
+  onSpeak: (key: string, text: string) => void
+  onStopSpeak: () => void
 }
 
 const MessageBubble = memo(function MessageBubble({
   entry,
   index,
+  bubbleKey,
+  speechKey,
+  speechLoading,
   lastHandoff,
   held,
   dismissedHandoff,
@@ -468,6 +505,8 @@ const MessageBubble = memo(function MessageBubble({
   renderers,
   onTakeControl,
   onScreenDone,
+  onSpeak,
+  onStopSpeak,
 }: BubbleViewProps) {
   const message = entry.message
   const role = message.info?.role ?? "message"
@@ -541,6 +580,47 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         ) : null}
       </div>
+      {!mine && message.text.trim() ? (
+        <Stack
+          direction="row"
+          spacing={0.5}
+          sx={{ justifyContent: "flex-end", mt: 0.25 }}
+        >
+          <ToolTip
+            title={speechKey === bubbleKey ? "Stop reading" : "Read out loud"}
+          >
+            <span>
+              <IconButton
+                size="small"
+                aria-label={
+                  speechKey === bubbleKey ? "Stop reading" : "Read out loud"
+                }
+                disabled={
+                  sending ||
+                  stopping ||
+                  (speechLoading !== null && speechLoading !== bubbleKey)
+                }
+                onClick={() => {
+                  if (speechKey === bubbleKey && speechLoading !== bubbleKey) {
+                    onStopSpeak()
+                    return
+                  }
+                  onSpeak(bubbleKey, message.text)
+                }}
+                sx={{ opacity: 0.7 }}
+              >
+                {speechLoading === bubbleKey ? (
+                  <CircularProgress size={1.1} />
+                ) : speechKey === bubbleKey ? (
+                  <StopIcon width={16} height={16} />
+                ) : (
+                  <VolumeUpIcon width={16} height={16} />
+                )}
+              </IconButton>
+            </span>
+          </ToolTip>
+        </Stack>
+      ) : null}
       {message.sentAt ? (
         <time
           className="ob-bubble-time"
@@ -714,6 +794,20 @@ type ComposerValidator = {
 
 const DRAFT_WRITE_DELAY = 400
 
+const READ_ALOUD_KEY = "ob-read-aloud"
+// Hold-to-talk limits: recordings below the floor are ignored, and the
+// recorder force-stops at the ceiling to stay well under the upload cap.
+const MIN_RECORD_MS = 700
+const MAX_RECORD_MS = 180_000
+
+// Sent as a normal user turn when a reply died with a provider connection
+// error (internet blip). One auto-retry per dead turn; further retries are
+// manual via the banner's Resume button.
+const RESUME_PROMPT =
+  "The connection dropped mid-reply and the response was cut off. Please continue from where you left off."
+const RESUME_BLOCK_MS = 3 * 60_000
+const RESUME_DELAY_MS = 6_000
+
 // Owns the composer draft and mention/slash popup state so every keystroke
 // re-renders only this subtree, not the whole workspace.
 function Composer({
@@ -734,8 +828,12 @@ function Composer({
   pluginCommands,
   pluginValidators,
   pluginAccept,
+  readAloud,
+  onToggleReadAloud,
   sharedDraftRef,
   migrateDraft,
+  projects,
+  onEnsureProjects,
 }: {
   sessionId: string
   running: boolean
@@ -754,8 +852,12 @@ function Composer({
   pluginCommands: ComposerCommand[]
   pluginValidators: ComposerValidator[]
   pluginAccept: string
+  readAloud: boolean
+  onToggleReadAloud: () => void
   sharedDraftRef: { current: string }
   migrateDraft: string
+  projects: ProjectMention[]
+  onEnsureProjects: () => void
 }) {
   const [draft, setDraft] = useState(() => {
     const stored = readDraft(localStorage, sessionId)
@@ -773,7 +875,6 @@ function Composer({
   const [slashHidden, setSlashHidden] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const [skillList, setSkillList] = useState<SkillSummary[]>([])
-  const [projectList, setProjectList] = useState<ProjectMention[]>([])
   const [joinOpen, setJoinOpen] = useState(false)
   const draftRef = useRef(draft)
   const writeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -782,7 +883,106 @@ function Composer({
   const messageInputRef = useRef<HTMLInputElement | null>(null)
   const pendingCaretRef = useRef<number | null>(null)
   const skillsRequestedRef = useRef(false)
-  const projectsRequestedRef = useRef(false)
+  const [recording, setRecording] = useState(false)
+  const [recordMs, setRecordMs] = useState(0)
+  const [transcribing, setTranscribing] = useState(false)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recordStreamRef = useRef<MediaStream | null>(null)
+  const recordChunksRef = useRef<Blob[]>([])
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const recordStartRef = useRef(0)
+
+  // release the microphone if the composer goes away mid-recording
+  useEffect(() => {
+    return () => {
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current)
+      recorderRef.current?.state !== "inactive" && recorderRef.current?.stop()
+      for (const track of recordStreamRef.current?.getTracks() ?? [])
+        track.stop()
+    }
+  }, [])
+
+  function stopRecording() {
+    if (recordTimerRef.current) {
+      clearInterval(recordTimerRef.current)
+      recordTimerRef.current = null
+    }
+    setRecording(false)
+    const recorder = recorderRef.current
+    if (recorder && recorder.state !== "inactive") recorder.stop()
+    for (const track of recordStreamRef.current?.getTracks() ?? []) track.stop()
+    recordStreamRef.current = null
+  }
+
+  async function finishRecording() {
+    const elapsed = Date.now() - recordStartRef.current
+    const chunks = recordChunksRef.current
+    const mime = chunks[0]?.type || "audio/webm"
+    recorderRef.current = null
+    if (elapsed < MIN_RECORD_MS || chunks.length === 0) {
+      if (elapsed >= 150) onError("hold the mic while speaking")
+      return
+    }
+    const blob = new Blob(chunks, { type: mime })
+    setTranscribing(true)
+    try {
+      const form = new FormData()
+      form.append(
+        "audio",
+        new File([blob], "speech.webm", { type: blob.type || "audio/webm" }),
+      )
+      const response = await fetch("/api/stt", { method: "POST", body: form })
+      const body = (await response.json().catch(() => ({}))) as {
+        text?: string
+        error?: string
+      }
+      if (!response.ok) {
+        throw new Error(body.error ?? "transcription failed")
+      }
+      const transcript = (body.text ?? "").trim()
+      if (!transcript) {
+        onError("nothing audible was picked up — hold the mic and speak")
+        return
+      }
+      const next = draftRef.current
+        ? `${draftRef.current} ${transcript}`
+        : transcript
+      updateDraft(next)
+      messageInputRef.current?.focus()
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "transcription failed")
+    } finally {
+      setTranscribing(false)
+    }
+  }
+
+  async function startRecording() {
+    if (recording || transcribing) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      recordStreamRef.current = stream
+      recordChunksRef.current = []
+      const recorder = new MediaRecorder(stream)
+      recorderRef.current = recorder
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) recordChunksRef.current.push(event.data)
+      })
+      recorder.addEventListener("stop", () => {
+        void finishRecording()
+      })
+      recorder.start()
+      recordStartRef.current = Date.now()
+      setRecordMs(0)
+      setRecording(true)
+      recordTimerRef.current = setInterval(() => {
+        const ms = Date.now() - recordStartRef.current
+        setRecordMs(ms)
+        if (ms >= MAX_RECORD_MS) stopRecording()
+      }, 200)
+    } catch {
+      onError("microphone unavailable — allow mic access for this page")
+    }
+  }
 
   function persistDraftNow(text: string) {
     if (writeTimer.current) {
@@ -822,14 +1022,6 @@ function Composer({
       .catch(() => setSkillList([]))
   }
 
-  function ensureProjects() {
-    if (projectsRequestedRef.current) return
-    projectsRequestedRef.current = true
-    api<{ projects?: ProjectMention[] }>("/api/projects")
-      .then((body) => setProjectList(body.projects ?? []))
-      .catch(() => setProjectList([]))
-  }
-
   const mentionSections = useMemo<RefSectionView[]>(
     () => [
       ...baseSections,
@@ -848,12 +1040,12 @@ function Composer({
             },
           ]
         : []),
-      ...(projectList.length
+      ...(projects.length
         ? [
             {
               key: "projects",
               label: "Projects",
-              items: projectList.map(
+              items: projects.map(
                 (project): RefItemView => ({
                   id: project.id,
                   name: project.name,
@@ -864,7 +1056,7 @@ function Composer({
           ]
         : []),
     ],
-    [baseSections, skillList, projectList],
+    [baseSections, skillList, projects],
   )
   const mentionKeys = useMemo(
     () => mentionSections.map((section) => section.key),
@@ -920,7 +1112,7 @@ function Composer({
     pendingCaretRef.current = active.start + suggestion.complete.length
     setMentionHidden(false)
     ensureSkills()
-    ensureProjects()
+    onEnsureProjects()
     rememberDraft(next)
     restoreCaret()
   }
@@ -1057,6 +1249,83 @@ function Composer({
           >
             <AttachFileIcon />
           </IconButton>
+          <ToolTip
+            title={recording ? "Release to transcribe" : "Hold to speak"}
+          >
+            <IconButton
+              size="medium"
+              aria-label={recording ? "Release to transcribe" : "Hold to speak"}
+              disabled={!running || sending || stopping || transcribing}
+              sx={{
+                flexShrink: 0,
+                touchAction: "none",
+                ...(recording
+                  ? {
+                      bgcolor: "error.main",
+                      color: "error.contrastText",
+                      animation: "ob-pulse 1.2s ease-in-out infinite",
+                    }
+                  : {}),
+              }}
+              onPointerDown={(event) => {
+                event.preventDefault()
+                void startRecording()
+              }}
+              onPointerUp={(event) => {
+                event.preventDefault()
+                if (recording) stopRecording()
+              }}
+              onPointerLeave={() => {
+                if (recording) stopRecording()
+              }}
+              onPointerCancel={() => {
+                if (recording) stopRecording()
+              }}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              {transcribing ? (
+                <CircularProgress size={1.1} />
+              ) : recording ? (
+                <StopIcon />
+              ) : (
+                <MicIcon />
+              )}
+            </IconButton>
+          </ToolTip>
+          {recording ? (
+            <Typography
+              variant="caption"
+              color="error"
+              sx={{ flexShrink: 0, fontVariantNumeric: "tabular-nums" }}
+            >
+              {Math.floor(recordMs / 1000)}s
+            </Typography>
+          ) : null}
+          <ToolTip
+            title={
+              readAloud
+                ? "Read replies out loud: on"
+                : "Read replies out loud: off"
+            }
+          >
+            <IconButton
+              size="medium"
+              aria-label="Read replies out loud"
+              aria-pressed={readAloud}
+              disabled={!running && !readAloud}
+              onClick={() => {
+                onToggleReadAloud()
+              }}
+              sx={{
+                flexShrink: 0,
+                ...(readAloud
+                  ? { bgcolor: "primary.main", color: "primary.contrastText" }
+                  : {}),
+              }}
+            >
+              {readAloud ? <VolumeUpIcon /> : <VolumeOffIcon />}
+            </IconButton>
+          </ToolTip>
           <input
             ref={fileInputRef}
             type="file"
@@ -1069,12 +1338,18 @@ function Composer({
             }}
           />
           <Box sx={{ position: "relative", flex: 1, minWidth: 0 }}>
+            <ReferenceOverlay
+              text={draft}
+              projects={projects}
+              inputRef={messageInputRef}
+            />
             <TextField
               label="Message"
               value={draft}
               multiline
               ref={messageInputRef}
               disabled={!running || sending || stopping}
+              onFocus={() => onEnsureProjects()}
               onChange={(event) => {
                 const el = event.currentTarget
                 setMentionHidden(false)
@@ -1083,7 +1358,7 @@ function Composer({
                 if (mentionIndex !== 0) setMentionIndex(0)
                 if (el.value.includes("@")) {
                   ensureSkills()
-                  ensureProjects()
+                  onEnsureProjects()
                 }
                 rememberDraft(el.value)
                 setCaret(el.selectionStart ?? el.value.length)
@@ -1312,6 +1587,8 @@ export function Workspace({ me }: { me: Me }) {
   const [stopping, setStopping] = useState(false)
   const [tab, setTab] = useState("chat")
   const [error, setError] = useState("")
+  const [projectList, setProjectList] = useState<ProjectMention[]>([])
+  const projectsRequestedRef = useRef(false)
   const [sessionId, setSessionId] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
@@ -1381,6 +1658,15 @@ export function Workspace({ me }: { me: Me }) {
   const [notices, setNotices] = useState<CronNotice[]>([])
   const [cronResult, setCronResult] = useState<CronNotice | null>(null)
   const mobile = useMobile()
+
+  // projects power @project(s)/ mentions in the composer and chat bubbles
+  const ensureProjects = useCallback(() => {
+    if (projectsRequestedRef.current) return
+    projectsRequestedRef.current = true
+    api<{ projects?: ProjectMention[] }>("/api/projects")
+      .then((body) => setProjectList(body.projects ?? []))
+      .catch(() => setProjectList([]))
+  }, [])
   const { plugins: installedPlugins } = useInstalledPlugins()
   const pluginRenderers = useMemo(() => {
     const map = new Map<string, PluginRenderer>()
@@ -1490,12 +1776,104 @@ export function Workspace({ me }: { me: Me }) {
       ),
     [messages, receipts, sessionId],
   )
+  const turnIssue = useMemo(() => turnError(messages), [messages])
   const activity = modelActivity({
     phase: stopping ? "sleeping" : phase,
     sending,
     status: sessionId ? sessionStatus[sessionId] : undefined,
     messages,
   })
+
+  // Read-aloud: the browser fetches synthesized speech from the control plane
+  // and plays it locally; the desktop never hears any of this.
+  const [readAloud, setReadAloud] = useState(
+    () => localStorage.getItem(READ_ALOUD_KEY) === "1",
+  )
+  const [speakingKey, setSpeakingKey] = useState<string | null>(null)
+  const [speechLoadingKey, setSpeechLoadingKey] = useState<string | null>(null)
+  const speechInFlightRef = useRef(false)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const stopSpeaking = useCallback(() => {
+    const audio = audioRef.current
+    if (audio) {
+      audio.pause()
+      if (audio.src) URL.revokeObjectURL(audio.src)
+      audioRef.current = null
+    }
+    setSpeakingKey(null)
+  }, [])
+  const speakText = useCallback(
+    async (key: string, rawText: string) => {
+      if (speechInFlightRef.current) return
+      const text = speakableText(rawText).slice(0, 4000)
+      if (!text) return
+      stopSpeaking()
+      speechInFlightRef.current = true
+      setSpeechLoadingKey(key)
+      try {
+        const response = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text }),
+        })
+        if (!response.ok) {
+          const body = (await response.json().catch(() => ({}))) as {
+            error?: string
+          }
+          throw new Error(body.error ?? "read-aloud failed")
+        }
+        const blob = await response.blob()
+        const audio = new Audio(URL.createObjectURL(blob))
+        audioRef.current = audio
+        audio.addEventListener("ended", () => {
+          if (audioRef.current !== audio) return
+          URL.revokeObjectURL(audio.src)
+          audioRef.current = null
+          setSpeakingKey(null)
+        })
+        setSpeakingKey(key)
+        await audio.play()
+      } catch (caught) {
+        stopSpeaking()
+        setError(caught instanceof Error ? caught.message : "read-aloud failed")
+      } finally {
+        speechInFlightRef.current = false
+        setSpeechLoadingKey(null)
+      }
+    },
+    [stopSpeaking],
+  )
+  const toggleReadAloud = useCallback(() => {
+    setReadAloud((current) => {
+      const next = !current
+      localStorage.setItem(READ_ALOUD_KEY, next ? "1" : "0")
+      if (!next) stopSpeaking()
+      return next
+    })
+  }, [stopSpeaking])
+  const lastSpokenRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!readAloud) return
+    let found: { id: string; text: string; completed: number } | null = null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+      if ((message.info?.role ?? "") !== "assistant") continue
+      const completed = message.info?.time?.completed
+      if (!completed) continue
+      found = {
+        id: message.info?.id ?? `i${i}`,
+        text: visibleText(message),
+        completed,
+      }
+      break
+    }
+    if (!found) return
+    if (lastSpokenRef.current === found.id) return
+    lastSpokenRef.current = found.id
+    // opening an old thread must not replay history
+    if (Date.now() - found.completed > 30_000) return
+    void speakText(found.id, found.text)
+  }, [messages, readAloud, speakText])
   const modelOptions = useMemo(
     () =>
       models.map((item) => (
@@ -1521,6 +1899,37 @@ export function Workspace({ me }: { me: Me }) {
   const canStop = Boolean(
     sessionId && running && !stopping && (sending || threadBusy(sessionId)),
   )
+  // Auto-resume: when a turn dies with a retryable provider error, resend a
+  // continue prompt once the thread is idle again. One automatic attempt per
+  // dead turn, throttled so a long outage cannot create a retry loop; the
+  // banner keeps a manual Resume button for everything else.
+  const resumeTriedRef = useRef<string | null>(null)
+  const resumeBlockRef = useRef(0)
+  const resumePromptRef = useRef<((text: string) => Promise<boolean>) | null>(
+    null,
+  )
+  useEffect(() => {
+    if (!turnIssue?.retryable || !turnIssue.messageId) return
+    if (!sessionId || !running || sending || stopping) return
+    if (threadBusy(sessionId)) return
+    if (resumeTriedRef.current === turnIssue.messageId) return
+    resumeTriedRef.current = turnIssue.messageId
+    if (Date.now() < resumeBlockRef.current) return
+    resumeBlockRef.current = Date.now() + RESUME_BLOCK_MS
+    const timer = setTimeout(
+      () => void resumePromptRef.current?.(RESUME_PROMPT),
+      RESUME_DELAY_MS,
+    )
+    return () => clearTimeout(timer)
+  }, [
+    turnIssue?.messageId,
+    turnIssue?.retryable,
+    sessionId,
+    running,
+    sending,
+    stopping,
+    threadBusy,
+  ])
   const busyIds = useMemo(() => {
     const set = new Set<string>()
     for (const item of sessions) {
@@ -2180,6 +2589,7 @@ export function Workspace({ me }: { me: Me }) {
       setSending(false)
     }
   }
+  resumePromptRef.current = prompt
 
   // sends one message; the composer owns draft/joined restore on failure
   async function submit(text: string, files: JoinedFile[]): Promise<boolean> {
@@ -2603,1224 +3013,1277 @@ export function Workspace({ me }: { me: Me }) {
         : undefined
 
   return (
-    <Stack
-      className="ob-workspace"
-      sx={{ height: "100%", minHeight: 0, p: mobile ? 0.5 : 1 }}
-      spacing={mobile ? 0.5 : 0.75}
-    >
-      {error ? (
-        <Alert severity="error" onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
-      {unreadNotices[0] ? (
-        <Alert
-          severity="info"
-          onClose={() =>
-            void markNoticesViewed({ id: unreadNotices[0]?.id ?? "" })
-          }
-        >
-          {unreadNotices.length > 1
-            ? `${unreadNotices.length} cron jobs published results. Latest: ${unreadNotices[0].jobName}. `
-            : `${unreadNotices[0].jobName} published results. `}
-          {clipNoticeLine(unreadNotices[0].summary)}{" "}
-          <Button size="small" onClick={() => openNotice(unreadNotices[0])}>
-            View result
-          </Button>
-        </Alert>
-      ) : null}
-
+    <ProjectRefsContext.Provider value={projectList}>
       <Stack
-        direction="row"
-        spacing={1}
-        alignItems="center"
-        className="ob-mobile-bar ob-workspace-top"
-        sx={{ minHeight: 40, flexShrink: 0 }}
+        className="ob-workspace"
+        sx={{ height: "100%", minHeight: 0, p: mobile ? 0.5 : 1 }}
+        spacing={mobile ? 0.5 : 0.75}
       >
-        <IconButton
-          size="small"
-          aria-label="Open workspace menu"
-          onClick={() => setDrawerOpen(true)}
-        >
-          <MenuIcon />
-        </IconButton>
-        <Typography
-          variant="subtitle2"
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {tab === "chat"
-            ? activeThread
-              ? threadTitle(activeThread)
-              : sessionId
-                ? "New thread"
-                : "Chat"
-            : tab === "desktop"
-              ? "Desktop"
-              : tab === "projects"
-                ? "Projects"
-                : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
-        </Typography>
-        <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
-          {stopping ? "stopping…" : phase === "starting" ? "starting…" : phase}
-        </Chip>
-        {phase === "starting" || stopping ? (
-          <CircularProgress size={1.2} />
+        {error ? (
+          <Alert severity="error" onClose={() => setError("")}>
+            {error}
+          </Alert>
         ) : null}
-      </Stack>
-
-      {/* Chat */}
-      <Box
-        sx={{
-          flex: 1,
-          minHeight: 0,
-          display: tab === "chat" ? "flex" : "none",
-          flexDirection: "column",
-          gap: mobile ? 0.5 : 1,
-        }}
-      >
-        {running && mobile ? (
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            className="ob-threads-bar"
-            sx={{ px: 0.25 }}
+        {unreadNotices[0] ? (
+          <Alert
+            severity="info"
+            onClose={() =>
+              void markNoticesViewed({ id: unreadNotices[0]?.id ?? "" })
+            }
           >
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<ChatIcon />}
-              onClick={() => setThreadsOpen((open) => !open)}
-            >
-              {threadsOpen ? "Hide threads" : "Threads"}
+            {unreadNotices.length > 1
+              ? `${unreadNotices.length} cron jobs published results. Latest: ${unreadNotices[0].jobName}. `
+              : `${unreadNotices[0].jobName} published results. `}
+            {clipNoticeLine(unreadNotices[0].summary)}{" "}
+            <Button size="small" onClick={() => openNotice(unreadNotices[0])}>
+              View result
             </Button>
-            {!threadsOpen && sessions.some((item) => showUnread(item.id)) ? (
-              <span className="ob-unread-dot" role="img" aria-label="Unread" />
-            ) : null}
-            <Typography
-              variant="caption"
-              color="textSecondary"
-              sx={{
-                flex: 1,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {activeThread
-                ? `${threadTitle(activeThread)} · ${personaName(threadPersona[activeThread.id])}`
+          </Alert>
+        ) : null}
+
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          className="ob-mobile-bar ob-workspace-top"
+          sx={{ minHeight: 40, flexShrink: 0 }}
+        >
+          <IconButton
+            size="small"
+            aria-label="Open workspace menu"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <MenuIcon />
+          </IconButton>
+          <Typography
+            variant="subtitle2"
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {tab === "chat"
+              ? activeThread
+                ? threadTitle(activeThread)
                 : sessionId
                   ? "New thread"
-                  : "No thread selected"}
-            </Typography>
-          </Stack>
-        ) : null}
+                  : "Chat"
+              : tab === "desktop"
+                ? "Desktop"
+                : tab === "projects"
+                  ? "Projects"
+                  : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
+          </Typography>
+          <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
+            {stopping
+              ? "stopping…"
+              : phase === "starting"
+                ? "starting…"
+                : phase}
+          </Chip>
+          {phase === "starting" || stopping ? (
+            <CircularProgress size={1.2} />
+          ) : null}
+        </Stack>
+
+        {/* Chat */}
         <Box
           sx={{
             flex: 1,
             minHeight: 0,
-            display: "flex",
-            flexDirection: "row",
-            gap: 1,
+            display: tab === "chat" ? "flex" : "none",
+            flexDirection: "column",
+            gap: mobile ? 0.5 : 1,
           }}
         >
-          {running ? (
-            <ThreadsPanel
-              sessions={sessions}
-              sessionId={sessionId}
-              loading={sessionsLoading}
-              mobile={mobile}
-              open={threadsOpen}
-              personaLabel={personaLabel}
-              busyIds={busyIds}
-              unread={unread}
-              actionBusy={actionBusy}
-              actions={threadActions}
-            />
-          ) : null}
-          <Paper
-            variant="outlined"
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              minHeight: 0,
-              display: mobile && running && threadsOpen ? "none" : "flex",
-              flexDirection: "column",
-            }}
-          >
-            {sessionId && !mobile ? (
-              <Typography
-                variant="caption"
-                color="textSecondary"
-                sx={{ px: 1.5, pt: 0.75 }}
-              >
-                {personaName(threadPersona[sessionId])}
-              </Typography>
-            ) : null}
-            {stopping ? (
-              <Stack
-                direction="row"
-                spacing={1}
-                alignItems="center"
-                className="ob-status-row"
-                sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
-              >
-                <CircularProgress size={1.2} />
-                <Typography variant="caption" color="textSecondary">
-                  Stopping the desktop…
-                </Typography>
-              </Stack>
-            ) : activity ? (
-              <Stack
-                direction="row"
-                spacing={1}
-                alignItems="center"
-                className="ob-status-row"
-                sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
-              >
-                {mobile ? null : (
-                  <Typography variant="caption" color="textSecondary">
-                    Model
-                  </Typography>
-                )}
-                <Chip
-                  size="small"
-                  color={
-                    activity === "done"
-                      ? "success"
-                      : activity === "initialize"
-                        ? "warning"
-                        : "primary"
-                  }
-                >
-                  {ACTIVITY_LABEL[activity]}
-                </Chip>
-                {activity === "done" ? null : <CircularProgress size={1.2} />}
-                {canStop ? (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    color="error"
-                    startIcon={<StopIcon width={16} height={16} />}
-                    disabled={stopBusy}
-                    onClick={() => void stopThread()}
-                    sx={{ ml: "auto" }}
-                  >
-                    Stop
-                  </Button>
-                ) : null}
-              </Stack>
-            ) : null}
-            {stopping || activity ? <Divider /> : null}
-            <Box
-              className="ob-chat-log"
-              ref={outputRef}
-              onScroll={() => {
-                const el = outputRef.current
-                if (!el) return
-                stickRef.current = nearBottom(
-                  el.scrollHeight,
-                  el.scrollTop,
-                  el.clientHeight,
-                )
-              }}
-            >
-              {phase === "sleeping" ? (
-                <Stack
-                  alignItems="center"
-                  justifyContent="center"
-                  sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
-                  spacing={1}
-                >
-                  <Typography variant="subtitle1">Desktop is asleep</Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    Start the desktop to chat with OpenCode.
-                  </Typography>
-                  <Button
-                    variant="contained"
-                    startIcon={<PlayArrowIcon />}
-                    onClick={() => void start()}
-                    sx={{ mt: 1 }}
-                  >
-                    Start desktop
-                  </Button>
-                </Stack>
-              ) : messagesLoading && shown.length === 0 ? (
-                <Stack
-                  alignItems="center"
-                  justifyContent="center"
-                  sx={{ flex: 1, minHeight: 160 }}
-                  spacing={1}
-                >
-                  <Stack spacing={1} sx={{ width: "min(620px, 100%)" }}>
-                    <Skeleton
-                      key="bubble-user-0"
-                      variant="rounded"
-                      height={44}
-                      width="42%"
-                      sx={{ alignSelf: "flex-end" }}
-                    />
-                    <Skeleton
-                      key="bubble-assistant-0"
-                      variant="rounded"
-                      height={72}
-                      width="78%"
-                    />
-                    <Skeleton
-                      key="bubble-user-1"
-                      variant="rounded"
-                      height={44}
-                      width="30%"
-                      sx={{ alignSelf: "flex-end" }}
-                    />
-                    <Skeleton
-                      key="bubble-assistant-1"
-                      variant="rounded"
-                      height={56}
-                      width="64%"
-                    />
-                    <Skeleton
-                      key="bubble-assistant-2"
-                      variant="rounded"
-                      height={48}
-                      width="56%"
-                    />
-                  </Stack>
-                </Stack>
-              ) : shown.length === 0 ? (
-                <Stack
-                  alignItems="center"
-                  justifyContent="center"
-                  sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
-                  spacing={1}
-                >
-                  <Typography variant="subtitle1">
-                    {phase === "starting"
-                      ? "Opening the desktop"
-                      : "No messages yet"}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    {phase === "starting"
-                      ? "The model is not ready until the desktop is up."
-                      : model
-                        ? `Using ${model}. Ask anything.`
-                        : "Pick a model, then ask anything."}
-                  </Typography>
-                </Stack>
-              ) : (
-                shown.map((entry, index) => (
-                  <MessageBubble
-                    key={bubbleKeys[index]}
-                    entry={entry}
-                    index={index}
-                    lastHandoff={lastHandoff}
-                    held={held}
-                    dismissedHandoff={dismissedHandoff}
-                    screenLive={screenLive}
-                    screenPath={screen?.path ?? ""}
-                    screenError={screenError}
-                    running={running}
-                    sending={sending}
-                    stopping={stopping}
-                    controlBusy={controlBusy}
-                    renderers={pluginRenderers}
-                    onTakeControl={bubbleActions.takeControl}
-                    onScreenDone={bubbleActions.screenDone}
-                  />
-                ))
-              )}
-            </Box>
-            {held &&
-            holdOrigin === "chat" &&
-            screen?.sessionId === sessionId ? (
-              <div className="ob-takeover">
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Typography variant="caption" sx={{ flex: 1 }}>
-                    You have the desktop
-                  </Typography>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    disabled={!running || sending || stopping || controlBusy}
-                    onClick={() => void releaseControl()}
-                  >
-                    Done
-                  </Button>
-                </Stack>
-                <VncFrame title="your screen" path={screen.path} interactive />
-              </div>
-            ) : null}
-            <Divider />
-            <Composer
-              key={sessionId}
-              sessionId={sessionId}
-              running={running}
-              sending={sending}
-              stopping={stopping}
-              stopBusy={stopBusy}
-              canStop={canStop}
-              mobile={mobile}
-              joined={joined}
-              rememberJoined={rememberJoined}
-              onError={setError}
-              onSubmit={submit}
-              onStop={() => void stopThread()}
-              baseSections={baseSections}
-              pluginButtons={pluginButtons}
-              pluginCommands={pluginCommands}
-              pluginValidators={pluginValidators}
-              pluginAccept={pluginAccept}
-              sharedDraftRef={draftRef}
-              migrateDraft={migrateDraft}
-            />
-          </Paper>
-        </Box>
-      </Box>
-
-      {/* Desktop — keep alive while running so VNC state survives tab switches */}
-      <Box
-        sx={{
-          flex: 1,
-          minHeight: 0,
-          display: tab === "desktop" ? "flex" : "none",
-          flexDirection: "column",
-          gap: 1,
-        }}
-      >
-        {!running ? (
-          <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-            <Typography variant="subtitle1">Desktop is asleep</Typography>
-            <Typography variant="body2" color="textSecondary">
-              Start the desktop to view a thread screen.
-            </Typography>
-          </Paper>
-        ) : !sessionId ? (
-          <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-            <Typography variant="subtitle1">No thread selected</Typography>
-            <Typography variant="body2" color="textSecondary">
-              Select a thread to open its screen.
-            </Typography>
-          </Paper>
-        ) : (
-          <>
+          {running && mobile ? (
             <Stack
               direction="row"
               spacing={1}
               alignItems="center"
-              sx={{ flexWrap: "wrap", rowGap: 1 }}
+              className="ob-threads-bar"
+              sx={{ px: 0.25 }}
             >
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ChatIcon />}
+                onClick={() => setThreadsOpen((open) => !open)}
+              >
+                {threadsOpen ? "Hide threads" : "Threads"}
+              </Button>
+              {!threadsOpen && sessions.some((item) => showUnread(item.id)) ? (
+                <span
+                  className="ob-unread-dot"
+                  role="img"
+                  aria-label="Unread"
+                />
+              ) : null}
+              <Typography
+                variant="caption"
+                color="textSecondary"
+                sx={{
+                  flex: 1,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {activeThread
+                  ? `${threadTitle(activeThread)} · ${personaName(threadPersona[activeThread.id])}`
+                  : sessionId
+                    ? "New thread"
+                    : "No thread selected"}
+              </Typography>
+            </Stack>
+          ) : null}
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "row",
+              gap: 1,
+            }}
+          >
+            {running ? (
+              <ThreadsPanel
+                sessions={sessions}
+                sessionId={sessionId}
+                loading={sessionsLoading}
+                mobile={mobile}
+                open={threadsOpen}
+                personaLabel={personaLabel}
+                busyIds={busyIds}
+                unread={unread}
+                actionBusy={actionBusy}
+                actions={threadActions}
+              />
+            ) : null}
+            <Paper
+              variant="outlined"
+              sx={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: 0,
+                display: mobile && running && threadsOpen ? "none" : "flex",
+                flexDirection: "column",
+              }}
+            >
+              {sessionId && !mobile ? (
+                <Typography
+                  variant="caption"
+                  color="textSecondary"
+                  sx={{ px: 1.5, pt: 0.75 }}
+                >
+                  {personaName(threadPersona[sessionId])}
+                </Typography>
+              ) : null}
+              {stopping ? (
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  className="ob-status-row"
+                  sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
+                >
+                  <CircularProgress size={1.2} />
+                  <Typography variant="caption" color="textSecondary">
+                    Stopping the desktop…
+                  </Typography>
+                </Stack>
+              ) : activity ? (
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  className="ob-status-row"
+                  sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
+                >
+                  {mobile ? null : (
+                    <Typography variant="caption" color="textSecondary">
+                      Model
+                    </Typography>
+                  )}
+                  <Chip
+                    size="small"
+                    color={
+                      activity === "done"
+                        ? "success"
+                        : activity === "initialize"
+                          ? "warning"
+                          : "primary"
+                    }
+                  >
+                    {ACTIVITY_LABEL[activity]}
+                  </Chip>
+                  {activity === "done" ? null : <CircularProgress size={1.2} />}
+                  {canStop ? (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      startIcon={<StopIcon width={16} height={16} />}
+                      disabled={stopBusy}
+                      onClick={() => void stopThread()}
+                      sx={{ ml: "auto" }}
+                    >
+                      Stop
+                    </Button>
+                  ) : null}
+                </Stack>
+              ) : null}
+              {stopping || activity ? <Divider /> : null}
+              <Box
+                className="ob-chat-log"
+                ref={outputRef}
+                onScroll={() => {
+                  const el = outputRef.current
+                  if (!el) return
+                  stickRef.current = nearBottom(
+                    el.scrollHeight,
+                    el.scrollTop,
+                    el.clientHeight,
+                  )
+                }}
+              >
+                {phase === "sleeping" ? (
+                  <Stack
+                    alignItems="center"
+                    justifyContent="center"
+                    sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
+                    spacing={1}
+                  >
+                    <Typography variant="subtitle1">
+                      Desktop is asleep
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      Start the desktop to chat with OpenCode.
+                    </Typography>
+                    <Button
+                      variant="contained"
+                      startIcon={<PlayArrowIcon />}
+                      onClick={() => void start()}
+                      sx={{ mt: 1 }}
+                    >
+                      Start desktop
+                    </Button>
+                  </Stack>
+                ) : messagesLoading && shown.length === 0 ? (
+                  <Stack
+                    alignItems="center"
+                    justifyContent="center"
+                    sx={{ flex: 1, minHeight: 160 }}
+                    spacing={1}
+                  >
+                    <Stack spacing={1} sx={{ width: "min(620px, 100%)" }}>
+                      <Skeleton
+                        key="bubble-user-0"
+                        variant="rounded"
+                        height={44}
+                        width="42%"
+                        sx={{ alignSelf: "flex-end" }}
+                      />
+                      <Skeleton
+                        key="bubble-assistant-0"
+                        variant="rounded"
+                        height={72}
+                        width="78%"
+                      />
+                      <Skeleton
+                        key="bubble-user-1"
+                        variant="rounded"
+                        height={44}
+                        width="30%"
+                        sx={{ alignSelf: "flex-end" }}
+                      />
+                      <Skeleton
+                        key="bubble-assistant-1"
+                        variant="rounded"
+                        height={56}
+                        width="64%"
+                      />
+                      <Skeleton
+                        key="bubble-assistant-2"
+                        variant="rounded"
+                        height={48}
+                        width="56%"
+                      />
+                    </Stack>
+                  </Stack>
+                ) : shown.length === 0 ? (
+                  <Stack
+                    alignItems="center"
+                    justifyContent="center"
+                    sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
+                    spacing={1}
+                  >
+                    <Typography variant="subtitle1">
+                      {phase === "starting"
+                        ? "Opening the desktop"
+                        : "No messages yet"}
+                    </Typography>
+                    <Typography variant="body2" color="textSecondary">
+                      {phase === "starting"
+                        ? "The model is not ready until the desktop is up."
+                        : model
+                          ? `Using ${model}. Ask anything.`
+                          : "Pick a model, then ask anything."}
+                    </Typography>
+                  </Stack>
+                ) : (
+                  shown.map((entry, index) => (
+                    <MessageBubble
+                      key={bubbleKeys[index]}
+                      entry={entry}
+                      index={index}
+                      bubbleKey={bubbleKeys[index] ?? ""}
+                      speechKey={speakingKey}
+                      speechLoading={speechLoadingKey}
+                      lastHandoff={lastHandoff}
+                      held={held}
+                      dismissedHandoff={dismissedHandoff}
+                      screenLive={screenLive}
+                      screenPath={screen?.path ?? ""}
+                      screenError={screenError}
+                      running={running}
+                      sending={sending}
+                      stopping={stopping}
+                      controlBusy={controlBusy}
+                      renderers={pluginRenderers}
+                      onTakeControl={bubbleActions.takeControl}
+                      onScreenDone={bubbleActions.screenDone}
+                      onSpeak={speakText}
+                      onStopSpeak={stopSpeaking}
+                    />
+                  ))
+                )}
+              </Box>
+              {turnIssue && tab === "chat" ? (
+                <Alert
+                  severity={turnIssue.retryable ? "warning" : "error"}
+                  sx={{ flexShrink: 0 }}
+                  action={
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={sending || stopping}
+                      onClick={() => void prompt(RESUME_PROMPT)}
+                    >
+                      Resume
+                    </Button>
+                  }
+                >
+                  {turnIssue.retryable
+                    ? "Connection dropped mid-reply. OpenBot will retry automatically; you can also resume now."
+                    : `Reply failed: ${turnIssue.detail}`}
+                </Alert>
+              ) : null}
+              {held &&
+              holdOrigin === "chat" &&
+              screen?.sessionId === sessionId ? (
+                <div className="ob-takeover">
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Typography variant="caption" sx={{ flex: 1 }}>
+                      You have the desktop
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      disabled={!running || sending || stopping || controlBusy}
+                      onClick={() => void releaseControl()}
+                    >
+                      Done
+                    </Button>
+                  </Stack>
+                  <VncFrame
+                    title="your screen"
+                    path={screen.path}
+                    interactive
+                  />
+                </div>
+              ) : null}
+              <Divider />
+              <Composer
+                key={sessionId}
+                sessionId={sessionId}
+                running={running}
+                sending={sending}
+                stopping={stopping}
+                stopBusy={stopBusy}
+                canStop={canStop}
+                mobile={mobile}
+                joined={joined}
+                rememberJoined={rememberJoined}
+                onError={setError}
+                onSubmit={submit}
+                onStop={() => void stopThread()}
+                baseSections={baseSections}
+                pluginButtons={pluginButtons}
+                pluginCommands={pluginCommands}
+                pluginValidators={pluginValidators}
+                pluginAccept={pluginAccept}
+                readAloud={readAloud}
+                onToggleReadAloud={toggleReadAloud}
+                sharedDraftRef={draftRef}
+                migrateDraft={migrateDraft}
+                projects={projectList}
+                onEnsureProjects={ensureProjects}
+              />
+            </Paper>
+          </Box>
+        </Box>
+
+        {/* Desktop — keep alive while running so VNC state survives tab switches */}
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: tab === "desktop" ? "flex" : "none",
+            flexDirection: "column",
+            gap: 1,
+          }}
+        >
+          {!running ? (
+            <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
+              <Typography variant="subtitle1">Desktop is asleep</Typography>
+              <Typography variant="body2" color="textSecondary">
+                Start the desktop to view a thread screen.
+              </Typography>
+            </Paper>
+          ) : !sessionId ? (
+            <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
+              <Typography variant="subtitle1">No thread selected</Typography>
+              <Typography variant="body2" color="textSecondary">
+                Select a thread to open its screen.
+              </Typography>
+            </Paper>
+          ) : (
+            <>
+              <Stack
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                sx={{ flexWrap: "wrap", rowGap: 1 }}
+              >
+                <Typography
+                  variant="caption"
+                  color="textSecondary"
+                  sx={{ flex: 1 }}
+                >
+                  {stopping
+                    ? "Stopping the desktop…"
+                    : held
+                      ? "You have this screen. The agent is paused."
+                      : `Screen for ${
+                          sessions.find((item) => item.id === sessionId)
+                            ?.title || "this thread"
+                        }. View only until you take control.`}
+                </Typography>
+                <Button
+                  size="small"
+                  variant="contained"
+                  disabled={!running || stopping || controlBusy}
+                  onClick={() =>
+                    void (held ? releaseControl(false) : takeControl())
+                  }
+                >
+                  {held ? "Done" : "Take control"}
+                </Button>
+                <ToolTip title="Reload VNC">
+                  <Button
+                    size="small"
+                    variant="text"
+                    startIcon={<RefreshIcon />}
+                    onClick={() => setDesktopKey((key) => key + 1)}
+                    disabled={!screen || screen.sessionId !== sessionId}
+                  >
+                    Reload
+                  </Button>
+                </ToolTip>
+                <ToolTip title="Open VNC in a new tab">
+                  <Button
+                    size="small"
+                    variant="text"
+                    startIcon={<OpenInNewIcon />}
+                    disabled={!screen || screen.sessionId !== sessionId || held}
+                    onClick={() => {
+                      if (!screen || screen.sessionId !== sessionId || held)
+                        return
+                      openVnc(screen.path, false)
+                    }}
+                  >
+                    Pop out
+                  </Button>
+                </ToolTip>
+              </Stack>
+              {screen?.sessionId === sessionId ? (
+                <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
+                  <VncFrame
+                    key={`${screen.sessionId}-${desktopKey}-${held ? "held" : "view"}`}
+                    title="desktop"
+                    path={screen.path}
+                    interactive={held}
+                    className="ob-frame"
+                  />
+                </Box>
+              ) : (
+                <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
+                  <Typography variant="subtitle1">
+                    {screenError ? "Screen unavailable" : "Opening screen"}
+                  </Typography>
+                  <Typography variant="body2" color="textSecondary">
+                    {screenError || "Opening this thread's screen…"}
+                  </Typography>
+                </Paper>
+              )}
+            </>
+          )}
+        </Box>
+
+        {/* Cron — mounted only while visible; jobs live in workspace state */}
+        {tab === "cron" ? (
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: 1,
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="center">
               <Typography
                 variant="caption"
                 color="textSecondary"
                 sx={{ flex: 1 }}
               >
-                {stopping
-                  ? "Stopping the desktop…"
-                  : held
-                    ? "You have this screen. The agent is paused."
-                    : `Screen for ${
-                        sessions.find((item) => item.id === sessionId)?.title ||
-                        "this thread"
-                      }. View only until you take control.`}
+                Prompt runs the agent. Script posts command output. Script then
+                prompt gives that output to the agent.
               </Typography>
-              <Button
-                size="small"
-                variant="contained"
-                disabled={!running || stopping || controlBusy}
-                onClick={() =>
-                  void (held ? releaseControl(false) : takeControl())
-                }
-              >
-                {held ? "Done" : "Take control"}
-              </Button>
-              <ToolTip title="Reload VNC">
-                <Button
+              <ToolTip title="Reload jobs">
+                <IconButton
                   size="small"
-                  variant="text"
-                  startIcon={<RefreshIcon />}
-                  onClick={() => setDesktopKey((key) => key + 1)}
-                  disabled={!screen || screen.sessionId !== sessionId}
+                  aria-label="Reload jobs"
+                  onClick={() => void loadCron()}
                 >
-                  Reload
-                </Button>
-              </ToolTip>
-              <ToolTip title="Open VNC in a new tab">
-                <Button
-                  size="small"
-                  variant="text"
-                  startIcon={<OpenInNewIcon />}
-                  disabled={!screen || screen.sessionId !== sessionId || held}
-                  onClick={() => {
-                    if (!screen || screen.sessionId !== sessionId || held)
-                      return
-                    openVnc(screen.path, false)
-                  }}
-                >
-                  Pop out
-                </Button>
+                  <RefreshIcon />
+                </IconButton>
               </ToolTip>
             </Stack>
-            {screen?.sessionId === sessionId ? (
-              <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-                <VncFrame
-                  key={`${screen.sessionId}-${desktopKey}-${held ? "held" : "view"}`}
-                  title="desktop"
-                  path={screen.path}
-                  interactive={held}
-                  className="ob-frame"
-                />
-              </Box>
-            ) : (
-              <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-                <Typography variant="subtitle1">
-                  {screenError ? "Screen unavailable" : "Opening screen"}
-                </Typography>
-                <Typography variant="body2" color="textSecondary">
-                  {screenError || "Opening this thread's screen…"}
-                </Typography>
-              </Paper>
-            )}
-          </>
-        )}
-      </Box>
+            <Box className="ob-cron-list" sx={{ flex: 1, minHeight: 0 }}>
+              {cronJobs.length === 0 ? (
+                <Stack
+                  alignItems="center"
+                  justifyContent="center"
+                  sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
+                  spacing={1}
+                >
+                  <Typography variant="subtitle1">No scheduled jobs</Typography>
+                  <Typography variant="body2" color="textSecondary">
+                    Add one here, or ask the agent to schedule work with
+                    ob-cron.
+                  </Typography>
+                </Stack>
+              ) : (
+                cronJobs.map((job) => (
+                  <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      sx={{ flexWrap: "wrap", rowGap: 1 }}
+                    >
+                      <Typography
+                        variant="subtitle2"
+                        sx={{
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {job.name}
+                      </Typography>
+                      <Chip size="small" label={cronSchedule(job)} />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={cronRunLabel(job.runKind)}
+                      />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={cronModelLabel(job, models)}
+                      />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={personaName(job.personaId ?? undefined)}
+                      />
+                      {notices.some(
+                        (notice) => notice.jobId === job.id && !notice.viewedAt,
+                      ) ? (
+                        <Chip size="small" color="primary" label="new result" />
+                      ) : null}
+                      <Box sx={{ flex: 1 }} />
+                      {cronBusyId === job.id ? (
+                        <CircularProgress size={1.2} />
+                      ) : (
+                        <Switch
+                          size="small"
+                          checked={job.enabled}
+                          aria-label={`Toggle ${job.name}`}
+                          onChange={() => void toggleCronJob(job)}
+                        />
+                      )}
+                    </Stack>
+                    <Typography
+                      variant="body2"
+                      color="textSecondary"
+                      sx={{
+                        mt: 0.5,
+                        overflow: "hidden",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                      }}
+                    >
+                      {job.runKind === "script" ? job.script : job.message}
+                    </Typography>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
+                    >
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={
+                          job.enabled
+                            ? `next ${formatWhen(job.nextRunAt)}`
+                            : "paused"
+                        }
+                      />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={
+                          job.lastError
+                            ? "error"
+                            : job.lastRunAt
+                              ? "success"
+                              : undefined
+                        }
+                        label={
+                          job.lastError
+                            ? "error"
+                            : job.lastRunAt
+                              ? `ran ${formatAgo(job.lastRunAt)}`
+                              : "never ran"
+                        }
+                      />
+                      <Box sx={{ flex: 1 }} />
+                      <Button
+                        size="small"
+                        variant="text"
+                        startIcon={<EditIcon />}
+                        disabled={Boolean(cronBusyId)}
+                        onClick={() => openCronForm(job)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="text"
+                        startIcon={<PlayArrowIcon />}
+                        disabled={Boolean(cronBusyId)}
+                        onClick={() => void runCronJob(job)}
+                      >
+                        Run now
+                      </Button>
+                      {notices.some((notice) => notice.jobId === job.id) ? (
+                        <Button
+                          size="small"
+                          variant="text"
+                          startIcon={<ChatIcon />}
+                          disabled={Boolean(cronBusyId)}
+                          onClick={() => openJobResult(job)}
+                        >
+                          Result
+                        </Button>
+                      ) : null}
+                      <IconButton
+                        size="small"
+                        aria-label={`Delete ${job.name}`}
+                        disabled={Boolean(cronBusyId)}
+                        onClick={() => setCronDeleteTarget(job)}
+                      >
+                        <DeleteIcon width={18} height={18} />
+                      </IconButton>
+                    </Stack>
+                    {job.lastError ? (
+                      <Typography
+                        variant="caption"
+                        color="error"
+                        sx={{ display: "block", mt: 0.5 }}
+                      >
+                        {job.lastError}
+                      </Typography>
+                    ) : null}
+                  </Paper>
+                ))
+              )}
+            </Box>
+          </Box>
+        ) : null}
 
-      {/* Cron — mounted only while visible; jobs live in workspace state */}
-      {tab === "cron" ? (
+        {/* Projects */}
         <Box
           sx={{
             flex: 1,
             minHeight: 0,
-            display: "flex",
+            display: tab === "projects" ? "flex" : "none",
             flexDirection: "column",
-            gap: 1,
           }}
         >
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Typography
-              variant="caption"
-              color="textSecondary"
-              sx={{ flex: 1 }}
-            >
-              Prompt runs the agent. Script posts command output. Script then
-              prompt gives that output to the agent.
-            </Typography>
-            <ToolTip title="Reload jobs">
-              <IconButton
-                size="small"
-                aria-label="Reload jobs"
-                onClick={() => void loadCron()}
-              >
-                <RefreshIcon />
-              </IconButton>
-            </ToolTip>
-          </Stack>
-          <Box className="ob-cron-list" sx={{ flex: 1, minHeight: 0 }}>
-            {cronJobs.length === 0 ? (
-              <Stack
-                alignItems="center"
-                justifyContent="center"
-                sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
-                spacing={1}
-              >
-                <Typography variant="subtitle1">No scheduled jobs</Typography>
-                <Typography variant="body2" color="textSecondary">
-                  Add one here, or ask the agent to schedule work with ob-cron.
-                </Typography>
-              </Stack>
-            ) : (
-              cronJobs.map((job) => (
-                <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    alignItems="center"
-                    sx={{ flexWrap: "wrap", rowGap: 1 }}
-                  >
-                    <Typography
-                      variant="subtitle2"
-                      sx={{
-                        minWidth: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {job.name}
-                    </Typography>
-                    <Chip size="small" label={cronSchedule(job)} />
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={cronRunLabel(job.runKind)}
-                    />
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={cronModelLabel(job, models)}
-                    />
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={personaName(job.personaId ?? undefined)}
-                    />
-                    {notices.some(
-                      (notice) => notice.jobId === job.id && !notice.viewedAt,
-                    ) ? (
-                      <Chip size="small" color="primary" label="new result" />
-                    ) : null}
-                    <Box sx={{ flex: 1 }} />
-                    {cronBusyId === job.id ? (
-                      <CircularProgress size={1.2} />
-                    ) : (
-                      <Switch
-                        size="small"
-                        checked={job.enabled}
-                        aria-label={`Toggle ${job.name}`}
-                        onChange={() => void toggleCronJob(job)}
-                      />
-                    )}
-                  </Stack>
-                  <Typography
-                    variant="body2"
-                    color="textSecondary"
-                    sx={{
-                      mt: 0.5,
-                      overflow: "hidden",
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                    }}
-                  >
-                    {job.runKind === "script" ? job.script : job.message}
-                  </Typography>
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    alignItems="center"
-                    sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
-                  >
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={
-                        job.enabled
-                          ? `next ${formatWhen(job.nextRunAt)}`
-                          : "paused"
-                      }
-                    />
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      color={
-                        job.lastError
-                          ? "error"
-                          : job.lastRunAt
-                            ? "success"
-                            : undefined
-                      }
-                      label={
-                        job.lastError
-                          ? "error"
-                          : job.lastRunAt
-                            ? `ran ${formatAgo(job.lastRunAt)}`
-                            : "never ran"
-                      }
-                    />
-                    <Box sx={{ flex: 1 }} />
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<EditIcon />}
-                      disabled={Boolean(cronBusyId)}
-                      onClick={() => openCronForm(job)}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<PlayArrowIcon />}
-                      disabled={Boolean(cronBusyId)}
-                      onClick={() => void runCronJob(job)}
-                    >
-                      Run now
-                    </Button>
-                    {notices.some((notice) => notice.jobId === job.id) ? (
-                      <Button
-                        size="small"
-                        variant="text"
-                        startIcon={<ChatIcon />}
-                        disabled={Boolean(cronBusyId)}
-                        onClick={() => openJobResult(job)}
-                      >
-                        Result
-                      </Button>
-                    ) : null}
-                    <IconButton
-                      size="small"
-                      aria-label={`Delete ${job.name}`}
-                      disabled={Boolean(cronBusyId)}
-                      onClick={() => setCronDeleteTarget(job)}
-                    >
-                      <DeleteIcon width={18} height={18} />
-                    </IconButton>
-                  </Stack>
-                  {job.lastError ? (
-                    <Typography
-                      variant="caption"
-                      color="error"
-                      sx={{ display: "block", mt: 0.5 }}
-                    >
-                      {job.lastError}
-                    </Typography>
-                  ) : null}
-                </Paper>
-              ))
-            )}
-          </Box>
+          <MemoProjects subscribe={subscribe} />
         </Box>
-      ) : null}
 
-      {/* Projects */}
-      <Box
-        sx={{
-          flex: 1,
-          minHeight: 0,
-          display: tab === "projects" ? "flex" : "none",
-          flexDirection: "column",
-        }}
-      >
-        <MemoProjects subscribe={subscribe} />
-      </Box>
-
-      <Drawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        variant="temporary"
-        anchor="left"
-        width={300}
-      >
-        <Box sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}>
-          <Typography variant="subtitle2">Views</Typography>
-          <List dense disablePadding>
-            <ListItemButton
-              selected={tab === "chat"}
-              onClick={() => goTab("chat")}
-            >
-              <ChatIcon />
-              <ListItemText
-                primary={`Chat${shown.length ? ` (${shown.length})` : ""}`}
-              />
-            </ListItemButton>
-            <ListItemButton
-              selected={tab === "desktop"}
-              onClick={() => goTab("desktop")}
-            >
-              <ComputerIcon />
-              <ListItemText primary="Desktop" />
-            </ListItemButton>
-            <ListItemButton
-              selected={tab === "cron"}
-              onClick={() => goTab("cron")}
-            >
-              <ScheduleIcon />
-              <ListItemText
-                primary={`Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
-              />
-            </ListItemButton>
-            <ListItemButton
-              selected={tab === "projects"}
-              onClick={() => goTab("projects")}
-            >
-              <FolderIcon />
-              <ListItemText primary="Projects" />
-            </ListItemButton>
-          </List>
-          <Divider />
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Typography variant="subtitle2" sx={{ flex: 1 }}>
-              Desktop
-            </Typography>
-            <Chip size="small" color={phaseColor}>
-              {stopping
-                ? "stopping…"
-                : phase === "starting"
-                  ? "starting…"
-                  : phase}
-            </Chip>
-          </Stack>
-          {running ? (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={
-                stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
-              }
-              onClick={() => void sleep()}
-              disabled={stopping}
-              aria-busy={stopping}
-            >
-              {stopping ? "Stopping…" : "Sleep"}
-            </Button>
-          ) : (
-            <Button
-              size="small"
-              variant="contained"
-              startIcon={<PlayArrowIcon />}
-              onClick={() => void start()}
-              disabled={phase === "starting"}
-            >
-              Start
-            </Button>
-          )}
-          <Divider />
-          <Typography variant="subtitle2">Model</Typography>
-          {modelsLoading && models.length === 0 ? (
-            <Skeleton width="100%" height={40} />
-          ) : (
-            <Select
-              name="model-drawer"
-              label={running ? "Model" : "Model (start desktop)"}
-              value={model}
-              disabled={!running || models.length === 0}
-              sx={{ width: "100%" }}
-              onSelect={(value) => selectModel(value)}
-            >
-              {modelOptions}
-            </Select>
-          )}
-          {modelsError ? (
-            <ToolTip title={modelsError}>
-              <Chip size="small" color="error" variant="outlined">
-                {modelsError}
+        <Drawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          variant="temporary"
+          anchor="left"
+          width={300}
+        >
+          <Box
+            sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}
+          >
+            <Typography variant="subtitle2">Views</Typography>
+            <List dense disablePadding>
+              <ListItemButton
+                selected={tab === "chat"}
+                onClick={() => goTab("chat")}
+              >
+                <ChatIcon />
+                <ListItemText
+                  primary={`Chat${shown.length ? ` (${shown.length})` : ""}`}
+                />
+              </ListItemButton>
+              <ListItemButton
+                selected={tab === "desktop"}
+                onClick={() => goTab("desktop")}
+              >
+                <ComputerIcon />
+                <ListItemText primary="Desktop" />
+              </ListItemButton>
+              <ListItemButton
+                selected={tab === "cron"}
+                onClick={() => goTab("cron")}
+              >
+                <ScheduleIcon />
+                <ListItemText
+                  primary={`Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
+                />
+              </ListItemButton>
+              <ListItemButton
+                selected={tab === "projects"}
+                onClick={() => goTab("projects")}
+              >
+                <FolderIcon />
+                <ListItemText primary="Projects" />
+              </ListItemButton>
+            </List>
+            <Divider />
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="subtitle2" sx={{ flex: 1 }}>
+                Desktop
+              </Typography>
+              <Chip size="small" color={phaseColor}>
+                {stopping
+                  ? "stopping…"
+                  : phase === "starting"
+                    ? "starting…"
+                    : phase}
               </Chip>
-            </ToolTip>
-          ) : null}
-          {running && !modelsLoading ? (
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<RefreshIcon />}
-              onClick={() => void loadModels()}
-            >
-              Reload model list
-            </Button>
-          ) : null}
-          <Divider />
-          {running ? (
+            </Stack>
+            {running ? (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={
+                  stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
+                }
+                onClick={() => void sleep()}
+                disabled={stopping}
+                aria-busy={stopping}
+              >
+                {stopping ? "Stopping…" : "Sleep"}
+              </Button>
+            ) : (
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<PlayArrowIcon />}
+                onClick={() => void start()}
+                disabled={phase === "starting"}
+              >
+                Start
+              </Button>
+            )}
+            <Divider />
+            <Typography variant="subtitle2">Model</Typography>
+            {modelsLoading && models.length === 0 ? (
+              <Skeleton width="100%" height={40} />
+            ) : (
+              <Select
+                name="model-drawer"
+                label={running ? "Model" : "Model (start desktop)"}
+                value={model}
+                disabled={!running || models.length === 0}
+                sx={{ width: "100%" }}
+                onSelect={(value) => selectModel(value)}
+              >
+                {modelOptions}
+              </Select>
+            )}
+            {modelsError ? (
+              <ToolTip title={modelsError}>
+                <Chip size="small" color="error" variant="outlined">
+                  {modelsError}
+                </Chip>
+              </ToolTip>
+            ) : null}
+            {running && !modelsLoading ? (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<RefreshIcon />}
+                onClick={() => void loadModels()}
+              >
+                Reload model list
+              </Button>
+            ) : null}
+            <Divider />
+            {running ? (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<AddIcon />}
+                disabled={actionBusy}
+                onClick={() => {
+                  setNewPersonaId("assistant")
+                  setNewThreadOpen(true)
+                  setDrawerOpen(false)
+                }}
+              >
+                New thread
+              </Button>
+            ) : null}
             <Button
               size="small"
               variant="text"
               startIcon={<AddIcon />}
-              disabled={actionBusy}
               onClick={() => {
-                setNewPersonaId("assistant")
-                setNewThreadOpen(true)
-                setDrawerOpen(false)
+                goTab("cron")
+                openCronForm()
               }}
             >
-              New thread
+              Add job
             </Button>
-          ) : null}
-          <Button
-            size="small"
-            variant="text"
-            startIcon={<AddIcon />}
-            onClick={() => {
-              goTab("cron")
-              openCronForm()
-            }}
-          >
-            Add job
-          </Button>
-        </Box>
-      </Drawer>
+          </Box>
+        </Drawer>
 
-      <Menu
-        open={Boolean(menuThread)}
-        anchorEl={menuAnchor}
-        onClose={() => setMenuThread(null)}
-      >
-        {menuThread ? (
-          <>
-            <ListItemButton
-              onClick={() => {
-                setRenameTarget(menuThread)
-                setRenameTitle(threadTitle(menuThread))
-                setMenuThread(null)
-              }}
-            >
-              <EditIcon />
-              <ListItemText primary="Rename" />
-            </ListItemButton>
-            {threadBusy(menuThread.id) ? (
-              <ListItemButton onClick={() => void abortThread(menuThread.id)}>
-                <StopIcon />
-                <ListItemText primary="Abort" />
-              </ListItemButton>
-            ) : null}
-            <ListItemButton
-              onClick={() => {
-                setDeleteTarget(menuThread)
-                setMenuThread(null)
-              }}
-            >
-              <DeleteIcon />
-              <ListItemText primary="Delete" />
-            </ListItemButton>
-          </>
-        ) : null}
-      </Menu>
-
-      {newThreadOpen ? (
-        <Dialog open onClose={() => setNewThreadOpen(false)}>
-          <DialogTitle>New thread</DialogTitle>
-          <DialogContent>
-            <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-              The personality stays for this thread. It cannot be changed later.
-            </Typography>
-            <Select
-              name="persona"
-              label="Personality"
-              value={newPersonaId}
-              disabled={actionBusy}
-              sx={{ width: "100%", mt: 1 }}
-              onSelect={setNewPersonaId}
-            >
-              {(personas.length
-                ? personas
-                : [
-                    {
-                      id: "assistant",
-                      name: "Assistant",
-                      instruction: "",
-                      builtin: true,
-                    },
-                  ]
-              ).map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </Select>
-          </DialogContent>
-          <DialogActions>
-            <Button variant="text" onClick={() => setNewThreadOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="contained"
-              disabled={actionBusy}
-              onClick={() => void newThread()}
-            >
-              Start
-            </Button>
-          </DialogActions>
-        </Dialog>
-      ) : null}
-
-      {renameTarget ? (
-        <Dialog open onClose={() => setRenameTarget(null)}>
-          <DialogTitle>Rename thread</DialogTitle>
-          <DialogContent>
-            <TextField
-              label="Title"
-              value={renameTitle}
-              autoFocus
-              sx={{ width: "100%", mt: 1 }}
-              disabled={actionBusy}
-              onChange={(event) => setRenameTitle(event.currentTarget.value)}
-              onKeyDown={(event: React.KeyboardEvent) => {
-                if (event.key === "Enter") {
-                  event.preventDefault()
-                  void saveRename()
-                }
-              }}
-            />
-          </DialogContent>
-          <DialogActions>
-            <Button variant="text" onClick={() => setRenameTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="contained"
-              disabled={actionBusy || !renameTitle.trim()}
-              onClick={() => void saveRename()}
-            >
-              Save
-            </Button>
-          </DialogActions>
-        </Dialog>
-      ) : null}
-
-      {deleteTarget ? (
-        <Dialog open onClose={() => setDeleteTarget(null)}>
-          <DialogTitle>Delete thread?</DialogTitle>
-          <DialogContent>
-            <Typography variant="body2">
-              Deletes “{deleteTarget ? threadTitle(deleteTarget) : ""}” and all
-              of its messages. This cannot be undone.
-            </Typography>
-          </DialogContent>
-          <DialogActions>
-            <Button variant="text" onClick={() => setDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              color="error"
-              variant="contained"
-              disabled={actionBusy}
-              startIcon={<DeleteIcon />}
-              onClick={() => void deleteThread()}
-            >
-              Delete
-            </Button>
-          </DialogActions>
-        </Dialog>
-      ) : null}
-
-      {cronAddOpen ? (
-        <Dialog open onClose={() => setCronAddOpen(false)}>
-          <DialogTitle>
-            {cronEditId ? "Edit cron job" : "Add cron job"}
-          </DialogTitle>
-          <DialogContent>
-            <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
-              <TextField
-                label="Name"
-                value={cronName}
-                autoFocus
-                onChange={(event) => setCronName(event.currentTarget.value)}
-              />
-              <Select
-                name="run"
-                label="Run as"
-                value={cronRunKind}
-                onSelect={(value) =>
-                  setCronRunKind(value as "prompt" | "script" | "both")
-                }
+        <Menu
+          open={Boolean(menuThread)}
+          anchorEl={menuAnchor}
+          onClose={() => setMenuThread(null)}
+        >
+          {menuThread ? (
+            <>
+              <ListItemButton
+                onClick={() => {
+                  setRenameTarget(menuThread)
+                  setRenameTitle(threadTitle(menuThread))
+                  setMenuThread(null)
+                }}
               >
-                <option value="prompt">Prompt</option>
-                <option value="script">Script</option>
-                <option value="both">Script then prompt</option>
+                <EditIcon />
+                <ListItemText primary="Rename" />
+              </ListItemButton>
+              {threadBusy(menuThread.id) ? (
+                <ListItemButton onClick={() => void abortThread(menuThread.id)}>
+                  <StopIcon />
+                  <ListItemText primary="Abort" />
+                </ListItemButton>
+              ) : null}
+              <ListItemButton
+                onClick={() => {
+                  setDeleteTarget(menuThread)
+                  setMenuThread(null)
+                }}
+              >
+                <DeleteIcon />
+                <ListItemText primary="Delete" />
+              </ListItemButton>
+            </>
+          ) : null}
+        </Menu>
+
+        {newThreadOpen ? (
+          <Dialog open onClose={() => setNewThreadOpen(false)}>
+            <DialogTitle>New thread</DialogTitle>
+            <DialogContent>
+              <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
+                The personality stays for this thread. It cannot be changed
+                later.
+              </Typography>
+              <Select
+                name="persona"
+                label="Personality"
+                value={newPersonaId}
+                disabled={actionBusy}
+                sx={{ width: "100%", mt: 1 }}
+                onSelect={setNewPersonaId}
+              >
+                {(personas.length
+                  ? personas
+                  : [
+                      {
+                        id: "assistant",
+                        name: "Assistant",
+                        instruction: "",
+                        builtin: true,
+                      },
+                    ]
+                ).map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
               </Select>
-              {cronRunKind !== "script" ? (
-                <TextField
-                  label="Message sent to the agent"
-                  value={cronMessage}
-                  multiline
-                  rows={3}
-                  onChange={(event) =>
-                    setCronMessage(event.currentTarget.value)
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setNewThreadOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                disabled={actionBusy}
+                onClick={() => void newThread()}
+              >
+                Start
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        {renameTarget ? (
+          <Dialog open onClose={() => setRenameTarget(null)}>
+            <DialogTitle>Rename thread</DialogTitle>
+            <DialogContent>
+              <TextField
+                label="Title"
+                value={renameTitle}
+                autoFocus
+                sx={{ width: "100%", mt: 1 }}
+                disabled={actionBusy}
+                onChange={(event) => setRenameTitle(event.currentTarget.value)}
+                onKeyDown={(event: React.KeyboardEvent) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    void saveRename()
                   }
-                />
-              ) : null}
-              {cronRunKind !== "prompt" ? (
+                }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setRenameTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                disabled={actionBusy || !renameTitle.trim()}
+                onClick={() => void saveRename()}
+              >
+                Save
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        {deleteTarget ? (
+          <Dialog open onClose={() => setDeleteTarget(null)}>
+            <DialogTitle>Delete thread?</DialogTitle>
+            <DialogContent>
+              <Typography variant="body2">
+                Deletes “{deleteTarget ? threadTitle(deleteTarget) : ""}” and
+                all of its messages. This cannot be undone.
+              </Typography>
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                color="error"
+                variant="contained"
+                disabled={actionBusy}
+                startIcon={<DeleteIcon />}
+                onClick={() => void deleteThread()}
+              >
+                Delete
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        {cronAddOpen ? (
+          <Dialog open onClose={() => setCronAddOpen(false)}>
+            <DialogTitle>
+              {cronEditId ? "Edit cron job" : "Add cron job"}
+            </DialogTitle>
+            <DialogContent>
+              <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
                 <TextField
-                  label="Script"
-                  value={cronScript}
-                  multiline
-                  rows={4}
-                  placeholder="bash /home/agent/workspace/check.sh"
-                  onChange={(event) => setCronScript(event.currentTarget.value)}
+                  label="Name"
+                  value={cronName}
+                  autoFocus
+                  onChange={(event) => setCronName(event.currentTarget.value)}
                 />
-              ) : null}
-              {cronEditId ? (
-                <Typography variant="caption" color="textSecondary">
-                  Schedule stays {editingSchedule(cronJobs, cronEditId)}.
-                </Typography>
-              ) : (
-                <>
+                <Select
+                  name="run"
+                  label="Run as"
+                  value={cronRunKind}
+                  onSelect={(value) =>
+                    setCronRunKind(value as "prompt" | "script" | "both")
+                  }
+                >
+                  <option value="prompt">Prompt</option>
+                  <option value="script">Script</option>
+                  <option value="both">Script then prompt</option>
+                </Select>
+                {cronRunKind !== "script" ? (
+                  <TextField
+                    label="Message sent to the agent"
+                    value={cronMessage}
+                    multiline
+                    rows={3}
+                    onChange={(event) =>
+                      setCronMessage(event.currentTarget.value)
+                    }
+                  />
+                ) : null}
+                {cronRunKind !== "prompt" ? (
+                  <TextField
+                    label="Script"
+                    value={cronScript}
+                    multiline
+                    rows={4}
+                    placeholder="bash /home/agent/workspace/check.sh"
+                    onChange={(event) =>
+                      setCronScript(event.currentTarget.value)
+                    }
+                  />
+                ) : null}
+                {cronEditId ? (
+                  <Typography variant="caption" color="textSecondary">
+                    Schedule stays {editingSchedule(cronJobs, cronEditId)}.
+                  </Typography>
+                ) : (
+                  <>
+                    <Select
+                      name="schedule"
+                      label="Schedule"
+                      value={cronKind}
+                      onSelect={(value) => setCronKind(value as CronKind)}
+                    >
+                      <option value="every">Interval</option>
+                      <option value="cron">Cron expression (UTC)</option>
+                      <option value="at">One time</option>
+                    </Select>
+                    {cronKind === "every" ? (
+                      <TextField
+                        label="Every (seconds, min 60)"
+                        value={cronEvery}
+                        inputMode="numeric"
+                        onChange={(event) =>
+                          setCronEvery(event.currentTarget.value)
+                        }
+                      />
+                    ) : cronKind === "cron" ? (
+                      <TextField
+                        label="Cron expression"
+                        value={cronExpr}
+                        placeholder="0 9 * * 1-5"
+                        onChange={(event) =>
+                          setCronExpr(event.currentTarget.value)
+                        }
+                      />
+                    ) : (
+                      <TextField
+                        label="Run at"
+                        value={cronAt}
+                        type="datetime-local"
+                        onChange={(event) =>
+                          setCronAt(event.currentTarget.value)
+                        }
+                      />
+                    )}
+                  </>
+                )}
+                {cronRunKind !== "script" ? (
                   <Select
-                    name="schedule"
-                    label="Schedule"
-                    value={cronKind}
-                    onSelect={(value) => setCronKind(value as CronKind)}
+                    name="cron-model"
+                    label="Model"
+                    value={cronModel}
+                    disabled={!running && models.length === 0 && !cronModel}
+                    onSelect={setCronModel}
                   >
-                    <option value="every">Interval</option>
-                    <option value="cron">Cron expression (UTC)</option>
-                    <option value="at">One time</option>
+                    {[
+                      <option key="default" value="">
+                        Desktop default
+                      </option>,
+                      ...(cronModel &&
+                      !models.some(
+                        (item) =>
+                          `${item.providerID}/${item.modelID}` === cronModel,
+                      )
+                        ? [
+                            <option key={cronModel} value={cronModel}>
+                              {cronModel}
+                            </option>,
+                          ]
+                        : []),
+                      ...modelOptions,
+                    ]}
                   </Select>
-                  {cronKind === "every" ? (
-                    <TextField
-                      label="Every (seconds, min 60)"
-                      value={cronEvery}
-                      inputMode="numeric"
-                      onChange={(event) =>
-                        setCronEvery(event.currentTarget.value)
-                      }
-                    />
-                  ) : cronKind === "cron" ? (
-                    <TextField
-                      label="Cron expression"
-                      value={cronExpr}
-                      placeholder="0 9 * * 1-5"
-                      onChange={(event) =>
-                        setCronExpr(event.currentTarget.value)
-                      }
-                    />
-                  ) : (
-                    <TextField
-                      label="Run at"
-                      value={cronAt}
-                      type="datetime-local"
-                      onChange={(event) => setCronAt(event.currentTarget.value)}
-                    />
-                  )}
-                </>
+                ) : null}
+                {cronRunKind !== "script" ? (
+                  <Select
+                    name="cron-persona"
+                    label="Personality"
+                    value={cronPersona}
+                    onSelect={setCronPersona}
+                  >
+                    {[
+                      ...(personas.length
+                        ? personas
+                        : [
+                            {
+                              id: "assistant",
+                              name: "Assistant",
+                              instruction: "",
+                              builtin: true,
+                            },
+                          ]
+                      ).map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      )),
+                      ...(cronPersona &&
+                      !personas.some((item) => item.id === cronPersona) &&
+                      cronPersona !== "assistant"
+                        ? [
+                            <option key={cronPersona} value={cronPersona}>
+                              {personaName(cronPersona)}
+                            </option>,
+                          ]
+                        : []),
+                    ]}
+                  </Select>
+                ) : null}
+                <Typography variant="caption" color="textSecondary">
+                  {cronRunKind === "script"
+                    ? "Runs on the desktop in /home/agent/workspace. Output is posted to this job's thread."
+                    : cronRunKind === "both"
+                      ? "The script runs first. Its output is added to the prompt. The agent's result is posted to this job's thread."
+                      : "The model and personality run the temporary session. The result is still posted to this job's thread."}
+                  {cronRunKind !== "script" && !running
+                    ? " Start the desktop to choose a model other than the desktop default."
+                    : ""}
+                </Typography>
+              </Stack>
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setCronAddOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                disabled={
+                  cronSaving ||
+                  !cronName.trim() ||
+                  (cronRunKind !== "script" && !cronMessage.trim()) ||
+                  (cronRunKind !== "prompt" && !cronScript.trim()) ||
+                  (!cronEditId &&
+                    ((cronKind === "every" && !(Number(cronEvery) >= 60)) ||
+                      (cronKind === "cron" &&
+                        cronExpr.trim().split(/\s+/).length !== 5) ||
+                      (cronKind === "at" && !cronAt)))
+                }
+                onClick={() => void saveCronJob()}
+              >
+                {cronSaving ? "…" : cronEditId ? "Save" : "Add"}
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        {cronDeleteTarget ? (
+          <Dialog open onClose={() => setCronDeleteTarget(null)}>
+            <DialogTitle>Delete cron job?</DialogTitle>
+            <DialogContent>
+              <Typography variant="body2">
+                Deletes “{cronDeleteTarget?.name ?? ""}” and its past results.
+                It will never run again. This cannot be undone.
+              </Typography>
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setCronDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                color="error"
+                variant="contained"
+                disabled={Boolean(cronBusyId)}
+                startIcon={<DeleteIcon />}
+                onClick={() => void removeCronJob()}
+              >
+                Delete
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        {cronResult ? (
+          <Dialog open onClose={() => setCronResult(null)}>
+            <DialogTitle>{cronResult.jobName ?? ""}</DialogTitle>
+            <DialogContent>
+              {cronResult.summary?.trim() ? (
+                <div className="ob-md">
+                  <ChatMarkdown text={cronResult.summary} />
+                </div>
+              ) : (
+                <Typography variant="body2" color="textSecondary">
+                  No output.
+                </Typography>
               )}
-              {cronRunKind !== "script" ? (
-                <Select
-                  name="cron-model"
-                  label="Model"
-                  value={cronModel}
-                  disabled={!running && models.length === 0 && !cronModel}
-                  onSelect={setCronModel}
-                >
-                  {[
-                    <option key="default" value="">
-                      Desktop default
-                    </option>,
-                    ...(cronModel &&
-                    !models.some(
-                      (item) =>
-                        `${item.providerID}/${item.modelID}` === cronModel,
-                    )
-                      ? [
-                          <option key={cronModel} value={cronModel}>
-                            {cronModel}
-                          </option>,
-                        ]
-                      : []),
-                    ...modelOptions,
-                  ]}
-                </Select>
-              ) : null}
-              {cronRunKind !== "script" ? (
-                <Select
-                  name="cron-persona"
-                  label="Personality"
-                  value={cronPersona}
-                  onSelect={setCronPersona}
-                >
-                  {[
-                    ...(personas.length
-                      ? personas
-                      : [
-                          {
-                            id: "assistant",
-                            name: "Assistant",
-                            instruction: "",
-                            builtin: true,
-                          },
-                        ]
-                    ).map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name}
-                      </option>
-                    )),
-                    ...(cronPersona &&
-                    !personas.some((item) => item.id === cronPersona) &&
-                    cronPersona !== "assistant"
-                      ? [
-                          <option key={cronPersona} value={cronPersona}>
-                            {personaName(cronPersona)}
-                          </option>,
-                        ]
-                      : []),
-                  ]}
-                </Select>
-              ) : null}
-              <Typography variant="caption" color="textSecondary">
-                {cronRunKind === "script"
-                  ? "Runs on the desktop in /home/agent/workspace. Output is posted to this job's thread."
-                  : cronRunKind === "both"
-                    ? "The script runs first. Its output is added to the prompt. The agent's result is posted to this job's thread."
-                    : "The model and personality run the temporary session. The result is still posted to this job's thread."}
-                {cronRunKind !== "script" && !running
-                  ? " Start the desktop to choose a model other than the desktop default."
-                  : ""}
-              </Typography>
-            </Stack>
-          </DialogContent>
-          <DialogActions>
-            <Button variant="text" onClick={() => setCronAddOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="contained"
-              disabled={
-                cronSaving ||
-                !cronName.trim() ||
-                (cronRunKind !== "script" && !cronMessage.trim()) ||
-                (cronRunKind !== "prompt" && !cronScript.trim()) ||
-                (!cronEditId &&
-                  ((cronKind === "every" && !(Number(cronEvery) >= 60)) ||
-                    (cronKind === "cron" &&
-                      cronExpr.trim().split(/\s+/).length !== 5) ||
-                    (cronKind === "at" && !cronAt)))
-              }
-              onClick={() => void saveCronJob()}
-            >
-              {cronSaving ? "…" : cronEditId ? "Save" : "Add"}
-            </Button>
-          </DialogActions>
-        </Dialog>
-      ) : null}
-
-      {cronDeleteTarget ? (
-        <Dialog open onClose={() => setCronDeleteTarget(null)}>
-          <DialogTitle>Delete cron job?</DialogTitle>
-          <DialogContent>
-            <Typography variant="body2">
-              Deletes “{cronDeleteTarget?.name ?? ""}” and its past results. It
-              will never run again. This cannot be undone.
-            </Typography>
-          </DialogContent>
-          <DialogActions>
-            <Button variant="text" onClick={() => setCronDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              color="error"
-              variant="contained"
-              disabled={Boolean(cronBusyId)}
-              startIcon={<DeleteIcon />}
-              onClick={() => void removeCronJob()}
-            >
-              Delete
-            </Button>
-          </DialogActions>
-        </Dialog>
-      ) : null}
-
-      {cronResult ? (
-        <Dialog open onClose={() => setCronResult(null)}>
-          <DialogTitle>{cronResult.jobName ?? ""}</DialogTitle>
-          <DialogContent>
-            {cronResult.summary?.trim() ? (
-              <div className="ob-md">
-                <ChatMarkdown text={cronResult.summary} />
-              </div>
-            ) : (
-              <Typography variant="body2" color="textSecondary">
-                No output.
-              </Typography>
-            )}
-          </DialogContent>
-          <DialogActions>
-            <Button variant="text" onClick={() => setCronResult(null)}>
-              Close
-            </Button>
-          </DialogActions>
-        </Dialog>
-      ) : null}
-    </Stack>
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setCronResult(null)}>
+                Close
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+      </Stack>
+    </ProjectRefsContext.Provider>
   )
 }

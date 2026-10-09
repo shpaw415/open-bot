@@ -218,6 +218,41 @@ describe("resolve reference line", () => {
     expect(line).toContain("/home/agent/workspace/my-app")
   })
 
+  test("singular @project resolves like @projects", async () => {
+    const db = memoryDb()
+    db.createProject({
+      id: "pr-1",
+      userId: "u",
+      name: "My App",
+      path: "/home/agent/workspace/my-app",
+      createdAt: 0,
+    })
+    const line = await resolveReferenceLine(
+      db,
+      { id: "u" } as never,
+      "work in @project/My App today",
+    )
+    expect(line).toContain('project "My App" (id pr-1)')
+    expect(line).toContain("@project/My App")
+    expect(line).toContain("root directory")
+  })
+
+  test("projects resolve through directory and slug aliases", async () => {
+    const db = memoryDb()
+    db.createProject({
+      id: "pr-1",
+      userId: "u",
+      name: "My App",
+      path: "/home/agent/workspace/my-app",
+      createdAt: 0,
+    })
+    for (const text of ["use @projects/my-app", "use @project/my-app"]) {
+      const line = await resolveReferenceLine(db, { id: "u" } as never, text)
+      expect(line).toContain('project "My App" (id pr-1)')
+      expect(line).toContain("/home/agent/workspace/my-app")
+    }
+  })
+
   test("a failing section list reports unavailable", async () => {
     const db = memoryDb()
     const original = refSections.skills

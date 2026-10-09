@@ -287,7 +287,8 @@ export function Projects({
                 ? "The folder must exist under /home/agent; the name defaults to its last segment."
                 : "The folder is created on the desktop if it does not exist yet."}{" "}
               Mention the project in chat with{" "}
-              <Box Element="code">@projects/{slug || "name"}</Box>.
+              <Box Element="code">@projects/{slug || "name"}</Box> (the project
+              name; the slug works too).
             </Typography>
           </Stack>
         </DialogContent>

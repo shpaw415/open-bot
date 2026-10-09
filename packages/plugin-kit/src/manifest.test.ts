@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  isDevVersion,
   manifestIssuesText,
   parsePluginManifest,
   pluginPermissionSummary,
@@ -82,6 +83,15 @@ describe("plugin manifest", () => {
       expect(text).toContain("id")
       expect(text).toContain("version")
     }
+  })
+
+  test("accepts dev tags and prereleases as versions", () => {
+    for (const version of ["beta-1", "staging.2", "1.2.3-beta.1"]) {
+      const result = validatePluginManifest({ ...valid, version })
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(isDevVersion(result.manifest.version)).toBe(true)
+    }
+    expect(isDevVersion("1.0.0")).toBe(false)
   })
 
   test("rejects cron with both schedules", () => {
@@ -269,6 +279,45 @@ describe("plugin manifest", () => {
       expect(text).toContain("opencode.agentTools.build")
       expect(text.match(/tool glob must be/g) ?? []).toHaveLength(1)
       expect(text.match(/must be a boolean/g) ?? []).toHaveLength(1)
+    }
+  })
+
+  test("accepts agentsMd as the only opencode surface", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      opencode: {
+        agentsMd:
+          "Always check the weather CLI before answering weather questions.",
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.opencode?.agentsMd).toContain("weather CLI")
+      const summary = pluginPermissionSummary(result.manifest)
+      expect(summary).toContain(
+        "Adds standing instructions to the agent (AGENTS.md)",
+      )
+    }
+  })
+
+  test("rejects bad agentsMd", () => {
+    const empty = validatePluginManifest({
+      ...valid,
+      opencode: { agentsMd: "   " },
+    })
+    expect(empty.ok).toBe(false)
+    const notString = validatePluginManifest({
+      ...valid,
+      opencode: { agentsMd: 42 },
+    })
+    expect(notString.ok).toBe(false)
+    const tooLong = validatePluginManifest({
+      ...valid,
+      opencode: { agentsMd: "x".repeat(4001) },
+    })
+    expect(tooLong.ok).toBe(false)
+    if (!tooLong.ok) {
+      expect(manifestIssuesText(tooLong.issues)).toContain("opencode.agentsMd")
     }
   })
 })

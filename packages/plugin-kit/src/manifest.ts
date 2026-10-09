@@ -4,6 +4,17 @@ export const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/
 export const SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/
 export const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\dA-Za-z.-]+)?$/
+// Development tags (beta-1, staging.2, rc) for stress-testing before a stable
+// release; force-movable git tag v<version>, hidden from marketplace search.
+export const DEV_VERSION_PATTERN = /^[a-z][a-z0-9._-]{0,31}$/
+// Keep .source identical to the schema JSON version.pattern (schema.test.ts).
+export const PLUGIN_VERSION_PATTERN = new RegExp(
+  `${SEMVER_PATTERN.source}|${DEV_VERSION_PATTERN.source}`,
+)
+export function isDevVersion(version: string): boolean {
+  if (SEMVER_PATTERN.test(version)) return version.includes("-")
+  return DEV_VERSION_PATTERN.test(version)
+}
 export const GITHUB_REPO_PATTERN = /^[A-Za-z0-9.-]+\/[A-Za-z0-9._-]+$/
 export const COMMAND_PATTERN = /^\/?[a-z0-9][a-z0-9-]{0,31}$/
 export const FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/
@@ -175,6 +186,10 @@ export type PluginManifest = {
     // Tool enable/disable globs patched into existing agents,
     // e.g. { "build": { "blender_*": false } }.
     agentTools?: Record<string, Record<string, boolean>>
+    // Standing instructions injected into the agent's context (loaded next to
+    // AGENTS.md via opencode.json's instructions array). Behavioral rules the
+    // agent must always follow while the plugin is installed — never secrets.
+    agentsMd?: string
   }
 }
 
@@ -185,6 +200,7 @@ export type ManifestValidation =
   | { ok: false; issues: ManifestIssue[] }
 
 const MAX_TEXT = 64 * 1024
+const MAX_AGENTS_MD = 4000
 const MAX_MANIFEST = 512 * 1024
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -243,6 +259,8 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
   const agentTools = Object.keys(manifest.opencode?.agentTools ?? {})
   if (agentTools.length > 0)
     summary.push(`Adjusts agent tools for: ${agentTools.join(", ")}`)
+  if (manifest.opencode?.agentsMd)
+    summary.push("Adds standing instructions to the agent (AGENTS.md)")
   if (perms.opencode || manifest.opencode)
     summary.push("Extends the agent (OpenCode plugins / MCP)")
   return summary
@@ -437,8 +455,11 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     issues.push({ path: "name", message: "name is required (max 64)" })
   }
   const version = str(input.version)
-  if (!version || !SEMVER_PATTERN.test(version)) {
-    issues.push({ path: "version", message: "version must be semver (X.Y.Z)" })
+  if (!version || !PLUGIN_VERSION_PATTERN.test(version)) {
+    issues.push({
+      path: "version",
+      message: "version must be semver (X.Y.Z) or a dev tag (e.g. beta-1)",
+    })
   }
   const description = str(input.description)
   if (!description || description.length > 500) {
@@ -826,6 +847,19 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
               }
             }
           }
+        }
+      }
+      if (opencode.agentsMd !== undefined) {
+        const text = opencode.agentsMd
+        if (
+          typeof text !== "string" ||
+          !text.trim() ||
+          text.length > MAX_AGENTS_MD
+        ) {
+          issues.push({
+            path: "opencode.agentsMd",
+            message: `agentsMd must be a non-empty string (max ${MAX_AGENTS_MD})`,
+          })
         }
       }
     }

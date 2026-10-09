@@ -1,7 +1,7 @@
 "no action"
 
 import {
-  manifestIssuesText,
+  isDevVersion,
   type PluginManifest,
   validatePluginManifest,
 } from "@open-bot/plugin-kit"
@@ -74,6 +74,12 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
         : existing?.status === "approved"
           ? "approved"
           : "pending"
+  // Dev tags and prereleases stay out of search: only stable publishes move
+  // latest_version (what the marketplace listing and default installs use).
+  const listedVersion =
+    existing && isDevVersion(manifest.version)
+      ? (existing.latest_version ?? manifest.version)
+      : manifest.version
   if (existing) {
     await DB.prepare(
       `UPDATE plugins SET name = ?2, description = ?3, author = ?4, repo = ?5, category = ?6,
@@ -87,7 +93,7 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
         manifest.repo,
         manifest.category,
         JSON.stringify(manifest.tags ?? []),
-        manifest.version,
+        listedVersion,
         status,
         security.status,
         readme ?? existing.readme,

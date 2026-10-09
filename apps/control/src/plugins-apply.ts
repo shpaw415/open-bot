@@ -9,11 +9,14 @@ import type { PluginManifest } from "@open-bot/plugin-kit"
 import { nextRunMs } from "./cron"
 import {
   endpoint,
+  ensurePluginAgentsMd,
   type PluginToolFile,
+  pluginAgentsMdPath,
   removePluginTools,
   restartOpencode,
   runPluginInitCommands,
   syncOpencodePlugin,
+  syncPluginAgentsMd,
   syncPluginAuth,
   syncPluginTools,
 } from "./docker"
@@ -270,6 +273,10 @@ export async function applyPluginInstall(
     }
 
     const opencode = manifest.opencode
+    if (opencode?.agentsMd) {
+      await syncPluginAgentsMd(user.id, manifest.id, opencode.agentsMd)
+      applied.agentsMd = true
+    }
     if (
       opencode &&
       (opencode.plugin?.length ||
@@ -288,6 +295,18 @@ export async function applyPluginInstall(
         removeAgentTools: {},
       })
       applied.opencode = true
+    }
+    if (applied.agentsMd || applied.opencode) {
+      if (applied.agentsMd) {
+        await syncOpencodePlugin(user.id, {
+          addPlugins: [],
+          removePlugins: [],
+          addMcp: {},
+          removeMcp: [],
+          addInstructions: [pluginAgentsMdPath(manifest.id)],
+          removeInstructions: [],
+        })
+      }
       await restartOpencode(user.id).catch(() => {})
     }
   } catch (error) {
@@ -367,6 +386,17 @@ async function revertApplied(
       addAgentTools: {},
       removeAgentTools: manifest?.opencode?.agentTools ?? {},
     }).catch(() => {})
+  }
+  if (applied.agentsMd) {
+    await syncOpencodePlugin(user.id, {
+      addPlugins: [],
+      removePlugins: [],
+      addMcp: {},
+      removeMcp: [],
+      addInstructions: [],
+      removeInstructions: [pluginAgentsMdPath(pluginId)],
+    }).catch(() => {})
+    await syncPluginAgentsMd(user.id, pluginId, null).catch(() => {})
   }
 }
 
@@ -464,6 +494,27 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
       } catch (error) {
         console.error(
           `plugin ${row.pluginId} boot file sync failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      }
+    }
+    const agentsMd = manifest.opencode?.agentsMd
+    if (agentsMd) {
+      try {
+        const wrote = await ensurePluginAgentsMd(userId, row.pluginId, agentsMd)
+        await syncOpencodePlugin(userId, {
+          addPlugins: [],
+          removePlugins: [],
+          addMcp: {},
+          removeMcp: [],
+          addInstructions: [pluginAgentsMdPath(row.pluginId)],
+          removeInstructions: [],
+        })
+        if (wrote) await restartOpencode(userId).catch(() => {})
+      } catch (error) {
+        console.error(
+          `plugin ${row.pluginId} boot agentsMd sync failed: ${
             error instanceof Error ? error.message : error
           }`,
         )

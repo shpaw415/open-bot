@@ -2,7 +2,9 @@ import { expect, test } from "bun:test"
 import {
   chatImageUrl,
   embedWorkspaceImages,
+  speakableText,
   splitPluginCards,
+  turnError,
   workspaceModel3dPath,
   workspaceModel3dSrc,
 } from "./chat-view"
@@ -65,4 +67,79 @@ test("keeps plain text and malformed cards readable", () => {
     expect(broken[0].block.plugin).toBe("")
     expect(broken[0].block.data).toEqual({})
   }
+})
+
+test("detects a dead turn from the provider connect error", () => {
+  const messages = [
+    { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "hi" }] },
+    {
+      info: {
+        id: "a1",
+        role: "assistant",
+        time: { created: 1, completed: 2 },
+        error: {
+          name: "APIError",
+          data: {
+            message:
+              "Cannot connect to API: Unable to connect. Is the computer able to access the url?",
+            isRetryable: true,
+          },
+        },
+      },
+      parts: [],
+    },
+  ]
+  const issue = turnError(messages)
+  expect(issue?.messageId).toBe("a1")
+  expect(issue?.retryable).toBe(true)
+})
+
+test("ignores completed turns and user-stopped turns", () => {
+  expect(
+    turnError([
+      {
+        info: { id: "a2", role: "assistant", error: { name: "Aborted" } },
+        parts: [],
+      },
+    ]),
+  ).toBeNull()
+  expect(
+    turnError([
+      {
+        info: {
+          id: "a3",
+          role: "assistant",
+          error: { name: "APIError", data: { message: "Aborted by user." } },
+        },
+        parts: [],
+      },
+    ]),
+  ).toBeNull()
+  expect(
+    turnError([{ info: { id: "a4", role: "assistant" }, parts: [] }]),
+  ).toBeNull()
+  expect(
+    turnError([
+      { info: { id: "u2", role: "user", error: { name: "APIError" } } },
+      { info: { id: "a5", role: "assistant" }, parts: [] },
+    ]),
+  ).toBeNull()
+})
+
+test("speakableText keeps prose and drops non-speech content", () => {
+  expect(speakableText("Hello world. How are you?")).toBe(
+    "Hello world. How are you?",
+  )
+  expect(speakableText("Look:\n\n```py\nprint('hi')\n```\nDone.")).toBe(
+    "Look: Done.",
+  )
+  expect(speakableText("run `npm test` now")).toBe("run npm test now")
+  expect(speakableText("![screen](open-bot://screen)")).toBe("")
+  expect(speakableText("[docs](https://example.com) page")).toBe("docs page")
+  expect(speakableText("![pic](/home/agent/workspace/a.png)")).toBe("")
+  expect(speakableText('```plugin-card\n{"plugin":"x"}\n```')).toBe("")
+  expect(speakableText("## Heading\n- one\n- two\n> quoted")).toBe(
+    "Heading one two quoted",
+  )
+  expect(speakableText("a\n\nb").length).toBeGreaterThan(0)
 })

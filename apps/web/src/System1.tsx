@@ -7,6 +7,7 @@ import { useEffect, useState } from "react"
 import { api } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { NavigationIcon } from "./icons"
+import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
 
 type System1Spec = {
   id: string
@@ -64,6 +65,7 @@ export function System1() {
   const [slug, setSlug] = useState("jev")
 
   const spec = providers.find((item) => item.id === provider) ?? providers[0]
+  const vault = useVaultOverride(keySource)
 
   useEffect(() => {
     void api<System1Form>("/api/system1")
@@ -242,25 +244,30 @@ export function System1() {
         {spec?.id === "cloudflare-jev" ? (
           <Stack spacing={1.5}>
             <TextField
-              label="Account ID"
+              label={vault.locked ? "Account ID (from vault)" : "Account ID"}
               value={accountId}
               placeholder="Cloudflare account ID"
+              disabled={vault.locked}
               onChange={(event) =>
                 setComposed(event.currentTarget.value, gatewayId, slug)
               }
             />
             <TextField
-              label="Gateway ID"
+              label={vault.locked ? "Gateway ID (from vault)" : "Gateway ID"}
               value={gatewayId}
               placeholder="home-ai"
+              disabled={vault.locked}
               onChange={(event) =>
                 setComposed(accountId, event.currentTarget.value, slug)
               }
             />
             <TextField
-              label="Provider slug"
+              label={
+                vault.locked ? "Provider slug (from vault)" : "Provider slug"
+              }
               value={slug}
               placeholder="jev"
+              disabled={vault.locked}
               onChange={(event) =>
                 setComposed(accountId, gatewayId, event.currentTarget.value)
               }
@@ -269,9 +276,10 @@ export function System1() {
         ) : null}
         {spec?.id === "cloudflare-clef" ? (
           <TextField
-            label="Account ID"
+            label={vault.locked ? "Account ID (from vault)" : "Account ID"}
             value={accountId}
             placeholder="Cloudflare account ID"
+            disabled={vault.locked}
             onChange={(event) => setClefAccount(event.currentTarget.value)}
           />
         ) : null}
@@ -281,30 +289,43 @@ export function System1() {
           placeholder={spec?.endpointPlaceholder}
           onChange={(event) => setEndpoint(event.currentTarget.value)}
         />
-        <TextField
-          label={
-            hasKey
-              ? spec?.keyRequired
-                ? "API key (blank keeps the saved key)"
-                : "API key (optional, blank keeps the saved key)"
-              : spec?.keyRequired
-                ? "API key"
-                : "API key (optional)"
-          }
-          type="password"
-          value={apiKey}
-          onChange={(event) => setApiKey(event.currentTarget.value)}
-        />
+        <Stack direction="row" spacing={1} alignItems="center">
+          <TextField
+            label={
+              vault.locked
+                ? "Using the vault key"
+                : hasKey
+                  ? spec?.keyRequired
+                    ? "API key (blank keeps the saved key)"
+                    : "API key (optional, blank keeps the saved key)"
+                  : spec?.keyRequired
+                    ? "API key"
+                    : "API key (optional)"
+            }
+            type={vault.locked ? undefined : "password"}
+            value={vault.locked ? "" : apiKey}
+            placeholder={vault.locked ? "••••••••" : undefined}
+            disabled={vault.locked}
+            sx={{ flex: 1 }}
+            onChange={(event) => setApiKey(event.currentTarget.value)}
+          />
+          {vault.locked ? (
+            <VaultOverrideButton onClick={vault.override} />
+          ) : null}
+        </Stack>
         {spec?.gatewayToken ? (
           <TextField
             label={
-              hasGatewayToken
-                ? "Gateway token (blank keeps the saved token)"
-                : "Gateway token (optional)"
+              vault.locked
+                ? "Gateway token (from vault)"
+                : hasGatewayToken
+                  ? "Gateway token (blank keeps the saved token)"
+                  : "Gateway token (optional)"
             }
-            type="password"
-            value={gatewayToken}
-            placeholder="cf-aig-authorization"
+            type={vault.locked ? undefined : "password"}
+            value={vault.locked ? "" : gatewayToken}
+            placeholder={vault.locked ? "••••••••" : "cf-aig-authorization"}
+            disabled={vault.locked}
             onChange={(event) => setGatewayToken(event.currentTarget.value)}
           />
         ) : null}

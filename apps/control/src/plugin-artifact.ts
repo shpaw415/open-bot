@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Db } from "@open-bot/db"
-import type { PluginFile } from "@open-bot/plugin-kit"
+import { isDevVersion, type PluginFile } from "@open-bot/plugin-kit"
 import { marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 
@@ -45,7 +45,9 @@ export async function fetchPluginArtifact(
   const safeVersion = version.replace(/[^\w.-]/g, "")
   const cached = join(CACHE_DIR, `${pluginId}-${safeVersion}.tgz`)
   const cachedSha = `${cached}.sha256`
-  if (existsSync(cached) && existsSync(cachedSha)) {
+  // Dev tags are mutable (republish overwrites the marketplace tarball), so
+  // they bypass the cache and always re-download; stable versions are cached.
+  if (!isDevVersion(version) && existsSync(cached) && existsSync(cachedSha)) {
     return {
       tarballPath: cached,
       sha256: readFileSync(cachedSha, "utf8").trim(),

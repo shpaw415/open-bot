@@ -18,6 +18,7 @@ import {
   ExtensionIcon,
   ImageIcon,
   MemoryIcon,
+  MicIcon,
   NavigationIcon,
   PersonIcon,
   VpnKeyIcon,
@@ -28,6 +29,7 @@ import { Personalities } from "./Personalities"
 import { System1 } from "./System1"
 import { VideoProvider } from "./VideoProvider"
 import { VikingModels } from "./VikingModels"
+import { VoiceProvider } from "./VoiceProvider"
 
 type Model = { providerID: string; modelID: string; name?: string }
 
@@ -37,6 +39,7 @@ type ConfigTab =
   | "memory"
   | "nav"
   | "media"
+  | "voice"
   | "personas"
   | "skills"
   | "backup"
@@ -221,6 +224,7 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
           <Tab label="Memory" value="memory" icon={<MemoryIcon />} />
           <Tab label="Navigation" value="nav" icon={<NavigationIcon />} />
           <Tab label="Media" value="media" icon={<ImageIcon />} />
+          <Tab label="Voice" value="voice" icon={<MicIcon />} />
           <Tab label="Personas" value="personas" icon={<PersonIcon />} />
           <Tab label="Skills" value="skills" icon={<ExtensionIcon />} />
           <Tab label="Backup" value="backup" icon={<BackupIcon />} />
@@ -234,6 +238,7 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
         {tab === "media" ? <ImageProvider /> : null}
         {tab === "media" ? <VideoProvider /> : null}
         {tab === "media" ? <Model3dProvider /> : null}
+        {tab === "voice" ? <VoiceProvider /> : null}
         {tab === "personas" ? <Personalities /> : null}
         {tab === "skills" ? <CustomSkills /> : null}
         {tab === "backup" ? <Backup me={me} /> : null}

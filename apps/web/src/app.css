@@ -456,6 +456,16 @@ body,
   }
 }
 
+@keyframes ob-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ob-unread-dot {
     animation: none;

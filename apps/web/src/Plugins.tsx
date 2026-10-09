@@ -8,6 +8,7 @@ import IconButton from "@shpaw415/mui-lite/IconButton"
 import { TablePagination } from "@shpaw415/mui-lite/Pagination"
 import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress, LinearProgress } from "@shpaw415/mui-lite/Progress"
+import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Snackbar from "@shpaw415/mui-lite/Snackbar"
 import Stack from "@shpaw415/mui-lite/Stack"
@@ -53,6 +54,14 @@ type MarketComment = {
   createdAt: number
 }
 
+type VersionOption = { version: string; stability: "stable" | "dev" }
+
+const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+
+function isDevVersion(version: string): boolean {
+  return !STABLE_VERSION_PATTERN.test(version)
+}
+
 function PluginHeader({
   plugin,
 }: {
@@ -64,6 +73,11 @@ function PluginHeader({
       <Typography variant="caption" color="textSecondary">
         {plugin.pluginId} · v{plugin.version}
       </Typography>
+      {isDevVersion(plugin.version) ? (
+        <ToolTip title="Development build — reinstall the same version to pick up republished fixes">
+          <Chip size="small" color="warning" variant="outlined" label="dev" />
+        </ToolTip>
+      ) : null}
     </Stack>
   )
 }
@@ -79,12 +93,44 @@ function InstallDialog({
     version: string
     permissions: string[]
     setupCommands: string[]
+    versions: VersionOption[]
   }
   onClose: () => void
   onInstalled: () => void
 }) {
+  const [version, setVersion] = useState(target.version)
+  const [permissions, setPermissions] = useState(target.permissions)
+  const [setupCommands, setSetupCommands] = useState(target.setupCommands)
+  const [checking, setChecking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const dev = isDevVersion(version)
+
+  useEffect(() => {
+    if (version === target.version) return
+    let alive = true
+    setChecking(true)
+    api<{
+      needsConfirm?: boolean
+      permissions?: string[]
+      setupCommands?: string[]
+    }>("/api/plugins/install", {
+      method: "POST",
+      body: JSON.stringify({ pluginId: target.id, version }),
+    })
+      .then((probe) => {
+        if (!alive || !probe.needsConfirm) return
+        setPermissions(probe.permissions ?? [])
+        setSetupCommands(probe.setupCommands ?? [])
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setChecking(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [version, target.id, target.version])
 
   async function install() {
     setBusy(true)
@@ -92,7 +138,7 @@ function InstallDialog({
     try {
       await api("/api/plugins/install", {
         method: "POST",
-        body: JSON.stringify({ pluginId: target.id, confirm: true }),
+        body: JSON.stringify({ pluginId: target.id, version, confirm: true }),
       })
       onInstalled()
       onClose()
@@ -103,16 +149,46 @@ function InstallDialog({
     }
   }
 
+  const options: VersionOption[] = target.versions.some(
+    (option) => option.version === target.version,
+  )
+    ? target.versions
+    : [{ version: target.version, stability: "stable" }, ...target.versions]
+
   return (
     <Dialog open onClose={() => !busy && onClose()} fullWidth>
       <Stack spacing={2} sx={{ p: 3 }}>
         <Typography variant="h6">Install {target.name}?</Typography>
-        {busy ? <LinearProgress variant="indeterminate" /> : null}
-        <Typography variant="body2" color="textSecondary">
-          v{target.version} · id {target.id}
-        </Typography>
-        <PluginBadges permissions={target.permissions} />
-        {target.setupCommands.length > 0 ? (
+        {busy || checking ? <LinearProgress variant="indeterminate" /> : null}
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Select
+            name="version"
+            label="Version"
+            value={version}
+            disabled={busy || checking}
+            sx={{ minWidth: 220 }}
+            onSelect={(next) => setVersion(next)}
+          >
+            {options.map((option) => (
+              <option key={option.version} value={option.version}>
+                v{option.version}
+                {option.stability === "dev" ? " (dev)" : ""}
+              </option>
+            ))}
+          </Select>
+          <Typography variant="caption" color="textSecondary">
+            id {target.id}
+          </Typography>
+        </Stack>
+        {dev ? (
+          <Alert severity="warning">
+            Development build — for stress-testing and staging. It stays out of
+            marketplace search; republish the same tag and reinstall here to
+            pick up fixes.
+          </Alert>
+        ) : null}
+        <PluginBadges permissions={permissions} />
+        {setupCommands.length > 0 ? (
           <>
             <Typography variant="caption" color="textSecondary">
               Setup — these shell commands run as root in your desktop at
@@ -132,7 +208,7 @@ function InstallDialog({
                 wordBreak: "break-word",
               }}
             >
-              {target.setupCommands.join("\n")}
+              {setupCommands.join("\n")}
             </Box>
           </>
         ) : null}
@@ -176,6 +252,7 @@ function InstalledTable({
   onToggle,
   onRemove,
   onSettings,
+  onReinstall,
 }: {
   plugins: InstalledPluginInfo[]
   loaded: boolean
@@ -187,6 +264,7 @@ function InstalledTable({
   onToggle: (plugin: InstalledPluginInfo) => void
   onRemove: (plugin: InstalledPluginInfo) => void
   onSettings: (plugin: InstalledPluginInfo) => void
+  onReinstall: (plugin: InstalledPluginInfo) => void
 }) {
   const [confirmId, setConfirmId] = useState<string | null>(null)
   const visible = plugins.slice(
@@ -290,27 +368,49 @@ function InstalledTable({
                       </ToolTip>
                     </TableCell>
                     <TableCell align="right">
-                      <ToolTip title={`Remove ${plugin.name}`}>
-                        <IconButton
-                          size="small"
-                          aria-label={`Remove ${plugin.name}`}
-                          disabled={rowBusy}
-                          onClick={() => {
-                            if (confirmId === plugin.pluginId) {
-                              onRemove(plugin)
-                              setConfirmId(null)
-                              return
-                            }
-                            setConfirmId(plugin.pluginId)
-                          }}
+                      <Stack
+                        direction="row"
+                        spacing={0.5}
+                        sx={{ justifyContent: "flex-end" }}
+                      >
+                        <ToolTip
+                          title={
+                            isDevVersion(plugin.version)
+                              ? `Re-install v${plugin.version} — re-pull the release and re-run setup to pick up republished dev fixes`
+                              : `Re-install v${plugin.version} — re-pull the release and re-run setup`
+                          }
                         >
-                          {confirmId === plugin.pluginId ? (
-                            <Typography variant="caption">sure?</Typography>
-                          ) : (
-                            <DeleteIcon />
-                          )}
-                        </IconButton>
-                      </ToolTip>
+                          <IconButton
+                            size="small"
+                            aria-label={`Re-install ${plugin.name}`}
+                            disabled={rowBusy}
+                            onClick={() => onReinstall(plugin)}
+                          >
+                            <RefreshIcon />
+                          </IconButton>
+                        </ToolTip>
+                        <ToolTip title={`Remove ${plugin.name}`}>
+                          <IconButton
+                            size="small"
+                            aria-label={`Remove ${plugin.name}`}
+                            disabled={rowBusy}
+                            onClick={() => {
+                              if (confirmId === plugin.pluginId) {
+                                onRemove(plugin)
+                                setConfirmId(null)
+                                return
+                              }
+                              setConfirmId(plugin.pluginId)
+                            }}
+                          >
+                            {confirmId === plugin.pluginId ? (
+                              <Typography variant="caption">sure?</Typography>
+                            ) : (
+                              <DeleteIcon />
+                            )}
+                          </IconButton>
+                        </ToolTip>
+                      </Stack>
                     </TableCell>
                   </TableRow>
                 )
@@ -520,14 +620,14 @@ function MarketTable({
                         <Button
                           size="small"
                           variant={installed ? "text" : "outlined"}
-                          disabled={pending || installed}
+                          disabled={pending}
                           startIcon={
                             pending ? <CircularProgress size={1} /> : undefined
                           }
                           onClick={() => onInstall(plugin)}
                         >
                           {installed
-                            ? "Installed"
+                            ? "Re-install"
                             : pending
                               ? "Checking…"
                               : "Install"}
@@ -780,6 +880,7 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     version: string
     permissions: string[]
     setupCommands: string[]
+    versions: VersionOption[]
   } | null>(null)
   const [settingsFor, setSettingsFor] = useState<InstalledPluginInfo | null>(
     null,
@@ -877,17 +978,38 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         needsConfirm?: boolean
         permissions?: string[]
         setupCommands?: string[]
+        version?: string
       }>("/api/plugins/install", {
         method: "POST",
         body: JSON.stringify({ pluginId: target.id }),
       })
       if (probe.needsConfirm) {
+        let versions: VersionOption[] = [
+          { version: probe.version ?? target.version, stability: "stable" },
+        ]
+        try {
+          const detail = await api<{ versions?: VersionOption[] }>(
+            `/api/plugins/market/${encodeURIComponent(target.id)}`,
+          )
+          if (detail.versions && detail.versions.length > 0)
+            versions = detail.versions
+        } catch {
+          versions = [
+            {
+              version: probe.version ?? target.version,
+              stability: isDevVersion(probe.version ?? target.version)
+                ? "dev"
+                : "stable",
+            },
+          ]
+        }
         setInstallTarget({
           id: target.id,
           name: target.name,
-          version: target.version,
+          version: probe.version ?? target.version,
           permissions: probe.permissions ?? [],
           setupCommands: probe.setupCommands ?? [],
+          versions,
         })
         return
       }
@@ -982,6 +1104,21 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
             )
           }
           onSettings={setSettingsFor}
+          onReinstall={(target) =>
+            void act(
+              target.pluginId,
+              () =>
+                api("/api/plugins/install", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    pluginId: target.pluginId,
+                    version: target.version,
+                    confirm: true,
+                  }),
+                }),
+              `${target.pluginId} re-installed (v${target.version})`,
+            )
+          }
         />
 
         <Divider />

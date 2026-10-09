@@ -266,7 +266,17 @@ function vikingConfig(desktop: Desktop, viking: VikingProvider) {
 
 async function runDetached(args: string[]) {
   await docker(
-    ["run", "-d", "--label", "open-bot=1", ...args],
+    [
+      "run",
+      "-d",
+      "--label",
+      "open-bot=1",
+      // Crash/OOM self-heal and come-back-after-host-reboot. Explicit docker
+      // stop (sleep) still keeps the container down.
+      "--restart",
+      "unless-stopped",
+      ...args,
+    ],
     undefined,
     120_000,
   )
@@ -572,6 +582,7 @@ async function startDesktopInner(
 }
 
 export async function stopDesktop(userId: string) {
+  markSlept(userId)
   stopFileWatch(userId)
   const n = names(userId)
   await sh(["docker", "stop", "-t", "5", n.computer], undefined, 90_000)
@@ -579,7 +590,65 @@ export async function stopDesktop(userId: string) {
   await sh(["docker", "stop", "-t", "15", n.viking], undefined, 90_000)
 }
 
+// Desktops stopped on purpose (sleep button, idle sweeper, recycle) so the
+// crash-restart sweep does not resurrect them.
+const sleptAt = new Map<string, number>()
+
+function markSlept(userId: string) {
+  sleptAt.set(userId, Date.now())
+}
+
+export function sleptRecently(userId: string, withinMs = 15 * 60_000) {
+  const at = sleptAt.get(userId)
+  return typeof at === "number" && Date.now() - at < withinMs
+}
+
+export async function containerExists(name: string) {
+  const result = await sh(
+    ["docker", "container", "inspect", name],
+    undefined,
+    30_000,
+  )
+  return result.code === 0
+}
+
+/**
+ * True when the desktop's opencode server still has work in flight. Used by
+ * the idle sweeper so a desktop is never stopped mid-turn; unreadable status
+ * counts as busy to stay on the safe side.
+ */
+export async function desktopBusy(
+  userId: string,
+  desktop: Desktop | null,
+): Promise<boolean> {
+  if (!desktop) return true
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  try {
+    const base = await endpoint(userId, "opencode", 4096)
+    const response = await fetch(`${base}/session/status`, {
+      headers: {
+        authorization: `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`,
+      },
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!response.ok) return true
+    const body = (await response.json()) as Record<
+      string,
+      { type?: unknown } | undefined
+    >
+    if (!body || typeof body !== "object") return true
+    return Object.values(body).some(
+      (status) =>
+        !status || typeof status !== "object" || status.type !== "idle",
+    )
+  } catch {
+    return true
+  }
+}
+
 export async function destroyDesktop(userId: string) {
+  markSlept(userId)
   stopFileWatch(userId)
   const n = names(userId)
   await sh(
@@ -1275,10 +1344,131 @@ export async function syncPluginAuth(
   return true
 }
 
+// Persistent path (on the /home volume) of the instructions file a plugin's
+// `opencode.agentsMd` text is written to; referenced from opencode.json's
+// instructions array so it loads next to the seed AGENTS.md.
+export function pluginAgentsMdPath(pluginId: string) {
+  return `/home/agent/.config/open-bot/agents-md/plugin-${pluginId}.md`
+}
+
+// Write (or remove) a plugin's agentsMd instructions file in the desktop.
+// data: null removes the file and prunes the directory best effort.
+export async function syncPluginAgentsMd(
+  userId: string,
+  pluginId: string,
+  text: string | null,
+) {
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(pluginId)) {
+    throw new HttpError(400, "invalid plugin id", "plugin_id")
+  }
+  const n = names(userId)
+  const dir = "/home/agent/.config/open-bot/agents-md"
+  const file = pluginAgentsMdPath(pluginId)
+  if (!(await isRunning(n.opencode))) return false
+  if (text === null) {
+    await sh(["docker", "exec", n.opencode, "rm", "-f", file])
+    await sh([
+      "docker",
+      "exec",
+      n.opencode,
+      "rmdir",
+      "--ignore-fail-on-non-empty",
+      dir,
+    ]).catch(() => {})
+    return true
+  }
+  if (!text.trim() || text.length > 4000) {
+    throw new HttpError(400, "invalid agentsMd text", "plugin_agents_md")
+  }
+  const local = mkdtempSync(join(tmpdir(), "ob-agentsmd-"))
+  const tmp = join(local, `plugin-${pluginId}.md`)
+  try {
+    writeFileSync(
+      tmp,
+      `<!-- open-bot plugin: ${pluginId} -->\n\n${text.trim()}\n`,
+      { mode: 0o644 },
+    )
+    const wrote = await sh(
+      [
+        "docker",
+        "exec",
+        n.opencode,
+        "mkdir",
+        "-p",
+        "--",
+        "/home/agent/.config/open-bot/agents-md",
+      ],
+      undefined,
+      60_000,
+    )
+    if (wrote.code !== 0) {
+      throw new HttpError(
+        502,
+        "could not create the agents-md directory",
+        "plugin_agents_md",
+      )
+    }
+    const copied = await sh(
+      ["docker", "cp", tmp, `${n.opencode}:${file}`],
+      undefined,
+      60_000,
+    )
+    if (copied.code !== 0) {
+      throw new HttpError(
+        502,
+        "could not write the plugin instructions file",
+        "plugin_agents_md",
+      )
+    }
+    const chown = await sh(
+      ["docker", "exec", n.opencode, "chown", "agent:agent", file],
+      undefined,
+      60_000,
+    )
+    if (chown.code !== 0) {
+      throw new HttpError(
+        502,
+        "could not set the instructions file owner",
+        "plugin_agents_md",
+      )
+    }
+  } finally {
+    rmSync(local, { recursive: true, force: true })
+  }
+  return true
+}
+
+// Boot-time companion of syncPluginAgentsMd: writes the file only when it is
+// missing (fresh /home volume, install while the desktop was asleep). Returns
+// true when the file was (re)created.
+export async function ensurePluginAgentsMd(
+  userId: string,
+  pluginId: string,
+  text: string,
+): Promise<boolean> {
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(pluginId)) {
+    throw new HttpError(400, "invalid plugin id", "plugin_id")
+  }
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const check = await sh([
+    "docker",
+    "exec",
+    n.opencode,
+    "test",
+    "-f",
+    pluginAgentsMdPath(pluginId),
+  ])
+  if (check.code === 0) return false
+  await syncPluginAgentsMd(userId, pluginId, text)
+  return true
+}
+
 // Merge (patch non-null) or remove (patch null) a plugin's OpenCode plugin
-// packages, MCP servers, agent definitions, and agent tool overrides in the
-// desktop's opencode.json. agents/agentTools use deep merges so patches to
-// existing agents (e.g. tool denies on build) compose with each other.
+// packages, MCP servers, agent definitions, agent tool overrides, and
+// instructions entries in the desktop's opencode.json. agents/agentTools use
+// deep merges so patches to existing agents (e.g. tool denies on build)
+// compose with each other; instructions is a set of file paths.
 export async function syncOpencodePlugin(
   userId: string,
   patch: {
@@ -1290,6 +1480,8 @@ export async function syncOpencodePlugin(
     removeAgents?: string[]
     addAgentTools?: Record<string, Record<string, boolean>>
     removeAgentTools?: Record<string, Record<string, boolean>>
+    addInstructions?: string[]
+    removeInstructions?: string[]
   } | null,
 ) {
   const n = names(userId)
@@ -1302,7 +1494,9 @@ export async function syncOpencodePlugin(
       Object.keys(patch.addAgents ?? {}).length === 0 &&
       (patch.removeAgents ?? []).length === 0 &&
       Object.keys(patch.addAgentTools ?? {}).length === 0 &&
-      Object.keys(patch.removeAgentTools ?? {}).length === 0)
+      Object.keys(patch.removeAgentTools ?? {}).length === 0 &&
+      (patch.addInstructions ?? []).length === 0 &&
+      (patch.removeInstructions ?? []).length === 0)
   if (empty) return false
   if (!(await isRunning(n.opencode))) return false
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
@@ -1312,11 +1506,12 @@ export async function syncOpencodePlugin(
     ".agent = (((.agent // {}) * $addA) | with_entries(select(.key as $k | ($rmA | index($k)) | not)))",
     "reduce ($addT | keys_unsorted[]) as $n (.; (.agent[$n].tools) = (((.agent[$n].tools) // {}) + $addT[$n]))",
     "reduce ($rmT | keys_unsorted[]) as $n (.; if .agent[$n].tools then .agent[$n].tools = ((.agent[$n].tools) | with_entries(select(.key as $k | ($rmT[$n] | index($k)) | not))) | if (.agent[$n].tools | length) == 0 then del(.agent[$n].tools) else . end else . end)",
+    ".instructions = (((.instructions // []) + $addI) - $rmI | unique)",
   ].join(" | ")
   const script = [
     "sh",
     "-c",
-    `jq --argjson addP ${quote(JSON.stringify(patch.addPlugins))} --argjson rmP ${quote(JSON.stringify(patch.removePlugins))} --argjson addM ${quote(JSON.stringify(patch.addMcp))} --argjson rmM ${quote(JSON.stringify(patch.removeMcp))} --argjson addA ${quote(JSON.stringify(patch.addAgents ?? {}))} --argjson rmA ${quote(JSON.stringify(patch.removeAgents ?? []))} --argjson addT ${quote(JSON.stringify(patch.addAgentTools ?? {}))} --argjson rmT ${quote(JSON.stringify(patch.removeAgentTools ?? {}))} '${program}' $HOME/.config/opencode/opencode.json > /tmp/oc-plugin.json && mv /tmp/oc-plugin.json $HOME/.config/opencode/opencode.json`,
+    `jq --argjson addP ${quote(JSON.stringify(patch.addPlugins))} --argjson rmP ${quote(JSON.stringify(patch.removePlugins))} --argjson addM ${quote(JSON.stringify(patch.addMcp))} --argjson rmM ${quote(JSON.stringify(patch.removeMcp))} --argjson addA ${quote(JSON.stringify(patch.addAgents ?? {}))} --argjson rmA ${quote(JSON.stringify(patch.removeAgents ?? []))} --argjson addT ${quote(JSON.stringify(patch.addAgentTools ?? {}))} --argjson rmT ${quote(JSON.stringify(patch.removeAgentTools ?? {}))} --argjson addI ${quote(JSON.stringify(patch.addInstructions ?? []))} --argjson rmI ${quote(JSON.stringify(patch.removeInstructions ?? []))} '${program}' $HOME/.config/opencode/opencode.json > /tmp/oc-plugin.json && mv /tmp/oc-plugin.json $HOME/.config/opencode/opencode.json`,
   ]
   const result = await sh([
     "docker",

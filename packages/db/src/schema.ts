@@ -68,6 +68,16 @@ export const desktops = sqliteTable("desktops", {
   system1AccountId: text("system1_account_id"),
   system1GatewayId: text("system1_gateway_id"),
   system1Slug: text("system1_slug"),
+  sttProvider: text("stt_provider"),
+  sttAccountId: text("stt_account_id"),
+  sttApiKey: text("stt_api_key"),
+  sttModel: text("stt_model"),
+  ttsProvider: text("tts_provider"),
+  ttsAccountId: text("tts_account_id"),
+  ttsApiKey: text("tts_api_key"),
+  ttsModel: text("tts_model"),
+  ttsVoice: text("tts_voice"),
+  voiceLanguage: text("voice_language"),
 })
 
 export const userKeys = sqliteTable(

@@ -12,11 +12,11 @@ Plugins extend what you can do: skills, personalities, scheduled jobs, desktop t
 When a task needs something you cannot do with current tools, skills, or plugins, plan a plugin instead of giving up or hand-rolling a one-off:
 
 1. Scaffold: `ob-plugin new <slug>` creates `~/plugins-create/<slug>/` with `open-bot.plugin.json` and a README.
-2. Implement: fill the manifest — inline `skills`, `personas`, `cron`, `tools`, `configs`, `setup`, `permissions`, `dashboard`, `textbox`, `opencode`. Tool files are plain scripts installed into `/usr/local/bin`. Larger text payloads go in `files[]` (`{name, source, exec}` — repo-relative paths shipped in the release tarball, installed next to tools). `opencode.agents` registers new agent workers (built-in names are rejected); `opencode.agentTools` patches tool globs on existing agents (e.g. `{"build": {"myplugin_*": false}}`). `setup.commands` are shell commands run as root in the desktop at install and re-run after every desktop recreate — use them for environment setup the plugin needs (e.g. `"sudo apt-get install -y figlet"`); keep them idempotent and minimal, and pair destructive ones with `setup.uninstall` cleanup. Helper sessions the plugin spawns (worker pipelines, batch jobs) must be titled with the `worker:` prefix so they stay out of the dashboard thread list (same convention as `cron-run:`).
+2. Implement: fill the manifest following the JSON schema at `~/.config/opencode/skills/plugin/open-bot.plugin.schema.json` — read it before writing any field you are unsure about; every field name, pattern, and limit is defined there, and unknown fields are rejected. Inline sections: `skills`, `personas`, `cron`, `tools`, `configs`, `setup`, `permissions`, `dashboard`, `textbox`, `opencode`. Tool files are plain scripts installed into `/usr/local/bin`. Larger text payloads go in `files[]` (`{name, source, exec}` — repo-relative paths shipped in the release tarball, installed next to tools). `opencode.agents` registers new agent workers (built-in names are rejected); `opencode.agentTools` patches tool globs on existing agents (e.g. `{"build": {"myplugin_*": false}}`); `opencode.agentsMd` is a short block of standing instructions (max 4000 chars) injected next to AGENTS.md for as long as the plugin is installed — durable behavioral rules the agent must always follow, never secrets and never per-task prompts. `setup.commands` are shell commands run as root in the desktop at install and re-run after every desktop recreate — use them for environment setup the plugin needs (e.g. `"sudo apt-get install -y figlet"`); keep them idempotent and minimal, and pair destructive ones with `setup.uninstall` cleanup. Helper sessions the plugin spawns (worker pipelines, batch jobs) must be titled with the `worker:` prefix so they stay out of the dashboard thread list (same convention as `cron-run:`).
 3. Test locally: run the tool scripts yourself, walk through the skill steps, and check the cron prompt reads well.
 4. Validate: `ob-plugin validate ~/plugins-create/<slug>` and fix every issue.
 5. Publish (see below), then `ob-plugin install <slug>` so the new capability goes live on this desktop.
-6. Stress-test: load the `stress-test` skill and run the installed plugin through complex use cases from the user's seat, filing defects and iterating versions until every case passes. Do not tell the user it works before it passes.
+6. Stress-test: load the `stress-test` skill and run the installed plugin through complex use cases from the user's seat, filing defects and iterating versions until every case passes. Do not tell the user it works before it passes. Iterate on a dev tag (`beta-1`) while staging — see below — and publish semver once it passes.
 
 Tell the user in one sentence that you built and published a plugin for it.
 
@@ -37,6 +37,22 @@ ob-plugin install NAME
 - `publish` registers the manifest on the marketplace and automatically creates a daily guard cron named `plugin:NAME:guard`. Keep that job; it is your maintenance duty. It survives uninstalling the plugin.
 - Bump `version` (semver) for every change, commit, create a matching `v<version>` release, and publish again so the marketplace serves the new version.
 - Never put secrets in a manifest. Request vault slugs with `permissions.vaultCreate` and let the user fill values on the Config Keys page.
+
+## Staging a release (dev tags)
+
+For stress-testing and staging before a stable release, publish a dev tag instead of bumping semver. Set the manifest `version` to a short lowercase tag (e.g. `beta-1`, `staging.2`), then move the tag and publish — republishing the same tag overwrites it:
+
+```sh
+git add -A && git commit -m "beta-1"
+git tag -f vbeta-1 && git push -f origin vbeta-1
+gh release create vbeta-1 -R OWNER/NAME --notes "Dev build" --clobber || true
+ob-plugin publish ~/plugins-create/NAME
+ob-plugin install NAME --version beta-1
+```
+
+- Dev versions pass the same security review, consent flow, and policy as stable ones, but stay out of marketplace search and never become the listing's "latest".
+- Reinstalling the pinned version (`ob-plugin install NAME --version beta-1` again, or Re-install on the dashboard Plugins tab) picks up the republish: it re-pulls the release and re-runs setup. Uninstall from the same tab any time.
+- When the plugin passes, bump to semver (`1.0.0`), tag, and publish — the stable version becomes the marketplace latest, and a plain `ob-plugin install NAME` upgrades installs pinned to the dev tag.
 
 ## Maintaining your plugins (guard cron)
 
