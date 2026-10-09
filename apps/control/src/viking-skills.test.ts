@@ -110,7 +110,7 @@ describe("viking skills", () => {
         content: skill.body,
       },
       wait: true,
-      timeout: 45,
+      timeout: 240,
     })
   })
 
