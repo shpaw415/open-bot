@@ -95,12 +95,13 @@ export default function Account() {
       ) : !user ? (
         <div className="mt-8 rounded-xl border border-slate-800 bg-slate-900/60 p-6 text-center">
           <p className="text-slate-300">Sign in to manage your API keys.</p>
-          <a
-            href="/api/auth/login"
+          <button
+            type="button"
+            onClick={() => window.location.assign("/api/auth/login")}
             className="mt-4 inline-block rounded-full bg-blue-600 px-6 py-2.5 text-sm font-semibold hover:bg-blue-500"
           >
             Sign in
-          </a>
+          </button>
         </div>
       ) : (
         <>

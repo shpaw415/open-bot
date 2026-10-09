@@ -36,12 +36,13 @@ export default function Login() {
             ? "Signed in — taking you to your account…"
             : "Redirecting to sign-in…"}
         </p>
-        <a
-          href="/api/auth/login"
+        <button
+          type="button"
+          onClick={() => window.location.assign("/api/auth/login")}
           className="mt-4 inline-block rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold hover:bg-blue-500"
         >
           Sign in
-        </a>
+        </button>
         <a href="/" className="ml-3 text-sm text-slate-400 hover:underline">
           Browse plugins
         </a>
