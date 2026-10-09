@@ -20,7 +20,7 @@ describe("blender is plugin-only", () => {
     // the entrypoint keeps a migration that strips old built-in leftovers
     expect(entrypoint).not.toContain("blender-up.sh")
     expect(entrypoint).not.toContain("seed/skills/blender")
-    expect(entrypoint).not.toContain("$seed[0].agent[\"blender-worker\"]")
+    expect(entrypoint).not.toContain('$seed[0].agent["blender-worker"]')
     expect(entrypoint).not.toContain("apply-blender-mcp")
     expect(entrypoint).not.toContain("blender-mcp-venv")
     expect(seedConfig).not.toContain("blender")

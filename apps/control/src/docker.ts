@@ -37,6 +37,11 @@ export function startError(userId: string) {
   return startErrors.get(userId) ?? ""
 }
 
+/** In-flight start promise for a user, if one is running. */
+export function currentStart(userId: string) {
+  return starting.get(userId)
+}
+
 export function controlBase(network: string) {
   if (inDocker) return "http://open-bot:8787"
   return `http://${gatewayCache.get(network) ?? "127.0.0.1"}:8787`
@@ -49,56 +54,75 @@ export function llmBase(network: string) {
 const gatewayCache = new Map<string, string>()
 
 async function ensureNetwork(network: string) {
-  const exists = await sh(["docker", "network", "inspect", network])
-  if (exists.code !== 0) await docker(["network", "create", network])
+  const exists = await sh(
+    ["docker", "network", "inspect", network],
+    undefined,
+    30_000,
+  )
+  if (exists.code !== 0)
+    await docker(["network", "create", network], undefined, 30_000)
   const gateway = (
-    await docker([
-      "network",
-      "inspect",
-      "-f",
-      "{{(index .IPAM.Config 0).Gateway}}",
-      network,
-    ])
+    await docker(
+      [
+        "network",
+        "inspect",
+        "-f",
+        "{{(index .IPAM.Config 0).Gateway}}",
+        network,
+      ],
+      undefined,
+      30_000,
+    )
   ).trim()
   gatewayCache.set(network, gateway)
   if (inDocker && controlName) {
-    const connected = await sh([
-      "docker",
-      "network",
-      "inspect",
-      network,
-      "-f",
-      "{{range $k, $v := .Containers}}{{$v.Name}} {{end}}",
-    ])
-    if (!connected.stdout.includes(controlName)) {
-      await docker([
+    const connected = await sh(
+      [
+        "docker",
         "network",
-        "connect",
-        "--alias",
-        "open-bot",
+        "inspect",
         network,
-        controlName,
-      ])
+        "-f",
+        "{{range $k, $v := .Containers}}{{$v.Name}} {{end}}",
+      ],
+      undefined,
+      30_000,
+    )
+    if (!connected.stdout.includes(controlName)) {
+      await docker(
+        ["network", "connect", "--alias", "open-bot", network, controlName],
+        undefined,
+        30_000,
+      )
     }
   }
 }
 
 async function ensureVolume(name: string) {
-  const exists = await sh(["docker", "volume", "inspect", name])
-  if (exists.code !== 0) await docker(["volume", "create", name])
+  const exists = await sh(
+    ["docker", "volume", "inspect", name],
+    undefined,
+    30_000,
+  )
+  if (exists.code !== 0)
+    await docker(["volume", "create", name], undefined, 30_000)
 }
 
 async function captureAptSnapshot(container: string, homeVolume: string) {
-  const exists = await sh(["docker", "inspect", container])
+  const exists = await sh(["docker", "inspect", container], undefined, 30_000)
   if (exists.code !== 0) return
   const dir = mkdtempSync(join(tmpdir(), "ob-apt-"))
   try {
-    const copied = await sh([
-      "docker",
-      "cp",
-      `${container}:/var/lib/apt/extended_states`,
-      join(dir, "extended_states"),
-    ])
+    const copied = await sh(
+      [
+        "docker",
+        "cp",
+        `${container}:/var/lib/apt/extended_states`,
+        join(dir, "extended_states"),
+      ],
+      undefined,
+      60_000,
+    )
     if (copied.code !== 0) return
     const names = manualPackages(
       readFileSync(join(dir, "extended_states"), "utf8"),
@@ -119,6 +143,7 @@ async function captureAptSnapshot(container: string, homeVolume: string) {
         "mkdir -p /home/agent/.open-bot && cat > /home/agent/.open-bot/apt-manual-snapshot",
       ],
       `${names.join("\n")}\n`,
+      120_000,
     )
     if (written.code !== 0) {
       console.error(
@@ -131,7 +156,11 @@ async function captureAptSnapshot(container: string, homeVolume: string) {
 }
 
 export async function imageReady(image: string) {
-  const result = await sh(["docker", "image", "inspect", image])
+  const result = await sh(
+    ["docker", "image", "inspect", image],
+    undefined,
+    30_000,
+  )
   return result.code === 0
 }
 
@@ -148,24 +177,26 @@ export async function runningCount() {
 }
 
 export async function isRunning(name: string) {
-  const result = await sh([
-    "docker",
-    "inspect",
-    "-f",
-    "{{.State.Running}}",
-    name,
-  ])
+  const result = await sh(
+    ["docker", "inspect", "-f", "{{.State.Running}}", name],
+    undefined,
+    30_000,
+  )
   return result.code === 0 && result.stdout.trim() === "true"
 }
 
 export async function containerIp(name: string, network: string) {
   const ip = (
-    await docker([
-      "inspect",
-      "-f",
-      `{{(index .NetworkSettings.Networks "${network}").IPAddress}}`,
-      name,
-    ])
+    await docker(
+      [
+        "inspect",
+        "-f",
+        `{{(index .NetworkSettings.Networks "${network}").IPAddress}}`,
+        name,
+      ],
+      undefined,
+      30_000,
+    )
   ).trim()
   if (!ip) throw new Error(`no address for ${name}`)
   return ip
@@ -234,7 +265,11 @@ function vikingConfig(desktop: Desktop, viking: VikingProvider) {
 }
 
 async function runDetached(args: string[]) {
-  await docker(["run", "-d", "--label", "open-bot=1", ...args])
+  await docker(
+    ["run", "-d", "--label", "open-bot=1", ...args],
+    undefined,
+    120_000,
+  )
 }
 
 export async function startDesktop(
@@ -329,7 +364,7 @@ async function startDesktopInner(
         "viking_models_missing",
       )
     }
-    await sh(["docker", "rm", "-f", n.viking])
+    await sh(["docker", "rm", "-f", n.viking], undefined, 60_000)
     await runDetached([
       "--name",
       n.viking,
@@ -366,7 +401,7 @@ async function startDesktopInner(
   if (!(await isRunning(n.opencode))) {
     createdOpencode = true
     await captureAptSnapshot(n.opencode, n.home)
-    await sh(["docker", "rm", "-f", n.opencode])
+    await sh(["docker", "rm", "-f", n.opencode], undefined, 60_000)
     await runDetached([
       "--name",
       n.opencode,
@@ -433,7 +468,7 @@ async function startDesktopInner(
     {
       authorization: auth,
     },
-    600000,
+    300000,
   )
   if (createdOpencode) {
     try {
@@ -511,7 +546,7 @@ async function startDesktopInner(
   }
 
   if (!(await isRunning(n.computer))) {
-    await sh(["docker", "rm", "-f", n.computer])
+    await sh(["docker", "rm", "-f", n.computer], undefined, 60_000)
     await runDetached([
       "--name",
       n.computer,
@@ -539,29 +574,28 @@ async function startDesktopInner(
 export async function stopDesktop(userId: string) {
   stopFileWatch(userId)
   const n = names(userId)
-  await sh(["docker", "stop", "-t", "5", n.computer])
-  await sh(["docker", "stop", "-t", "30", n.opencode])
-  await sh(["docker", "stop", "-t", "15", n.viking])
+  await sh(["docker", "stop", "-t", "5", n.computer], undefined, 90_000)
+  await sh(["docker", "stop", "-t", "10", n.opencode], undefined, 90_000)
+  await sh(["docker", "stop", "-t", "15", n.viking], undefined, 90_000)
 }
 
 export async function destroyDesktop(userId: string) {
   stopFileWatch(userId)
   const n = names(userId)
-  await sh(["docker", "rm", "-f", n.computer, n.opencode, n.viking])
-  const volumes = await sh([
-    "docker",
-    "volume",
-    "rm",
-    "-f",
-    n.home,
-    n.usrLocal,
-    n.vikingData,
-    n.x11,
-  ])
+  await sh(
+    ["docker", "rm", "-f", n.computer, n.opencode, n.viking],
+    undefined,
+    60_000,
+  )
+  const volumes = await sh(
+    ["docker", "volume", "rm", "-f", n.home, n.usrLocal, n.vikingData, n.x11],
+    undefined,
+    60_000,
+  )
   if (volumes.code !== 0 && !/no such volume/i.test(volumes.stderr)) {
     throw new Error(volumes.stderr.trim() || "could not remove desktop volumes")
   }
-  await sh(["docker", "network", "rm", n.network])
+  await sh(["docker", "network", "rm", n.network], undefined, 30_000)
 }
 
 export async function desktopPhase(userId: string) {
@@ -698,15 +732,11 @@ export function spawnProjectShell(
 
 export async function restartOpencode(userId: string) {
   const n = names(userId)
-  await sh([
-    "docker",
-    "exec",
-    n.opencode,
-    "pkill",
-    "-TERM",
-    "-f",
-    "opencode serve",
-  ])
+  await sh(
+    ["docker", "exec", n.opencode, "pkill", "-TERM", "-f", "opencode serve"],
+    undefined,
+    30_000,
+  )
 }
 
 export async function syncImageAuth(
@@ -743,6 +773,7 @@ export async function syncImageAuth(
       "/opt/open-bot/apply-image-auth.sh",
     ],
     payload,
+    120_000,
   )
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim()
@@ -790,6 +821,7 @@ export async function syncVideoAuth(
       "/opt/open-bot/apply-video-auth.sh",
     ],
     payload,
+    120_000,
   )
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim()
@@ -837,6 +869,7 @@ export async function syncModel3dAuth(
       "/opt/open-bot/apply-model3d-auth.sh",
     ],
     payload,
+    120_000,
   )
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim()
@@ -880,6 +913,7 @@ export async function syncSystem1(
       "/opt/open-bot/apply-system1.sh",
     ],
     payload,
+    120_000,
   )
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim()
@@ -942,6 +976,7 @@ export async function syncChatAuth(
       "/opt/open-bot/apply-chat-auth.sh",
     ],
     JSON.stringify({ entries: payloadEntries, revoke: payloadRevoke }),
+    120_000,
   )
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim()
@@ -988,7 +1023,11 @@ export async function syncPluginTools(
     try {
       writeFileSync(local, file.content, { mode: 0o755 })
       const bin = `/usr/local/bin/ob-plugin-${pluginId}-${file.name}`
-      const copied = await sh(["docker", "cp", local, `${n.opencode}:${bin}`])
+      const copied = await sh(
+        ["docker", "cp", local, `${n.opencode}:${bin}`],
+        undefined,
+        60_000,
+      )
       if (copied.code !== 0) {
         throw new HttpError(
           502,
@@ -996,14 +1035,11 @@ export async function syncPluginTools(
           "plugin_tool",
         )
       }
-      const chmod = await sh([
-        "docker",
-        "exec",
-        n.opencode,
-        "chmod",
-        file.exec ? "755" : "644",
-        bin,
-      ])
+      const chmod = await sh(
+        ["docker", "exec", n.opencode, "chmod", file.exec ? "755" : "644", bin],
+        undefined,
+        60_000,
+      )
       if (chmod.code !== 0) {
         throw new HttpError(
           502,
@@ -1164,9 +1200,28 @@ export async function runPluginInitCommands(
     }
     const [stdout, stderr, code] = raced.value
     const output = `${stdout}\n${stderr}`.trim()
+    const ok = code === 0 && !timedOut
+    if (ok) {
+      // Plugin commands run as root; make sure anything they dropped into the
+      // agent's own directories stays writable by the agent.
+      sh(
+        [
+          "docker",
+          "exec",
+          n.opencode,
+          "chown",
+          "-R",
+          "agent:agent",
+          "/home/agent/workspace",
+          "/home/agent/plugins-create",
+        ],
+        undefined,
+        120_000,
+      ).catch(() => {})
+    }
     return {
       ran: true,
-      ok: code === 0,
+      ok,
       timedOut,
       output: writeError ? `${output}\n${writeError}`.trim() : output,
     }
@@ -1206,6 +1261,7 @@ export async function syncPluginAuth(
       "/opt/open-bot/apply-plugin-auth.sh",
     ],
     JSON.stringify({ file: `plugin-${pluginId}.json`, data: data ?? null }),
+    120_000,
   )
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim()

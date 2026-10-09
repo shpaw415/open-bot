@@ -78,5 +78,8 @@ if [[ "$ready" != "1" ]]; then
 fi
 
 echo "restarting running desktops"
-docker exec open-bot bun apps/control/src/recycle.ts
+if ! timeout 2400 docker exec open-bot bun apps/control/src/recycle.ts; then
+  echo "WARNING: desktop restart failed or timed out;" >&2
+  echo "affected desktops are asleep — start them from the dashboard" >&2
+fi
 echo "updated http://${host}:${port}"

@@ -38,7 +38,7 @@ export type DesktopStatus = {
   error?: string
 }
 
-export async function waitForDesktop(timeoutMs = 600_000): Promise<void> {
+export async function waitForDesktop(timeoutMs = 330_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (true) {
     const status = await api<DesktopStatus>("/api/desktop")

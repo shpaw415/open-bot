@@ -121,6 +121,69 @@ describe("plugins router", () => {
     expect(db.cronJobs("a")).toHaveLength(1)
   })
 
+  test("stores marketplace API keys in the real generated format", async () => {
+    const key = "obm_Mx4Bp9Qw7Tk2Zr8Nv5Lj3Hd6Fg1Sy0C_"
+
+    const bad = route("/api/plugins/marketplace/key", "PUT", { key: "obm_x" })
+    const badRes = await handlePlugins(
+      bad.req,
+      bad.url,
+      db,
+      user({ role: "admin" }),
+      hub,
+    )
+    expect(badRes?.status).toBe(400)
+    expect(await badRes?.json()).toMatchObject({
+      error: "that does not look like a marketplace API key",
+    })
+
+    const saved = route("/api/plugins/marketplace/key", "PUT", { key })
+    const savedRes = await handlePlugins(
+      saved.req,
+      saved.url,
+      db,
+      user({ role: "admin" }),
+      hub,
+    )
+    expect(await savedRes?.json()).toMatchObject({
+      ok: true,
+      hint: key.slice(-4),
+    })
+
+    const info = route("/api/plugins/marketplace/key")
+    const infoRes = await handlePlugins(
+      info.req,
+      info.url,
+      db,
+      user({ role: "admin" }),
+      hub,
+    )
+    expect(await infoRes?.json()).toMatchObject({
+      source: "account",
+      hint: key.slice(-4),
+    })
+
+    const removed = route("/api/plugins/marketplace/key", "DELETE")
+    const removedRes = await handlePlugins(
+      removed.req,
+      removed.url,
+      db,
+      user({ role: "admin" }),
+      hub,
+    )
+    expect(await removedRes?.json()).toMatchObject({ ok: true })
+
+    const cleared = route("/api/plugins/marketplace/key")
+    const clearedRes = await handlePlugins(
+      cleared.req,
+      cleared.url,
+      db,
+      user({ role: "admin" }),
+      hub,
+    )
+    expect(await clearedRes?.json()).toMatchObject({ source: "instance" })
+  })
+
   test("unknown plugin routes return null so the server can 404", async () => {
     const missing = route("/api/plugins/nope")
     expect(handlePlugins(missing.req, missing.url, db, user(), hub)).toBeNull()

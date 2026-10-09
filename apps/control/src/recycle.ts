@@ -9,6 +9,7 @@ import {
   stopDesktop,
 } from "./docker"
 import { dataDir, names } from "./env"
+import { stopFileWatch } from "./file-watch"
 import { resolveDesktopProviders } from "./key-vault"
 import { reapplyPluginSetup } from "./plugins-apply"
 
@@ -76,10 +77,13 @@ for (const userId of db.desktopUserIds()) {
       `failed ${names(userId).opencode}: ${error instanceof Error ? error.message : error}`,
     )
   }
+  // startDesktop spawned a file watcher in this process; kill it or Bun will
+  // wait on its stdout pipe forever and recycle never exits.
+  stopFileWatch(userId)
 }
 
 if (restarted === 0 && failed === 0 && skipped === 0)
   console.log("no running desktops")
 if (skipped > 0)
   console.log("busy desktops keep the old image until their next idle restart")
-if (failed > 0) process.exit(1)
+process.exit(failed > 0 ? 1 : 0)

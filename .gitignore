@@ -13,3 +13,4 @@ apps/marketplace/.env
 apps/marketplace/.dev.vars
 apps/marketplace/.wrangler
 apps/marketplace/functions
+.env

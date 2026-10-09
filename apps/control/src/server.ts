@@ -28,6 +28,7 @@ import {
 } from "./cron"
 import {
   type ChatKeyEntry,
+  currentStart,
   desktopPhase,
   endpoint,
   isRunning,
@@ -940,6 +941,10 @@ async function api(req: Request, url: URL, db: Db, hub: EventHub) {
     return json({ phase: "starting" })
   }
   if (url.pathname === "/api/desktop/stop" && req.method === "POST") {
+    // Wait out an in-flight start first so sleep can never race the containers
+    // a start is still creating or health-checking.
+    const inflight = currentStart(user.id)
+    if (inflight) await inflight.catch(() => {})
     await stopDesktop(user.id)
     return json({ phase: "sleeping" })
   }

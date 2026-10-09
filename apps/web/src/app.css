@@ -51,10 +51,6 @@ body,
   border-radius: 18px;
   overflow-wrap: anywhere;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
-  /* skip layout/paint for bubbles scrolled out of view on long threads;
-     "auto" remembers each bubble's last rendered height */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
 }
 
 /* Code-heavy answers get more room so <pre> blocks stay readable. */

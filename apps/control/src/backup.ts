@@ -531,6 +531,26 @@ export async function restoreVolumeFromFile(volume: string, filePath: string) {
     ],
     filePath,
   )
+  if (volume.startsWith("ob-home-")) {
+    // A restored home can carry root-owned files; ask the next desktop boot
+    // for a full recursive chown before the agent starts.
+    await sh(
+      [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        "-v",
+        `${volume}:/dst`,
+        opencodeImage,
+        "-c",
+        "mkdir -p /dst/.open-bot && touch /dst/.open-bot/need-full-chown",
+      ],
+      undefined,
+      60_000,
+    )
+  }
 }
 
 async function snapshotControlDb(filePath: string) {

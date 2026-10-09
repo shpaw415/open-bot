@@ -28,7 +28,10 @@ if [ ! -s "$missing" ]; then
   rm -f "$missing"
   exit 0
 fi
-apt-get update && xargs -r -a "$missing" apt-get install -y --no-install-recommends
+# Lock::Timeout makes a concurrent apt run (plugin setup commands) win the
+# lock; we wait for it instead of failing the restore.
+apt-get -o DPkg::Lock::Timeout=600 update &&
+  xargs -r -a "$missing" apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=600
 status=$?
 rm -f "$missing"
 exit "$status"

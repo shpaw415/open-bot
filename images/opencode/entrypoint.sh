@@ -77,11 +77,31 @@ cp /opt/open-bot/seed/openviking-config.json /home/agent/.config/opencode/openvi
 cat > /home/agent/.openviking/ovcli.conf <<EOF
 {"url":"${OPENVIKING_URL}","api_key":"${OPENVIKING_API_KEY}"}
 EOF
-chown -R agent:agent /home/agent
-chmod 1777 /tmp/.X11-unix
-if ! /opt/open-bot/restore-apt.sh >>/home/agent/.open-bot/apt-restore.log 2>&1; then
-  echo "apt restore failed" >&2
+# A full recursive chown of the persistent home is slow (5 GB+), so only the
+# subtrees that root tooling writes get one on every boot. A volume restore
+# drops .open-bot/need-full-chown to request the whole-home pass.
+if [ -f /home/agent/.open-bot/need-full-chown ]; then
+  chown -R agent:agent /home/agent
+  rm -f /home/agent/.open-bot/need-full-chown
 fi
+chown -R agent:agent \
+  /home/agent/.open-bot \
+  /home/agent/.config/opencode \
+  /home/agent/.openviking \
+  /home/agent/plugins-create
+chmod 1777 /tmp/.X11-unix
+# Package restore can download for minutes on a slow mirror; run it in the
+# background so the desktop reports ready first. The delay lets plugin setup
+# commands grab the dpkg lock first; restore-apt waits for the lock too.
+rm -f /home/agent/.open-bot/apt-restore.done
+(
+  sleep 90
+  if /opt/open-bot/restore-apt.sh >>/home/agent/.open-bot/apt-restore.log 2>&1; then
+    touch /home/agent/.open-bot/apt-restore.done
+  else
+    echo "apt restore failed" >&2
+  fi
+) &
 run() {
   su -s /bin/sh agent -c "export HOME=/home/agent; $1"
 }
@@ -113,9 +133,23 @@ run "ttyd -p 7681 -W -b /desktop/term bash" &
     sleep 2
   done
 ) &
+# Serve supervisor: restart opencode when it crashes, but exit cleanly (taking
+# the container down) when docker stops us. setsid puts serve in its own
+# process group so the TERM below reaches node, not just the su wrapper.
+term_hit=0
+on_term() {
+  term_hit=1
+  if [ -s /run/opencode.pid ]; then
+    kill -s TERM -- "-$(cat /run/opencode.pid)" 2>/dev/null || true
+  fi
+}
+trap on_term TERM INT
 while true; do
-  run "cd /home/agent/workspace && opencode serve --hostname 0.0.0.0 --port 4096" &
+  setsid su -s /bin/sh agent -c "export HOME=/home/agent; cd /home/agent/workspace && opencode serve --hostname 0.0.0.0 --port 4096" &
   echo $! > /run/opencode.pid
   wait $! || true
+  if [ "$term_hit" = 1 ]; then
+    exit 0
+  fi
   sleep 1
 done

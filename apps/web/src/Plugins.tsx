@@ -5,14 +5,26 @@ import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, { DialogActions } from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
 import IconButton from "@shpaw415/mui-lite/IconButton"
+import { TablePagination } from "@shpaw415/mui-lite/Pagination"
 import Paper from "@shpaw415/mui-lite/Paper"
+import { CircularProgress, LinearProgress } from "@shpaw415/mui-lite/Progress"
+import Skeleton from "@shpaw415/mui-lite/Skeleton"
+import Snackbar from "@shpaw415/mui-lite/Snackbar"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Switch from "@shpaw415/mui-lite/Switch"
+import Table, {
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+} from "@shpaw415/mui-lite/Table"
 import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api } from "./api"
+import { useMobile } from "./hooks"
 import { DeleteIcon, ExtensionIcon, RefreshIcon } from "./icons"
 import {
   type InstalledPluginInfo,
@@ -92,9 +104,10 @@ function InstallDialog({
   }
 
   return (
-    <Dialog open onClose={onClose} fullWidth>
+    <Dialog open onClose={() => !busy && onClose()} fullWidth>
       <Stack spacing={2} sx={{ p: 3 }}>
         <Typography variant="h6">Install {target.name}?</Typography>
+        {busy ? <LinearProgress variant="indeterminate" /> : null}
         <Typography variant="body2" color="textSecondary">
           v{target.version} · id {target.id}
         </Typography>
@@ -127,6 +140,12 @@ function InstallDialog({
           Plugins can add skills, personalities, scheduled jobs, dashboard tabs,
           and desktop tools. Remove them any time from this page.
         </Typography>
+        {busy ? (
+          <Typography variant="caption" color="textSecondary">
+            Downloading the reviewed release and applying it to your desktop —
+            this can take a minute.
+          </Typography>
+        ) : null}
         {error ? <Alert severity="error">{error}</Alert> : null}
       </Stack>
       <DialogActions>
@@ -136,6 +155,7 @@ function InstallDialog({
         <Button
           variant="contained"
           disabled={busy}
+          startIcon={busy ? <CircularProgress size={1} /> : undefined}
           onClick={() => void install()}
         >
           {busy ? "Installing…" : "Install"}
@@ -145,78 +165,172 @@ function InstallDialog({
   )
 }
 
-function InstalledCard({
-  plugin,
-  busy,
+function InstalledTable({
+  plugins,
+  loaded,
+  actionId,
+  page,
+  rowsPerPage,
+  onPageChange,
+  onRowsPerPageChange,
   onToggle,
   onRemove,
   onSettings,
 }: {
-  plugin: InstalledPluginInfo
-  busy: boolean
+  plugins: InstalledPluginInfo[]
+  loaded: boolean
+  actionId: string | null
+  page: number
+  rowsPerPage: 10 | 25 | 50 | 100
+  onPageChange: (next: number) => void
+  onRowsPerPageChange: (next: 10 | 25 | 50 | 100) => void
   onToggle: (plugin: InstalledPluginInfo) => void
   onRemove: (plugin: InstalledPluginInfo) => void
   onSettings: (plugin: InstalledPluginInfo) => void
 }) {
-  const [confirm, setConfirm] = useState(false)
+  const [confirmId, setConfirmId] = useState<string | null>(null)
+  const visible = plugins.slice(
+    page * rowsPerPage,
+    page * rowsPerPage + rowsPerPage,
+  )
+
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Stack spacing={1}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Stack sx={{ flex: 1, minWidth: 0 }}>
-            <PluginHeader plugin={plugin} />
-            <Typography
-              variant="body2"
-              color="textSecondary"
-              sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
-            >
-              {plugin.description}
-            </Typography>
-          </Stack>
-          <ToolTip title={plugin.enabled ? "Disable" : "Enable"}>
-            <Switch
-              checked={plugin.enabled}
-              disabled={busy}
-              onChange={() => onToggle(plugin)}
-            />
-          </ToolTip>
-          <IconButton
-            size="small"
-            aria-label={`Remove ${plugin.name}`}
-            disabled={busy}
-            onClick={() => {
-              if (confirm) {
-                onRemove(plugin)
-                setConfirm(false)
-                return
-              }
-              setConfirm(true)
-            }}
-          >
-            {confirm ? (
-              <Typography variant="caption">sure?</Typography>
+    <Paper variant="outlined">
+      <TableContainer sx={{ overflowX: "auto" }}>
+        <Table size="small" stickyHeader>
+          <TableHead>
+            <TableRow>
+              <TableCell>Plugin</TableCell>
+              <TableCell>Description</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell align="center">Enabled</TableCell>
+              <TableCell align="right">Actions</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {!loaded ? (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Skeleton height={32} />
+                </TableCell>
+              </TableRow>
+            ) : plugins.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Typography variant="body2" color="textSecondary">
+                    Nothing installed yet. Ask the agent to build a plugin, or
+                    install one from the marketplace below.
+                  </Typography>
+                </TableCell>
+              </TableRow>
             ) : (
-              <DeleteIcon />
+              visible.map((plugin) => {
+                const rowBusy = actionId === plugin.pluginId
+                return (
+                  <TableRow key={plugin.id} hover>
+                    <TableCell>
+                      <PluginHeader plugin={plugin} />
+                      {(plugin.manifest.configs?.length ?? 0) > 0 ? (
+                        <Button
+                          size="small"
+                          variant="text"
+                          disabled={rowBusy}
+                          onClick={() => onSettings(plugin)}
+                        >
+                          Settings
+                        </Button>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <ToolTip title={plugin.description || plugin.pluginId}>
+                        <Typography
+                          variant="body2"
+                          color="textSecondary"
+                          sx={{
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                            maxWidth: 320,
+                          }}
+                        >
+                          {plugin.description || "—"}
+                        </Typography>
+                      </ToolTip>
+                      {plugin.init && !plugin.init.ok ? (
+                        <ToolTip
+                          title={`Setup commands failed — check ~/.open-bot/plugin-init/${plugin.pluginId}.log on the desktop.`}
+                        >
+                          <Chip
+                            size="small"
+                            color="warning"
+                            label="setup failed"
+                            sx={{ mt: 0.5 }}
+                          />
+                        </ToolTip>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <Stack direction="row" spacing={0.5}>
+                        <Chip
+                          size="small"
+                          color={plugin.enabled ? "success" : undefined}
+                          label={plugin.enabled ? "on" : "off"}
+                        />
+                        {rowBusy ? <CircularProgress size={1} /> : null}
+                      </Stack>
+                    </TableCell>
+                    <TableCell align="center">
+                      <ToolTip title={plugin.enabled ? "Disable" : "Enable"}>
+                        <Switch
+                          checked={plugin.enabled}
+                          disabled={rowBusy}
+                          onChange={() => onToggle(plugin)}
+                        />
+                      </ToolTip>
+                    </TableCell>
+                    <TableCell align="right">
+                      <ToolTip title={`Remove ${plugin.name}`}>
+                        <IconButton
+                          size="small"
+                          aria-label={`Remove ${plugin.name}`}
+                          disabled={rowBusy}
+                          onClick={() => {
+                            if (confirmId === plugin.pluginId) {
+                              onRemove(plugin)
+                              setConfirmId(null)
+                              return
+                            }
+                            setConfirmId(plugin.pluginId)
+                          }}
+                        >
+                          {confirmId === plugin.pluginId ? (
+                            <Typography variant="caption">sure?</Typography>
+                          ) : (
+                            <DeleteIcon />
+                          )}
+                        </IconButton>
+                      </ToolTip>
+                    </TableCell>
+                  </TableRow>
+                )
+              })
             )}
-          </IconButton>
-        </Stack>
-        {(plugin.manifest.configs?.length ?? 0) > 0 ? (
-          <Button
-            variant="text"
-            disabled={busy}
-            onClick={() => onSettings(plugin)}
-          >
-            Settings
-          </Button>
-        ) : null}
-        {plugin.init && !plugin.init.ok ? (
-          <Alert severity="warning" sx={{ py: 0.5 }}>
-            Setup commands failed on the last run. Check{" "}
-            <code>~/.open-bot/plugin-init/{plugin.pluginId}.log</code> on the
-            desktop.
-          </Alert>
-        ) : null}
-      </Stack>
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {plugins.length > 0 ? (
+        <TablePagination
+          count={plugins.length}
+          page={page}
+          rowsPerPage={rowsPerPage}
+          onPageChange={(_event, next) => onPageChange(next)}
+          onRowsPerPageChange={(next) => {
+            onRowsPerPageChange(next)
+            onPageChange(0)
+          }}
+        />
+      ) : null}
     </Paper>
   )
 }
@@ -271,57 +385,175 @@ function SettingsDialog({
         <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button variant="contained" disabled={busy} onClick={() => void save()}>
-          Save
+        <Button
+          variant="contained"
+          disabled={busy}
+          startIcon={busy ? <CircularProgress size={1} /> : undefined}
+          onClick={() => void save()}
+        >
+          {busy ? "Saving…" : "Save"}
         </Button>
       </DialogActions>
     </Dialog>
   )
 }
 
-function MarketRow({
-  plugin,
-  installed,
-  busy,
+function MarketTable({
+  market,
+  loading,
+  installingId,
+  installedIds,
+  page,
+  rowsPerPage,
+  onPageChange,
+  onRowsPerPageChange,
   onInstall,
+  onDiscuss,
 }: {
-  plugin: MarketPlugin
-  installed: boolean
-  busy: boolean
+  market: MarketPlugin[]
+  loading: boolean
+  installingId: string | null
+  installedIds: Set<string>
+  page: number
+  rowsPerPage: 10 | 25 | 50 | 100
+  onPageChange: (next: number) => void
+  onRowsPerPageChange: (next: 10 | 25 | 50 | 100) => void
   onInstall: (plugin: MarketPlugin) => void
+  onDiscuss: (plugin: MarketPlugin) => void
 }) {
+  const visible = market.slice(
+    page * rowsPerPage,
+    page * rowsPerPage + rowsPerPage,
+  )
+
   return (
-    <Stack spacing={0.5}>
-      {installed ? <Divider /> : null}
-      <Stack direction="row" spacing={1} alignItems="center">
-        <Stack sx={{ flex: 1, minWidth: 0 }}>
-          <Stack direction="row" spacing={1} alignItems="baseline">
-            <Typography variant="subtitle2">{plugin.name}</Typography>
-            <Typography variant="caption" color="textSecondary">
-              {plugin.id} · v{plugin.version} · {plugin.author}
-            </Typography>
-            {plugin.status !== "approved" ? (
-              <Chip label={plugin.status} size="small" variant="outlined" />
-            ) : null}
-          </Stack>
-          <Typography
-            variant="body2"
-            color="textSecondary"
-            sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
-          >
-            {plugin.description}
-          </Typography>
-        </Stack>
-        <Button
-          size="small"
-          variant={installed ? "text" : "outlined"}
-          disabled={busy || installed}
-          onClick={() => onInstall(plugin)}
-        >
-          {installed ? "Installed" : "Install"}
-        </Button>
-      </Stack>
-    </Stack>
+    <Paper variant="outlined">
+      <TableContainer sx={{ overflowX: "auto" }}>
+        <Table size="small" stickyHeader>
+          <TableHead>
+            <TableRow>
+              <TableCell>Plugin</TableCell>
+              <TableCell>Author</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell align="right">Downloads</TableCell>
+              <TableCell align="right">Actions</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {loading && market.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Skeleton height={32} />
+                </TableCell>
+              </TableRow>
+            ) : market.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Typography variant="body2" color="textSecondary">
+                    No plugins found. Agents publish plugins with{" "}
+                    <code>ob-plugin publish</code>.
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            ) : (
+              visible.map((plugin) => {
+                const installed = installedIds.has(plugin.id)
+                const pending = installingId === plugin.id
+                return (
+                  <TableRow key={plugin.id} hover>
+                    <TableCell>
+                      <Typography variant="subtitle2">{plugin.name}</Typography>
+                      <Typography variant="caption" color="textSecondary">
+                        {plugin.id} · v{plugin.version}
+                      </Typography>
+                      <ToolTip title={plugin.description || plugin.id}>
+                        <Typography
+                          variant="body2"
+                          color="textSecondary"
+                          sx={{
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                            maxWidth: 320,
+                          }}
+                        >
+                          {plugin.description || "—"}
+                        </Typography>
+                      </ToolTip>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="body2">
+                        {plugin.author || "—"}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      {plugin.status !== "approved" ? (
+                        <Chip
+                          label={plugin.status}
+                          size="small"
+                          variant="outlined"
+                        />
+                      ) : (
+                        <Chip
+                          label="approved"
+                          size="small"
+                          color="success"
+                          variant="outlined"
+                        />
+                      )}
+                    </TableCell>
+                    <TableCell align="right">{plugin.downloads}</TableCell>
+                    <TableCell align="right">
+                      <Stack
+                        direction="row"
+                        spacing={0.5}
+                        sx={{ justifyContent: "flex-end" }}
+                      >
+                        <Button
+                          size="small"
+                          variant="text"
+                          onClick={() => onDiscuss(plugin)}
+                        >
+                          Discuss
+                        </Button>
+                        <Button
+                          size="small"
+                          variant={installed ? "text" : "outlined"}
+                          disabled={pending || installed}
+                          startIcon={
+                            pending ? <CircularProgress size={1} /> : undefined
+                          }
+                          onClick={() => onInstall(plugin)}
+                        >
+                          {installed
+                            ? "Installed"
+                            : pending
+                              ? "Checking…"
+                              : "Install"}
+                        </Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                )
+              })
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {market.length > 0 ? (
+        <TablePagination
+          count={market.length}
+          page={page}
+          rowsPerPage={rowsPerPage}
+          onPageChange={(_event, next) => onPageChange(next)}
+          onRowsPerPageChange={(next) => {
+            onRowsPerPageChange(next)
+            onPageChange(0)
+          }}
+        />
+      ) : null}
+    </Paper>
   )
 }
 
@@ -391,6 +623,7 @@ function Discussion({ pluginId }: { pluginId: string }) {
         <Button
           variant="text"
           disabled={busy || !text.trim()}
+          startIcon={busy ? <CircularProgress size={1} /> : undefined}
           onClick={() => void post()}
         >
           Post
@@ -507,6 +740,7 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
               size="small"
               variant="contained"
               disabled={busy || !value.trim()}
+              startIcon={busy ? <CircularProgress size={1} /> : undefined}
               onClick={() => void save()}
             >
               Save
@@ -529,12 +763,17 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
 }
 
 export function Plugins({ isAdmin }: { isAdmin: boolean }) {
-  const { plugins, policy, configured, refresh } = useInstalledPlugins()
+  const mobile = useMobile()
+  const { plugins, policy, configured, loaded, refresh } = useInstalledPlugins()
   const [market, setMarket] = useState<MarketPlugin[]>([])
   const [query, setQuery] = useState("")
-  const [busy, setBusy] = useState(false)
+  const [marketLoading, setMarketLoading] = useState(false)
+  const [policyBusy, setPolicyBusy] = useState(false)
+  const [actionId, setActionId] = useState<string | null>(null)
+  const [installingId, setInstallingId] = useState<string | null>(null)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
+  const [toast, setToast] = useState<string | null>(null)
   const [installTarget, setInstallTarget] = useState<{
     id: string
     name: string
@@ -546,9 +785,17 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     null,
   )
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [installedPage, setInstalledPage] = useState(0)
+  const [installedRowsPerPage, setInstalledRowsPerPage] = useState<
+    10 | 25 | 50 | 100
+  >(10)
+  const [marketPage, setMarketPage] = useState(0)
+  const [marketRowsPerPage, setMarketRowsPerPage] = useState<
+    10 | 25 | 50 | 100
+  >(10)
 
   const loadMarket = useCallback(async (q: string) => {
-    setBusy(true)
+    setMarketLoading(true)
     setError("")
     try {
       const suffix = q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""
@@ -556,13 +803,15 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         `/api/plugins/market${suffix}`,
       )
       setMarket(body.plugins ?? [])
+      setMarketPage(0)
     } catch (caught) {
       setMarket([])
-      setError(
-        caught instanceof Error ? caught.message : "marketplace unavailable",
-      )
+      const message =
+        caught instanceof Error ? caught.message : "marketplace unavailable"
+      setError(message)
+      setToast(message)
     } finally {
-      setBusy(false)
+      setMarketLoading(false)
     }
   }, [])
 
@@ -575,25 +824,91 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     [plugins],
   )
 
-  async function act(action: () => Promise<unknown>, message: string) {
-    setBusy(true)
+  async function act(
+    id: string,
+    action: () => Promise<unknown>,
+    message: string,
+  ) {
+    setActionId(id)
     setError("")
     setNotice("")
     try {
       await action()
       setNotice(message)
+      setToast(message)
       await refresh()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "action failed")
+      const message = caught instanceof Error ? caught.message : "action failed"
+      setError(message)
+      setToast(message)
     } finally {
-      setBusy(false)
+      setActionId(null)
+    }
+  }
+
+  async function togglePolicy() {
+    setPolicyBusy(true)
+    setError("")
+    setNotice("")
+    try {
+      await api("/api/plugins/policy", {
+        method: "PUT",
+        body: JSON.stringify({
+          policy: policy === "auto" ? "manual" : "auto",
+        }),
+      })
+      setNotice("policy updated")
+      setToast("policy updated")
+      await refresh()
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "action failed"
+      setError(message)
+      setToast(message)
+    } finally {
+      setPolicyBusy(false)
+    }
+  }
+
+  async function startInstall(target: MarketPlugin) {
+    setInstallingId(target.id)
+    setError("")
+    try {
+      const probe = await api<{
+        needsConfirm?: boolean
+        permissions?: string[]
+        setupCommands?: string[]
+      }>("/api/plugins/install", {
+        method: "POST",
+        body: JSON.stringify({ pluginId: target.id }),
+      })
+      if (probe.needsConfirm) {
+        setInstallTarget({
+          id: target.id,
+          name: target.name,
+          version: target.version,
+          permissions: probe.permissions ?? [],
+          setupCommands: probe.setupCommands ?? [],
+        })
+        return
+      }
+      await refresh()
+      const message = `${target.id} installed`
+      setNotice(message)
+      setToast(message)
+    } catch (caught) {
+      const message =
+        caught instanceof Error ? caught.message : "install failed"
+      setError(message)
+      setToast(message)
+    } finally {
+      setInstallingId(null)
     }
   }
 
   return (
     <Box
       className="ob-scroll"
-      sx={{ p: 2, maxWidth: 860, mx: "auto", width: "100%" }}
+      sx={{ p: 2, maxWidth: 960, mx: "auto", width: "100%" }}
     >
       <Stack spacing={2}>
         <Stack direction="row" spacing={1} alignItems="center">
@@ -606,19 +921,9 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
             <Button
               size="small"
               variant="text"
-              disabled={busy}
-              onClick={() =>
-                void act(
-                  () =>
-                    api("/api/plugins/policy", {
-                      method: "PUT",
-                      body: JSON.stringify({
-                        policy: policy === "auto" ? "manual" : "auto",
-                      }),
-                    }),
-                  "policy updated",
-                )
-              }
+              disabled={policyBusy}
+              startIcon={policyBusy ? <CircularProgress size={1} /> : undefined}
+              onClick={() => void togglePolicy()}
             >
               switch to {policy === "auto" ? "manual" : "auto"}
             </Button>
@@ -632,48 +937,57 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           </Alert>
         ) : null}
         <MarketplaceAccount isAdmin={isAdmin} />
-        {error ? <Alert severity="error">{error}</Alert> : null}
-        {notice ? <Alert severity="success">{notice}</Alert> : null}
+        {error ? (
+          <Alert severity="error" onClose={() => setError("")}>
+            {error}
+          </Alert>
+        ) : null}
+        {notice ? (
+          <Alert severity="success" onClose={() => setNotice("")}>
+            {notice}
+          </Alert>
+        ) : null}
 
-        <Typography variant="subtitle2">Installed</Typography>
-        {plugins.length === 0 ? (
-          <Typography variant="body2" color="textSecondary">
-            Nothing installed yet. Ask the agent to build a plugin, or install
-            one from the marketplace below.
-          </Typography>
-        ) : (
-          plugins.map((plugin) => (
-            <InstalledCard
-              key={plugin.id}
-              plugin={plugin}
-              busy={busy}
-              onToggle={(target) =>
-                void act(
-                  () =>
-                    api(
-                      `/api/plugins/installed/${encodeURIComponent(target.pluginId)}/${target.enabled ? "disable" : "enable"}`,
-                      { method: "POST" },
-                    ),
-                  `${target.pluginId} ${target.enabled ? "disabled" : "enabled"}`,
-                )
-              }
-              onRemove={(target) =>
-                void act(
-                  () =>
-                    api(
-                      `/api/plugins/installed/${encodeURIComponent(target.pluginId)}`,
-                      { method: "DELETE" },
-                    ),
-                  `${target.pluginId} removed`,
-                )
-              }
-              onSettings={setSettingsFor}
-            />
-          ))
-        )}
+        <Typography variant="subtitle2">
+          Installed ({plugins.length})
+        </Typography>
+        <InstalledTable
+          plugins={plugins}
+          loaded={loaded}
+          actionId={actionId}
+          page={installedPage}
+          rowsPerPage={installedRowsPerPage}
+          onPageChange={setInstalledPage}
+          onRowsPerPageChange={setInstalledRowsPerPage}
+          onToggle={(target) =>
+            void act(
+              target.pluginId,
+              () =>
+                api(
+                  `/api/plugins/installed/${encodeURIComponent(target.pluginId)}/${target.enabled ? "disable" : "enable"}`,
+                  { method: "POST" },
+                ),
+              `${target.pluginId} ${target.enabled ? "disabled" : "enabled"}`,
+            )
+          }
+          onRemove={(target) =>
+            void act(
+              target.pluginId,
+              () =>
+                api(
+                  `/api/plugins/installed/${encodeURIComponent(target.pluginId)}`,
+                  { method: "DELETE" },
+                ),
+              `${target.pluginId} removed`,
+            )
+          }
+          onSettings={setSettingsFor}
+        />
 
         <Divider />
-        <Typography variant="subtitle2">Marketplace</Typography>
+        <Typography variant="subtitle2">
+          Marketplace ({market.length})
+        </Typography>
         <Stack direction="row" spacing={1}>
           <TextField
             label="Search plugins"
@@ -686,58 +1000,38 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           />
           <Button
             variant="outlined"
-            disabled={busy}
+            disabled={marketLoading}
+            startIcon={
+              marketLoading ? <CircularProgress size={1} /> : undefined
+            }
             onClick={() => void loadMarket(query)}
           >
-            Search
+            {marketLoading ? "Searching…" : "Search"}
           </Button>
           <ToolTip title="Refresh">
             <IconButton
               aria-label="Refresh marketplace"
+              disabled={marketLoading}
               onClick={() => void loadMarket(query)}
             >
               <RefreshIcon />
             </IconButton>
           </ToolTip>
         </Stack>
-        {market.map((plugin) => (
-          <MarketRow
-            key={plugin.id}
-            plugin={plugin}
-            installed={installedIds.has(plugin.id)}
-            busy={busy}
-            onInstall={async (target) => {
-              setError("")
-              try {
-                const probe = await api<{
-                  needsConfirm?: boolean
-                  permissions?: string[]
-                  setupCommands?: string[]
-                }>("/api/plugins/install", {
-                  method: "POST",
-                  body: JSON.stringify({ pluginId: target.id }),
-                })
-                if (probe.needsConfirm) {
-                  setInstallTarget({
-                    id: target.id,
-                    name: target.name,
-                    version: target.version,
-                    permissions: probe.permissions ?? [],
-                    setupCommands: probe.setupCommands ?? [],
-                  })
-                  return
-                }
-                await refresh()
-                setNotice(`${target.id} installed`)
-              } catch (caught) {
-                setError(
-                  caught instanceof Error ? caught.message : "install failed",
-                )
-              }
-            }}
-          />
-        ))}
-        {!busy && market.length === 0 && configured ? (
+        {marketLoading ? <LinearProgress variant="indeterminate" /> : null}
+        <MarketTable
+          market={market}
+          loading={marketLoading}
+          installingId={installingId}
+          installedIds={installedIds}
+          page={marketPage}
+          rowsPerPage={marketRowsPerPage}
+          onPageChange={setMarketPage}
+          onRowsPerPageChange={setMarketRowsPerPage}
+          onInstall={(target) => void startInstall(target)}
+          onDiscuss={(target) => setDetailId(target.id)}
+        />
+        {!marketLoading && market.length === 0 && configured ? (
           <Typography variant="body2" color="textSecondary">
             No plugins found. Agents publish plugins with{" "}
             <code>ob-plugin publish</code>.
@@ -760,7 +1054,9 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           onClose={() => setInstallTarget(null)}
           onInstalled={() => {
             void refresh()
-            setNotice(`${installTarget.id} installed`)
+            const message = `${installTarget.id} installed`
+            setNotice(message)
+            setToast(message)
           }}
         />
       ) : null}
@@ -770,6 +1066,13 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           onClose={() => setSettingsFor(null)}
         />
       ) : null}
+      <Snackbar
+        open={toast != null}
+        autoHideDuration={4000}
+        onClose={() => setToast(null)}
+        position={mobile ? "bottom-center" : "bottom-left"}
+        message={toast ?? ""}
+      />
     </Box>
   )
 }
