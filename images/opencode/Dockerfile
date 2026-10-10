@@ -93,6 +93,9 @@ COPY images/opencode/sync-chromium.sh /opt/open-bot/sync-chromium.sh
 COPY images/opencode/record-apt.sh /opt/open-bot/record-apt.sh
 COPY images/opencode/restore-apt.sh /opt/open-bot/restore-apt.sh
 COPY images/opencode/apt-persist.conf /etc/apt/apt.conf.d/99open-bot-persist
+COPY images/opencode/preview-server.ts /opt/open-bot/preview-server.ts
+COPY images/opencode/preview-spawn.ts /opt/open-bot/preview-spawn.ts
+COPY images/opencode/ob-preview.sh /usr/local/bin/ob-preview
 COPY images/opencode/ob-vnc.sh /usr/local/bin/ob-vnc
 COPY images/opencode/ob-page.sh /usr/local/bin/ob-page
 COPY images/opencode/xcap.py /opt/open-bot/xcap.py
@@ -114,12 +117,12 @@ RUN if [ "$OPEN_BOT_DEV" = "1" ]; then \
     fi \
     && rm -f /tmp/ob-improve.sh
 RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
-     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset \
+     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/open-bot/preview-server.ts /opt/open-bot/preview-spawn.ts \
     && cp -a /usr/local /opt/image-usr-local \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset \
+      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview \
     && touch /opt/open-bot/instance
 
 USER root

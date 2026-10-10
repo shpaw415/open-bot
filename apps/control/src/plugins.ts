@@ -16,6 +16,11 @@ import {
 import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 import {
+  checkLocalPluginPath,
+  readLocalPluginFiles,
+  readLocalPluginManifest,
+} from "./plugin-local"
+import {
   applyPluginInstall,
   applyPluginUninstall,
   reapplyPluginConfig,
@@ -129,6 +134,8 @@ function publicInstalled(row: {
   manifest: Record<string, unknown>
   readme: string | null
   enabled: boolean
+  source?: "marketplace" | "local"
+  localPath?: string | null
   applied?: PluginAppliedLog
   createdAt: number
   updatedAt: number
@@ -150,6 +157,8 @@ function publicInstalled(row: {
     permissions: pluginPermissionSummary(manifest),
     setupCommands,
     init: row.applied?.init ?? null,
+    source: row.source === "local" ? "local" : "marketplace",
+    localPath: row.source === "local" ? (row.localPath ?? null) : null,
     manifest,
     readme: row.readme,
     createdAt: row.createdAt,
@@ -303,6 +312,60 @@ function parsePublishBody(body: Record<string, unknown>) {
   return result.manifest
 }
 
+async function installLocalPlugin(
+  db: Db,
+  user: User,
+  hub: { emit: (userId: string, event: { type: string }) => void },
+  rawPath: string,
+  confirm: boolean,
+  settings: Record<string, string> | undefined,
+) {
+  const checked = checkLocalPluginPath(rawPath)
+  if (!checked.ok) return json({ error: checked.error }, 400)
+  const loaded = await readLocalPluginManifest(user.id, checked.path)
+  const currentPolicy = policy(db)
+  if (currentPolicy === "manual" && !confirm) {
+    return json(
+      {
+        needsConfirm: true,
+        policy: currentPolicy,
+        local: true,
+        path: loaded.path,
+        permissions: pluginPermissionSummary(loaded.manifest),
+        setupCommands: loaded.manifest.setup?.commands ?? [],
+        name: loaded.manifest.name,
+        version: loaded.manifest.version,
+      },
+      409,
+    )
+  }
+  const files = await readLocalPluginFiles(
+    user.id,
+    loaded.path,
+    loaded.manifest,
+  )
+  const row = await applyPluginInstall(
+    db,
+    user,
+    {
+      id: loaded.manifest.id,
+      version: loaded.manifest.version,
+      status: "approved",
+      manifest: loaded.manifest,
+      readme: loaded.readme,
+      downloads: 0,
+    },
+    {
+      settings,
+      source: "local",
+      localPath: loaded.path,
+      files,
+    },
+  )
+  hub.emit(user.id, { type: "plugins.changed" })
+  return json({ plugin: publicInstalled(row) })
+}
+
 export function handlePlugins(
   req: Request,
   url: URL,
@@ -444,8 +507,49 @@ export function handlePlugins(
       .then(async (body: Record<string, unknown>) => {
         const pluginId = String(body.pluginId ?? "").trim()
         const version = String(body.version ?? "").trim()
+        const rawPath = String(body.path ?? "").trim()
+        const local = body.local === true
         const confirm = body.confirm === true
-        if (!pluginId) return json({ error: "pluginId is required" }, 400)
+        if (rawPath && pluginId) {
+          return json({ error: "pass pluginId or path, not both" }, 400)
+        }
+        if (rawPath && version) {
+          return json(
+            { error: "version cannot be set for a local install" },
+            400,
+          )
+        }
+        if (rawPath && local) {
+          return json({ error: "pass pluginId or path, not both" }, 400)
+        }
+        if (!rawPath && !pluginId) {
+          return json({ error: "pluginId or path is required" }, 400)
+        }
+        const settings =
+          body.settings && typeof body.settings === "object"
+            ? (body.settings as Record<string, string>)
+            : undefined
+        if (rawPath) {
+          return installLocalPlugin(db, user, hub, rawPath, confirm, settings)
+        }
+        if (local) {
+          const installed = db.installedPlugin(user.id, pluginId)
+          if (
+            !installed ||
+            installed.source !== "local" ||
+            !installed.localPath
+          ) {
+            return json({ error: "not a local plugin" }, 404)
+          }
+          return installLocalPlugin(
+            db,
+            user,
+            hub,
+            installed.localPath,
+            confirm,
+            settings,
+          )
+        }
         if (version && !PLUGIN_VERSION_PATTERN.test(version)) {
           return json(
             { error: "version must be semver or a dev tag (e.g. beta-1)" },
@@ -476,10 +580,6 @@ export function handlePlugins(
             403,
           )
         }
-        const settings =
-          body.settings && typeof body.settings === "object"
-            ? (body.settings as Record<string, string>)
-            : undefined
         const row = await applyPluginInstall(
           db,
           user,

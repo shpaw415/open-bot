@@ -94,6 +94,12 @@ import {
 } from "./personas"
 import { handlePlugins } from "./plugins"
 import {
+  mintPreviewToken,
+  PREVIEW_REPLY,
+  proxyPreview,
+  readPreviewPort,
+} from "./preview"
+import {
   projectDir,
   projectName,
   projectSubpath,
@@ -656,6 +662,8 @@ export function createServer(
         ) {
           return await termUpgrade(req, url, db, server)
         }
+        if (url.pathname.startsWith("/api/preview/frame/"))
+          return await proxyPreview(req, url, server)
         if (url.pathname.startsWith("/api/"))
           return await api(req, url, db, hub, () => server.timeout(req, 0))
         if (url.pathname.startsWith("/desktop/"))
@@ -1005,6 +1013,20 @@ async function api(
     if (inflight) await inflight.catch(() => {})
     await stopDesktop(user.id)
     return json({ phase: "sleeping" })
+  }
+  if (url.pathname === "/api/preview/frame" && req.method === "POST") {
+    const body = await readJson(req)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const root = await resolveRootSession(
+      base,
+      basic(desktop.opencodePassword),
+      String(body.sessionId ?? ""),
+    )
+    const port = await readPreviewPort(user.id, root)
+    if (port === null) return json({ error: "preview is not running" }, 404)
+    const minted = mintPreviewToken(user.id, root)
+    return json({ frameUrl: minted.frameUrl, expiresAt: minted.expiresAt })
   }
   if (url.pathname === "/api/desktop/screen" && req.method === "POST") {
     const body = await readJson(req)
@@ -2051,6 +2073,7 @@ async function api(
         IMAGE_REPLY,
         VIDEO_REPLY,
         MODEL3D_REPLY,
+        PREVIEW_REPLY,
         await resolveReferenceLine(db, user, text),
       ]
         .filter((item): item is string => Boolean(item))

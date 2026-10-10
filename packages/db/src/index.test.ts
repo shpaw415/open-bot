@@ -769,6 +769,19 @@ describe("plugin store", () => {
     })
     expect(updated?.version).toBe("1.1.0")
     expect(updated?.readme).toBe("# hi")
+    expect(updated?.source).toBe("marketplace")
+    expect(updated?.localPath).toBeNull()
+
+    const local = db.updateInstalledPlugin("a", "weather-pro", {
+      version: "1.1.0",
+      manifest: "{}",
+      readme: "# hi",
+      source: "local",
+      localPath: "/plugin/root",
+    })
+    expect(local?.source).toBe("local")
+    expect(local?.localPath).toBe("/plugin/root")
+    expect(db.installedPlugin("a", "weather-pro")?.source).toBe("local")
 
     db.setPluginSetting("a", "weather-pro", "units", "metric")
     expect(db.pluginSettings("a", "weather-pro")[0]?.value).toBe("metric")

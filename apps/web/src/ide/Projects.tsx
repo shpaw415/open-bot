@@ -12,7 +12,7 @@ import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useState } from "react"
 import { api } from "../api"
 import type { EventStream } from "../hooks"
 import { useMobile } from "../hooks"
@@ -40,8 +40,12 @@ function createdLabel(ms: number): string {
 
 export function Projects({
   subscribe,
+  threadBar,
+  onThreadDock,
 }: {
   subscribe?: EventStream["subscribe"]
+  threadBar?: ReactNode
+  onThreadDock?: (el: HTMLDivElement | null) => void
 }) {
   const mobile = useMobile()
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
@@ -121,6 +125,8 @@ export function Projects({
         <Ide
           project={selected}
           subscribe={subscribe}
+          threadBar={threadBar}
+          onThreadDock={onThreadDock}
           onBack={() => {
             setSelected(null)
             load()

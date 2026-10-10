@@ -107,6 +107,72 @@ describe("plugins router", () => {
     expect(await res?.json()).toMatchObject({ plugins: [], policy: "manual" })
   })
 
+  test("local install rejects a bad path and a missing local row", async () => {
+    const both = route("/api/plugins/install", "POST", {
+      pluginId: "weather-pro",
+      path: "/plugin/root",
+    })
+    const bothRes = await handlePlugins(both.req, both.url, db, user(), hub)
+    expect(bothRes?.status).toBe(400)
+    expect(await bothRes?.json()).toMatchObject({
+      error: "pass pluginId or path, not both",
+    })
+
+    const neither = route("/api/plugins/install", "POST", {})
+    const neitherRes = await handlePlugins(
+      neither.req,
+      neither.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(neitherRes?.status).toBe(400)
+
+    const relative = route("/api/plugins/install", "POST", {
+      path: "plugin/root",
+    })
+    const relativeRes = await handlePlugins(
+      relative.req,
+      relative.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(relativeRes?.status).toBe(400)
+    expect(await relativeRes?.json()).toMatchObject({
+      error: "path must be an absolute desktop path",
+    })
+
+    const traversal = route("/api/plugins/install", "POST", {
+      path: "/plugin/../root",
+    })
+    const traversalRes = await handlePlugins(
+      traversal.req,
+      traversal.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(traversalRes?.status).toBe(400)
+
+    const missing = route("/api/plugins/install", "POST", {
+      pluginId: "weather-pro",
+      local: true,
+      confirm: true,
+    })
+    const missingRes = await handlePlugins(
+      missing.req,
+      missing.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(missingRes?.status).toBe(404)
+    expect(await missingRes?.json()).toMatchObject({
+      error: "not a local plugin",
+    })
+  })
+
   test("install accepts dev tags and prereleases, rejects malformed versions", async () => {
     const bad = route("/api/plugins/install", "POST", {
       pluginId: "weather-pro",

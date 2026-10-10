@@ -311,6 +311,8 @@ export type PluginAppliedLog = {
   init?: { ranAt: number; ok: boolean; output: string }
 }
 
+export type InstalledPluginSource = "marketplace" | "local"
+
 export type InstalledPlugin = {
   id: string
   userId: string
@@ -319,6 +321,8 @@ export type InstalledPlugin = {
   manifest: Record<string, unknown>
   readme: string | null
   enabled: boolean
+  source: InstalledPluginSource
+  localPath: string | null
   applied: PluginAppliedLog
   createdAt: number
   updatedAt: number
@@ -382,6 +386,8 @@ function mapInstalledPlugin(
     manifest,
     readme: row.readme,
     enabled: row.enabled,
+    source: row.source === "local" ? "local" : "marketplace",
+    localPath: row.localPath ?? null,
     applied,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1450,12 +1456,24 @@ export function openDatabase(path: string) {
         .run()
     },
     createInstalledPlugin(
-      row: Omit<InstalledPlugin, "manifest" | "applied"> & {
+      row: Omit<
+        InstalledPlugin,
+        "manifest" | "applied" | "source" | "localPath"
+      > & {
         manifest: string
         applied?: string
+        source?: InstalledPluginSource
+        localPath?: string | null
       },
     ) {
-      orm.insert(installedPlugins).values(row).run()
+      orm
+        .insert(installedPlugins)
+        .values({
+          ...row,
+          source: row.source ?? "marketplace",
+          localPath: row.localPath ?? null,
+        })
+        .run()
     },
     installedPlugins(userId: string) {
       return orm
@@ -1502,12 +1520,27 @@ export function openDatabase(path: string) {
     updateInstalledPlugin(
       userId: string,
       pluginId: string,
-      changes: { version: string; manifest: string; readme: string | null },
+      changes: {
+        version: string
+        manifest: string
+        readme: string | null
+        source?: InstalledPluginSource
+        localPath?: string | null
+      },
     ) {
       if (!this.installedPlugin(userId, pluginId)) return null
       orm
         .update(installedPlugins)
-        .set({ ...changes, updatedAt: Date.now() })
+        .set({
+          version: changes.version,
+          manifest: changes.manifest,
+          readme: changes.readme,
+          ...(changes.source !== undefined ? { source: changes.source } : {}),
+          ...(changes.localPath !== undefined
+            ? { localPath: changes.localPath }
+            : {}),
+          updatedAt: Date.now(),
+        })
         .where(
           and(
             eq(installedPlugins.userId, userId),

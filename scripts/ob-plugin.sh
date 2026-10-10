@@ -16,7 +16,8 @@ Usage:
   ob-plugin publish DIR              publish the plugin to the marketplace (repo + release must exist)
   ob-plugin search [QUERY]           search the marketplace
   ob-plugin info ID                  marketplace details for one plugin
-  ob-plugin install ID [--version X] [--yes]   install a plugin (--version takes semver or a dev tag like beta-1; --yes skips the consent prompt)
+  ob-plugin install ID [--version X] [--yes]   install a marketplace plugin (--version takes semver or a dev tag like beta-1; --yes skips the consent prompt)
+  ob-plugin install --path DIR [--yes]   install a local plugin directory (shows as (local); reinstall re-reads DIR)
   ob-plugin list                     list installed plugins
   ob-plugin remove ID                uninstall a plugin
   ob-plugin enable ID | disable ID   toggle a plugin
@@ -44,6 +45,11 @@ Staging a release (dev tags):
   ob-plugin install NAME --version beta-1
   Dev tags stay out of marketplace search; republishing the same tag overwrites
   it, and reinstalling the pinned version updates the install in place.
+
+Local development (no publish):
+  ob-plugin install --path ~/plugins-create/NAME
+  The plugin appears in the installed list with (local) beside the name.
+  Re-install from this command or the Plugins page re-reads that directory.
 EOF
 }
 
@@ -110,10 +116,16 @@ case "$cmd" in
     cat > "$dir/README.md" <<EOF
 # $name
 
-open-bot plugin. Edit \`$MANIFEST_FILE\`, then:
+open-bot plugin. Edit \`$MANIFEST_FILE\`, then install it locally:
 
 \`\`\`sh
 ob-plugin validate ~/plugins-create/$name
+ob-plugin install --path ~/plugins-create/$name
+\`\`\`
+
+Publish when it is ready:
+
+\`\`\`sh
 git init -b main && git add -A && git commit -m "v0.1.0"
 gh repo create $repo_hint --public --source . --push
 gh release create v0.1.0 -R $repo_hint --notes "First release"
@@ -212,21 +224,47 @@ EOF
     printf '%s' "$out" | jq '{id: .plugin.id, name: .plugin.name, version: .plugin.version, status: .plugin.status, description: .plugin.description, author: .plugin.author, repo: .plugin.repo, category: .plugin.category, tags: .plugin.tags, downloads: .plugin.downloads, versions: [.versions[].version | . + (if test("^[0-9]+\\.[0-9]+\\.[0-9]+$") then "" else " (dev)" end)]}'
     ;;
   install)
-    [ $# -ge 1 ] || { usage; exit 2; }
-    id="$1"
-    shift
+    path=""
+    id=""
     version=""
     yes=0
     while [ $# -gt 0 ]; do
       case "$1" in
+        --path) [ $# -ge 2 ] || { usage; exit 2; }; path="$2"; shift 2 ;;
         --version) [ $# -ge 2 ] || { usage; exit 2; }; version="$2"; shift 2 ;;
         --yes) yes=1; shift ;;
-        *) echo "unknown option: $1" >&2; usage; exit 2 ;;
+        -*) echo "unknown option: $1" >&2; usage; exit 2 ;;
+        *)
+          if [ -n "$id" ]; then
+            echo "ob-plugin: unexpected argument: $1" >&2
+            usage
+            exit 2
+          fi
+          id="$1"
+          shift
+          ;;
       esac
     done
-    version_json="null"
-    [ -n "$version" ] && version_json=$(jq -Rn --arg v "$version" '$v')
-    body=$(jq -n --arg id "$id" --argjson v "$version_json" --argjson confirm "$([ "$yes" -eq 1 ] && echo true || echo false)" '{pluginId: $id, version: $v, confirm: $confirm}')
+    if [ -n "$path" ] && { [ -n "$id" ] || [ -n "$version" ]; }; then
+      echo "ob-plugin: --path cannot be combined with an id or --version" >&2
+      exit 2
+    fi
+    if [ -z "$path" ] && [ -z "$id" ]; then
+      usage
+      exit 2
+    fi
+    confirm=false
+    [ "$yes" -eq 1 ] && confirm=true
+    if [ -n "$path" ]; then
+      [ -d "$path" ] || { echo "ob-plugin: not a directory: $path" >&2; exit 2; }
+      [ -f "$path/$MANIFEST_FILE" ] || { echo "ob-plugin: missing $path/$MANIFEST_FILE" >&2; exit 2; }
+      abs=$(realpath "$path") || { echo "ob-plugin: cannot resolve $path" >&2; exit 2; }
+      body=$(jq -n --arg path "$abs" --argjson confirm "$confirm" '{path: $path, confirm: $confirm}')
+    else
+      version_json="null"
+      [ -n "$version" ] && version_json=$(jq -Rn --arg v "$version" '$v')
+      body=$(jq -n --arg id "$id" --argjson v "$version_json" --argjson confirm "$confirm" '{pluginId: $id, version: $v, confirm: $confirm}')
+    fi
     out=$(request POST /api/plugins/install "$body")
     fail_on_error "$out"
     if printf '%s' "$out" | jq -e '.needsConfirm == true' >/dev/null 2>&1; then
@@ -240,19 +278,23 @@ EOF
       read -r answer
       case "$answer" in
         y|Y|yes|Yes)
-          body=$(jq -n --arg id "$id" --argjson v "$version_json" '{pluginId: $id, version: $v, confirm: true}')
+          if [ -n "$path" ]; then
+            body=$(jq -n --arg path "$abs" '{path: $path, confirm: true}')
+          else
+            body=$(jq -n --arg id "$id" --argjson v "$version_json" '{pluginId: $id, version: $v, confirm: true}')
+          fi
           out=$(request POST /api/plugins/install "$body")
           fail_on_error "$out"
           ;;
         *) echo "cancelled"; exit 1 ;;
       esac
     fi
-    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, name: .plugin.name}'
+    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, name: .plugin.name, source: (.plugin.source // "marketplace")}'
     ;;
   list)
     out=$(request GET /api/plugins/installed)
     fail_on_error "$out"
-    printf '%s' "$out" | jq -r '.plugins[] | "- \(.pluginId) v\(.version)\(if .enabled then "" else " (disabled)" end) \(.name) — \(.description)"'
+    printf '%s' "$out" | jq -r '.plugins[] | "- \(.pluginId) v\(.version)\(if .source == "local" then " (local)" else "" end)\(if .enabled then "" else " (disabled)" end) \(.name) — \(.description)"'
     ;;
   remove)
     [ $# -eq 1 ] || { usage; exit 2; }

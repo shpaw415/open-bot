@@ -273,6 +273,8 @@ export const installedPlugins = sqliteTable(
     readme: text("readme"),
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     applied: text("applied").notNull().default("{}"),
+    source: text("source").notNull().default("marketplace"),
+    localPath: text("local_path"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

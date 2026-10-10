@@ -71,7 +71,7 @@ export function speakableText(input: string): string {
   const text = splitPluginCards(input)
     .map((segment) => (segment.kind === "text" ? (segment.text ?? "") : ""))
     .join("\n\n")
-  const clean = splitScreenHandoff(text)
+  const clean = splitPreview(splitScreenHandoff(text).text)
     .text.replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
@@ -90,11 +90,16 @@ export function speakableText(input: string): string {
 const SCREEN_IMAGE = /!\[[^\]]*\]\(open-bot:\/\/screen\)/g
 const SCREEN_LINK = /\[[^\]]*\]\(open-bot:\/\/screen\)/g
 const SCREEN_LINE = /(^|\n)\s*open-bot:\/\/screen\s*(?=\n|$)/g
+const PREVIEW_IMAGE = /!\[[^\]]*\]\(open-bot:\/\/preview(\/[^)\s]*)?\)/g
+const PREVIEW_LINK = /\[[^\]]*\]\(open-bot:\/\/preview(\/[^)\s]*)?\)/g
+const PREVIEW_LINE = /(^|\n)\s*open-bot:\/\/preview(\/[^\s]*)?\s*(?=\n|$)/g
 
 export type VisibleMessage = ChatMessage & {
   text: string
   images: string[]
   handoff: boolean
+  preview: boolean
+  previewPath: string
   sentAt: number | null
 }
 
@@ -129,6 +134,53 @@ export function handoffStamp(message: {
   sentAt: number | null
 }): string {
   return `${message.sentAt ?? 0}:${message.text.slice(0, 80)}`
+}
+
+export function previewPath(raw: string): string {
+  if (!raw || raw === "/") return "/"
+  if (
+    raw.includes("..") ||
+    raw.includes("\\") ||
+    raw.includes("?") ||
+    raw.includes("#")
+  )
+    return "/"
+  if (!raw.startsWith("/")) return "/"
+  return raw
+}
+
+export function previewFrameSrc(frameUrl: string, path: string): string {
+  if (!frameUrl.startsWith("/api/preview/frame/")) return ""
+  const base = frameUrl.endsWith("/") ? frameUrl : `${frameUrl}/`
+  const rest = path.startsWith("/") ? path.slice(1) : path
+  if (rest.includes("..") || rest.includes("\\")) return base
+  return `${base}${rest}`
+}
+
+export function showLivePreview(input: {
+  preview: boolean
+  isLast: boolean
+}): boolean {
+  return input.preview && input.isLast
+}
+
+export function splitPreview(text: string): {
+  text: string
+  preview: boolean
+  path: string
+} {
+  const found = text.match(/open-bot:\/\/preview(\/[^\s)]*)?/)
+  if (!found) return { text, preview: false, path: "" }
+  const stripped = text
+    .replace(PREVIEW_IMAGE, "")
+    .replace(PREVIEW_LINK, "")
+    .replace(PREVIEW_LINE, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+  PREVIEW_IMAGE.lastIndex = 0
+  PREVIEW_LINK.lastIndex = 0
+  PREVIEW_LINE.lastIndex = 0
+  return { text: stripped, preview: true, path: previewPath(found[1] ?? "") }
 }
 
 export function vncFrameSrc(path: string, interactive: boolean): string {
@@ -307,13 +359,22 @@ export function visibleMessages(
         media,
       ),
     )
+    const preview = splitPreview(parsed.text)
     const images = visibleImages(message, media)
-    if (!parsed.text.trim() && images.length === 0 && !parsed.handoff) continue
+    if (
+      !preview.text.trim() &&
+      images.length === 0 &&
+      !parsed.handoff &&
+      !preview.preview
+    )
+      continue
     out.push({
       ...message,
-      text: parsed.text,
+      text: preview.text,
       images,
       handoff: parsed.handoff,
+      preview: preview.preview,
+      previewPath: preview.path,
       sentAt: messageSentAt(message),
     })
   }
@@ -544,6 +605,8 @@ export function threadBubbles(
         info: { ...message.info, role: "assistant" },
         text: result,
         images: [...message.images],
+        preview: message.preview,
+        previewPath: message.previewPath,
       }
       burstAt.set(bubble, bubble.sentAt)
       out.push(bubble)
@@ -565,6 +628,8 @@ export function threadBubbles(
       }
       prev.images = [...prev.images, ...message.images]
       prev.handoff = prev.handoff || message.handoff
+      prev.preview = prev.preview || message.preview
+      if (message.previewPath) prev.previewPath = message.previewPath
       if (prev.sentAt == null && message.sentAt != null)
         prev.sentAt = message.sentAt
       if (message.sentAt != null) burstAt.set(prev, message.sentAt)
@@ -575,6 +640,8 @@ export function threadBubbles(
       text: message.text,
       images: [...message.images],
       handoff: message.handoff,
+      preview: message.preview,
+      previewPath: message.previewPath,
     }
     burstAt.set(bubble, bubble.sentAt)
     out.push(bubble)

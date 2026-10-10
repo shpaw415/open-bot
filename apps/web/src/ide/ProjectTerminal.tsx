@@ -6,8 +6,21 @@ import type { ProjectInfo } from "./types"
  * One xterm session backed by a PTY in the desktop container, opened in the
  * project directory (/api/projects/<id>/terminal).
  */
-export function ProjectTerminal({ project }: { project: ProjectInfo }) {
+export function ProjectTerminal({
+  project,
+  active = true,
+}: {
+  project: ProjectInfo
+  active?: boolean
+}) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const fitRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    if (active) fitRef.current?.()
+  }, [active])
 
   useEffect(() => {
     const host = hostRef.current
@@ -18,12 +31,14 @@ export function ProjectTerminal({ project }: { project: ProjectInfo }) {
     let disposed = false
 
     const fitHost = () => {
+      if (!activeRef.current) return
       try {
         fit?.fit()
       } catch {
         // host not laid out yet
       }
     }
+    fitRef.current = fitHost
     const observer = new ResizeObserver(() => fitHost())
     observer.observe(host)
 
@@ -115,6 +130,7 @@ export function ProjectTerminal({ project }: { project: ProjectInfo }) {
 
     return () => {
       disposed = true
+      fitRef.current = null
       observer.disconnect()
       ws?.close()
       term?.dispose()

@@ -4,8 +4,11 @@ import {
   embedWorkspaceImages,
   mediaKey,
   pinMediaUrls,
+  previewFrameSrc,
+  showLivePreview,
   speakableText,
   splitPluginCards,
+  splitPreview,
   transcriptBubbles,
   turnError,
   visibleMessages,
@@ -251,6 +254,7 @@ test("speakableText keeps prose and drops non-speech content", () => {
   )
   expect(speakableText("run `npm test` now")).toBe("run npm test now")
   expect(speakableText("![screen](open-bot://screen)")).toBe("")
+  expect(speakableText("Here.\n\n![design](open-bot://preview)")).toBe("Here.")
   expect(speakableText("[docs](https://example.com) page")).toBe("docs page")
   expect(speakableText("![pic](/home/agent/workspace/a.png)")).toBe("")
   expect(speakableText('```plugin-card\n{"plugin":"x"}\n```')).toBe("")
@@ -258,4 +262,36 @@ test("speakableText keeps prose and drops non-speech content", () => {
     "Heading one two quoted",
   )
   expect(speakableText("a\n\nb").length).toBeGreaterThan(0)
+})
+
+test("a preview marker embeds the latest page and strips the url", () => {
+  expect(splitPreview("Look.\n\n![design](open-bot://preview/about)")).toEqual({
+    text: "Look.",
+    preview: true,
+    path: "/about",
+  })
+  expect(splitPreview("see open-bot://other")).toEqual({
+    text: "see open-bot://other",
+    preview: false,
+    path: "",
+  })
+  const bubbles = visibleMessages([
+    {
+      info: { role: "assistant" },
+      parts: [{ type: "text", text: "First.\n\nopen-bot://preview" }],
+    },
+    {
+      info: { role: "assistant" },
+      parts: [{ type: "text", text: "![site](open-bot://preview/pricing)" }],
+    },
+  ])
+  expect(bubbles[0]?.preview).toBe(true)
+  expect(bubbles[0]?.text).not.toContain("open-bot://preview")
+  expect(bubbles[1]?.previewPath).toBe("/pricing")
+  expect(showLivePreview({ preview: true, isLast: false })).toBe(false)
+  expect(showLivePreview({ preview: true, isLast: true })).toBe(true)
+  expect(previewFrameSrc("/api/preview/frame/tok/", "/pricing")).toBe(
+    "/api/preview/frame/tok/pricing",
+  )
+  expect(previewFrameSrc("https://evil.example/", "/")).toBe("")
 })

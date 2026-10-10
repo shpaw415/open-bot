@@ -54,6 +54,8 @@ export type InstalledPluginInfo = {
   author: string
   repo: string
   enabled: boolean
+  source?: "marketplace" | "local"
+  localPath?: string | null
   permissions: string[]
   setupCommands?: string[]
   init?: { ranAt: number; ok: boolean; output: string } | null

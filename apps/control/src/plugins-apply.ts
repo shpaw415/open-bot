@@ -21,6 +21,7 @@ import {
   syncPluginTools,
 } from "./docker"
 import { extractPluginFiles, fetchPluginArtifact } from "./plugin-artifact"
+import { readLocalPluginFiles } from "./plugin-local"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
@@ -50,6 +51,9 @@ export type MarketplaceEntry = {
 
 export type PluginInstallOptions = {
   settings?: Record<string, string>
+  source?: "marketplace" | "local"
+  localPath?: string | null
+  files?: PluginToolFile[]
 }
 
 export async function ensureAgentDesktop(user: User, db: Db) {
@@ -136,6 +140,11 @@ export async function applyPluginInstall(
   const existing = db.installedPlugin(user.id, manifest.id)
   const previous = existing?.applied
   const reusedPersonaIds: string[] = []
+  const source = options.source === "local" ? "local" : "marketplace"
+  const localPath = source === "local" ? (options.localPath ?? null) : null
+  if (source === "local" && !localPath) {
+    throw new Error("local install is missing a path")
+  }
   const applied: PluginAppliedLog = {
     personaIds: [],
     cronJobIds: [],
@@ -243,9 +252,13 @@ export async function applyPluginInstall(
       }
     }
 
+    const payloadFiles =
+      options.files !== undefined
+        ? options.files
+        : await resolvePluginFiles(db, manifest.id, entry.version, manifest)
     const toolFiles: PluginToolFile[] = [
       ...inlineToolFiles(manifest),
-      ...(await resolvePluginFiles(db, manifest.id, entry.version, manifest)),
+      ...payloadFiles,
     ]
     if (toolFiles.length > 0) {
       await syncPluginTools(user.id, manifest.id, toolFiles)
@@ -329,6 +342,8 @@ export async function applyPluginInstall(
       version: entry.version,
       manifest: JSON.stringify(manifest),
       readme: entry.readme ?? existing.readme,
+      source,
+      localPath,
     })
   } else {
     db.createInstalledPlugin({
@@ -339,6 +354,8 @@ export async function applyPluginInstall(
       manifest: JSON.stringify(manifest),
       readme: entry.readme,
       enabled: true,
+      source,
+      localPath,
       applied: "{}",
       createdAt: now,
       updatedAt: now,
@@ -484,12 +501,10 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
     }
     if ((manifest.files?.length ?? 0) > 0) {
       try {
-        const files = await resolvePluginFiles(
-          db,
-          row.pluginId,
-          row.version,
-          manifest,
-        )
+        const files =
+          row.source === "local" && row.localPath
+            ? await readLocalPluginFiles(userId, row.localPath, manifest)
+            : await resolvePluginFiles(db, row.pluginId, row.version, manifest)
         await syncPluginTools(userId, row.pluginId, files)
       } catch (error) {
         console.error(

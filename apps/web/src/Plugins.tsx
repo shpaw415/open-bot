@@ -65,11 +65,21 @@ function isDevVersion(version: string): boolean {
 function PluginHeader({
   plugin,
 }: {
-  plugin: { name: string; pluginId: string; version: string }
+  plugin: {
+    name: string
+    pluginId: string
+    version: string
+    source?: "marketplace" | "local"
+  }
 }) {
   return (
     <Stack direction="row" spacing={1} alignItems="baseline">
       <Typography variant="subtitle2">{plugin.name}</Typography>
+      {plugin.source === "local" ? (
+        <Typography variant="caption" color="textSecondary">
+          (local)
+        </Typography>
+      ) : null}
       <Typography variant="caption" color="textSecondary">
         {plugin.pluginId} · v{plugin.version}
       </Typography>
@@ -375,9 +385,11 @@ function InstalledTable({
                       >
                         <ToolTip
                           title={
-                            isDevVersion(plugin.version)
-                              ? `Re-install v${plugin.version} — re-pull the release and re-run setup to pick up republished dev fixes`
-                              : `Re-install v${plugin.version} — re-pull the release and re-run setup`
+                            plugin.source === "local"
+                              ? `Re-install from ${plugin.localPath ?? "the local path"} — re-read the directory and re-run setup`
+                              : isDevVersion(plugin.version)
+                                ? `Re-install v${plugin.version} — re-pull the release and re-run setup to pick up republished dev fixes`
+                                : `Re-install v${plugin.version} — re-pull the release and re-run setup`
                           }
                         >
                           <IconButton
@@ -1110,11 +1122,19 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
               () =>
                 api("/api/plugins/install", {
                   method: "POST",
-                  body: JSON.stringify({
-                    pluginId: target.pluginId,
-                    version: target.version,
-                    confirm: true,
-                  }),
+                  body: JSON.stringify(
+                    target.source === "local"
+                      ? {
+                          pluginId: target.pluginId,
+                          local: true,
+                          confirm: true,
+                        }
+                      : {
+                          pluginId: target.pluginId,
+                          version: target.version,
+                          confirm: true,
+                        },
+                  ),
                 }),
               `${target.pluginId} re-installed (v${target.version})`,
             )

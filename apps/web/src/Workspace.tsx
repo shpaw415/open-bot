@@ -21,7 +21,17 @@ import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  memo,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+import { createPortal } from "react-dom"
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
@@ -42,9 +52,11 @@ import {
   modelActivity,
   nearBottom,
   type PluginCardBlock,
+  previewFrameSrc,
   type SendReceipt,
   type SendStatus,
   samePayload,
+  showLivePreview,
   showLiveScreen,
   speakableText,
   splitPluginCards,
@@ -68,6 +80,7 @@ import {
   BlockIcon,
   ChatIcon,
   CheckCircleIcon,
+  CloseIcon,
   ComputerIcon,
   DeleteIcon,
   EditIcon,
@@ -103,6 +116,12 @@ import {
   THREAD_KEY,
 } from "./notify"
 import type { PersonaInfo } from "./Personalities"
+import {
+  clampPreviewWidth,
+  PreviewEmbed,
+  PreviewOverlay,
+  PreviewPane,
+} from "./PreviewView"
 import {
   type PluginCardSpec,
   PluginCards,
@@ -411,6 +430,80 @@ function threadTitle(session: SessionInfo): string {
   return session.title?.trim() || "New thread"
 }
 
+function Dock({
+  target,
+  children,
+}: {
+  target: HTMLElement | null
+  children: ReactNode
+}) {
+  if (target) return createPortal(children, target)
+  return children
+}
+
+function IdeThreadBar({
+  sessions,
+  sessionId,
+  actionBusy,
+  onSelect,
+  onCreate,
+}: {
+  sessions: SessionInfo[]
+  sessionId: string
+  actionBusy: boolean
+  onSelect: (id: string) => void
+  onCreate: () => void
+}) {
+  return (
+    <Stack
+      direction="row"
+      spacing={0.5}
+      alignItems="center"
+      sx={{
+        px: 1,
+        py: 0.5,
+        flexShrink: 0,
+        borderBottom: "1px solid",
+        borderColor: "divider",
+        bgcolor: "background.paper",
+      }}
+    >
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Select
+          name="ide-thread"
+          label="Thread"
+          value={sessionId}
+          disabled={actionBusy || sessions.length === 0}
+          onSelect={(id) => {
+            if (id) onSelect(id)
+          }}
+        >
+          {[
+            <option key="none" value="">
+              {sessions.length === 0 ? "No threads yet" : "Select a thread"}
+            </option>,
+            ...sessions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {threadTitle(item)}
+              </option>
+            )),
+          ]}
+        </Select>
+      </Box>
+      <ToolTip title="New thread">
+        <IconButton
+          size="small"
+          aria-label="New thread"
+          disabled={actionBusy}
+          onClick={onCreate}
+        >
+          <AddIcon width={18} height={18} />
+        </IconButton>
+      </ToolTip>
+    </Stack>
+  )
+}
+
 function formatAgo(ts: number): string {
   if (!ts) return ""
   const minutes = Math.round((Date.now() - ts) / 60_000)
@@ -491,6 +584,11 @@ type BubbleViewProps = {
   renderers: Map<string, PluginRenderer>
   onTakeControl: () => void
   onScreenDone: () => void
+  onOpenPreview: () => void
+  previewLive: boolean
+  previewOpened: boolean
+  previewSrc: string
+  previewError: string
   onSpeak: (key: string, text: string) => void
   onStopSpeak: () => void
 }
@@ -514,6 +612,11 @@ const MessageBubble = memo(function MessageBubble({
   renderers,
   onTakeControl,
   onScreenDone,
+  onOpenPreview,
+  previewLive,
+  previewOpened,
+  previewSrc,
+  previewError,
   onSpeak,
   onStopSpeak,
 }: BubbleViewProps) {
@@ -589,6 +692,29 @@ const MessageBubble = memo(function MessageBubble({
                 </Button>
               </Stack>
             ) : null}
+          </div>
+        ) : null}
+        {message.preview ? (
+          <div className="ob-preview-note">
+            {!previewLive ? (
+              <Typography variant="body2" color="textSecondary">
+                Preview is in a later reply.
+              </Typography>
+            ) : previewOpened ? (
+              <Typography variant="body2" color="textSecondary">
+                Preview is open.
+              </Typography>
+            ) : !running ? (
+              <Typography variant="body2" color="textSecondary">
+                Start the desktop to view this preview.
+              </Typography>
+            ) : previewSrc ? (
+              <PreviewEmbed src={previewSrc} onOpen={onOpenPreview} />
+            ) : (
+              <Typography variant="body2" color="textSecondary">
+                {previewError || "Opening preview…"}
+              </Typography>
+            )}
           </div>
         ) : null}
       </div>
@@ -1598,6 +1724,10 @@ export function Workspace({ me }: { me: Me }) {
   const [phase, setPhase] = useState<Phase>(me.desktop ?? "sleeping")
   const [stopping, setStopping] = useState(false)
   const [tab, setTab] = useState("chat")
+  const [threadDock, setThreadDock] = useState<HTMLDivElement | null>(null)
+  const onThreadDock = useCallback((el: HTMLDivElement | null) => {
+    setThreadDock((current) => (current === el ? current : el))
+  }, [])
   const [error, setError] = useState("")
   const [projectList, setProjectList] = useState<ProjectMention[]>([])
   const projectsRequestedRef = useRef(false)
@@ -1647,6 +1777,20 @@ export function Workspace({ me }: { me: Me }) {
   const [held, setHeld] = useState(false)
   const [holdOrigin, setHoldOrigin] = useState<"desktop" | "chat">("chat")
   const [dismissedHandoff, setDismissedHandoff] = useState("")
+  const [previewMode, setPreviewMode] = useState<"closed" | "pane" | "overlay">(
+    "closed",
+  )
+  const [previewWidth, setPreviewWidth] = useState(() => {
+    const raw = Number(sessionStorage.getItem("ob-preview-width"))
+    return Number.isFinite(raw) && raw >= 280 ? raw : 520
+  })
+  const [previewFrame, setPreviewFrame] = useState<{ frameUrl: string } | null>(
+    null,
+  )
+  const [previewError, setPreviewError] = useState("")
+  const previewRowRef = useRef<HTMLDivElement>(null)
+  const previewPaneRef = useRef<HTMLDivElement>(null)
+  const widthRef = useRef(previewWidth)
   const [controlBusy, setControlBusy] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([])
   const [cronBusyId, setCronBusyId] = useState("")
@@ -1791,6 +1935,10 @@ export function Workspace({ me }: { me: Me }) {
     [messages, receipts, sessionId, mediaMap],
   )
   const turnIssue = useMemo(() => turnError(messages), [messages])
+  const [dismissedTurnId, setDismissedTurnId] = useState("")
+  const turnIssueKey = turnIssue ? turnIssue.messageId || turnIssue.detail : ""
+  const visibleTurnIssue =
+    turnIssue && turnIssueKey !== dismissedTurnId ? turnIssue : null
   const activity = modelActivity({
     phase: stopping ? "sleeping" : phase,
     sending,
@@ -1910,6 +2058,7 @@ export function Workspace({ me }: { me: Me }) {
   )
   useEffect(() => {
     if (!turnIssue?.retryable || !turnIssue.messageId) return
+    if (turnIssueKey === dismissedTurnId) return
     if (!sessionId || !running || sending || stopping) return
     if (threadBusy(sessionId)) return
     if (resumeTriedRef.current === turnIssue.messageId) return
@@ -1924,6 +2073,8 @@ export function Workspace({ me }: { me: Me }) {
   }, [
     turnIssue?.messageId,
     turnIssue?.retryable,
+    turnIssueKey,
+    dismissedTurnId,
     sessionId,
     running,
     sending,
@@ -1964,6 +2115,21 @@ export function Workspace({ me }: { me: Me }) {
       ),
     [shown],
   )
+  const lastPreview = useMemo(
+    () =>
+      shown.reduce(
+        (at, item, index) => (item.message.preview ? index : at),
+        -1,
+      ),
+    [shown],
+  )
+  const previewSrc =
+    previewFrame && lastPreview >= 0
+      ? previewFrameSrc(
+          previewFrame.frameUrl,
+          shown[lastPreview]?.message.previewPath || "/",
+        )
+      : ""
   const screenLive = screen?.sessionId === sessionId
   // a draft typed before any thread existed, handed to the composer on mount
   const migrateDraft =
@@ -1974,11 +2140,13 @@ export function Workspace({ me }: { me: Me }) {
   const bubbleActionsRef = useRef({
     takeControl: () => {},
     screenDone: () => {},
+    openPreview: () => {},
   })
   const bubbleActions = useMemo(
     () => ({
       takeControl: () => bubbleActionsRef.current.takeControl(),
       screenDone: () => bubbleActionsRef.current.screenDone(),
+      openPreview: () => bubbleActionsRef.current.openPreview(),
     }),
     [],
   )
@@ -1999,6 +2167,13 @@ export function Workspace({ me }: { me: Me }) {
   bubbleActionsRef.current = {
     takeControl: () => void takeControl(),
     screenDone: () => void prompt("Done on the screen."),
+    openPreview: () => {
+      const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
+      const next = clampPreviewWidth(widthRef.current, parent)
+      widthRef.current = next
+      setPreviewWidth(next)
+      setPreviewMode(mobile ? "overlay" : "pane")
+    },
   }
   threadActionsRef.current = {
     select: selectThread,
@@ -2423,6 +2598,71 @@ export function Workspace({ me }: { me: Me }) {
   }, [tab, running, sessionId, desktopKey])
 
   const needsScreen = shown.some((entry) => entry.message.handoff)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: close the pane when the thread changes
+  useEffect(() => {
+    setPreviewMode("closed")
+    setPreviewFrame(null)
+    setPreviewError("")
+  }, [sessionId])
+  useEffect(() => {
+    if (previewMode === "pane" && mobile) setPreviewMode("overlay")
+    if (previewMode === "overlay" && !mobile) setPreviewMode("pane")
+  }, [mobile, previewMode])
+  useEffect(() => {
+    if (previewMode === "closed") return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || document.fullscreenElement) return
+      setPreviewMode("closed")
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [previewMode])
+  useEffect(() => {
+    if (!running || !sessionId || lastPreview < 0) {
+      setPreviewFrame(null)
+      return
+    }
+    if (tab !== "chat") return
+    let cancelled = false
+    let attempt = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = async () => {
+      try {
+        const next = await api<{ frameUrl: string }>("/api/preview/frame", {
+          method: "POST",
+          body: JSON.stringify({ sessionId }),
+        })
+        if (cancelled) return
+        setPreviewFrame(next)
+        setPreviewError("")
+      } catch (caught) {
+        if (cancelled) return
+        attempt += 1
+        if (attempt < 5) {
+          timer = setTimeout(() => void load(), 1000)
+          return
+        }
+        setPreviewFrame(null)
+        setPreviewError(
+          caught instanceof Error
+            ? caught.message
+            : "could not open the preview",
+        )
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [running, sessionId, lastPreview, tab])
+  useEffect(() => {
+    if (!previewSrc) return
+    const timer = setInterval(() => {
+      void fetch(previewSrc, { method: "HEAD" }).catch(() => {})
+    }, 60_000)
+    return () => clearInterval(timer)
+  }, [previewSrc])
   useEffect(() => {
     if (tab === "desktop" || !running || !sessionId || !needsScreen) return
     let cancelled = false
@@ -2558,6 +2798,7 @@ export function Workspace({ me }: { me: Me }) {
       },
     ])
     setError("")
+    if (turnIssue) setDismissedTurnId(turnIssue.messageId || turnIssue.detail)
     stickRef.current = true
     setSending(true)
     try {
@@ -3037,6 +3278,41 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
+  function onPreviewDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startW = widthRef.current
+    const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
+    document.body.classList.add("ob-preview-dragging")
+    const move = (next: PointerEvent) => {
+      const width = clampPreviewWidth(startW - (next.clientX - startX), parent)
+      widthRef.current = width
+      setPreviewWidth(width)
+    }
+    const up = () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", up)
+      document.body.classList.remove("ob-preview-dragging")
+      sessionStorage.setItem("ob-preview-width", String(widthRef.current))
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", up)
+  }
+
+  function openPreviewFullscreen() {
+    const el = previewPaneRef.current
+    if (!el?.requestFullscreen) {
+      setPreviewMode("overlay")
+      return
+    }
+    void el.requestFullscreen().catch(() => setPreviewMode("overlay"))
+  }
+
+  function closePreview() {
+    if (document.fullscreenElement) void document.exitFullscreen()
+    setPreviewMode("closed")
+  }
+
   const phaseColor = stopping
     ? "warning"
     : phase === "running"
@@ -3044,6 +3320,19 @@ export function Workspace({ me }: { me: Me }) {
       : phase === "starting"
         ? "warning"
         : undefined
+  const threadBar = useMemo(
+    () => (
+      <IdeThreadBar
+        sessions={sessions}
+        sessionId={sessionId}
+        actionBusy={actionBusy}
+        onSelect={threadActions.select}
+        onCreate={threadActions.create}
+      />
+    ),
+    [actionBusy, sessionId, sessions, threadActions],
+  )
+  const chatDocked = tab === "projects" && threadDock !== null
 
   return (
     <ProjectRefsContext.Provider value={projectList}>
@@ -3174,6 +3463,7 @@ export function Workspace({ me }: { me: Me }) {
             </Stack>
           ) : null}
           <Box
+            ref={previewRowRef}
             sx={{
               flex: 1,
               minHeight: 0,
@@ -3196,279 +3486,324 @@ export function Workspace({ me }: { me: Me }) {
                 actions={threadActions}
               />
             ) : null}
-            <Paper
-              variant="outlined"
-              sx={{
-                flex: 1,
-                minWidth: 0,
-                minHeight: 0,
-                display: mobile && running && threadsOpen ? "none" : "flex",
-                flexDirection: "column",
-              }}
-            >
-              {sessionId && !mobile ? (
-                <Typography
-                  variant="caption"
-                  color="textSecondary"
-                  sx={{ px: 1.5, pt: 0.75 }}
-                >
-                  {personaName(threadPersona[sessionId])}
-                </Typography>
-              ) : null}
-              {stopping ? (
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  className="ob-status-row"
-                  sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
-                >
-                  <CircularProgress size={1.2} />
-                  <Typography variant="caption" color="textSecondary">
-                    Stopping the desktop…
-                  </Typography>
-                </Stack>
-              ) : activity ? (
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  className="ob-status-row"
-                  sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
-                >
-                  {mobile ? null : (
-                    <Typography variant="caption" color="textSecondary">
-                      Model
-                    </Typography>
-                  )}
-                  <Chip
-                    size="small"
-                    color={
-                      activity === "done"
-                        ? "success"
-                        : activity === "initialize"
-                          ? "warning"
-                          : "primary"
-                    }
-                  >
-                    {ACTIVITY_LABEL[activity]}
-                  </Chip>
-                  {activity === "done" ? null : <CircularProgress size={1.2} />}
-                  {canStop ? (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="error"
-                      startIcon={<StopIcon width={16} height={16} />}
-                      disabled={stopBusy}
-                      onClick={() => void stopThread()}
-                      sx={{ ml: "auto" }}
-                    >
-                      Stop
-                    </Button>
-                  ) : null}
-                </Stack>
-              ) : null}
-              {stopping || activity ? <Divider /> : null}
-              <Box
-                className="ob-chat-log"
-                ref={outputRef}
-                onScroll={() => {
-                  const el = outputRef.current
-                  if (!el) return
-                  stickRef.current = nearBottom(
-                    el.scrollHeight,
-                    el.scrollTop,
-                    el.clientHeight,
-                  )
+            <Dock target={chatDocked ? threadDock : null}>
+              <Paper
+                className={chatDocked ? "ob-chat-docked" : undefined}
+                variant="outlined"
+                sx={{
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: 0,
+                  height: chatDocked ? "100%" : undefined,
+                  borderRadius: chatDocked ? 0 : undefined,
+                  border: chatDocked ? "none" : undefined,
+                  display: chatDocked
+                    ? "flex"
+                    : mobile && running && threadsOpen
+                      ? "none"
+                      : "flex",
+                  flexDirection: "column",
+                  overflow: chatDocked ? "hidden" : undefined,
                 }}
               >
-                {phase === "sleeping" ? (
-                  <Stack
-                    alignItems="center"
-                    justifyContent="center"
-                    sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
-                    spacing={1}
+                {sessionId && !mobile ? (
+                  <Typography
+                    variant="caption"
+                    color="textSecondary"
+                    sx={{ px: 1.5, pt: 0.75 }}
                   >
-                    <Typography variant="subtitle1">
-                      Desktop is asleep
-                    </Typography>
-                    <Typography variant="body2" color="textSecondary">
-                      Start the desktop to chat with OpenCode.
-                    </Typography>
-                    <Button
-                      variant="contained"
-                      startIcon={<PlayArrowIcon />}
-                      onClick={() => void start()}
-                      sx={{ mt: 1 }}
-                    >
-                      Start desktop
-                    </Button>
-                  </Stack>
-                ) : messagesLoading && shown.length === 0 ? (
+                    {personaName(threadPersona[sessionId])}
+                  </Typography>
+                ) : null}
+                {stopping ? (
                   <Stack
-                    alignItems="center"
-                    justifyContent="center"
-                    sx={{ flex: 1, minHeight: 160 }}
+                    direction="row"
                     spacing={1}
-                  >
-                    <Stack spacing={1} sx={{ width: "min(620px, 100%)" }}>
-                      <Skeleton
-                        key="bubble-user-0"
-                        variant="rounded"
-                        height={44}
-                        width="42%"
-                        sx={{ alignSelf: "flex-end" }}
-                      />
-                      <Skeleton
-                        key="bubble-assistant-0"
-                        variant="rounded"
-                        height={72}
-                        width="78%"
-                      />
-                      <Skeleton
-                        key="bubble-user-1"
-                        variant="rounded"
-                        height={44}
-                        width="30%"
-                        sx={{ alignSelf: "flex-end" }}
-                      />
-                      <Skeleton
-                        key="bubble-assistant-1"
-                        variant="rounded"
-                        height={56}
-                        width="64%"
-                      />
-                      <Skeleton
-                        key="bubble-assistant-2"
-                        variant="rounded"
-                        height={48}
-                        width="56%"
-                      />
-                    </Stack>
-                  </Stack>
-                ) : shown.length === 0 ? (
-                  <Stack
                     alignItems="center"
-                    justifyContent="center"
-                    sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
-                    spacing={1}
+                    className="ob-status-row"
+                    sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
                   >
-                    <Typography variant="subtitle1">
-                      {phase === "starting"
-                        ? "Opening the desktop"
-                        : "No messages yet"}
-                    </Typography>
-                    <Typography variant="body2" color="textSecondary">
-                      {phase === "starting"
-                        ? "The model is not ready until the desktop is up."
-                        : model
-                          ? `Using ${model}. Ask anything.`
-                          : "Pick a model, then ask anything."}
+                    <CircularProgress size={1.2} />
+                    <Typography variant="caption" color="textSecondary">
+                      Stopping the desktop…
                     </Typography>
                   </Stack>
-                ) : (
-                  shown.map((entry, index) => (
-                    <MessageBubble
-                      key={bubbleKeys[index]}
-                      entry={entry}
-                      index={index}
-                      bubbleKey={bubbleKeys[index] ?? ""}
-                      speechKey={speakingKey}
-                      speechLoading={speechLoadingKey}
-                      lastHandoff={lastHandoff}
-                      held={held}
-                      dismissedHandoff={dismissedHandoff}
-                      screenLive={screenLive}
-                      screenPath={screen?.path ?? ""}
-                      screenError={screenError}
-                      running={running}
-                      sending={sending}
-                      stopping={stopping}
-                      controlBusy={controlBusy}
-                      renderers={pluginRenderers}
-                      onTakeControl={bubbleActions.takeControl}
-                      onScreenDone={bubbleActions.screenDone}
-                      onSpeak={speakText}
-                      onStopSpeak={stopSpeaking}
-                    />
-                  ))
-                )}
-              </Box>
-              {turnIssue && tab === "chat" ? (
-                <Alert
-                  severity={turnIssue.retryable ? "warning" : "error"}
-                  sx={{ flexShrink: 0 }}
-                  action={
-                    <Button
+                ) : activity ? (
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    className="ob-status-row"
+                    sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
+                  >
+                    {mobile ? null : (
+                      <Typography variant="caption" color="textSecondary">
+                        Model
+                      </Typography>
+                    )}
+                    <Chip
                       size="small"
-                      variant="outlined"
-                      disabled={sending || stopping}
-                      onClick={() => void prompt(RESUME_PROMPT)}
+                      color={
+                        activity === "done"
+                          ? "success"
+                          : activity === "initialize"
+                            ? "warning"
+                            : "primary"
+                      }
                     >
-                      Resume
-                    </Button>
-                  }
+                      {ACTIVITY_LABEL[activity]}
+                    </Chip>
+                    {activity === "done" ? null : (
+                      <CircularProgress size={1.2} />
+                    )}
+                    {canStop ? (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        startIcon={<StopIcon width={16} height={16} />}
+                        disabled={stopBusy}
+                        onClick={() => void stopThread()}
+                        sx={{ ml: "auto" }}
+                      >
+                        Stop
+                      </Button>
+                    ) : null}
+                  </Stack>
+                ) : null}
+                {stopping || activity ? <Divider /> : null}
+                <Box
+                  className="ob-chat-log"
+                  ref={outputRef}
+                  onScroll={() => {
+                    const el = outputRef.current
+                    if (!el) return
+                    stickRef.current = nearBottom(
+                      el.scrollHeight,
+                      el.scrollTop,
+                      el.clientHeight,
+                    )
+                  }}
                 >
-                  {turnIssue.retryable
-                    ? "Connection dropped mid-reply. OpenBot will retry automatically; you can also resume now."
-                    : `Reply failed: ${turnIssue.detail}`}
-                </Alert>
-              ) : null}
-              {held &&
-              holdOrigin === "chat" &&
-              screen?.sessionId === sessionId ? (
-                <div className="ob-takeover">
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Typography variant="caption" sx={{ flex: 1 }}>
-                      You have the desktop
-                    </Typography>
-                    <Button
-                      size="small"
-                      variant="contained"
-                      disabled={!running || sending || stopping || controlBusy}
-                      onClick={() => void releaseControl()}
+                  {phase === "sleeping" ? (
+                    <Stack
+                      alignItems="center"
+                      justifyContent="center"
+                      sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
+                      spacing={1}
                     >
-                      Done
-                    </Button>
-                  </Stack>
-                  <VncFrame
-                    title="your screen"
-                    path={screen.path}
-                    interactive
-                  />
-                </div>
-              ) : null}
-              <Divider />
-              <Composer
-                key={sessionId}
-                sessionId={sessionId}
-                running={running}
-                sending={sending}
-                stopping={stopping}
-                stopBusy={stopBusy}
-                canStop={canStop}
-                mobile={mobile}
-                joined={joined}
-                rememberJoined={rememberJoined}
-                onError={setError}
-                onSubmit={submit}
-                onStop={() => void stopThread()}
-                baseSections={baseSections}
-                pluginButtons={pluginButtons}
-                pluginCommands={pluginCommands}
-                pluginValidators={pluginValidators}
-                pluginAccept={pluginAccept}
-                readAloud={readAloud}
-                onToggleReadAloud={toggleReadAloud}
-                sharedDraftRef={draftRef}
-                migrateDraft={migrateDraft}
-                projects={projectList}
-                onEnsureProjects={ensureProjects}
+                      <Typography variant="subtitle1">
+                        Desktop is asleep
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        Start the desktop to chat with OpenCode.
+                      </Typography>
+                      <Button
+                        variant="contained"
+                        startIcon={<PlayArrowIcon />}
+                        onClick={() => void start()}
+                        sx={{ mt: 1 }}
+                      >
+                        Start desktop
+                      </Button>
+                    </Stack>
+                  ) : messagesLoading && shown.length === 0 ? (
+                    <Stack
+                      alignItems="center"
+                      justifyContent="center"
+                      sx={{ flex: 1, minHeight: 160 }}
+                      spacing={1}
+                    >
+                      <Stack spacing={1} sx={{ width: "min(620px, 100%)" }}>
+                        <Skeleton
+                          key="bubble-user-0"
+                          variant="rounded"
+                          height={44}
+                          width="42%"
+                          sx={{ alignSelf: "flex-end" }}
+                        />
+                        <Skeleton
+                          key="bubble-assistant-0"
+                          variant="rounded"
+                          height={72}
+                          width="78%"
+                        />
+                        <Skeleton
+                          key="bubble-user-1"
+                          variant="rounded"
+                          height={44}
+                          width="30%"
+                          sx={{ alignSelf: "flex-end" }}
+                        />
+                        <Skeleton
+                          key="bubble-assistant-1"
+                          variant="rounded"
+                          height={56}
+                          width="64%"
+                        />
+                        <Skeleton
+                          key="bubble-assistant-2"
+                          variant="rounded"
+                          height={48}
+                          width="56%"
+                        />
+                      </Stack>
+                    </Stack>
+                  ) : shown.length === 0 ? (
+                    <Stack
+                      alignItems="center"
+                      justifyContent="center"
+                      sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
+                      spacing={1}
+                    >
+                      <Typography variant="subtitle1">
+                        {phase === "starting"
+                          ? "Opening the desktop"
+                          : "No messages yet"}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        {phase === "starting"
+                          ? "The model is not ready until the desktop is up."
+                          : model
+                            ? `Using ${model}. Ask anything.`
+                            : "Pick a model, then ask anything."}
+                      </Typography>
+                    </Stack>
+                  ) : (
+                    shown.map((entry, index) => (
+                      <MessageBubble
+                        key={bubbleKeys[index]}
+                        entry={entry}
+                        index={index}
+                        bubbleKey={bubbleKeys[index] ?? ""}
+                        speechKey={speakingKey}
+                        speechLoading={speechLoadingKey}
+                        lastHandoff={lastHandoff}
+                        held={held}
+                        dismissedHandoff={dismissedHandoff}
+                        screenLive={screenLive}
+                        screenPath={screen?.path ?? ""}
+                        screenError={screenError}
+                        running={running}
+                        sending={sending}
+                        stopping={stopping}
+                        controlBusy={controlBusy}
+                        renderers={pluginRenderers}
+                        onTakeControl={bubbleActions.takeControl}
+                        onScreenDone={bubbleActions.screenDone}
+                        onOpenPreview={bubbleActions.openPreview}
+                        previewLive={showLivePreview({
+                          preview: Boolean(entry.message.preview),
+                          isLast: index === lastPreview,
+                        })}
+                        previewOpened={previewMode !== "closed"}
+                        previewSrc={previewSrc}
+                        previewError={previewError}
+                        onSpeak={speakText}
+                        onStopSpeak={stopSpeaking}
+                      />
+                    ))
+                  )}
+                </Box>
+                {visibleTurnIssue && (tab === "chat" || chatDocked) ? (
+                  <Alert
+                    severity={visibleTurnIssue.retryable ? "warning" : "error"}
+                    sx={{ flexShrink: 0 }}
+                    action={
+                      <Stack direction="row" spacing={0.5} alignItems="center">
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={sending || stopping}
+                          onClick={() => void prompt(RESUME_PROMPT)}
+                        >
+                          Resume
+                        </Button>
+                        <IconButton
+                          size="small"
+                          aria-label="Close"
+                          onClick={() => setDismissedTurnId(turnIssueKey)}
+                        >
+                          <CloseIcon width={18} height={18} />
+                        </IconButton>
+                      </Stack>
+                    }
+                  >
+                    {visibleTurnIssue.retryable
+                      ? "Connection dropped mid-reply. OpenBot will retry automatically; you can also resume now."
+                      : `Reply failed: ${visibleTurnIssue.detail}`}
+                  </Alert>
+                ) : null}
+                {held &&
+                holdOrigin === "chat" &&
+                screen?.sessionId === sessionId ? (
+                  <div className="ob-takeover">
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Typography variant="caption" sx={{ flex: 1 }}>
+                        You have the desktop
+                      </Typography>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        disabled={
+                          !running || sending || stopping || controlBusy
+                        }
+                        onClick={() => void releaseControl()}
+                      >
+                        Done
+                      </Button>
+                    </Stack>
+                    <VncFrame
+                      title="your screen"
+                      path={screen.path}
+                      interactive
+                    />
+                  </div>
+                ) : null}
+                <Divider />
+                <Composer
+                  key={sessionId}
+                  sessionId={sessionId}
+                  running={running}
+                  sending={sending}
+                  stopping={stopping}
+                  stopBusy={stopBusy}
+                  canStop={canStop}
+                  mobile={mobile}
+                  joined={joined}
+                  rememberJoined={rememberJoined}
+                  onError={setError}
+                  onSubmit={submit}
+                  onStop={() => void stopThread()}
+                  baseSections={baseSections}
+                  pluginButtons={pluginButtons}
+                  pluginCommands={pluginCommands}
+                  pluginValidators={pluginValidators}
+                  pluginAccept={pluginAccept}
+                  readAloud={readAloud}
+                  onToggleReadAloud={toggleReadAloud}
+                  sharedDraftRef={draftRef}
+                  migrateDraft={migrateDraft}
+                  projects={projectList}
+                  onEnsureProjects={ensureProjects}
+                />
+              </Paper>
+            </Dock>
+            {previewMode === "pane" && previewSrc ? (
+              <PreviewPane
+                src={previewSrc}
+                width={previewWidth}
+                paneRef={previewPaneRef}
+                onClose={closePreview}
+                onFullscreen={openPreviewFullscreen}
+                onDrag={onPreviewDrag}
               />
-            </Paper>
+            ) : null}
           </Box>
         </Box>
+        {previewMode === "overlay" && previewSrc ? (
+          <PreviewOverlay src={previewSrc} onClose={closePreview} />
+        ) : null}
 
         {/* Desktop — keep alive while running so VNC state survives tab switches */}
         <Box
@@ -3784,7 +4119,11 @@ export function Workspace({ me }: { me: Me }) {
             flexDirection: "column",
           }}
         >
-          <MemoProjects subscribe={subscribe} />
+          <MemoProjects
+            subscribe={subscribe}
+            threadBar={threadBar}
+            onThreadDock={onThreadDock}
+          />
         </Box>
 
         <Drawer

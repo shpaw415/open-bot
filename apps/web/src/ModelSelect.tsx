@@ -119,7 +119,7 @@ export function ModelSelect({
   leading?: { id: string; title: string }
 }) {
   const { ids, toggle } = useModelFavorites(userId)
-  const [query, setQuery] = useState("")
+  const [query, setQuery] = useState<string | null>(null)
   const inputId = `ob-model-${name}`
   const favoriteKey = ids.join("|")
   const listKey = useMemo(
@@ -176,7 +176,7 @@ export function ModelSelect({
     input.dataset.list = String(listKey.length)
     let timer = 0
     const onBlur = () => {
-      timer = window.setTimeout(() => setQuery(""), 200)
+      timer = window.setTimeout(() => setQuery(null), 200)
     }
     const onFocus = () => window.clearTimeout(timer)
     input.addEventListener("blur", onBlur)
@@ -192,11 +192,12 @@ export function ModelSelect({
     <AutoComplete
       key={listKey}
       options={options}
-      value={query || display}
+      value={query ?? display}
       onChange={(event) => setQuery(event.currentTarget.value)}
       onFilter={(opt, input) => {
         const needle = input.trim().toLowerCase()
-        if (!needle || needle === display.toLowerCase()) return true
+        if (!needle || (query === null && needle === display.toLowerCase()))
+          return true
         return (
           opt.title.toLowerCase().includes(needle) ||
           opt.label.toLowerCase().includes(needle) ||
@@ -207,7 +208,7 @@ export function ModelSelect({
       formatInput={(opt) => opt.title}
       formatSelect={(opt) => opt.id === value}
       onSelect={(opt) => {
-        setQuery("")
+        setQuery(null)
         onSelect(opt.id)
       }}
       SlotProps={{
@@ -244,7 +245,7 @@ export function ModelSelect({
               pressed={ids.includes(opt.id)}
               title={opt.title}
               onToggle={() => {
-                setQuery("")
+                setQuery(null)
                 toggle(opt.id)
               }}
             />

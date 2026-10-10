@@ -15,8 +15,9 @@ When a task needs something you cannot do with current tools, skills, or plugins
 2. Implement: fill the manifest following the JSON schema at `~/.config/opencode/skills/plugin/open-bot.plugin.schema.json` — read it before writing any field you are unsure about; every field name, pattern, and limit is defined there, and unknown fields are rejected. Inline sections: `skills`, `personas`, `cron`, `tools`, `configs`, `setup`, `permissions`, `dashboard`, `textbox`, `opencode`. Tool files are plain scripts installed into `/usr/local/bin`. Larger text payloads go in `files[]` (`{name, source, exec}` — repo-relative paths shipped in the release tarball, installed next to tools). `opencode.agents` registers new agent workers (built-in names are rejected); `opencode.agentTools` patches tool globs on existing agents (e.g. `{"build": {"myplugin_*": false}}`); `opencode.agentsMd` is a short block of standing instructions (max 4000 chars) injected next to AGENTS.md for as long as the plugin is installed — durable behavioral rules the agent must always follow, never secrets and never per-task prompts. `setup.commands` are shell commands run as root in the desktop at install and re-run after every desktop recreate — use them for environment setup the plugin needs (e.g. `"sudo apt-get install -y figlet"`); keep them idempotent and minimal, and pair destructive ones with `setup.uninstall` cleanup. Helper sessions the plugin spawns (worker pipelines, batch jobs) must be titled with the `worker:` prefix so they stay out of the dashboard thread list (same convention as `cron-run:`).
 3. Test locally: run the tool scripts yourself, walk through the skill steps, and check the cron prompt reads well.
 4. Validate: `ob-plugin validate ~/plugins-create/<slug>` and fix every issue.
-5. Publish (see below), then `ob-plugin install <slug>` so the new capability goes live on this desktop.
-6. Stress-test: load the `stress-test` skill and run the installed plugin through complex use cases from the user's seat, filing defects and iterating versions until every case passes. Do not tell the user it works before it passes. Iterate on a dev tag (`beta-1`) while staging — see below — and publish semver once it passes.
+5. Install locally: `ob-plugin install --path ~/plugins-create/<slug>`. It lands in the installed list with (local) beside the name. Re-run that command, or Re-install on the Plugins page, to pick up edits. Remove works like any other install.
+6. Publish (see below), then `ob-plugin install <slug>` when the plugin should leave this desktop and live on the marketplace.
+7. Stress-test: load the `stress-test` skill and run the installed plugin through complex use cases from the user's seat, filing defects and iterating versions until every case passes. Do not tell the user it works before it passes. Iterate on a dev tag (`beta-1`) while staging — see below — and publish semver once it passes.
 
 Tell the user in one sentence that you built and published a plugin for it.
 
@@ -71,6 +72,7 @@ When a message starts with `[cron: plugin:NAME:guard]`, do the maintenance pass 
 ob-plugin search weather       # search the marketplace
 ob-plugin info weather-pro     # details, versions, repo
 ob-plugin install weather-pro  # installs skills, personas, cron, tools, tabs
+ob-plugin install --path ~/plugins-create/weather-pro  # local dev install, shown as (local)
 ob-plugin list                 # installed plugins
 ob-plugin remove weather-pro   # uninstall (reverses everything it created)
 ob-plugin issue weather-pro "Title" "Details"   # file a GitHub issue
@@ -83,5 +85,5 @@ Install respects the instance policy: `manual` asks the user to confirm the perm
 
 - Plugin projects live in `~/plugins-create/<slug>/`. Do not scatter plugin files elsewhere.
 - Only publish manifests you validated. Never publish another creator's plugin under your name.
-- Do not edit installed plugin payloads by hand (skills, cron jobs named `plugin:<id>:...`, `/usr/local/bin/ob-plugin-<id>-*` tools, `~/.config/open-bot/plugin-<id>.json`, `~/.open-bot/plugin-init/<id>.log` setup logs). Uninstall or republish instead.
+- Do not edit installed plugin payloads by hand (skills, cron jobs named `plugin:<id>:...`, `/usr/local/bin/ob-plugin-<id>-*` tools, `~/.config/open-bot/plugin-<id>.json`, `~/.open-bot/plugin-init/<id>.log` setup logs). Uninstall, reinstall from `--path`, or republish instead.
 - Do not touch the guard cron of a plugin you did not publish.

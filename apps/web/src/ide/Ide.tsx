@@ -15,6 +15,7 @@ import { api } from "../api"
 import { type EventStream, useDebounced, useMobile } from "../hooks"
 import {
   ArrowBackIcon,
+  ChatIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CloseIcon,
@@ -22,6 +23,7 @@ import {
   DescriptionIcon,
   FolderIcon,
   FolderOpenIcon,
+  PushPinIcon,
   RefreshIcon,
   SaveIcon,
   SearchIcon,
@@ -162,20 +164,28 @@ const EDITOR_OPTIONS: Monaco.editor.IStandaloneEditorConstructionOptions = {
   padding: { top: 8 },
 }
 
+type PanelTab = "terminal" | "thread"
+
 export function Ide({
   project,
   onBack,
   subscribe,
+  threadBar,
+  onThreadDock,
 }: {
   project: ProjectInfo
   onBack: () => void
   subscribe?: EventStream["subscribe"]
+  threadBar?: ReactNode
+  onThreadDock?: (el: HTMLDivElement | null) => void
 }) {
   const mobile = useMobile()
   const [root, setRoot] = useState<TreeEntry[] | null>(null)
   const [children, setChildren] = useState<Record<string, TreeEntry[]>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [tabs, setTabs] = useState<string[]>([])
+  const [pinned, setPinned] = useState<string[]>([])
+  const [hoverTab, setHoverTab] = useState<string | null>(null)
   const [active, setActive] = useState<string | null>(null)
   const [saved, setSaved] = useState<Record<string, string>>({})
   const [draft, setDraft] = useState<Record<string, string>>({})
@@ -189,13 +199,20 @@ export function Ide({
   const [quickFiles, setQuickFiles] = useState<string[] | null>(null)
   const [sidebar, setSidebar] = useState(!mobile)
   const [cursor, setCursor] = useState({ ln: 1, col: 1 })
-  const [termOpen, setTermOpen] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [panelTab, setPanelTab] = useState<PanelTab>("terminal")
+  const [panelHeight, setPanelHeight] = useState(280)
+  const [termStarted, setTermStarted] = useState(false)
+  const [termEpoch, setTermEpoch] = useState(0)
 
   const stateRef = useRef({ active, draft, saved, project, saving })
   stateRef.current = { active, draft, saved, project, saving }
   const quickInputRef = useRef<HTMLInputElement | null>(null)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
+  const editorColRef = useRef<HTMLDivElement>(null)
+  const dockRef = useRef<HTMLDivElement>(null)
   const touchedRef = useRef<Set<string>>(new Set())
+  const showPanelRef = useRef<(tab: PanelTab) => void>(() => {})
 
   const showToast = useCallback((text: string, error = false) => {
     setToast({ text, error })
@@ -203,6 +220,37 @@ export function Ide({
       setToast((current) => (current?.text === text ? null : current))
     }, 4200)
   }, [])
+
+  const showPanel = useCallback(
+    (tab: PanelTab) => {
+      if (tab === "terminal") setTermStarted(true)
+      if (panelOpen && panelTab === tab) {
+        setPanelOpen(false)
+        return
+      }
+      setPanelTab(tab)
+      setPanelOpen(true)
+      if (tab === "thread") setPanelHeight((height) => Math.max(height, 360))
+    },
+    [panelOpen, panelTab],
+  )
+  showPanelRef.current = showPanel
+
+  const selectPanelTab = useCallback((tab: PanelTab) => {
+    if (tab === "terminal") setTermStarted(true)
+    setPanelTab(tab)
+    if (tab === "thread") setPanelHeight((height) => Math.max(height, 360))
+  }, [])
+
+  useEffect(() => {
+    if (!onThreadDock) return
+    if (!(panelOpen && panelTab === "thread")) {
+      onThreadDock(null)
+      return
+    }
+    onThreadDock(dockRef.current)
+    return () => onThreadDock(null)
+  }, [onThreadDock, panelOpen, panelTab])
 
   const listDir = useCallback(
     async (dir: string): Promise<TreeEntry[]> => {
@@ -259,6 +307,14 @@ export function Ide({
   }, [draft, saved])
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  const pinnedRef = useRef(pinned)
+  pinnedRef.current = pinned
+  const orderedTabs = useMemo(() => {
+    const open = new Set(tabs)
+    const pins = pinned.filter((path) => open.has(path))
+    const pinSet = new Set(pins)
+    return [...pins, ...tabs.filter((path) => !pinSet.has(path))]
+  }, [pinned, tabs])
 
   const reloadActive = useCallback(
     async (path: string) => {
@@ -430,19 +486,33 @@ export function Ide({
   const closeTab = useCallback((path: string) => {
     if (
       dirtyRef.current[path] &&
-      !window.confirm(`Save changes to ${baseName(path)} before closing?`)
+      !window.confirm(`Discard unsaved changes to ${baseName(path)}?`)
     ) {
       return
     }
+    setPinned((current) => current.filter((item) => item !== path))
     setTabs((current) => {
       const next = current.filter((item) => item !== path)
-      setActive((currentActive) =>
-        currentActive === path
-          ? (next[next.length - 1] ?? null)
-          : currentActive,
-      )
+      setActive((currentActive) => {
+        if (currentActive !== path) return currentActive
+        const pins = pinnedRef.current.filter((item) => current.includes(item))
+        const ordered = [
+          ...pins,
+          ...current.filter((item) => !pins.includes(item)),
+        ]
+        const at = ordered.indexOf(path)
+        return ordered[at + 1] ?? ordered[at - 1] ?? null
+      })
       return next
     })
+  }, [])
+
+  const togglePin = useCallback((path: string) => {
+    setPinned((current) =>
+      current.includes(path)
+        ? current.filter((item) => item !== path)
+        : [...current, path],
+    )
   }, [])
 
   const ensureQuickFiles = useCallback(async () => {
@@ -494,7 +564,7 @@ export function Ide({
       }
       if (mod && event.key === "`") {
         event.preventDefault()
-        setTermOpen((current) => !current)
+        showPanelRef.current("terminal")
       }
     }
     window.addEventListener("keydown", onKey, true)
@@ -626,10 +696,24 @@ export function Ide({
           <DescriptionIcon width={18} height={18} />
         </TitleBarIcon>
         <TitleBarIcon
-          label={termOpen ? "Hide terminal" : "Show terminal"}
-          onClick={() => setTermOpen((current) => !current)}
+          label={
+            panelOpen && panelTab === "terminal"
+              ? "Hide terminal"
+              : "Show terminal"
+          }
+          active={panelOpen && panelTab === "terminal"}
+          onClick={() => showPanel("terminal")}
         >
           <TerminalIcon width={18} height={18} />
+        </TitleBarIcon>
+        <TitleBarIcon
+          label={
+            panelOpen && panelTab === "thread" ? "Hide thread" : "Show thread"
+          }
+          active={panelOpen && panelTab === "thread"}
+          onClick={() => showPanel("thread")}
+        >
+          <ChatIcon width={18} height={18} />
         </TitleBarIcon>
         <Box
           sx={{
@@ -642,7 +726,7 @@ export function Ide({
         >
           {activeBase ? `${activeBase} — ${project.name}` : project.name}
         </Box>
-        <Box sx={{ width: mobile ? 192 : 152 }} />
+        <Box sx={{ width: mobile ? 232 : 192 }} />
       </Box>
 
       {/* Body */}
@@ -786,6 +870,7 @@ export function Ide({
 
         {/* Editor area */}
         <Box
+          ref={editorColRef}
           sx={{
             flex: 1,
             minWidth: 0,
@@ -809,18 +894,34 @@ export function Ide({
               "&::-webkit-scrollbar-thumb": { background: vscode.scrollbar },
             }}
           >
-            {tabs.map((path) => {
+            {orderedTabs.map((path) => {
               const isActive = path === active
               const isDirty = dirty[path] === true
+              const isPinned = pinned.includes(path)
+              const showActions = mobile || isActive || hoverTab === path
               return (
                 <Box
                   key={path}
                   onClick={() => setActive(path)}
+                  onDoubleClick={() => {
+                    if (!isPinned) togglePin(path)
+                  }}
+                  onMouseEnter={() => setHoverTab(path)}
+                  onMouseLeave={() =>
+                    setHoverTab((current) =>
+                      current === path ? null : current,
+                    )
+                  }
+                  onAuxClick={(event) => {
+                    if (event.button !== 1) return
+                    event.preventDefault()
+                    closeTab(path)
+                  }}
                   sx={{
                     display: "flex",
                     alignItems: "center",
                     gap: "6px",
-                    padding: "0 8px 0 12px",
+                    padding: "0 4px 0 12px",
                     backgroundColor: isActive
                       ? vscode.tabActiveBg
                       : vscode.tabInactiveBg,
@@ -830,44 +931,44 @@ export function Ide({
                     flexShrink: 0,
                     borderRight: `1px solid ${vscode.tabBorder}`,
                     position: "relative",
-                    "&:hover .ob-tab-close": { visibility: "visible" },
                   }}
                 >
                   <FileGlyph token={iconForFile(baseName(path))} size={15} />
                   <Box Element="span" sx={{ whiteSpace: "nowrap" }}>
                     {baseName(path)}
                   </Box>
-                  <Box
-                    className="ob-tab-close"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      closeTab(path)
-                    }}
-                    sx={{
-                      visibility: isDirty ? "visible" : "hidden",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 20,
-                      height: 20,
-                      borderRadius: "5px",
-                      "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" },
-                    }}
-                    title="Close (unsaved changes)"
+                  {isDirty ? (
+                    <Box
+                      sx={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        flexShrink: 0,
+                        backgroundColor: vscode.tabActiveFg,
+                      }}
+                    />
+                  ) : null}
+                  <TabAction
+                    label={isPinned ? "Unpin" : "Pin"}
+                    hidden={!showActions && !isPinned}
+                    onClick={() => togglePin(path)}
                   >
-                    {isDirty ? (
-                      <Box
-                        sx={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          backgroundColor: vscode.tabActiveFg,
-                        }}
-                      />
-                    ) : (
-                      <CloseIcon width={14} height={14} />
-                    )}
-                  </Box>
+                    <PushPinIcon
+                      width={14}
+                      height={14}
+                      style={{
+                        transform: isPinned ? "rotate(0deg)" : "rotate(45deg)",
+                        opacity: isPinned ? 1 : 0.85,
+                      }}
+                    />
+                  </TabAction>
+                  <TabAction
+                    label="Close"
+                    hidden={!showActions}
+                    onClick={() => closeTab(path)}
+                  >
+                    <CloseIcon width={14} height={14} />
+                  </TabAction>
                 </Box>
               )
             })}
@@ -1024,66 +1125,169 @@ export function Ide({
                   >
                     <ShortcutRow keys="Ctrl+P" text="Quick open a file" />
                     <ShortcutRow keys="Ctrl+S" text="Save the active file" />
-                    <ShortcutRow keys="Ctrl+`" text="Toggle the terminal" />
+                    <ShortcutRow
+                      keys="Ctrl+`"
+                      text="Toggle the terminal panel"
+                    />
                   </Box>
                 ) : null}
               </Box>
             ) : null}
           </Box>
 
-          {/* Terminal panel */}
-          {termOpen ? (
+          {panelOpen || termStarted ? (
             <Box
               sx={{
-                height: 280,
+                display: panelOpen ? "flex" : "none",
+                height: panelHeight,
                 flexShrink: 0,
-                display: "flex",
                 flexDirection: "column",
                 borderTop: `1px solid ${vscode.border}`,
                 backgroundColor: vscode.editorBg,
                 minHeight: 0,
+                position: "relative",
               }}
             >
               <Box
+                title="Resize panel"
+                aria-label="Resize panel"
+                onPointerDown={(event) => {
+                  event.preventDefault()
+                  const startY = event.clientY
+                  const startH = panelHeight
+                  const parent =
+                    editorColRef.current?.clientHeight ?? window.innerHeight
+                  const max = Math.max(200, Math.floor(parent * 0.7))
+                  const move = (ev: PointerEvent) => {
+                    const next = startH - (ev.clientY - startY)
+                    setPanelHeight(Math.min(max, Math.max(160, next)))
+                  }
+                  const up = () => {
+                    window.removeEventListener("pointermove", move)
+                    window.removeEventListener("pointerup", up)
+                  }
+                  window.addEventListener("pointermove", move)
+                  window.addEventListener("pointerup", up)
+                }}
+                sx={{
+                  position: "absolute",
+                  top: -3,
+                  left: 0,
+                  right: 0,
+                  height: 6,
+                  cursor: "row-resize",
+                  zIndex: 2,
+                }}
+              />
+              <Box
+                role="tablist"
+                aria-label="Panel"
                 sx={{
                   display: "flex",
-                  alignItems: "center",
-                  height: 30,
+                  alignItems: "stretch",
+                  height: 35,
                   flexShrink: 0,
-                  padding: "0 8px",
-                  gap: "6px",
-                  fontSize: 11,
-                  color: vscode.sidebarFg,
+                  backgroundColor: vscode.sidebarBg,
+                  borderBottom: `1px solid ${vscode.border}`,
                 }}
               >
-                <TerminalIcon width={14} height={14} />
-                <Box
-                  Element="span"
-                  sx={{ fontWeight: 700, letterSpacing: "0.04em" }}
+                <PanelTabButton
+                  label="Terminal"
+                  active={panelTab === "terminal"}
+                  onClick={() => selectPanelTab("terminal")}
                 >
-                  TERMINAL
-                </Box>
-                <Box Element="span" sx={{ color: vscode.muted }}>
-                  bash — {project.name}
-                </Box>
+                  <TerminalIcon width={14} height={14} />
+                </PanelTabButton>
+                <PanelTabButton
+                  label="Thread"
+                  active={panelTab === "thread"}
+                  onClick={() => selectPanelTab("thread")}
+                >
+                  <ChatIcon width={14} height={14} />
+                </PanelTabButton>
+                {panelTab === "terminal" ? (
+                  <Box
+                    Element="span"
+                    sx={{
+                      alignSelf: "center",
+                      color: vscode.muted,
+                      fontSize: 12,
+                      marginLeft: "4px",
+                    }}
+                  >
+                    bash — {project.name}
+                  </Box>
+                ) : null}
                 <Box sx={{ flex: 1 }} />
-                <IconAction
-                  label="Kill terminal"
-                  onClick={() => {
-                    setTermOpen(false)
-                  }}
-                >
-                  <DeleteIcon width={15} height={15} />
-                </IconAction>
-                <IconAction
-                  label="Hide panel"
-                  onClick={() => setTermOpen(false)}
-                >
-                  <ChevronDownIcon width={16} height={16} />
-                </IconAction>
+                {panelTab === "terminal" ? (
+                  <Box
+                    sx={{ display: "flex", alignItems: "center", pr: "4px" }}
+                  >
+                    <IconAction
+                      label="Kill terminal"
+                      onClick={() => setTermEpoch((epoch) => epoch + 1)}
+                    >
+                      <DeleteIcon width={15} height={15} />
+                    </IconAction>
+                  </Box>
+                ) : null}
+                <Box sx={{ display: "flex", alignItems: "center", pr: "6px" }}>
+                  <IconAction
+                    label="Hide panel"
+                    onClick={() => setPanelOpen(false)}
+                  >
+                    <ChevronDownIcon width={16} height={16} />
+                  </IconAction>
+                </Box>
               </Box>
-              <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-                <ProjectTerminal project={project} />
+              <Box
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                {termStarted ? (
+                  <Box
+                    sx={{
+                      display:
+                        panelOpen && panelTab === "terminal" ? "flex" : "none",
+                      flex: 1,
+                      minHeight: 0,
+                    }}
+                  >
+                    <ProjectTerminal
+                      key={termEpoch}
+                      project={project}
+                      active={panelOpen && panelTab === "terminal"}
+                    />
+                  </Box>
+                ) : null}
+                {panelOpen && panelTab === "thread" ? (
+                  <Box
+                    role="tabpanel"
+                    aria-label="Thread"
+                    sx={{
+                      flex: 1,
+                      minHeight: 0,
+                      display: "flex",
+                      flexDirection: "column",
+                    }}
+                  >
+                    {threadBar}
+                    <Box
+                      ref={dockRef}
+                      sx={{
+                        flex: 1,
+                        minHeight: 0,
+                        display: "flex",
+                        flexDirection: "column",
+                        overflow: "hidden",
+                      }}
+                    />
+                  </Box>
+                ) : null}
               </Box>
             </Box>
           ) : null}
@@ -1306,10 +1510,12 @@ function TitleBarIcon({
   label,
   onClick,
   children,
+  active = false,
 }: {
   label: string
   onClick: () => void
   children: ReactNode
+  active?: boolean
 }) {
   return (
     <Box
@@ -1324,11 +1530,49 @@ function TitleBarIcon({
         height: 26,
         borderRadius: "5px",
         cursor: "pointer",
-        color: vscode.titleBarFg,
+        color: active ? vscode.activityBarActiveFg : vscode.titleBarFg,
+        backgroundColor: active ? "rgba(255,255,255,0.08)" : undefined,
         "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" },
       }}
     >
       {children}
+    </Box>
+  )
+}
+
+function PanelTabButton({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <Box
+      role="tab"
+      aria-selected={active}
+      aria-label={label}
+      onClick={onClick}
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        height: 35,
+        padding: "0 12px",
+        cursor: "pointer",
+        flexShrink: 0,
+        fontSize: 13,
+        color: active ? vscode.tabActiveFg : vscode.tabFg,
+        borderTop: `2px solid ${active ? vscode.statusBg : "transparent"}`,
+        "&:hover": { color: vscode.tabActiveFg },
+      }}
+    >
+      {children}
+      <Box Element="span">{label}</Box>
     </Box>
   )
 }
@@ -1359,6 +1603,43 @@ function ActivityIcon({
         color: active ? vscode.activityBarActiveFg : vscode.activityBarFg,
         borderLeft: `2px solid ${active ? vscode.activityBarActiveFg : "transparent"}`,
         "&:hover": { color: vscode.activityBarActiveFg },
+      }}
+    >
+      {children}
+    </Box>
+  )
+}
+
+function TabAction({
+  label,
+  hidden,
+  onClick,
+  children,
+}: {
+  label: string
+  hidden: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <Box
+      title={label}
+      aria-label={label}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick()
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+      sx={{
+        visibility: hidden ? "hidden" : "visible",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 22,
+        height: 22,
+        flexShrink: 0,
+        borderRadius: "5px",
+        "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" },
       }}
     >
       {children}
