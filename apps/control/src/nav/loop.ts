@@ -12,6 +12,7 @@ import {
   hostOf,
   isBlankPage,
   MAX_STEPS,
+  type NavMark,
   NONE_VALUE,
   pageIsError,
   pageKey,
@@ -53,6 +54,7 @@ export type Driver = {
   probe(): Promise<Snapshot>
   act(action: Act): Promise<void>
   navigate?(url: string): Promise<void>
+  capture?(marks: NavMark[]): Promise<string | null>
 }
 
 export type Ask = (input: {

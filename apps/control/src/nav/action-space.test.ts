@@ -3,6 +3,7 @@ import {
   buildActionSpace,
   buildQuestions,
   goalValues,
+  marksFromSpace,
   NONE_VALUE,
   parseDecision,
   type Snapshot,
@@ -18,6 +19,43 @@ function page(elements: Snapshot["elements"]): Snapshot {
     elements,
   }
 }
+
+test("marks use action-space indexes and badge a dropdown once", () => {
+  const space = buildActionSpace(
+    page([
+      {
+        targetId: "n4",
+        role: "button",
+        label: "Search",
+        value: "",
+        editable: false,
+        actionable: true,
+      },
+      {
+        targetId: "n9",
+        role: "select",
+        label: "Size",
+        value: "",
+        editable: false,
+        actionable: true,
+        options: [{ label: "S" }, { label: "M" }],
+      },
+      {
+        targetId: "n1",
+        role: "button",
+        label: "Hidden",
+        value: "",
+        editable: false,
+        actionable: false,
+      },
+    ]),
+    [],
+  )
+  expect(marksFromSpace(space)).toEqual([
+    { index: "1", targetId: "n4" },
+    { index: "2", targetId: "n9" },
+  ])
+})
 
 test("goal values come from quotes, urls, and search phrasing", () => {
   expect(goalValues('search for "rubber duck"')).toEqual(["rubber duck"])

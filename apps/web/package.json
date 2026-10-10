@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "bash monaco.sh public && vite --host 127.0.0.1 --port 5173",
-    "build": "bun build index.html --outdir dist --target browser --splitting --minify && bun absolutize.ts && bash monaco.sh dist",
+    "dev:ai": "bash monaco.sh public && vite --host 100.96.0.3 --port 5173",
+    "build": "bun build index.html --outdir dist --target browser --splitting --minify && cp public/favicon.ico public/logo.png dist/ && bun absolutize.ts && bash monaco.sh dist",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

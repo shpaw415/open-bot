@@ -39,6 +39,15 @@ export function projectName(raw: unknown): string | null {
   return name
 }
 
+export function isProjectManageRequest(
+  pathname: string,
+  method: string,
+): boolean {
+  if (pathname === "/api/projects" && (method === "GET" || method === "POST"))
+    return true
+  return method === "DELETE" && /^\/api\/projects\/[^/]+$/.test(pathname)
+}
+
 // Projects may also point at an existing desktop folder outside the
 // workspace (e.g. ~/plugins-create/<slug>), so the dashboard can manage
 // plugin projects and other pre-existing folders.

@@ -163,6 +163,17 @@ export function Login({ onLogin }: { onLogin: (me: Me) => void }) {
       <Stack spacing={2}>
         <ThemeToggle />
         <Stack spacing={0.5}>
+          <img
+            src="/logo.png"
+            alt=""
+            width={58}
+            height={58}
+            style={{
+              marginLeft: "auto",
+              marginRight: "auto",
+              scale: 2.3,
+            }}
+          />
           <Typography variant="h5">open-bot</Typography>
           <Typography variant="body2" color="textSecondary">
             Self-hosted OpenCode desktops per user.

@@ -1,4 +1,4 @@
-import type { Snapshot } from "./action-space"
+import type { NavMark, Snapshot } from "./action-space"
 import type { Act, Driver } from "./loop"
 
 export type CdpDriver = Driver & { close(): void }
@@ -50,6 +50,9 @@ export async function connectCdp(port: number): Promise<CdpDriver> {
       const pause =
         action.kind === "type" ? 200 : action.kind === "wait" ? 150 : 80
       await Bun.sleep(pause)
+    },
+    capture(marks) {
+      return captureMarked(socket, marks)
     },
     close() {
       socket.close()
@@ -201,6 +204,62 @@ export function normalize(value: unknown): Snapshot {
         options,
       }
     }),
+  }
+}
+
+export const MARK_ROOT_ID = "ob-nav-marks"
+
+export function markScript(marks: NavMark[]) {
+  const payload = JSON.stringify(
+    marks.slice(0, 16).map((mark) => ({
+      index: String(mark.index).slice(0, 8),
+      targetId: String(mark.targetId).slice(0, 64),
+    })),
+  )
+  return `(() => {
+    const rootId = ${JSON.stringify(MARK_ROOT_ID)}
+    document.getElementById(rootId)?.remove()
+    const root = document.createElement("div")
+    root.id = rootId
+    root.setAttribute("style", "position:fixed;inset:0;pointer-events:none;z-index:2147483646")
+    for (const mark of ${payload}) {
+      const el = document.querySelector("[data-obnav=" + JSON.stringify(mark.targetId) + "]")
+      if (!el) continue
+      const rect = el.getBoundingClientRect()
+      if (rect.width < 2 || rect.height < 2) continue
+      const badge = document.createElement("div")
+      badge.textContent = String(mark.index)
+      badge.setAttribute("style", "position:fixed;left:" + Math.max(0, Math.round(rect.left)) + "px;top:" + Math.max(0, Math.round(rect.top)) + "px;min-width:14px;padding:1px 3px;background:#111;color:#fff;font:700 13px/1 sans-serif;border-radius:2px")
+      root.append(badge)
+    }
+    document.documentElement.append(root)
+    return root.childElementCount
+  })()`
+}
+
+export function clearMarksScript() {
+  return `document.getElementById(${JSON.stringify(MARK_ROOT_ID)})?.remove()`
+}
+
+export async function captureMarked(
+  socket: CdpSocket,
+  marks: NavMark[],
+): Promise<string | null> {
+  if (marks.length === 0) return null
+  try {
+    await socket.call("Page.enable").catch(() => undefined)
+    await evaluate(socket, markScript(marks))
+    const shot = (await socket.call("Page.captureScreenshot", {
+      format: "jpeg",
+      quality: 60,
+      fromSurface: true,
+    })) as { data?: string }
+    const data = shot?.data?.trim() ?? ""
+    return data || null
+  } catch {
+    return null
+  } finally {
+    await evaluate(socket, clearMarksScript()).catch(() => undefined)
   }
 }
 

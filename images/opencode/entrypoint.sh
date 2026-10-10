@@ -5,7 +5,7 @@ mkdir -p /home/agent/workspace /home/agent/plugins-create /home/agent/.config/op
 if [ -d /opt/image-usr-local ]; then
   mkdir -p /usr/local
   cp -a /opt/image-usr-local/. /usr/local/
-  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview 2>/dev/null || true
+  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview 2>/dev/null || true
 fi
 if [ ! -f /opt/open-bot/dev-mode ]; then
   rm -f /usr/local/bin/ob-improve
@@ -40,6 +40,8 @@ mkdir -p /home/agent/.config/opencode/skills/gen-3d
 cp /opt/open-bot/seed/skills/gen-3d/SKILL.md /home/agent/.config/opencode/skills/gen-3d/SKILL.md
 mkdir -p /home/agent/.config/opencode/skills/persona
 cp /opt/open-bot/seed/skills/persona/SKILL.md /home/agent/.config/opencode/skills/persona/SKILL.md
+mkdir -p /home/agent/.config/opencode/skills/project
+cp /opt/open-bot/seed/skills/project/SKILL.md /home/agent/.config/opencode/skills/project/SKILL.md
 mkdir -p /home/agent/.config/opencode/skills/shortcut
 cp /opt/open-bot/seed/skills/shortcut/SKILL.md /home/agent/.config/opencode/skills/shortcut/SKILL.md
 mkdir -p /home/agent/.config/opencode/skills/refine

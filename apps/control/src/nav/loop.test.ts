@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test"
+import { system1Providers } from "../system1"
 import type { Decision, Snapshot } from "./action-space"
 import { type Act, runNav } from "./loop"
-import { decisionBody, decisionHeaders } from "./wire"
+import {
+  annotateQuestions,
+  decisionBody,
+  decisionHeaders,
+  providerHasVision,
+} from "./wire"
 
 const page: Snapshot = {
   url: "https://example.test/search",
@@ -419,6 +425,55 @@ test("headers keep the gateway token off the provider key", () => {
       {},
     ),
   ).toEqual({ state: "{}", questions: {} })
+  expect(
+    decisionBody(
+      {
+        endpoint: "https://example.test",
+        apiKey: "",
+        gatewayToken: "",
+        model: "clef",
+        provider: "cloudflare-clef",
+      },
+      "{}",
+      { operation: { type: "choice", instructions: "Pick." } },
+      [{ content_type: "image/jpeg", base64: "abc" }],
+    ),
+  ).toEqual({
+    model: "clef",
+    state: "{}",
+    questions: { operation: { type: "choice", instructions: "Pick." } },
+    images: [{ content_type: "image/jpeg", base64: "abc" }],
+  })
+  expect(
+    decisionBody(
+      {
+        endpoint: "https://example.test",
+        apiKey: "",
+        gatewayToken: "",
+        model: "",
+      },
+      "{}",
+      {},
+      [],
+    ),
+  ).toEqual({ state: "{}", questions: {} })
+})
+
+test("vision is only the clef providers", () => {
+  expect(
+    system1Providers
+      .filter((item) => providerHasVision(item.id))
+      .map((item) => item.id),
+  ).toEqual(["cloudflare-clef", "selfhosted-clef"])
+  expect(providerHasVision("cloudflare-jev")).toBe(false)
+  expect(providerHasVision("laya")).toBe(false)
+  expect(providerHasVision(undefined)).toBe(false)
+  expect(
+    annotateQuestions({
+      operation: { instructions: "Pick." },
+      needs_user: { instructions: "Login?" },
+    }).operation.instructions,
+  ).toBe("Pick. Badge numbers on the attached image are the control indexes.")
 })
 
 test("an error page exits blocked, not a false handoff", async () => {

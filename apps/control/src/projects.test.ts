@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  isProjectManageRequest,
   PROJECTS_ROOT,
   projectDir,
   projectName,
@@ -71,6 +72,23 @@ describe("project name", () => {
     expect(projectName("///")).toBeNull()
     expect(projectName("")).toBeNull()
     expect(projectName(7)).toBeNull()
+  })
+})
+
+describe("project manage requests", () => {
+  test("allows list, add, and remove only", () => {
+    expect(isProjectManageRequest("/api/projects", "GET")).toBe(true)
+    expect(isProjectManageRequest("/api/projects", "POST")).toBe(true)
+    expect(isProjectManageRequest("/api/projects/abc", "DELETE")).toBe(true)
+    expect(isProjectManageRequest("/api/projects/abc/file", "GET")).toBe(false)
+    expect(isProjectManageRequest("/api/projects/abc/files", "GET")).toBe(false)
+    expect(isProjectManageRequest("/api/projects/abc/search", "POST")).toBe(
+      false,
+    )
+    expect(isProjectManageRequest("/api/projects/abc/terminal", "GET")).toBe(
+      false,
+    )
+    expect(isProjectManageRequest("/api/projects", "DELETE")).toBe(false)
   })
 })
 

@@ -1889,6 +1889,16 @@ export function Workspace({ me }: { me: Me }) {
 
   const running = phase === "running"
   const { live, subscribe } = useEventStream(running)
+
+  useEffect(() => {
+    return subscribe((event) => {
+      if (event.type !== "projects.changed") return
+      projectsRequestedRef.current = true
+      api<{ projects?: ProjectMention[] }>("/api/projects")
+        .then((body) => setProjectList(body.projects ?? []))
+        .catch(() => {})
+    })
+  }, [subscribe])
   const baseSections = useMemo<RefSectionView[]>(
     () => [
       {

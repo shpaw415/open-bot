@@ -1,10 +1,18 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { parseDecision } from "./action-space"
+import { marksFromSpace, parseDecision } from "./action-space"
 import { connectCdp } from "./cdp"
 import { runNav } from "./loop"
 import { writeFieldText } from "./text"
-import { decisionBody, decisionHeaders, type System1Auth } from "./wire"
+import {
+  annotateQuestions,
+  DECISION_TIMEOUT_MS,
+  decisionBody,
+  decisionHeaders,
+  providerHasVision,
+  type System1Auth,
+  VISION_TIMEOUT_MS,
+} from "./wire"
 
 function arg(name: string) {
   const index = process.argv.indexOf(name)
@@ -20,7 +28,7 @@ function readConfig(home: string): System1Auth | null {
   try {
     const marker = JSON.parse(
       readFileSync(join(home, ".config/open-bot/system1.json"), "utf8"),
-    ) as { endpoint?: string; model?: string }
+    ) as { endpoint?: string; model?: string; provider?: string }
     if (!marker.endpoint) return null
     let apiKey = ""
     let gatewayToken = ""
@@ -36,6 +44,7 @@ function readConfig(home: string): System1Auth | null {
     return {
       endpoint: marker.endpoint,
       model: marker.model ?? "",
+      provider: marker.provider ?? "",
       apiKey,
       gatewayToken,
     }
@@ -110,20 +119,31 @@ async function main() {
       },
       ask: async ({ state, questions, space }) => {
         const started = Date.now()
+        let image = ""
+        if (providerHasVision(auth.provider) && driver.capture) {
+          image = (await driver.capture(marksFromSpace(space))) ?? ""
+        }
+        const asked = image ? annotateQuestions(questions) : questions
+        const images = image
+          ? [{ content_type: "image/jpeg" as const, base64: image }]
+          : undefined
         const response = await fetch(auth.endpoint, {
           method: "POST",
           headers: decisionHeaders(auth),
-          body: JSON.stringify(decisionBody(auth, state, questions)),
-          signal: AbortSignal.timeout(8000),
+          body: JSON.stringify(decisionBody(auth, state, asked, images)),
+          signal: AbortSignal.timeout(
+            image ? VISION_TIMEOUT_MS : DECISION_TIMEOUT_MS,
+          ),
         })
         const ms = Date.now() - started
+        const vision = image ? { vision: true } : {}
         if (!response.ok) {
-          note(home, { ms, http: response.status })
+          note(home, { ms, http: response.status, ...vision })
           throw new Error(`decision HTTP ${response.status}`)
         }
         const decision = parseDecision(await response.json(), space)
         if (!decision) {
-          note(home, { ms, http: response.status, error: "invalid" })
+          note(home, { ms, http: response.status, error: "invalid", ...vision })
           throw new Error("invalid decision")
         }
         note(home, {
@@ -132,6 +152,7 @@ async function main() {
           op: decision.operation,
           conf: Number(decision.confidence.toFixed(2)),
           needs: Number(decision.needsUser.toFixed(2)),
+          ...vision,
         })
         return decision
       },

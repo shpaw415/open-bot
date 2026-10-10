@@ -20,6 +20,10 @@ bun scripts/reports.ts done ID --note "what changed"
 bun scripts/reports.ts wontfix ID --note "why"
 ```
 
+## Projects list
+
+The desktop agent registers an existing folder with `ob-project add --path ~/project/user-project` (`scripts/ob-project.sh`, seed skill `images/opencode/seed/skills/project`). The path must already exist under `/home/agent`. `list` and `remove` use the desktop LLM token on `GET/POST /api/projects` and `DELETE /api/projects/:id` only; file, search, and terminal routes stay session-only. Remove unlinks the row and keeps the files. Create and delete emit `projects.changed` so the Projects tab and `@projects` mentions refresh. Existing desktops need `bun run images && bun run update` before they have the CLI.
+
 ## Thread preview
 
 The desktop agent can serve a Bun dev server and embed it in the thread (`images/opencode/seed/skills/preview`, `ob-preview`). The reply marker is `![title](open-bot://preview)`. The control plane proxies an allowlisted port (`4700–4719`) through a capability-token frame URL. On a wide screen, Open lifts that iframe into a resizable pane beside the thread; on a narrow screen it covers the viewport. Existing desktops need `bun run images && bun run update -- --dev` before they see the skill and CLI.

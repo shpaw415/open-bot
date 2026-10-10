@@ -91,9 +91,10 @@ case "$cmd" in
     fi
     dir="$CREATE_ROOT/$name"
     [ ! -e "$dir" ] || { echo "ob-plugin: $dir already exists" >&2; exit 2; }
-    mkdir -p "$dir"
     repo_hint="OWNER/$name"
     schema="/home/agent/.config/opencode/skills/plugin/open-bot.plugin.schema.json"
+    stage=$(mktemp -d)
+    trap 'rm -rf "$stage"' EXIT
     jq -n --arg id "$name" --arg repo "$repo_hint" --arg schema "$schema" \
       '{
         "$schema": $schema,
@@ -109,11 +110,11 @@ case "$cmd" in
           {
             name: $id,
             description: "When to load this skill",
-            body: "# " + $id + "\n\nInstructions for the agent.\n"
+            body: ("# " + $id + "\n\nInstructions for the agent.\n")
           }
         ]
-      }' > "$dir/$MANIFEST_FILE"
-    cat > "$dir/README.md" <<EOF
+      }' > "$stage/$MANIFEST_FILE"
+    cat > "$stage/README.md" <<EOF
 # $name
 
 open-bot plugin. Edit \`$MANIFEST_FILE\`, then install it locally:
@@ -146,6 +147,9 @@ Manifest quick reference:
 - opencode: {plugin: [npm...], mcp: {...}, agents: {...new agent defs...}, agentTools: {agent: {glob: bool}}, agentsMd: "standing instructions injected next to AGENTS.md (max 4000 chars, no secrets)"}
 - Helper sessions your plugin spawns must be titled with the "worker:" prefix so they stay out of the dashboard thread list.
 EOF
+    mkdir -p "$CREATE_ROOT"
+    mv "$stage" "$dir"
+    trap - EXIT
     echo "scaffolded $dir"
     ;;
   validate)

@@ -57,6 +57,11 @@ export type Candidate = {
   optionLabel: string
 }
 
+export type NavMark = {
+  index: string
+  targetId: string
+}
+
 export type ActionSpace = {
   elements: {
     index: string
@@ -405,4 +410,18 @@ function choiceOf(value: unknown) {
     }
   }
   return { key: choice, confidence: peak }
+}
+
+export function marksFromSpace(space: ActionSpace): NavMark[] {
+  const seen = new Map<string, string>()
+  for (const head of Object.values(space.heads)) {
+    for (const candidate of Object.values(head)) {
+      const index = candidate.key.split(":")[0] ?? ""
+      if (!index || !candidate.targetId || seen.has(index)) continue
+      seen.set(index, candidate.targetId)
+    }
+  }
+  return [...seen.entries()]
+    .sort((left, right) => Number(left[0]) - Number(right[0]))
+    .map(([index, targetId]) => ({ index, targetId }))
 }

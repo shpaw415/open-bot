@@ -10,6 +10,7 @@ export default function RenderShell({
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="icon" href="/favicon.ico" />
         <link rel="stylesheet" href="/static/style.css" />
         <title>{APP_DATA.projectName}</title>
       </head>

@@ -124,6 +124,13 @@ export function App() {
     <Box className="ob-shell">
       <AppBar position="static" elevation={1}>
         <Toolbar variant="dense">
+          <img
+            src="/logo.png"
+            alt=""
+            width={28}
+            height={28}
+            style={{ marginRight: 8, borderRadius: 4, scale: 3 }}
+          />
           <Typography variant="h6" sx={{ mr: 2, whiteSpace: "nowrap" }}>
             open-bot
           </Typography>

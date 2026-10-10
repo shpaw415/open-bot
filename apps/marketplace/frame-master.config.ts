@@ -183,6 +183,7 @@ export default {
     AssetsToBuild({
       paths: [
         { src: "static/favicon.ico", dist: "favicon.ico" },
+        { src: "static/logo.png", dist: "logo.png" },
         { src: "robots.txt", dist: "robots.txt" },
       ],
     }),
@@ -213,6 +214,7 @@ export default {
               exclude: [
                 "/static/*",
                 "/favicon.ico",
+                "/logo.png",
                 "/robots.txt",
                 "/@cf-process-env.js",
                 "/@dynamic-ssr-endpoints.js",

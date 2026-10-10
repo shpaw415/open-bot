@@ -69,6 +69,13 @@ export function Projects({
     load()
   }, [load])
 
+  useEffect(() => {
+    if (!subscribe) return
+    return subscribe((event) => {
+      if (event.type === "projects.changed") load()
+    })
+  }, [subscribe, load])
+
   async function create() {
     const trimmed = name.trim()
     if (busy) return

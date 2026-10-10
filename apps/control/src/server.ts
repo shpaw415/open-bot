@@ -100,6 +100,7 @@ import {
   readPreviewPort,
 } from "./preview"
 import {
+  isProjectManageRequest,
   projectDir,
   projectName,
   projectSubpath,
@@ -739,6 +740,98 @@ export function createServer(
   })
 }
 
+async function existingProjectDir(userId: string, customPath: string) {
+  const resolved = await opencodeExec(userId, [
+    "sh",
+    "-c",
+    'p=$(realpath -e -- "$1") && test -d "$p" && printf %s "$p"',
+    "ob-project",
+    customPath,
+  ])
+  if (resolved.code !== 0) return { error: "folder does not exist" }
+  const canonical = resolveCustomProjectPath(resolved.stdout.trim())
+  if (!canonical) return { error: "the folder must be under /home/agent" }
+  return { path: canonical }
+}
+
+async function handleProjectManage(
+  req: Request,
+  url: URL,
+  db: Db,
+  user: User,
+  hub: EventHub,
+): Promise<Response | null> {
+  if (url.pathname === "/api/projects" && req.method === "GET") {
+    return json({
+      projects: db.projects(user.id).map(({ id, name, path, createdAt }) => ({
+        id,
+        name,
+        path,
+        createdAt,
+      })),
+    })
+  }
+  if (url.pathname === "/api/projects" && req.method === "POST") {
+    const body = await readJson(req)
+    let name = projectName(body.name)
+    const requested = resolveCustomProjectPath(body.path)
+    if (!requested && body.path !== undefined && body.path !== "")
+      return json({ error: "the folder must be under /home/agent" }, 400)
+    if (!name && !requested)
+      return json({ error: "a project name is required" }, 400)
+    await ensure(user, db)
+    let path = requested
+    if (requested) {
+      const existing = await existingProjectDir(user.id, requested)
+      if ("error" in existing) return json({ error: existing.error }, 400)
+      path = existing.path
+    }
+    if (!name && path) name = projectName(path.split("/").pop())
+    if (!name) return json({ error: "a project name is required" }, 400)
+    const slug = slugifyName(name)
+    if (!slug) return json({ error: "a project name is required" }, 400)
+    if (db.projectByName(user.id, name))
+      return json({ error: "a project with this name already exists" }, 409)
+    const folder = path ?? projectDir(slug)
+    if (
+      db
+        .projects(user.id)
+        .some((project) => project.path.replace(/\/+$/g, "") === folder)
+    )
+      return json({ error: "this folder is already a project" }, 409)
+    if (!requested) {
+      const made = await opencodeExec(user.id, ["mkdir", "-p", "--", folder])
+      if (made.code !== 0)
+        return json({ error: "could not create the project directory" }, 502)
+    }
+    const project = {
+      id: crypto.randomUUID(),
+      userId: user.id,
+      name,
+      path: folder,
+      createdAt: Date.now(),
+    }
+    db.createProject(project)
+    hub.emit(user.id, { type: "projects.changed" })
+    return json({
+      project: {
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        createdAt: project.createdAt,
+      },
+    })
+  }
+  const projectIdMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/)
+  if (projectIdMatch && req.method === "DELETE") {
+    const id = decodeURIComponent(projectIdMatch[1] ?? "")
+    if (!db.deleteProject(id, user.id)) return json({ error: "not found" }, 404)
+    hub.emit(user.id, { type: "projects.changed" })
+    return json({ ok: true })
+  }
+  return null
+}
+
 async function api(
   req: Request,
   url: URL,
@@ -874,9 +967,15 @@ async function api(
     url.pathname.startsWith("/api/personas/")
   const isPluginPath =
     url.pathname === "/api/plugins" || url.pathname.startsWith("/api/plugins/")
-  if (isCronPath || isPersonaPath || isPluginPath) {
+  const isProjectManage = isProjectManageRequest(url.pathname, req.method)
+  if (isCronPath || isPersonaPath || isPluginPath || isProjectManage) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
+      if (isProjectManage) {
+        const handled = await handleProjectManage(req, url, db, agent, hub)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
       if (isPersonaPath) {
         const handled = handlePersonas(req, url, db, agent)
         if (handled) return handled
@@ -1637,62 +1736,8 @@ async function api(
     }
     return json({ ok: true })
   }
-  if (url.pathname === "/api/projects" && req.method === "GET") {
-    return json({
-      projects: db.projects(user.id).map(({ id, name, path, createdAt }) => ({
-        id,
-        name,
-        path,
-        createdAt,
-      })),
-    })
-  }
-  if (url.pathname === "/api/projects" && req.method === "POST") {
-    const body = await readJson(req)
-    let name = projectName(body.name)
-    const customPath = resolveCustomProjectPath(body.path)
-    if (!customPath && body.path !== undefined && body.path !== "")
-      return json({ error: "the folder must be under /home/agent" }, 400)
-    if (!name && customPath) name = projectName(customPath.split("/").pop())
-    if (!name) return json({ error: "a project name is required" }, 400)
-    const slug = slugifyName(name)
-    if (!slug) return json({ error: "a project name is required" }, 400)
-    if (db.projectByName(user.id, name))
-      return json({ error: "a project with this name already exists" }, 409)
-    const path = customPath ?? projectDir(slug)
-    if (
-      db
-        .projects(user.id)
-        .some((project) => project.path.replace(/\/+$/g, "") === path)
-    )
-      return json({ error: "this folder is already a project" }, 409)
-    await ensure(user, db)
-    const made = await opencodeExec(user.id, ["mkdir", "-p", "--", path])
-    if (made.code !== 0)
-      return json({ error: "could not create the project directory" }, 502)
-    const project = {
-      id: crypto.randomUUID(),
-      userId: user.id,
-      name,
-      path,
-      createdAt: Date.now(),
-    }
-    db.createProject(project)
-    return json({
-      project: {
-        id: project.id,
-        name: project.name,
-        path: project.path,
-        createdAt: project.createdAt,
-      },
-    })
-  }
-  const projectIdMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/)
-  if (projectIdMatch && req.method === "DELETE") {
-    const id = decodeURIComponent(projectIdMatch[1] ?? "")
-    if (!db.deleteProject(id, user.id)) return json({ error: "not found" }, 404)
-    return json({ ok: true })
-  }
+  const managedProject = await handleProjectManage(req, url, db, user, hub)
+  if (managedProject) return managedProject
   const projectRef = url.pathname.match(
     /^\/api\/projects\/([^/]+)\/(files|file)$/,
   )
