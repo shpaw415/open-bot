@@ -51,6 +51,15 @@ export function reviewPending(status: string | null | undefined): boolean {
   return status === "queued" || status === "running" || status === ""
 }
 
+export function publishShouldPoll(
+  securityStatus: string | null | undefined,
+  reviewStatus: string | null | undefined,
+): boolean {
+  const pending = (status: string | null | undefined) =>
+    status === "queued" || status === "running"
+  return pending(securityStatus) || pending(reviewStatus)
+}
+
 export function highestSeverity(
   findings: { severity: string }[],
 ): SecuritySeverity | null {

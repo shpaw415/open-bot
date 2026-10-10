@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   listingOnEnqueue,
   listingOnVerdict,
+  publishShouldPoll,
   reviewPending,
   shouldQueueReview,
 } from "./review-state"
@@ -63,5 +64,14 @@ describe("security review queue", () => {
     expect(reviewPending("queued")).toBe(true)
     expect(reviewPending("running")).toBe(true)
     expect(reviewPending("pass")).toBe(false)
+  })
+
+  test("republish still polls when the previous verdict is error", () => {
+    expect(publishShouldPoll("error", "queued")).toBe(true)
+    expect(publishShouldPoll("queued", "error")).toBe(true)
+    expect(publishShouldPoll("running", "pass")).toBe(true)
+    expect(publishShouldPoll("error", "error")).toBe(false)
+    expect(publishShouldPoll("pass", "pass")).toBe(false)
+    expect(publishShouldPoll("error", "")).toBe(false)
   })
 })

@@ -164,11 +164,12 @@ EOF
     body=$(jq -n --slurpfile m "$file" '{manifest: $m[0]}')
     out=$(request POST /api/plugins/publish "$body")
     fail_on_error "$out"
-    status=$(printf '%s' "$out" | jq -r '.marketplace.security.status // empty')
+    security_status=$(printf '%s' "$out" | jq -r '.marketplace.security.status // empty')
+    review_status=$(printf '%s' "$out" | jq -r '.marketplace.review.status // empty')
     poll=$(printf '%s' "$out" | jq -r '.review.poll // empty')
-    if [ -n "$poll" ] && { [ "$status" = "queued" ] || [ "$status" = "running" ]; }; then
+    if [ -n "$poll" ] && { [ "$security_status" = "queued" ] || [ "$security_status" = "running" ] || [ "$review_status" = "queued" ] || [ "$review_status" = "running" ]; }; then
       echo "ob-plugin: waiting for security review..." >&2
-      deadline=$(( $(date +%s) + 180 ))
+      deadline=$(( $(date +%s) + 480 ))
       while :; do
         polled=$(request GET "$poll")
         fail_on_error "$polled"
@@ -176,12 +177,16 @@ EOF
         case "$status" in
           queued|running|"")
             if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "ob-plugin: security review still ${status:-pending} after 8 minutes" >&2
               break
             fi
             sleep 2
             ;;
           *)
-            out=$(printf '%s' "$out" | jq --argjson polled "$polled" '.marketplace.security = $polled.security | .marketplace.status = ($polled.pluginStatus // .marketplace.status)')
+            out=$(printf '%s' "$out" | jq --argjson polled "$polled" --arg status "$status" '.marketplace.security = $polled.security | .marketplace.review.status = $status | .marketplace.status = ($polled.pluginStatus // .marketplace.status)')
+            if [ "$status" = "error" ]; then
+              echo "ob-plugin: security review error: $(printf '%s' "$polled" | jq -r '.security.error // "security review failed"')" >&2
+            fi
             break
             ;;
         esac

@@ -58,23 +58,76 @@ type GlmRunner = {
   run: (model: string, inputs: Record<string, unknown>) => Promise<unknown>
 }
 
-function responseText(result: unknown): string {
-  if (!result || typeof result !== "object") return ""
+export const GLM_REVIEW_MAX_TOKENS = 8192
+
+const VERDICT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["verdict", "severity", "findings"],
+  properties: {
+    verdict: { type: "string", enum: ["pass", "concern"] },
+    severity: { type: "string", enum: ["low", "medium", "high"] },
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "severity", "detail"],
+        properties: {
+          title: { type: "string" },
+          severity: { type: "string", enum: ["low", "medium", "high"] },
+          detail: { type: "string" },
+          path: { type: ["string", "null"] },
+        },
+      },
+    },
+  },
+}
+
+export function glmReviewRequest(userContent: string): Record<string, unknown> {
+  return {
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userContent },
+    ],
+    max_tokens: GLM_REVIEW_MAX_TOKENS,
+    max_completion_tokens: GLM_REVIEW_MAX_TOKENS,
+    temperature: 0.1,
+    reasoning_effort: "high",
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "security_verdict",
+        strict: true,
+        schema: VERDICT_SCHEMA,
+      },
+    },
+  }
+}
+
+function modelContent(result: unknown): {
+  text: string
+  finishReason: string | null
+} {
+  if (!result || typeof result !== "object")
+    return { text: "", finishReason: null }
   const record = result as Record<string, unknown>
-  if (typeof record.response === "string") return record.response
   const choices = record.choices
   if (Array.isArray(choices) && choices.length > 0) {
-    const message = (
-      choices[0] as {
-        message?: { content?: unknown; reasoning_content?: unknown }
-      }
-    )?.message
-    if (typeof message?.content === "string" && message.content.trim())
-      return message.content
-    if (typeof message?.reasoning_content === "string")
-      return message.reasoning_content
+    const choice = choices[0] as {
+      finish_reason?: unknown
+      message?: { content?: unknown }
+    }
+    const finishReason =
+      typeof choice.finish_reason === "string" ? choice.finish_reason : null
+    const content = choice.message?.content
+    if (typeof content === "string" && content.trim())
+      return { text: content, finishReason }
+    return { text: "", finishReason }
   }
-  return ""
+  if (typeof record.response === "string" && record.response.trim())
+    return { text: record.response, finishReason: null }
+  return { text: "", finishReason: null }
 }
 
 const SYSTEM_PROMPT = `You are a security reviewer for open-bot plugins. A plugin manifest installs skills, personas, cron jobs, desktop tools, and configs into a user's self-hosted agent desktop. Analyze the package and reply with ONLY a JSON object, no markdown fences, in this exact shape:
@@ -287,38 +340,41 @@ function normalizeFindings(parsed: unknown): SecurityFinding[] {
 type GlmVerdict = {
   verdict: "pass" | "concern" | "invalid"
   findings: SecurityFinding[]
+  exhausted: boolean
+}
+
+export function verdictFromModelResult(result: unknown): GlmVerdict {
+  const { text, finishReason } = modelContent(result)
+  const parsed = extractJson(text)
+  const verdict = normalizeVerdict(parsed) ?? "invalid"
+  return {
+    verdict,
+    findings: normalizeFindings(parsed),
+    exhausted:
+      verdict === "invalid" && (!text.trim() || finishReason === "length"),
+  }
 }
 
 async function runGlmReview(
   ai: NonNullable<Env["AI"]>,
   userContent: string,
-  strict: boolean,
 ): Promise<GlmVerdict> {
   const runner = ai as unknown as GlmRunner
   try {
-    const result = (await runner.run(MODEL, {
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: strict
-            ? `${userContent}\n\nREMINDER: reply with ONLY the JSON object, no other text.`
-            : userContent,
-        },
-      ],
-      max_tokens: 2048,
-      temperature: 0.1,
-      chat_template_kwargs: { enable_thinking: false },
-    })) as unknown
-    const parsed = extractJson(responseText(result))
-    const verdict = normalizeVerdict(parsed)
-    return {
-      verdict: verdict ?? "invalid",
-      findings: normalizeFindings(parsed),
+    const result = await runner.run(MODEL, glmReviewRequest(userContent))
+    const verdict = verdictFromModelResult(result)
+    if (verdict.verdict === "invalid") {
+      const { finishReason, text } = modelContent(result)
+      console.error("security review verdict unusable", {
+        exhausted: verdict.exhausted,
+        finishReason,
+        contentChars: text.length,
+      })
     }
+    return verdict
   } catch (error) {
     console.error("security review AI call failed", error)
-    return { verdict: "invalid", findings: [] }
+    return { verdict: "invalid", findings: [], exhausted: false }
   }
 }
 
@@ -470,14 +526,19 @@ export async function reviewPublish(
   const sources = await fetchScriptSources(repo, tag, tree, env.GITHUB_TOKEN)
   const userContent = buildUserContent(manifest, readme, tag, tree, sources)
 
-  let verdict = await runGlmReview(env.AI, userContent, false)
+  let verdict = await runGlmReview(env.AI, userContent)
   if (verdict.verdict === "invalid") {
-    verdict = await runGlmReview(env.AI, userContent, true)
+    verdict = await runGlmReview(
+      env.AI,
+      buildUserContent(manifest, null, tag, [], ""),
+    )
     if (verdict.verdict === "invalid") {
       return {
         status: "error",
         ...base,
-        error: "security review returned no usable verdict",
+        error: verdict.exhausted
+          ? "model exhausted token budget before a verdict"
+          : "security review returned no usable verdict",
       }
     }
   }

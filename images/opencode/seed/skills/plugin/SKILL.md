@@ -51,7 +51,7 @@ ob-plugin install NAME --version beta-1
 ```
 
 - Dev versions pass the same security review, consent flow, and policy as stable ones, but stay out of marketplace search and never become the listing's "latest".
-- `ob-plugin publish` returns after the marketplace queues the security review, then waits up to 3 minutes for `queued` / `running` to become `pass`, `concern`, or `error`.
+- `ob-plugin publish` returns after the marketplace queues the security review, then waits up to 8 minutes for `queued` / `running` to become `pass`, `concern`, or `error`. A previous review's error does not skip that wait.
 - Reinstalling the pinned version (`ob-plugin install NAME --version beta-1` again, or Re-install on the dashboard Plugins tab) picks up the republish: it re-pulls the release and re-runs setup. Uninstall from the same tab any time.
 - When the plugin passes, bump to semver (`1.0.0`), tag, and publish — the stable version becomes the marketplace latest, and a plain `ob-plugin install NAME` upgrades installs pinned to the dev tag.
 
