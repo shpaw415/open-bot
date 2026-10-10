@@ -3,6 +3,7 @@ import { join } from "node:path"
 import type { Db, WorkspaceMedia } from "@open-bot/db"
 import { endpoint } from "./docker"
 import { dataDir } from "./env"
+import { fileCapturedBytes, vaultCaptureFor } from "./media-vault"
 import { decodeWorkspaceImage, workspaceImagePath } from "./workspace-image"
 import {
   decodeWorkspaceModel3d,
@@ -100,6 +101,7 @@ export async function snapshotOne(
   base: string,
   auth: HeadersInit,
   target: { messageId: string; path: string; kind: Kind },
+  vault?: { albumTitle: string } | null,
 ) {
   const upstream = await fetch(
     `${base}/file/content?path=${encodeURIComponent(target.path)}`,
@@ -125,6 +127,44 @@ export async function snapshotOne(
     createdAt: Date.now(),
   })
   if (!created) removeMediaFile(id)
+  if (!vault) return
+  try {
+    fileCapturedBytes(db, {
+      userId,
+      sessionId,
+      messageId: target.messageId,
+      path: target.path,
+      bytes: decoded.bytes,
+      mime: decoded.mime,
+      kind: target.kind,
+      albumTitle: vault.albumTitle,
+    })
+  } catch {
+    return
+  }
+}
+
+async function sessionTitle(
+  base: string,
+  auth: HeadersInit,
+  sessionId: string,
+) {
+  try {
+    const res = await fetch(
+      `${base}/session/${encodeURIComponent(sessionId)}`,
+      {
+        headers: auth,
+        signal: AbortSignal.timeout(10_000),
+      },
+    )
+    if (!res.ok) return ""
+    const body = (await res.json().catch(() => null)) as {
+      title?: unknown
+    } | null
+    return typeof body?.title === "string" ? body.title : ""
+  } catch {
+    return ""
+  }
 }
 
 /** Prune oldest snapshots until total size fits under the configured cap. */
@@ -163,6 +203,9 @@ export async function captureSessionMedia(
     const now = Date.now()
     const pending = body.flatMap((message) => collectTargets(message, now))
     if (pending.length === 0) return
+    const remoteTitle = await sessionTitle(base, auth, sessionId)
+    const storedTitle = db.threadTitle(userId, sessionId)?.title ?? ""
+    const vault = vaultCaptureFor(storedTitle, remoteTitle)
     const existing = new Set(
       db
         .workspaceMediaForSession(userId, sessionId)
@@ -171,7 +214,7 @@ export async function captureSessionMedia(
     for (const target of pending) {
       if (existing.has(`${target.messageId}\n${target.path}`)) continue
       existing.add(`${target.messageId}\n${target.path}`)
-      await snapshotOne(db, userId, sessionId, base, auth, target).catch(
+      await snapshotOne(db, userId, sessionId, base, auth, target, vault).catch(
         () => {},
       )
     }

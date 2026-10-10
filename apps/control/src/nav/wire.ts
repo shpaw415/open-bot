@@ -40,7 +40,14 @@ export function decisionBody(
   const body: Record<string, unknown> = { state, questions }
   if (auth.model.trim()) body.model = auth.model.trim()
   const shots = (images ?? []).filter((item) => item.base64).slice(0, 4)
-  if (shots.length > 0) body.images = shots
+  if (shots.length > 0) {
+    // Cloudflare Workers AI wants {content_type, base64} objects; llama.cpp's
+    // /v1/systemone (selfhosted-clef) rejects them and needs data URLs.
+    body.images =
+      auth.provider === "cloudflare-clef"
+        ? shots
+        : shots.map((item) => `data:${item.content_type};base64,${item.base64}`)
+  }
   return body
 }
 

@@ -263,6 +263,8 @@ function InstalledTable({
   onRemove,
   onSettings,
   onReinstall,
+  onRetrySetup,
+  onUpdate,
 }: {
   plugins: InstalledPluginInfo[]
   loaded: boolean
@@ -275,6 +277,8 @@ function InstalledTable({
   onRemove: (plugin: InstalledPluginInfo) => void
   onSettings: (plugin: InstalledPluginInfo) => void
   onReinstall: (plugin: InstalledPluginInfo) => void
+  onRetrySetup: (plugin: InstalledPluginInfo) => void
+  onUpdate: (plugin: InstalledPluginInfo) => void
 }) {
   const [confirmId, setConfirmId] = useState<string | null>(null)
   const visible = plugins.slice(
@@ -328,6 +332,22 @@ function InstalledTable({
                           Settings
                         </Button>
                       ) : null}
+                      {plugin.updateAvailable ? (
+                        <ToolTip
+                          title={`New stable version available — updates to v${plugin.updateAvailable} (re-runs setup and re-applies every surface)`}
+                        >
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="primary"
+                            disabled={rowBusy}
+                            onClick={() => onUpdate(plugin)}
+                            sx={{ ml: 1 }}
+                          >
+                            update to v{plugin.updateAvailable}
+                          </Button>
+                        </ToolTip>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <ToolTip title={plugin.description || plugin.pluginId}>
@@ -347,14 +367,18 @@ function InstalledTable({
                       </ToolTip>
                       {plugin.init && !plugin.init.ok ? (
                         <ToolTip
-                          title={`Setup commands failed — check ~/.open-bot/plugin-init/${plugin.pluginId}.log on the desktop.`}
+                          title={`Setup commands failed at install or boot — click to re-run them (log: ~/.open-bot/plugin-init/${plugin.pluginId}.log)`}
                         >
-                          <Chip
+                          <Button
                             size="small"
                             color="warning"
-                            label="setup failed"
-                            sx={{ mt: 0.5 }}
-                          />
+                            variant="text"
+                            disabled={rowBusy}
+                            onClick={() => onRetrySetup(plugin)}
+                            sx={{ mt: 0.5, px: 0.5 }}
+                          >
+                            setup failed — retry
+                          </Button>
                         </ToolTip>
                       ) : null}
                     </TableCell>
@@ -457,13 +481,15 @@ function SettingsDialog({
   const [values, setValues] = useState<Record<string, string>>(() => {
     const out: Record<string, string> = {}
     for (const config of plugin.manifest.configs ?? [])
-      out[config.key] = config.def
+      out[config.key] = plugin.settings?.[config.key] ?? config.def
     return out
   })
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
 
   async function save() {
     setBusy(true)
+    setError("")
     try {
       await api(
         `/api/plugins/installed/${encodeURIComponent(plugin.pluginId)}/settings`,
@@ -473,25 +499,86 @@ function SettingsDialog({
         },
       )
       onClose()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "could not save")
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <Dialog open onClose={onClose} fullWidth>
+    <Dialog open onClose={() => !busy && onClose()} fullWidth>
       <Stack spacing={2} sx={{ p: 3 }}>
         <Typography variant="h6">{plugin.name} settings</Typography>
-        {(plugin.manifest.configs ?? []).map((config) => (
-          <TextField
-            key={config.key}
-            label={config.label}
-            value={values[config.key] ?? ""}
-            onChange={(event) =>
-              setValues({ ...values, [config.key]: event.currentTarget.value })
-            }
-          />
-        ))}
+        {(plugin.manifest.configs ?? []).map((config) => {
+          const type = config.type ?? (config.secret ? "secret" : "string")
+          if (type === "bool") {
+            return (
+              <Stack
+                key={config.key}
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                justifyContent="space-between"
+              >
+                <Typography variant="body2">{config.label}</Typography>
+                <Switch
+                  checked={values[config.key] === "true"}
+                  disabled={busy}
+                  onChange={() =>
+                    setValues({
+                      ...values,
+                      [config.key]:
+                        values[config.key] === "true" ? "false" : "true",
+                    })
+                  }
+                />
+              </Stack>
+            )
+          }
+          if (type === "enum" && (config.options?.length ?? 0) > 0) {
+            return (
+              <Select
+                key={config.key}
+                name={config.key}
+                label={config.label}
+                value={values[config.key] ?? ""}
+                disabled={busy}
+                onSelect={(next) =>
+                  setValues({ ...values, [config.key]: next })
+                }
+              >
+                {(config.options ?? []).map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </Select>
+            )
+          }
+          return (
+            <TextField
+              key={config.key}
+              label={config.label}
+              value={values[config.key] ?? ""}
+              disabled={busy}
+              type={
+                type === "secret"
+                  ? "password"
+                  : type === "number"
+                    ? "number"
+                    : "text"
+              }
+              onChange={(event) =>
+                setValues({
+                  ...values,
+                  [config.key]: event.currentTarget.value,
+                })
+              }
+            />
+          )
+        })}
+        {error ? <Alert severity="error">{error}</Alert> : null}
       </Stack>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>
@@ -876,7 +963,8 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
 
 export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   const mobile = useMobile()
-  const { plugins, policy, configured, loaded, refresh } = useInstalledPlugins()
+  const { plugins, policy, autoUpdate, configured, loaded, refresh } =
+    useInstalledPlugins()
   const [market, setMarket] = useState<MarketPlugin[]>([])
   const [query, setQuery] = useState("")
   const [marketLoading, setMarketLoading] = useState(false)
@@ -982,6 +1070,30 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  async function toggleAutoUpdate() {
+    setPolicyBusy(true)
+    setError("")
+    setNotice("")
+    try {
+      await api("/api/plugins/policy", {
+        method: "PUT",
+        body: JSON.stringify({
+          autoUpdate: autoUpdate === "stable" ? "off" : "stable",
+        }),
+      })
+      const message = `auto-update ${autoUpdate === "stable" ? "off" : "on for stable versions"}`
+      setNotice(message)
+      setToast(message)
+      await refresh()
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "action failed"
+      setError(message)
+      setToast(message)
+    } finally {
+      setPolicyBusy(false)
+    }
+  }
+
   async function startInstall(target: MarketPlugin) {
     setInstallingId(target.id)
     setError("")
@@ -1051,6 +1163,17 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
             Plugins
           </Typography>
           <Chip label={`policy: ${policy}`} size="small" variant="outlined" />
+          {isAdmin ? (
+            <ToolTip title="Automatically install newer approved stable versions of installed plugins">
+              <Chip
+                label={`auto-update: ${autoUpdate}`}
+                size="small"
+                variant="outlined"
+                color={autoUpdate === "stable" ? "primary" : undefined}
+                onClick={() => void toggleAutoUpdate()}
+              />
+            </ToolTip>
+          ) : null}
           {isAdmin ? (
             <Button
               size="small"
@@ -1137,6 +1260,32 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
                   ),
                 }),
               `${target.pluginId} re-installed (v${target.version})`,
+            )
+          }
+          onRetrySetup={(target) =>
+            void act(
+              target.pluginId,
+              () =>
+                api(
+                  `/api/plugins/installed/${encodeURIComponent(target.pluginId)}/setup`,
+                  { method: "POST" },
+                ),
+              `${target.pluginId} setup re-run`,
+            )
+          }
+          onUpdate={(target) =>
+            void act(
+              target.pluginId,
+              () =>
+                api("/api/plugins/install", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    pluginId: target.pluginId,
+                    version: target.updateAvailable,
+                    confirm: true,
+                  }),
+                }),
+              `${target.pluginId} updated to v${target.updateAvailable}`,
             )
           }
         />

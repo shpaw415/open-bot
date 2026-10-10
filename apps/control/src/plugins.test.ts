@@ -4,7 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { User } from "@open-bot/db"
 import { type Db, openDatabase } from "@open-bot/db"
+import type { PluginManifest } from "@open-bot/plugin-kit"
 import { ensureGuardCron, handlePlugins } from "./plugins"
+import { applyPluginInstall } from "./plugins-apply"
 
 const manifest = {
   id: "weather-pro",
@@ -75,7 +77,10 @@ describe("plugins router", () => {
   test("defaults to manual policy and gates changes to admins", async () => {
     const initial = route("/api/plugins/policy")
     const res = await handlePlugins(initial.req, initial.url, db, user(), hub)
-    expect(await res?.json()).toEqual({ policy: "manual" })
+    expect(await res?.json()).toEqual({
+      policy: "manual",
+      autoUpdate: "off",
+    })
 
     const denied = route("/api/plugins/policy", "PUT", { policy: "auto" })
     const deniedRes = await handlePlugins(
@@ -95,10 +100,29 @@ describe("plugins router", () => {
       user({ role: "admin" }),
       hub,
     )
-    expect(await allowedRes?.json()).toEqual({ policy: "auto" })
+    expect(await allowedRes?.json()).toEqual({
+      policy: "auto",
+      autoUpdate: "off",
+    })
     const after = route("/api/plugins/policy")
     const afterRes = await handlePlugins(after.req, after.url, db, user(), hub)
-    expect(await afterRes?.json()).toEqual({ policy: "auto" })
+    expect(await afterRes?.json()).toEqual({
+      policy: "auto",
+      autoUpdate: "off",
+    })
+
+    const toggle = route("/api/plugins/policy", "PUT", { autoUpdate: "stable" })
+    const toggleRes = await handlePlugins(
+      toggle.req,
+      toggle.url,
+      db,
+      user({ role: "admin" }),
+      hub,
+    )
+    expect(await toggleRes?.json()).toEqual({
+      policy: "auto",
+      autoUpdate: "stable",
+    })
   })
 
   test("lists installed plugins", async () => {
@@ -279,5 +303,332 @@ describe("plugins router", () => {
   test("unknown plugin routes return null so the server can 404", async () => {
     const missing = route("/api/plugins/nope")
     expect(handlePlugins(missing.req, missing.url, db, user(), hub)).toBeNull()
+  })
+
+  test("plugin notices require an installed, enabled, permitted plugin", async () => {
+    const emitted: { type: string; properties?: unknown }[] = []
+    const localHub = {
+      emit: (_id: string, event: { type: string; properties?: unknown }) =>
+        emitted.push(event),
+    }
+
+    const missing = route("/api/plugins/notice", "POST", {
+      pluginId: "weather-pro",
+      title: "Hi",
+    })
+    const missingRes = await handlePlugins(
+      missing.req,
+      missing.url,
+      db,
+      user(),
+      localHub,
+    )
+    expect(missingRes?.status).toBe(404)
+
+    const permitted = {
+      ...manifest,
+      permissions: { notifications: true },
+    }
+    db.createInstalledPlugin({
+      id: "row-1",
+      userId: "a",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify(permitted),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    const ok = route("/api/plugins/notice", "POST", {
+      pluginId: "weather-pro",
+      title: "Backup done",
+      body: "3 files copied",
+    })
+    const okRes = await handlePlugins(ok.req, ok.url, db, user(), localHub)
+    expect(await okRes?.json()).toMatchObject({ ok: true })
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0]).toMatchObject({
+      type: "plugin.notice",
+      properties: { pluginId: "weather-pro", title: "Backup done" },
+    })
+
+    db.setInstalledPluginEnabled("a", "weather-pro", false)
+    const disabled = route("/api/plugins/notice", "POST", {
+      pluginId: "weather-pro",
+      title: "Hi",
+    })
+    const disabledRes = await handlePlugins(
+      disabled.req,
+      disabled.url,
+      db,
+      user(),
+      localHub,
+    )
+    expect(disabledRes?.status).toBe(409)
+  })
+
+  test("plugin notices reject missing permission, bad input, and flood", async () => {
+    db.createInstalledPlugin({
+      id: "row-1",
+      userId: "a",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify(manifest),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    const denied = route("/api/plugins/notice", "POST", {
+      pluginId: "weather-pro",
+      title: "Hi",
+    })
+    const deniedRes = await handlePlugins(
+      denied.req,
+      denied.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(deniedRes?.status).toBe(403)
+
+    const tooLong = route("/api/plugins/notice", "POST", {
+      pluginId: "weather-pro",
+      title: "x".repeat(121),
+    })
+    const tooLongRes = await handlePlugins(
+      tooLong.req,
+      tooLong.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(tooLongRes?.status).toBe(400)
+
+    const update = db.installedPlugin("a", "weather-pro")
+    if (update) {
+      const withPermission = {
+        ...manifest,
+        permissions: { notifications: true },
+      }
+      db.updateInstalledPlugin("a", "weather-pro", {
+        version: update.version,
+        manifest: JSON.stringify(withPermission),
+        readme: null,
+      })
+    }
+    for (let index = 0; index < 30; index++) {
+      const flood = route("/api/plugins/notice", "POST", {
+        pluginId: "weather-pro",
+        title: `note ${index}`,
+      })
+      const floodRes = await handlePlugins(
+        flood.req,
+        flood.url,
+        db,
+        user(),
+        hub,
+      )
+      expect(floodRes?.status).toBe(index < 30 - 1 ? 200 : 429)
+    }
+  })
+
+  test("settings PUT validates typed configs", async () => {
+    db.createInstalledPlugin({
+      id: "row-1",
+      userId: "a",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        ...manifest,
+        configs: [
+          {
+            key: "units",
+            label: "Units",
+            def: "metric",
+            type: "enum",
+            options: ["metric", "imperial"],
+          },
+          { key: "alerts", label: "Alerts", def: "false", type: "bool" },
+          { key: "token", label: "Token", def: "", type: "secret" },
+        ],
+      }),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    const badEnum = route(
+      "/api/plugins/installed/weather-pro/settings",
+      "PUT",
+      {
+        settings: { units: "kelvin" },
+      },
+    )
+    const badEnumRes = await handlePlugins(
+      badEnum.req,
+      badEnum.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(badEnumRes?.status).toBe(400)
+
+    const unknown = route(
+      "/api/plugins/installed/weather-pro/settings",
+      "PUT",
+      {
+        settings: { nope: "x" },
+      },
+    )
+    const unknownRes = await handlePlugins(
+      unknown.req,
+      unknown.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(unknownRes?.status).toBe(400)
+
+    const good = route("/api/plugins/installed/weather-pro/settings", "PUT", {
+      settings: { units: "imperial", alerts: "1", token: "hunter2" },
+    })
+    const goodRes = await handlePlugins(good.req, good.url, db, user(), hub)
+    expect(await goodRes?.json()).toMatchObject({ ok: true })
+    const values = Object.fromEntries(
+      db.pluginSettings("a", "weather-pro").map((s) => [s.key, s.value]),
+    )
+    expect(values).toEqual({
+      units: "imperial",
+      alerts: "true",
+      token: "hunter2",
+    })
+
+    const listed = route("/api/plugins/installed")
+    const listedRes = await handlePlugins(
+      listed.req,
+      listed.url,
+      db,
+      user(),
+      hub,
+    )
+    const body = (await listedRes?.json()) as {
+      plugins: { settings: Record<string, string> }[]
+    }
+    expect(body.plugins[0]?.settings).toMatchObject({ units: "imperial" })
+  })
+
+  test("install prunes settings the new manifest no longer declares", async () => {
+    db.setPluginSetting("a", "weather-pro", "units", "imperial")
+    db.setPluginSetting("a", "weather-pro", "legacy", "junk")
+    const row = await applyPluginInstall(db, user(), {
+      id: "weather-pro",
+      version: "1.1.0",
+      status: "approved",
+      manifest: {
+        ...manifest,
+        configs: [{ key: "units", label: "Units", def: "metric" }],
+      } as unknown as PluginManifest,
+      readme: null,
+      downloads: 0,
+    })
+    expect(row.version).toBe("1.1.0")
+    const keys = db
+      .pluginSettings("a", "weather-pro")
+      .map((setting) => setting.key)
+      .sort()
+    expect(keys).toEqual(["units"])
+    // The saved value (not the default) survives the upgrade.
+    expect(
+      db.pluginSettings("a", "weather-pro").find((s) => s.key === "units")
+        ?.value,
+    ).toBe("imperial")
+  })
+
+  test("reinstall keeps saved settings and request settings win", async () => {
+    db.setPluginSetting("a", "weather-pro", "units", "imperial")
+    db.setPluginSetting("a", "weather-pro", "token", "hunter2")
+    await applyPluginInstall(db, user(), {
+      id: "weather-pro",
+      version: "1.2.0",
+      status: "approved",
+      manifest: {
+        ...manifest,
+        configs: [
+          { key: "units", label: "Units", def: "metric" },
+          { key: "token", label: "Token", def: "", type: "secret" },
+        ],
+      } as unknown as PluginManifest,
+      readme: null,
+      downloads: 0,
+    })
+    const values = Object.fromEntries(
+      db.pluginSettings("a", "weather-pro").map((s) => [s.key, s.value]),
+    )
+    expect(values).toEqual({ units: "imperial", token: "hunter2" })
+
+    await applyPluginInstall(
+      db,
+      user(),
+      {
+        id: "weather-pro",
+        version: "1.3.0",
+        status: "approved",
+        manifest: {
+          ...manifest,
+          configs: [
+            { key: "units", label: "Units", def: "metric" },
+            { key: "token", label: "Token", def: "", type: "secret" },
+          ],
+        } as unknown as PluginManifest,
+        readme: null,
+        downloads: 0,
+      },
+      { settings: { units: "kelvin" } },
+    ).catch(() => {})
+    // kelvin is not a declared enum-less string config value... string type
+    // accepts it; the request value must win over the saved one.
+    const after = Object.fromEntries(
+      db.pluginSettings("a", "weather-pro").map((s) => [s.key, s.value]),
+    )
+    expect(after.units).toBe("kelvin")
+    expect(after.token).toBe("hunter2")
+  })
+
+  test("setup retry surfaces failures", async () => {
+    db.createInstalledPlugin({
+      id: "row-1",
+      userId: "a",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        ...manifest,
+        setup: { commands: ["echo hello"] },
+      }),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    const none = route("/api/plugins/installed/unknown/setup", "POST")
+    const noneRes = await handlePlugins(none.req, none.url, db, user(), hub)
+    expect(noneRes?.status).toBe(404)
+
+    // No desktop is running in tests, so the docker exec path fails with a
+    // surfaced error rather than a silent ok.
+    const retry = route("/api/plugins/installed/weather-pro/setup", "POST")
+    const retryRes = await handlePlugins(retry.req, retry.url, db, user(), hub)
+    expect(retryRes?.status).toBe(502)
+    const body = (await retryRes?.json()) as { error?: string }
+    expect(body.error).toBeTruthy()
   })
 })

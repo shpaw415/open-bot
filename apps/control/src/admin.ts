@@ -1,6 +1,13 @@
 import type { Db, Role, User } from "@open-bot/db"
 import { desktopPhase, destroyDesktop, stopDesktop } from "./docker"
 import { handleAdminImprovements } from "./improvements"
+import {
+  deleteUserVault,
+  MAX_VAULT_CAP_MB,
+  pruneMediaVault,
+  VAULT_CAP_KEY,
+  vaultCapMb,
+} from "./media-vault"
 import { randomToken } from "./passwords"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
 import {
@@ -49,25 +56,47 @@ export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
     return json({
       mediaSnapshotCapMb: mediaCapMb(db),
       mediaSnapshotUsedBytes: db.workspaceMediaUsedBytes(),
+      mediaVaultCapMb: vaultCapMb(db),
+      mediaVaultUsedBytes: db.mediaVaultUsedBytes(),
     })
   }
   if (url.pathname === "/api/admin/settings" && req.method === "PUT") {
     const body = await readJson(req)
-    const raw = body.mediaSnapshotCapMb
-    const value =
-      typeof raw === "number" && Number.isInteger(raw) ? raw : Number.NaN
-    if (!Number.isFinite(value) || value < 0 || value > MAX_MEDIA_CAP_MB)
-      return json(
-        {
-          error: `mediaSnapshotCapMb must be an integer between 0 and ${MAX_MEDIA_CAP_MB}`,
-        },
-        400,
-      )
-    db.setSetting(MEDIA_CAP_KEY, String(value))
-    pruneWorkspaceMedia(db)
+    if ("mediaSnapshotCapMb" in body) {
+      const raw = body.mediaSnapshotCapMb
+      const value =
+        typeof raw === "number" && Number.isInteger(raw) ? raw : Number.NaN
+      if (!Number.isFinite(value) || value < 0 || value > MAX_MEDIA_CAP_MB)
+        return json(
+          {
+            error: `mediaSnapshotCapMb must be an integer between 0 and ${MAX_MEDIA_CAP_MB}`,
+          },
+          400,
+        )
+      db.setSetting(MEDIA_CAP_KEY, String(value))
+      pruneWorkspaceMedia(db)
+    }
+    if ("mediaVaultCapMb" in body) {
+      const raw = body.mediaVaultCapMb
+      const value =
+        typeof raw === "number" && Number.isInteger(raw) ? raw : Number.NaN
+      if (!Number.isFinite(value) || value < 0 || value > MAX_VAULT_CAP_MB)
+        return json(
+          {
+            error: `mediaVaultCapMb must be an integer between 0 and ${MAX_VAULT_CAP_MB}`,
+          },
+          400,
+        )
+      db.setSetting(VAULT_CAP_KEY, String(value))
+      pruneMediaVault(db)
+    }
+    if (!("mediaSnapshotCapMb" in body) && !("mediaVaultCapMb" in body))
+      return json({ error: "nothing to update" }, 400)
     return json({
-      mediaSnapshotCapMb: value,
+      mediaSnapshotCapMb: mediaCapMb(db),
       mediaSnapshotUsedBytes: db.workspaceMediaUsedBytes(),
+      mediaVaultCapMb: vaultCapMb(db),
+      mediaVaultUsedBytes: db.mediaVaultUsedBytes(),
     })
   }
   if (url.pathname === "/api/admin/users" && req.method === "GET") {
@@ -213,6 +242,7 @@ export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
     if (error) return json({ error }, 400)
     await destroyDesktop(target.id)
     deleteUserMedia(db, target.id)
+    deleteUserVault(db, target.id)
     db.deleteUser(target.id)
     return json({ ok: true })
   }

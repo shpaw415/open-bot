@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl gh git jq libatomic1 procps sudo unzip \
-    xvfb openbox chromium sqlite3 \
+    xvfb openbox chromium wmctrl xdotool sqlite3 \
     python3 python3-pip python3-venv python3-pil \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \
@@ -63,6 +63,8 @@ COPY scripts/opencode-auth.sh /opt/open-bot/opencode-auth.sh
 COPY scripts/ob-cron.sh /usr/local/bin/ob-cron
 COPY scripts/ob-persona.sh /usr/local/bin/ob-persona
 COPY scripts/ob-project.sh /usr/local/bin/ob-project
+COPY scripts/ob-thread.sh /usr/local/bin/ob-thread
+COPY scripts/ob-media.sh /usr/local/bin/ob-media
 COPY scripts/ob-config.sh /usr/local/bin/ob-config
 COPY scripts/ob-plugin.sh /usr/local/bin/ob-plugin
 COPY scripts/ob-backup.sh /usr/local/bin/ob-backup
@@ -98,6 +100,7 @@ COPY images/opencode/preview-server.ts /opt/open-bot/preview-server.ts
 COPY images/opencode/preview-spawn.ts /opt/open-bot/preview-spawn.ts
 COPY images/opencode/ob-preview.sh /usr/local/bin/ob-preview
 COPY images/opencode/ob-vnc.sh /usr/local/bin/ob-vnc
+COPY images/opencode/ob-app.sh /usr/local/bin/ob-app
 COPY images/opencode/ob-page.sh /usr/local/bin/ob-page
 COPY images/opencode/xcap.py /opt/open-bot/xcap.py
 COPY images/opencode/xshot.ts /opt/open-bot/xshot.ts
@@ -118,12 +121,12 @@ RUN if [ "$OPEN_BOT_DEV" = "1" ]; then \
     fi \
     && rm -f /tmp/ob-improve.sh
 RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
-     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/open-bot/preview-server.ts /opt/open-bot/preview-spawn.ts \
+     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/open-bot/preview-server.ts /opt/open-bot/preview-spawn.ts \
     && cp -a /usr/local /opt/image-usr-local \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-project /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview \
+      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-nav /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-app /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-project /opt/image-usr-local/bin/ob-thread /opt/image-usr-local/bin/ob-media /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview \
     && touch /opt/open-bot/instance
 
 USER root

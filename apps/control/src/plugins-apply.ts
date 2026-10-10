@@ -155,9 +155,28 @@ export async function applyPluginInstall(
   }
 
   try {
-    const wantedSettings = pluginSettingsFor(manifest, options.settings ?? {})
+    // Saved settings survive an upgrade/reinstall: request-provided values
+    // win, then everything the user configured keeps its value.
+    const savedSettings: Record<string, string> = {}
+    for (const setting of db.pluginSettings(user.id, manifest.id)) {
+      savedSettings[setting.key] = setting.value
+    }
+    const wantedSettings = pluginSettingsFor(manifest, {
+      ...savedSettings,
+      ...(options.settings ?? {}),
+    })
     for (const [key, value] of Object.entries(wantedSettings)) {
       db.setPluginSetting(user.id, manifest.id, key, value)
+    }
+    // Settings migration: keys the new manifest no longer declares are dead
+    // weight (and keep surfacing in config payloads) — prune them.
+    const manifestKeys = new Set(
+      (manifest.configs ?? []).map((config) => config.key),
+    )
+    for (const setting of db.pluginSettings(user.id, manifest.id)) {
+      if (!manifestKeys.has(setting.key)) {
+        db.deletePluginSetting(user.id, manifest.id, setting.key)
+      }
     }
 
     for (const slug of manifest.permissions?.vaultCreate ?? []) {
@@ -435,6 +454,182 @@ export async function applyPluginUninstall(
   await revertApplied(db, user, row.pluginId, row.applied)
   await syncPluginAuth(user.id, row.pluginId, null).catch(() => {})
   db.deleteInstalledPlugin(user.id, row.pluginId)
+}
+
+// Re-runs the manifest's root setup commands (visible + retryable path for a
+// failed install/boot setup). Updates the applied init log either way.
+export async function retryPluginSetup(
+  db: Db,
+  user: User,
+  row: InstalledPlugin,
+): Promise<PluginAppliedLog["init"]> {
+  const manifest = row.manifest as PluginManifest
+  const commands = manifest.setup?.commands ?? []
+  if (commands.length === 0) {
+    throw new Error("this plugin declares no setup commands")
+  }
+  const result = await runPluginInitCommands(
+    user.id,
+    row.pluginId,
+    commands,
+    "retry",
+  )
+  const init = initLogEntry(result) ?? row.applied.init
+  if (init) {
+    db.setInstalledPluginApplied(user.id, row.pluginId, {
+      ...row.applied,
+      init,
+    })
+  }
+  if (!result.ok) {
+    throw new Error(
+      `setup failed${result.timedOut ? " (timed out)" : ""}: ${result.output.slice(-500)}`,
+    )
+  }
+  return init
+}
+
+// Deep enable/disable. Beyond the OpenCode surfaces, a disabled plugin also
+// pauses its cron jobs, unloads its skills from OpenViking, and drops its
+// config file (which holds vault secrets). Enable restores all of it from the
+// manifest snapshot stored on the installed row.
+export async function setPluginEnabled(
+  db: Db,
+  user: User,
+  row: InstalledPlugin,
+  enable: boolean,
+): Promise<InstalledPlugin> {
+  const updated = db.setInstalledPluginEnabled(user.id, row.pluginId, enable)
+  const manifest = row.manifest as PluginManifest
+  const pluginId = row.pluginId
+
+  for (const jobId of row.applied.cronJobIds) {
+    const job = db.cronJobById(jobId, user.id)
+    if (!job) continue
+    if (enable && !job.enabled) {
+      db.updateCronJob(jobId, user.id, {
+        enabled: true,
+        nextRunAt: nextRunMs(job),
+      })
+    } else if (!enable && job.enabled) {
+      db.updateCronJob(jobId, user.id, { enabled: false })
+    }
+  }
+
+  if ((manifest.skills?.length ?? 0) > 0) {
+    try {
+      const skills = await vikingSkills(user, db)
+      if (enable) {
+        const owned = new Set(row.applied.skills)
+        const existingNames = new Set(
+          (await skills.list().catch(() => [])).map((s) => s.name),
+        )
+        for (const skill of manifest.skills ?? []) {
+          // Only skills this install created come back. If the name is taken
+          // at enable time it is either our own (disable failed to remove it
+          // — already correct) or a foreign skill (never clobber it).
+          if (!owned.has(skill.name) || existingNames.has(skill.name)) continue
+          await skills
+            .save({
+              name: skill.name,
+              description: skill.description,
+              body: skill.body,
+            })
+            .catch(() => {})
+        }
+      } else {
+        for (const name of row.applied.skills) {
+          await skills.remove(name).catch(() => {})
+        }
+      }
+    } catch (error) {
+      console.error(
+        `plugin ${pluginId} skill ${enable ? "reload" : "unload"} failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
+  }
+
+  // The config file carries vault secrets; a disabled plugin loses it and
+  // gets a fresh copy (from current settings + vault values) on enable.
+  if (enable) {
+    await reapplyPluginConfig(db, user, row).catch((error) => {
+      console.error(
+        `plugin ${pluginId} config restore failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    })
+  } else {
+    await syncPluginAuth(user.id, pluginId, null).catch((error) => {
+      console.error(
+        `plugin ${pluginId} config removal failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    })
+  }
+
+  const oc = manifest.opencode
+  if (
+    oc &&
+    (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools || oc.agentsMd)
+  ) {
+    if (oc.agentsMd) {
+      const instructions = pluginAgentsMdPath(pluginId)
+      if (enable) {
+        await syncPluginAgentsMd(user.id, pluginId, oc.agentsMd)
+      }
+      await syncOpencodePlugin(
+        user.id,
+        enable
+          ? {
+              addPlugins: [],
+              removePlugins: [],
+              addMcp: {},
+              removeMcp: [],
+              addInstructions: [instructions],
+              removeInstructions: [],
+            }
+          : {
+              addPlugins: [],
+              removePlugins: [],
+              addMcp: {},
+              removeMcp: [],
+              addInstructions: [],
+              removeInstructions: [instructions],
+            },
+      )
+    }
+    if (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools) {
+      const patch = enable
+        ? {
+            addPlugins: oc.plugin ?? [],
+            removePlugins: [],
+            addMcp: (oc.mcp ?? {}) as Record<string, unknown>,
+            removeMcp: [],
+            addAgents: oc.agents ?? {},
+            removeAgents: [],
+            addAgentTools: oc.agentTools ?? {},
+            removeAgentTools: {},
+          }
+        : {
+            addPlugins: [],
+            removePlugins: oc.plugin ?? [],
+            addMcp: {},
+            removeMcp: Object.keys((oc.mcp ?? {}) as object),
+            addAgents: {},
+            removeAgents: Object.keys(oc.agents ?? {}),
+            addAgentTools: {},
+            removeAgentTools: oc.agentTools ?? {},
+          }
+      await syncOpencodePlugin(user.id, patch)
+    }
+    await restartOpencode(user.id).catch(() => {})
+  }
+
+  return updated ?? db.installedPlugin(user.id, pluginId) ?? row
 }
 
 export async function reapplyPluginConfig(

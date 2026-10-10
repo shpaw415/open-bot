@@ -27,6 +27,8 @@ import {
   improvements,
   installedPlugins,
   invites,
+  mediaAlbums,
+  mediaItems,
   personas,
   pluginSettings,
   projects,
@@ -324,6 +326,8 @@ export type InstalledPlugin = {
   source: InstalledPluginSource
   localPath: string | null
   applied: PluginAppliedLog
+  latestVersion: string | null
+  latestCheckedAt: number | null
   createdAt: number
   updatedAt: number
 }
@@ -342,6 +346,32 @@ export type WorkspaceMedia = {
   path: string
   mime: string
   bytes: number
+  createdAt: number
+}
+
+export type MediaKind = "image" | "video" | "model3d" | "file"
+
+export type MediaAlbum = {
+  id: string
+  userId: string
+  name: string
+  sessionId: string | null
+  createdAt: number
+}
+
+export type MediaItem = {
+  id: string
+  userId: string
+  albumId: string
+  kind: MediaKind
+  name: string
+  title: string
+  mime: string
+  bytes: number
+  sha256: string
+  sourcePath: string
+  sessionId: string | null
+  messageId: string | null
   createdAt: number
 }
 
@@ -389,6 +419,8 @@ function mapInstalledPlugin(
     source: row.source === "local" ? "local" : "marketplace",
     localPath: row.localPath ?? null,
     applied,
+    latestVersion: row.latestVersion ?? null,
+    latestCheckedAt: row.latestCheckedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -492,6 +524,31 @@ function rowFromUserKeys(row: typeof userKeys.$inferSelect): UserKey {
     baseUrl: row.baseUrl ?? "",
     updatedAt: row.updatedAt,
   }
+}
+
+function asMediaItem(row: {
+  id: string
+  userId: string
+  albumId: string
+  kind: string
+  name: string
+  title: string
+  mime: string
+  bytes: number
+  sha256: string
+  sourcePath: string
+  sessionId: string | null
+  messageId: string | null
+  createdAt: number
+}): MediaItem {
+  const kind: MediaKind =
+    row.kind === "image" ||
+    row.kind === "video" ||
+    row.kind === "model3d" ||
+    row.kind === "file"
+      ? row.kind
+      : "file"
+  return { ...row, kind }
 }
 
 export function openDatabase(path: string) {
@@ -1458,12 +1515,19 @@ export function openDatabase(path: string) {
     createInstalledPlugin(
       row: Omit<
         InstalledPlugin,
-        "manifest" | "applied" | "source" | "localPath"
+        | "manifest"
+        | "applied"
+        | "source"
+        | "localPath"
+        | "latestVersion"
+        | "latestCheckedAt"
       > & {
         manifest: string
         applied?: string
         source?: InstalledPluginSource
         localPath?: string | null
+        latestVersion?: string | null
+        latestCheckedAt?: number | null
       },
     ) {
       orm
@@ -1472,6 +1536,8 @@ export function openDatabase(path: string) {
           ...row,
           source: row.source ?? "marketplace",
           localPath: row.localPath ?? null,
+          latestVersion: row.latestVersion ?? null,
+          latestCheckedAt: row.latestCheckedAt ?? null,
         })
         .run()
     },
@@ -1535,6 +1601,9 @@ export function openDatabase(path: string) {
           version: changes.version,
           manifest: changes.manifest,
           readme: changes.readme,
+          // The version moved: the stored "latest" is stale until re-checked.
+          latestVersion: null,
+          latestCheckedAt: null,
           ...(changes.source !== undefined ? { source: changes.source } : {}),
           ...(changes.localPath !== undefined
             ? { localPath: changes.localPath }
@@ -1549,6 +1618,27 @@ export function openDatabase(path: string) {
         )
         .run()
       return this.installedPlugin(userId, pluginId)
+    },
+    setInstalledPluginLatest(
+      userId: string,
+      pluginId: string,
+      latestVersion: string | null,
+    ) {
+      if (!this.installedPlugin(userId, pluginId)) return
+      orm
+        .update(installedPlugins)
+        .set({
+          latestVersion,
+          latestCheckedAt: Date.now(),
+          updatedAt: Date.now(),
+        })
+        .where(
+          and(
+            eq(installedPlugins.userId, userId),
+            eq(installedPlugins.pluginId, pluginId),
+          ),
+        )
+        .run()
     },
     setInstalledPluginApplied(
       userId: string,
@@ -1623,6 +1713,18 @@ export function openDatabase(path: string) {
           ],
           set: { value, updatedAt },
         })
+        .run()
+    },
+    deletePluginSetting(userId: string, pluginId: string, key: string) {
+      orm
+        .delete(pluginSettings)
+        .where(
+          and(
+            eq(pluginSettings.userId, userId),
+            eq(pluginSettings.pluginId, pluginId),
+            eq(pluginSettings.key, key),
+          ),
+        )
         .run()
     },
     getSetting(key: string): string | null {
@@ -1716,6 +1818,156 @@ export function openDatabase(path: string) {
       orm.delete(workspaceMedia).where(inArray(workspaceMedia.id, ids)).run()
       return rows
     },
+    mediaAlbums(userId: string): MediaAlbum[] {
+      return orm
+        .select()
+        .from(mediaAlbums)
+        .where(eq(mediaAlbums.userId, userId))
+        .orderBy(desc(mediaAlbums.createdAt), desc(mediaAlbums.id))
+        .all()
+    },
+    mediaAlbum(id: string, userId: string): MediaAlbum | null {
+      return (
+        orm
+          .select()
+          .from(mediaAlbums)
+          .where(and(eq(mediaAlbums.id, id), eq(mediaAlbums.userId, userId)))
+          .get() ?? null
+      )
+    },
+    mediaAlbumByName(userId: string, name: string): MediaAlbum | null {
+      return (
+        orm
+          .select()
+          .from(mediaAlbums)
+          .where(
+            and(eq(mediaAlbums.userId, userId), eq(mediaAlbums.name, name)),
+          )
+          .get() ?? null
+      )
+    },
+    mediaAlbumBySession(userId: string, sessionId: string): MediaAlbum | null {
+      return (
+        orm
+          .select()
+          .from(mediaAlbums)
+          .where(
+            and(
+              eq(mediaAlbums.userId, userId),
+              eq(mediaAlbums.sessionId, sessionId),
+            ),
+          )
+          .get() ?? null
+      )
+    },
+    createMediaAlbum(row: MediaAlbum) {
+      orm.insert(mediaAlbums).values(row).run()
+    },
+    deleteMediaAlbum(id: string, userId: string): boolean {
+      const row = this.mediaAlbum(id, userId)
+      if (!row) return false
+      orm.delete(mediaAlbums).where(eq(mediaAlbums.id, id)).run()
+      return true
+    },
+    mediaItemsForAlbum(userId: string, albumId: string): MediaItem[] {
+      return orm
+        .select()
+        .from(mediaItems)
+        .where(
+          and(eq(mediaItems.userId, userId), eq(mediaItems.albumId, albumId)),
+        )
+        .orderBy(desc(mediaItems.createdAt), desc(mediaItems.id))
+        .all()
+        .map(asMediaItem)
+    },
+    mediaItem(id: string, userId: string): MediaItem | null {
+      const row = orm
+        .select()
+        .from(mediaItems)
+        .where(and(eq(mediaItems.id, id), eq(mediaItems.userId, userId)))
+        .get()
+      return row ? asMediaItem(row) : null
+    },
+    mediaItemBySha(albumId: string, sha256: string): MediaItem | null {
+      const row = orm
+        .select()
+        .from(mediaItems)
+        .where(
+          and(eq(mediaItems.albumId, albumId), eq(mediaItems.sha256, sha256)),
+        )
+        .get()
+      return row ? asMediaItem(row) : null
+    },
+    mediaItemByMessagePath(
+      messageId: string,
+      sourcePath: string,
+    ): MediaItem | null {
+      const row = orm
+        .select()
+        .from(mediaItems)
+        .where(
+          and(
+            eq(mediaItems.messageId, messageId),
+            eq(mediaItems.sourcePath, sourcePath),
+          ),
+        )
+        .get()
+      return row ? asMediaItem(row) : null
+    },
+    createMediaItem(row: MediaItem): boolean {
+      if (this.mediaItemBySha(row.albumId, row.sha256)) return false
+      if (
+        row.messageId &&
+        this.mediaItemByMessagePath(row.messageId, row.sourcePath)
+      )
+        return false
+      try {
+        orm.insert(mediaItems).values(row).run()
+        return true
+      } catch {
+        return false
+      }
+    },
+    deleteMediaItem(id: string, userId: string): MediaItem | null {
+      const row = this.mediaItem(id, userId)
+      if (!row) return null
+      orm.delete(mediaItems).where(eq(mediaItems.id, id)).run()
+      return row
+    },
+    deleteMediaItems(ids: string[]): MediaItem[] {
+      if (ids.length === 0) return []
+      const rows = orm
+        .select()
+        .from(mediaItems)
+        .where(inArray(mediaItems.id, ids))
+        .all()
+      orm.delete(mediaItems).where(inArray(mediaItems.id, ids)).run()
+      return rows.map(asMediaItem)
+    },
+    mediaItemsForUser(userId: string): MediaItem[] {
+      return orm
+        .select()
+        .from(mediaItems)
+        .where(eq(mediaItems.userId, userId))
+        .all()
+        .map(asMediaItem)
+    },
+    mediaVaultUsedBytes(): number {
+      const row = orm
+        .select({ total: sum(mediaItems.bytes) })
+        .from(mediaItems)
+        .get()
+      return Number(row?.total ?? 0)
+    },
+    mediaVaultOldest(limit: number): MediaItem[] {
+      return orm
+        .select()
+        .from(mediaItems)
+        .orderBy(asc(mediaItems.createdAt), asc(mediaItems.id))
+        .limit(limit)
+        .all()
+        .map(asMediaItem)
+    },
     cronJobsByPlugin(userId: string, pluginId: string) {
       return this.cronJobs(userId).filter((job) =>
         job.name.startsWith(`plugin:${pluginId}:`),
@@ -1791,6 +2043,8 @@ export function openDatabase(path: string) {
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
         tx.delete(projects).where(eq(projects.userId, userId)).run()
+        tx.delete(mediaItems).where(eq(mediaItems.userId, userId)).run()
+        tx.delete(mediaAlbums).where(eq(mediaAlbums.userId, userId)).run()
         tx.delete(workspaceMedia).where(eq(workspaceMedia.userId, userId)).run()
       })
     },
@@ -1810,6 +2064,8 @@ export function openDatabase(path: string) {
           .where(eq(installedPlugins.userId, userId))
           .run()
         tx.delete(pluginSettings).where(eq(pluginSettings.userId, userId)).run()
+        tx.delete(mediaItems).where(eq(mediaItems.userId, userId)).run()
+        tx.delete(mediaAlbums).where(eq(mediaAlbums.userId, userId)).run()
         tx.delete(workspaceMedia).where(eq(workspaceMedia.userId, userId)).run()
         tx.delete(users).where(eq(users.id, userId)).run()
       })

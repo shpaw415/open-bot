@@ -29,6 +29,7 @@ import { EventHub } from "./events"
 import { setFileWatchSink } from "./file-watch"
 import { resolveDesktopProviders } from "./key-vault"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
+import { dispatchPluginHooks } from "./plugin-hooks"
 import { reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStuckWatch } from "./stuck"
@@ -78,9 +79,18 @@ if (db.userCount() === 0) {
 
 const hub = new EventHub(
   (userId) => eventTarget(db, userId),
-  (userId, event) => onUpstreamEvent(db, userId, event),
+  (userId, event) => {
+    onUpstreamEvent(db, userId, event)
+    dispatchPluginHooks(db, userId, event)
+  },
 )
-onDesktopReady((userId) => reapplyPluginSetup(db, userId))
+onDesktopReady((userId) => {
+  hub.ensurePump(userId)
+  return reapplyPluginSetup(db, userId)
+})
+// Background pumps for already-running desktops so plugin hooks, media
+// capture, and other event observers work with no dashboard attached.
+for (const row of db.activeDesktops(0)) hub.ensurePump(row.userId)
 setFileWatchSink((userId, files) => {
   hub.emit(userId, { type: "project.files", properties: { files } })
 })

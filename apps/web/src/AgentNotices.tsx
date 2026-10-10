@@ -102,6 +102,45 @@ export function AgentNotices({
 
   useEffect(() => {
     return subscribe((event) => {
+      if (event.type === "plugin.notice") {
+        const props = event.properties as
+          | {
+              pluginId?: unknown
+              name?: unknown
+              title?: unknown
+              body?: unknown
+            }
+          | undefined
+        const name =
+          typeof props?.name === "string" && props.name.trim()
+            ? props.name.trim()
+            : typeof props?.pluginId === "string"
+              ? props.pluginId
+              : "plugin"
+        const heading =
+          typeof props?.title === "string" && props.title.trim()
+            ? props.title.trim().slice(0, 120)
+            : "notification"
+        const detail =
+          typeof props?.body === "string" && props.body.trim()
+            ? props.body.trim().slice(0, 500)
+            : ""
+        const id = `plugin-notice-${props?.pluginId ?? "x"}-${Date.now()}`
+        const toast: Toast = {
+          id,
+          title: `${name}: ${heading}`,
+          body: detail,
+          sessionId: "",
+        }
+        setToast(toast)
+        showNative(
+          `${name}: ${heading}`,
+          detail,
+          `plugin-${props?.pluginId ?? "x"}`,
+          () => {},
+        )
+        return
+      }
       const armId = armsSession(event)
       if (armId && !armed.current.has(armId)) {
         armed.current.set(armId, Date.now())
@@ -140,7 +179,7 @@ export function AgentNotices({
         )
       }
       action={
-        toast ? (
+        toast?.sessionId ? (
           <Button
             size="small"
             variant="text"

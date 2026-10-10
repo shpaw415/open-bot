@@ -17,6 +17,7 @@ import {
   vikingProviderReady,
 } from "@open-bot/db"
 import { handleAdmin } from "./admin"
+import { desktopAppCatalog, launchDesktopApp } from "./apps"
 import { handleBackupApi } from "./backup-api"
 import {
   cronModelFields,
@@ -78,6 +79,7 @@ import {
   videoVaultSlug,
 } from "./key-vault"
 import { handleLlm } from "./llm"
+import { handleMedia, isMediaRequest } from "./media-vault"
 import {
   model3dAuthReady,
   model3dProviderById,
@@ -126,6 +128,7 @@ import {
   system1Providers,
 } from "./system1"
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
+import { handleThreads, isThreadRequest } from "./threads"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
 import {
   videoAuthReady,
@@ -968,9 +971,23 @@ async function api(
   const isPluginPath =
     url.pathname === "/api/plugins" || url.pathname.startsWith("/api/plugins/")
   const isProjectManage = isProjectManageRequest(url.pathname, req.method)
-  if (isCronPath || isPersonaPath || isPluginPath || isProjectManage) {
+  const isMedia = isMediaRequest(url.pathname, req.method)
+  const isThreadPath = isThreadRequest(url.pathname, req.method)
+  if (
+    isCronPath ||
+    isPersonaPath ||
+    isPluginPath ||
+    isProjectManage ||
+    isMedia ||
+    isThreadPath
+  ) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
+      if (isMedia) {
+        const handled = await handleMedia(req, url, db, agent, hub)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
       if (isProjectManage) {
         const handled = await handleProjectManage(req, url, db, agent, hub)
         if (handled) return handled
@@ -986,11 +1003,17 @@ async function api(
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
-      if (isCronPath) return handleCron(req, url, db, agent, hub)
+      if (isCronPath) return handleCron(req, url, db, agent, hub, holdOpen)
+      if (isThreadPath) return handleThreads(req, url, db, agent)
     }
   }
   const user = userFrom(req, db)
   if (!user) return json({ error: "unauthorized" }, 401)
+  if (isMedia) {
+    const handled = await handleMedia(req, url, db, user, hub)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
   if (isPersonaPath) {
     const handled = handlePersonas(req, url, db, user)
     if (handled) return handled
@@ -1001,7 +1024,7 @@ async function api(
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
-  if (isCronPath) return handleCron(req, url, db, user, hub)
+  if (isCronPath) return handleCron(req, url, db, user, hub, holdOpen)
   if (isBackupPath) {
     const handled = await handleBackupApi(
       req,
@@ -1186,6 +1209,28 @@ async function api(
     )
     await setScreenHold(user.id, root, false)
     return json({ sessionId: root, held: false })
+  }
+  if (url.pathname === "/api/desktop/apps" && req.method === "GET") {
+    await ensure(user, db)
+    const apps = await desktopAppCatalog(user.id)
+    return json({ apps: apps.map(({ id, name }) => ({ id, name })) })
+  }
+  if (url.pathname === "/api/desktop/apps/launch" && req.method === "POST") {
+    const body = await readJson(req)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    const root = await resolveRootSession(
+      base,
+      basic(desktop.opencodePassword),
+      String(body.sessionId ?? ""),
+    )
+    const screen = await ensureThreadScreen(db, user.id, root)
+    const launch = await launchDesktopApp(
+      user.id,
+      root,
+      String(body.appId ?? ""),
+    )
+    return json({ sessionId: screen.sessionId, ...launch })
   }
   if (url.pathname === "/api/keys" && req.method === "GET") {
     const entries = db.getUserKeys(user.id).map((key) => ({
@@ -2194,6 +2239,7 @@ async function handleCron(
   db: Db,
   user: User,
   hub: EventHub,
+  holdOpen?: () => void,
 ) {
   const idMatch = url.pathname.match(/^\/api\/cron\/([^/]+)(\/run)?$/)
 
@@ -2388,6 +2434,9 @@ async function handleCron(
   }
 
   if (idMatch?.[2] === "/run" && req.method === "POST") {
+    // Firing a job starts the desktop and prompts a session — well past the
+    // connection idle timeout.
+    holdOpen?.()
     const job = db.cronJobById(decodeURIComponent(idMatch[1] ?? ""), user.id)
     if (!job) return json({ error: "job not found" }, 404)
     const error = await fireCronJob(db, job, true, hub)

@@ -14,15 +14,25 @@ Usage:
   ob-plugin new NAME                 scaffold a plugin project in ~/plugins-create/NAME
   ob-plugin validate DIR             validate DIR/open-bot.plugin.json
   ob-plugin publish DIR              publish the plugin to the marketplace (repo + release must exist)
+  ob-plugin publish DIR --dev        staging loop for a dev-tag version: commit, push, force-move the
+                                     v<tag> tag, clobber the release, publish, then reinstall pinned
+                                     (--no-commit skips the git commit step)
+  ob-plugin doctor DIR               pre-publish checks: manifest validity, repo reachability, tag
+  ob-plugin guard status ID          show the plugin's maintenance guard cron
+  ob-plugin guard off ID             delete the plugin's maintenance guard cron (stop maintaining)
   ob-plugin search [QUERY]           search the marketplace
   ob-plugin info ID                  marketplace details for one plugin
   ob-plugin install ID [--version X] [--yes]   install a marketplace plugin (--version takes semver or a dev tag like beta-1; --yes skips the consent prompt)
   ob-plugin install --path DIR [--yes]   install a local plugin directory (shows as (local); reinstall re-reads DIR)
   ob-plugin list                     list installed plugins
+  ob-plugin outdated                 installed plugins with a newer marketplace version
+  ob-plugin update ID [VERSION]      update an installed plugin (defaults to the newest known stable)
   ob-plugin remove ID                uninstall a plugin
-  ob-plugin enable ID | disable ID   toggle a plugin
+  ob-plugin enable ID | disable ID   toggle a plugin (disable pauses its cron jobs and unloads its skills)
+  ob-plugin setup ID                 re-run a plugin's root setup commands (retry after a failure)
   ob-plugin settings ID [key=value]  show or update plugin settings
   ob-plugin issue ID TITLE [BODY]    file a GitHub issue on the plugin repo
+  ob-plugin notify ID TITLE [BODY]   post a dashboard notification as an installed plugin (needs permissions.notifications)
   ob-plugin comments ID              read marketplace discussion
   ob-plugin comment ID TEXT          post to marketplace discussion
 
@@ -57,12 +67,24 @@ request() {
   method="$1"
   path="$2"
   body="${3:-}"
-  if [ -n "$body" ]; then
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" \
-      -H "content-type: application/json" -d "$body" "$BASE$path"
-  else
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path"
-  fi
+  attempt=0
+  while :; do
+    attempt=$((attempt + 1))
+    if [ -n "$body" ]; then
+      out=$(curl -sS -m 300 -X "$method" -H "Authorization: Bearer $TOKEN" \
+        -H "content-type: application/json" -d "$body" "$BASE$path" 2>&1) &&
+        { printf '%s' "$out"; return 0; }
+    else
+      out=$(curl -sS -m 300 -X "$method" -H "Authorization: Bearer $TOKEN" \
+        "$BASE$path" 2>&1) &&
+        { printf '%s' "$out"; return 0; }
+    fi
+    if [ "$attempt" -ge 4 ]; then
+      echo "ob-plugin: control plane unreachable after $attempt attempts ($out)" >&2
+      return 1
+    fi
+    sleep $((attempt * 2))
+  done
 }
 
 fail_on_error() {
@@ -133,6 +155,13 @@ gh release create v0.1.0 -R $repo_hint --notes "First release"
 ob-plugin publish ~/plugins-create/$name
 \`\`\`
 
+While iterating on a dev tag (set \`version\` to e.g. \`beta-1\`), one command does
+commit, tag, release, publish, and reinstall:
+
+\`\`\`sh
+ob-plugin publish ~/plugins-create/$name --dev
+\`\`\`
+
 Manifest quick reference:
 - skills[]: {name, description, body} — installed into the desktop's OpenViking
 - personas[]: {name, instruction} — personalities the thread picker can choose
@@ -163,19 +192,67 @@ EOF
     [ "$(printf '%s' "$out" | jq -r '.ok')" = "true" ]
     ;;
   publish)
-    [ $# -eq 1 ] || { usage; exit 2; }
-    file="$1/$MANIFEST_FILE"
+    dir=""
+    dev=0
+    no_commit=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dev) dev=1; shift ;;
+        --no-commit) no_commit=1; shift ;;
+        -*) echo "unknown option: $1" >&2; usage; exit 2 ;;
+        *)
+          [ -z "$dir" ] || { echo "ob-plugin: unexpected argument: $1" >&2; usage; exit 2; }
+          dir="$1"
+          shift
+          ;;
+      esac
+    done
+    [ -n "$dir" ] || { usage; exit 2; }
+    file="$dir/$MANIFEST_FILE"
     [ -f "$file" ] || { echo "ob-plugin: missing $file" >&2; exit 2; }
+    plugin_id=$(jq -r '.id' "$file")
     version=$(jq -r '.version' "$file")
     repo=$(jq -r '.repo' "$file")
-    if curl -fsSL -o /dev/null "https://raw.githubusercontent.com/$repo/v$version/$MANIFEST_FILE" 2>/dev/null; then
-      :
+    stable=1
+    printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || stable=0
+    if [ "$dev" -eq 1 ]; then
+      if [ "$stable" -eq 1 ]; then
+        echo "ob-plugin: --dev stages a dev tag (e.g. beta-1); manifest version is $version" >&2
+        exit 2
+      fi
+      if [ -d "$dir/.git" ]; then
+        if [ "$no_commit" -eq 0 ]; then
+          git -C "$dir" add -A
+          # First-time publishers have no git identity; set a repo-local one
+          # rather than failing the commit.
+          git -C "$dir" config user.email >/dev/null 2>&1 ||
+            git -C "$dir" config user.email "agent@open-bot.local"
+          git -C "$dir" config user.name >/dev/null 2>&1 ||
+            git -C "$dir" config user.name "open-bot agent"
+          if ! git -C "$dir" diff --cached --quiet 2>/dev/null; then
+            git -C "$dir" commit -m "v$version" >/dev/null
+          fi
+        fi
+        branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
+        git -C "$dir" push origin "$branch"
+        git -C "$dir" tag -f "v$version" >/dev/null
+        git -C "$dir" push -f origin "v$version"
+        gh release create "v$version" -R "$repo" --notes "Dev build $version" --clobber >/dev/null 2>&1 ||
+          gh release edit "v$version" -R "$repo" --draft=false >/dev/null 2>&1 ||
+          true
+      else
+        echo "ob-plugin: $dir is not a git repo; expecting tag v$version to exist already" >&2
+      fi
     else
-      echo "ob-plugin: warning: $MANIFEST_FILE for v$version is not on GitHub yet ($repo tag v$version)." >&2
-      echo "  Push the repo and create the tag first — see ob-plugin help (dev tags may be force-moved)." >&2
-      printf 'publish anyway? [y/N] '
-      read -r answer
-      case "$answer" in y|Y|yes|Yes) ;; *) exit 1 ;; esac
+      if curl -fsSL -o /dev/null "https://raw.githubusercontent.com/$repo/v$version/$MANIFEST_FILE" 2>/dev/null; then
+        :
+      else
+        echo "ob-plugin: warning: $MANIFEST_FILE for v$version is not on GitHub yet ($repo tag v$version)." >&2
+        echo "  Push the repo and create the tag first — see ob-plugin help (dev tags may be force-moved)." >&2
+        printf 'publish anyway? [y/N] '
+        read -r answer
+        case "$answer" in y|Y|yes|Yes) ;; *) exit 1 ;; esac
+      fi
     fi
     body=$(jq -n --slurpfile m "$file" '{manifest: $m[0]}')
     out=$(request POST /api/plugins/publish "$body")
@@ -210,6 +287,71 @@ EOF
     fi
     printf '%s' "$out" | jq '{pluginId, version, marketplace, guardCronId, review}'
     echo "guard cron keeps this plugin maintained daily: ob-cron list | grep guard"
+    if [ "$dev" -eq 1 ]; then
+      installed=$(request GET /api/plugins/installed)
+      if printf '%s' "$installed" | jq -e --arg id "$plugin_id" '.plugins[] | select(.pluginId == $id and .source == "marketplace")' >/dev/null 2>&1; then
+        echo "ob-plugin: reinstalling pinned v$version to pick up the republish..." >&2
+        rebody=$(jq -n --arg id "$plugin_id" --arg v "$version" '{pluginId: $id, version: $v, confirm: true}')
+        reout=$(request POST /api/plugins/install "$rebody")
+        fail_on_error "$reout"
+      fi
+    fi
+    ;;
+  guard)
+    [ $# -eq 2 ] || { usage; exit 2; }
+    guard_action="$1"
+    plugin_id="$2"
+    case "$guard_action" in
+      status|off) ;;
+      *) usage; exit 2 ;;
+    esac
+    jobs=$(request GET /api/cron)
+    fail_on_error "$jobs"
+    job_id=$(printf '%s' "$jobs" | jq -r --arg name "plugin:$plugin_id:guard" '.[] | select(.name == $name) | .id' | head -1)
+    if [ -z "$job_id" ]; then
+      echo "no guard cron for $plugin_id"
+      exit 0
+    fi
+    if [ "$guard_action" = "status" ]; then
+      printf '%s' "$jobs" | jq -r --arg name "plugin:$plugin_id:guard" '.[] | select(.name == $name) | "guard: \(.name) [\(.id)] \(if .enabled then "enabled" else "paused" end), runs=\(.runCount), next=\(if .nextRunAt then (.nextRunAt / 1000 | strftime("%Y-%m-%dT%H:%M:%SZ")) else "unscheduled" end)"'
+    else
+      out=$(request DELETE "/api/cron/$(urlencode "$job_id")")
+      fail_on_error "$out"
+      echo "guard cron for $plugin_id deleted (the plugin is no longer maintained)"
+    fi
+    ;;
+  doctor)
+    [ $# -eq 1 ] || { usage; exit 2; }
+    file="$1/$MANIFEST_FILE"
+    [ -f "$file" ] || { echo "ob-plugin: missing $file" >&2; exit 2; }
+    body=$(jq -n --slurpfile m "$file" '{manifest: $m[0]}')
+    out=$(request POST /api/plugins/validate "$body")
+    if printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
+      echo "manifest: valid"
+    else
+      echo "manifest: invalid"
+      printf '%s' "$out" | jq -r '.issues[]? | " - \(.path // "manifest"): \(.message)"'
+      exit 1
+    fi
+    repo=$(jq -r '.repo' "$file")
+    version=$(jq -r '.version' "$file")
+    problems=0
+    if curl -fsSL -o /dev/null "https://raw.githubusercontent.com/$repo/HEAD/README.md" 2>/dev/null; then
+      echo "repo: reachable ($repo)"
+    else
+      echo "repo: NOT reachable ($repo)"
+      problems=1
+    fi
+    if curl -fsSL -o /dev/null "https://raw.githubusercontent.com/$repo/v$version/$MANIFEST_FILE" 2>/dev/null; then
+      echo "release tag: v$version serves the manifest"
+    else
+      echo "release tag: v$version missing (push the tag + release before publishing)"
+      problems=1
+    fi
+    if [ "$problems" -ne 0 ]; then
+      exit 1
+    fi
+    echo "ready: ob-plugin publish $1"
     ;;
   search)
     query="${1:-}"
@@ -298,7 +440,35 @@ EOF
   list)
     out=$(request GET /api/plugins/installed)
     fail_on_error "$out"
-    printf '%s' "$out" | jq -r '.plugins[] | "- \(.pluginId) v\(.version)\(if .source == "local" then " (local)" else "" end)\(if .enabled then "" else " (disabled)" end) \(.name) — \(.description)"'
+    printf '%s' "$out" | jq -r '.plugins[] | "- \(.pluginId) v\(.version)\(if .updateAvailable then " -> v\(.updateAvailable) available" else "" end)\(if .source == "local" then " (local)" else "" end)\(if .enabled then "" else " (disabled)" end)\(if .init and .init.ok == false then " (setup failed — ob-plugin setup \(.pluginId))" else "" end) \(.name) — \(.description)"'
+    ;;
+  outdated)
+    out=$(request GET /api/plugins/installed)
+    fail_on_error "$out"
+    count=$(printf '%s' "$out" | jq '[.plugins[] | select(.updateAvailable)] | length')
+    if [ "$count" = "0" ]; then
+      echo "all installed plugins are up to date"
+    else
+      printf '%s' "$out" | jq -r '.plugins[] | select(.updateAvailable) | "- \(.pluginId): v\(.version) -> v\(.updateAvailable)"'
+    fi
+    ;;
+  update)
+    [ $# -ge 1 ] || { usage; exit 2; }
+    plugin_id="$1"
+    target="${2:-}"
+    if [ -z "$target" ]; then
+      out=$(request GET /api/plugins/installed)
+      fail_on_error "$out"
+      target=$(printf '%s' "$out" | jq -r --arg id "$plugin_id" '.plugins[] | select(.pluginId == $id) | .updateAvailable // empty')
+      if [ -z "$target" ]; then
+        echo "ob-plugin: $plugin_id is up to date (pin one with: ob-plugin update $plugin_id VERSION)"
+        exit 0
+      fi
+    fi
+    body=$(jq -n --arg id "$plugin_id" --arg v "$target" '{pluginId: $id, version: $v, confirm: true}')
+    out=$(request POST /api/plugins/install "$body")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version}'
     ;;
   remove)
     [ $# -eq 1 ] || { usage; exit 2; }
@@ -312,6 +482,12 @@ EOF
     fail_on_error "$out"
     echo "$cmd $1"
     ;;
+  setup)
+    [ $# -eq 1 ] || { usage; exit 2; }
+    out=$(request POST "/api/plugins/installed/$(urlencode "$1")/setup")
+    fail_on_error "$out"
+    echo "setup re-run for $1"
+    ;;
   settings)
     [ $# -ge 1 ] || { usage; exit 2; }
     id="$1"
@@ -319,7 +495,10 @@ EOF
     if [ $# -eq 0 ]; then
       out=$(request GET "/api/plugins/installed")
       fail_on_error "$out"
-      printf '%s' "$out" | jq --arg id "$id" '.plugins[] | select(.pluginId == $id) | .manifest.configs[]? | {key, label, def}'
+      printf '%s' "$out" | jq --arg id "$id" \
+        '.plugins[] | select(.pluginId == $id) | . as $p | .manifest.configs[]? | . as $c |
+         (($p.settings // {})[$c.key]) as $v |
+         {key: .key, label: .label, type: (.type // (if .secret then "secret" else "string" end)), options: (.options // []), "default": (if (.type == "secret") or .secret then "(hidden)" else .def end), value: (if (.type == "secret") or .secret then (if $v == null then null else "(saved, hidden)" end) else $v end)}'
       exit 0
     fi
     settings='{}'
@@ -343,6 +522,17 @@ EOF
     out=$(request POST /api/plugins/issue "$body")
     fail_on_error "$out"
     printf '%s' "$out" | jq '{number, url}'
+    ;;
+  notify)
+    [ $# -ge 2 ] || { usage; exit 2; }
+    plugin_id="$1"
+    title="$2"
+    shift 2
+    text="$*"
+    body=$(jq -n --arg id "$plugin_id" --arg t "$title" --arg b "$text" '{pluginId: $id, title: $t, body: $b}')
+    out=$(request POST /api/plugins/notice "$body")
+    fail_on_error "$out"
+    echo "notification sent"
     ;;
   comments)
     [ $# -eq 1 ] || { usage; exit 2; }

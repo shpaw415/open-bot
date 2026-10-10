@@ -6,6 +6,8 @@ import {
   COMMAND_PATTERN,
   FILE_NAME_PATTERN,
   GITHUB_REPO_PATTERN,
+  PLUGIN_CONFIG_TYPES,
+  PLUGIN_HOOK_EVENTS,
   PLUGIN_ID_PATTERN,
   PLUGIN_VERSION_PATTERN,
   SLUG_PATTERN,
@@ -84,6 +86,12 @@ describe("plugin schema", () => {
     expect(top.tools.items.properties.content.maxLength).toBe(65536)
     expect(top.files.maxItems).toBe(32)
     expect(top.configs.maxItems).toBe(64)
+    expect(top.configs.items.properties.type.enum).toEqual(PLUGIN_CONFIG_TYPES)
+    expect(top.configs.items.properties.options.maxItems).toBe(16)
+    expect(top.configs.items.properties.options.items.maxLength).toBe(100)
+    expect(top.hooks.maxItems).toBe(8)
+    expect(top.hooks.items.properties.event.enum).toEqual(PLUGIN_HOOK_EVENTS)
+    expect(top.hooks.items.properties.message.maxLength).toBe(2000)
     expect(top.setup.properties.commands.maxItems).toBe(16)
     expect(top.setup.properties.commands.items.maxLength).toBe(500)
     expect(

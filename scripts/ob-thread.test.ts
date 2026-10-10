@@ -1,0 +1,193 @@
+import { expect, test } from "bun:test"
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+const script = join(import.meta.dir, "ob-thread.sh")
+
+function fakeCurl(home: string) {
+  const bin = join(home, "bin")
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+prev=""
+method=""
+for arg in "$@"; do
+  if [ "$prev" = "-d" ]; then printf '%s' "$arg" > "$CURL_BODY"; fi
+  if [ "$prev" = "-X" ]; then method="$arg"; fi
+  prev="$arg"
+done
+if [ "$method" = "GET" ]; then
+  printf '%s\\n' '{"threads":[{"id":"t1","title":"worker:job"},{"id":"t2","title":"Chat"}]}'
+else
+  printf '%s\\n' '{"id":"ses_1","title":"worker:Scrape prices","display":false}'
+fi
+`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+  return bin
+}
+
+async function run(
+  home: string,
+  args: string[],
+  extra: Record<string, string> = {},
+) {
+  const proc = Bun.spawn(["sh", script, ...args], {
+    cwd: home,
+    env: {
+      ...process.env,
+      HOME: home,
+      OPEN_BOT_LLM_TOKEN: "test",
+      PATH: `${join(home, "bin")}:${process.env.PATH ?? ""}`,
+      CURL_ARGS: join(home, "curl.args"),
+      CURL_BODY: join(home, "curl.body"),
+      ...extra,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  return { code, stdout, stderr }
+}
+
+async function argsOf(home: string) {
+  return (await Bun.file(join(home, "curl.args")).text()).split("\n")
+}
+
+async function bodyOf(home: string) {
+  return JSON.parse(await Bun.file(join(home, "curl.body")).text())
+}
+
+test("start posts the title, display flag, and message", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, [
+      "start",
+      "--title",
+      "Scrape prices",
+      "--message",
+      "go fetch",
+      "--display",
+    ])
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: "ses_1",
+      title: "worker:Scrape prices",
+      display: false,
+    })
+    const args = await argsOf(home)
+    expect(args).toContain("-X")
+    expect(args).toContain("POST")
+    expect(args.join(" ")).toContain("/api/threads")
+    expect(await bodyOf(home)).toEqual({
+      title: "Scrape prices",
+      display: true,
+      message: "go fetch",
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("start without --display omits the flag from the body", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["start", "--title", "Job"])
+    expect(result.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({ title: "Job" })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("bare start sends an empty body", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["start"])
+    expect(result.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({})
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("list issues a GET and prints one line per hidden thread", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["list"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toBe("- [t1] worker:job\n- [t2] Chat\n")
+    const args = await argsOf(home)
+    expect(args).toContain("GET")
+    expect(args.join(" ")).toContain("/api/threads")
+    expect(await Bun.file(join(home, "curl.body")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("control-plane errors fail with the server message", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/bin/sh
+printf '%s\\n' '{"error":"title cannot start with the reserved worker: prefix"}'
+`,
+    )
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, ["start", "--title", "worker:x"])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("reserved worker: prefix")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("unknown options and commands fail before calling curl", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const badOption = await run(home, ["start", "--stealth"])
+    expect(badOption.code).toBe(2)
+    expect(badOption.stderr).toContain("unknown option: --stealth")
+    const badCmd = await run(home, ["remove", "x"])
+    expect(badCmd.code).toBe(2)
+    expect(badCmd.stderr).toContain("unknown command: remove")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("missing token fails before calling curl", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["list"], { OPEN_BOT_LLM_TOKEN: "" })
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toContain("OPEN_BOT_LLM_TOKEN")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

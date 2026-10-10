@@ -5,14 +5,9 @@ import {
   type PluginManifest,
   parsePluginManifest,
   pluginPermissionSummary,
+  validateConfigValue,
 } from "@open-bot/plugin-kit"
 import { nextRunMs } from "./cron"
-import {
-  pluginAgentsMdPath,
-  restartOpencode,
-  syncOpencodePlugin,
-  syncPluginAgentsMd,
-} from "./docker"
 import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 import {
@@ -24,12 +19,19 @@ import {
   applyPluginInstall,
   applyPluginUninstall,
   reapplyPluginConfig,
+  retryPluginSetup,
+  setPluginEnabled,
 } from "./plugins-apply"
 
 const POLICY_KEY = "plugin_install_policy"
+const AUTO_UPDATE_KEY = "plugin_auto_update"
 const MARKET_KEY_SETTING = "marketplace_api_key"
 const POLICIES = ["manual", "auto"] as const
 type Policy = (typeof POLICIES)[number]
+const AUTO_UPDATES = ["off", "stable"] as const
+type AutoUpdate = (typeof AUTO_UPDATES)[number]
+const STABLE_VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 const GUARD_CRON_NAME = (pluginId: string) => `plugin:${pluginId}:guard`
 const GUARD_EVERY_SECONDS = 86_400
@@ -41,6 +43,72 @@ function json(body: unknown, status = 200) {
 function policy(db: Db): Policy {
   const saved = db.getSetting(POLICY_KEY)
   return POLICIES.includes(saved as Policy) ? (saved as Policy) : "manual"
+}
+
+function autoUpdate(db: Db): AutoUpdate {
+  const saved = db.getSetting(AUTO_UPDATE_KEY)
+  return AUTO_UPDATES.includes(saved as AutoUpdate)
+    ? (saved as AutoUpdate)
+    : "off"
+}
+
+const updateChecksInFlight = new Set<string>()
+
+// Fire-and-forget: refresh each installed marketplace plugin's "latest"
+// version from the marketplace (throttled per row) and auto-update stable
+// versions when the instance policy allows it. Never blocks the response.
+async function refreshPluginUpdates(
+  db: Db,
+  user: User,
+  hub: {
+    emit: (
+      userId: string,
+      event: { type: string; properties?: unknown },
+    ) => void
+  },
+) {
+  if (!marketplaceConfigured(db)) return
+  for (const row of db.installedPlugins(user.id)) {
+    if (row.source === "local") continue
+    if ((row.latestCheckedAt ?? 0) > Date.now() - UPDATE_CHECK_INTERVAL_MS)
+      continue
+    if (updateChecksInFlight.has(row.pluginId)) continue
+    updateChecksInFlight.add(row.pluginId)
+    void (async () => {
+      try {
+        const detail = await fetchDetail(db, row.pluginId)
+        db.setInstalledPluginLatest(
+          user.id,
+          row.pluginId,
+          detail.plugin.version,
+        )
+        if (
+          autoUpdate(db) === "stable" &&
+          detail.plugin.status === "approved" &&
+          STABLE_VERSION_RE.test(detail.plugin.version) &&
+          detail.plugin.version !== row.version
+        ) {
+          await applyPluginInstall(db, user, {
+            id: detail.plugin.id,
+            version: detail.plugin.version,
+            status: detail.plugin.status,
+            manifest: detail.manifest,
+            readme: detail.readme,
+            downloads: detail.plugin.downloads,
+          })
+          hub.emit(user.id, { type: "plugins.changed" })
+        }
+      } catch {
+        // Marketplace unreachable or plugin gone — mark checked so the next
+        // attempt waits a full interval instead of hammering every request.
+        try {
+          db.setInstalledPluginLatest(user.id, row.pluginId, null)
+        } catch {}
+      } finally {
+        updateChecksInFlight.delete(row.pluginId)
+      }
+    })()
+  }
 }
 
 function marketToken(db: Db): string {
@@ -127,23 +195,33 @@ type MarketDetail = {
   versions: { version: string; createdAt: number; notes: string | null }[]
 }
 
-function publicInstalled(row: {
-  id: string
-  pluginId: string
-  version: string
-  manifest: Record<string, unknown>
-  readme: string | null
-  enabled: boolean
-  source?: "marketplace" | "local"
-  localPath?: string | null
-  applied?: PluginAppliedLog
-  createdAt: number
-  updatedAt: number
-}) {
+function publicInstalled(
+  db: Db,
+  row: {
+    id: string
+    userId: string
+    pluginId: string
+    version: string
+    manifest: Record<string, unknown>
+    readme: string | null
+    enabled: boolean
+    source?: "marketplace" | "local"
+    localPath?: string | null
+    applied?: PluginAppliedLog
+    latestVersion?: string | null
+    latestCheckedAt?: number | null
+    createdAt: number
+    updatedAt: number
+  },
+) {
   const manifest = row.manifest as PluginManifest
   const setupCommands = Array.isArray(manifest.setup?.commands)
     ? manifest.setup.commands
     : []
+  const settings: Record<string, string> = {}
+  for (const setting of db.pluginSettings(row.userId, row.pluginId)) {
+    settings[setting.key] = setting.value
+  }
   return {
     id: row.id,
     pluginId: row.pluginId,
@@ -157,6 +235,13 @@ function publicInstalled(row: {
     permissions: pluginPermissionSummary(manifest),
     setupCommands,
     init: row.applied?.init ?? null,
+    settings,
+    updateAvailable:
+      row.source !== "local" &&
+      row.latestVersion &&
+      row.latestVersion !== row.version
+        ? row.latestVersion
+        : null,
     source: row.source === "local" ? "local" : "marketplace",
     localPath: row.source === "local" ? (row.localPath ?? null) : null,
     manifest,
@@ -243,16 +328,25 @@ export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
 }
 
 const issueLog = new Map<string, number[]>()
+const noticeLog = new Map<string, number[]>()
 
-function issueAllowed(userId: string) {
+function recentLimiter(
+  log: Map<string, number[]>,
+  key: string,
+  max: number,
+): boolean {
   const now = Date.now()
-  const recent = (issueLog.get(userId) ?? []).filter(
+  const recent = (log.get(key) ?? []).filter(
     (time) => now - time < 60 * 60 * 1000,
   )
-  issueLog.set(userId, recent)
-  if (recent.length >= 10) return false
+  log.set(key, recent)
+  if (recent.length >= max) return false
   recent.push(now)
   return true
+}
+
+function issueAllowed(userId: string) {
+  return recentLimiter(issueLog, userId, 10)
 }
 
 async function createIssue(
@@ -315,7 +409,12 @@ function parsePublishBody(body: Record<string, unknown>) {
 async function installLocalPlugin(
   db: Db,
   user: User,
-  hub: { emit: (userId: string, event: { type: string }) => void },
+  hub: {
+    emit: (
+      userId: string,
+      event: { type: string; properties?: unknown },
+    ) => void
+  },
   rawPath: string,
   confirm: boolean,
   settings: Record<string, string> | undefined,
@@ -363,7 +462,7 @@ async function installLocalPlugin(
     },
   )
   hub.emit(user.id, { type: "plugins.changed" })
-  return json({ plugin: publicInstalled(row) })
+  return json({ plugin: publicInstalled(db, row) })
 }
 
 export function handlePlugins(
@@ -371,35 +470,58 @@ export function handlePlugins(
   url: URL,
   db: Db,
   user: User,
-  hub: { emit: (userId: string, event: { type: string }) => void },
+  hub: {
+    emit: (
+      userId: string,
+      event: { type: string; properties?: unknown },
+    ) => void
+  },
   _holdOpen?: () => void,
 ): Response | Promise<Response> | null {
   const path = url.pathname
+  // Plugin mutations fan out to docker + OpenViking and can legitimately
+  // exceed Bun.serve's 10s connection idle timeout (skill re-embedding alone
+  // runs seconds to minutes). holdOpen disables it for this request.
+  const keepAlive = () => _holdOpen?.()
 
   if (path === "/api/plugins/policy" && req.method === "GET")
-    return json({ policy: policy(db) })
+    return json({ policy: policy(db), autoUpdate: autoUpdate(db) })
 
   if (path === "/api/plugins/policy" && req.method === "PUT") {
     if (user.role !== "admin") return json({ error: "admin only" }, 403)
     return req
       .json()
       .then((body: Record<string, unknown>) => {
-        const next = String(body.policy ?? "")
-        if (!POLICIES.includes(next as Policy)) {
-          return json({ error: "policy must be manual or auto" }, 400)
+        if (body.policy !== undefined) {
+          const next = String(body.policy ?? "")
+          if (!POLICIES.includes(next as Policy)) {
+            return json({ error: "policy must be manual or auto" }, 400)
+          }
+          db.setSetting(POLICY_KEY, next)
         }
-        db.setSetting(POLICY_KEY, next)
-        return json({ policy: next })
+        if (body.autoUpdate !== undefined) {
+          const next = String(body.autoUpdate ?? "")
+          if (!AUTO_UPDATES.includes(next as AutoUpdate)) {
+            return json({ error: "autoUpdate must be off or stable" }, 400)
+          }
+          db.setSetting(AUTO_UPDATE_KEY, next)
+        }
+        return json({ policy: policy(db), autoUpdate: autoUpdate(db) })
       })
       .catch(() => json({ error: "invalid json" }, 400))
   }
 
-  if (path === "/api/plugins/installed" && req.method === "GET")
+  if (path === "/api/plugins/installed" && req.method === "GET") {
+    void refreshPluginUpdates(db, user, hub)
     return json({
-      plugins: db.installedPlugins(user.id).map(publicInstalled),
+      plugins: db
+        .installedPlugins(user.id)
+        .map((row) => publicInstalled(db, row)),
       policy: policy(db),
+      autoUpdate: autoUpdate(db),
       configured: marketplaceConfigured(db),
     })
+  }
 
   if (path === "/api/plugins/marketplace/key" && req.method === "GET")
     return json({
@@ -502,6 +624,7 @@ export function handlePlugins(
   }
 
   if (path === "/api/plugins/install" && req.method === "POST") {
+    keepAlive()
     return req
       .json()
       .then(async (body: Record<string, unknown>) => {
@@ -603,7 +726,7 @@ export function handlePlugins(
           ).catch(() => {})
         }
         hub.emit(user.id, { type: "plugins.changed" })
-        return json({ plugin: publicInstalled(row) })
+        return json({ plugin: publicInstalled(db, row) })
       })
       .catch((error: unknown) => {
         if (error instanceof HttpError) throw error
@@ -616,6 +739,7 @@ export function handlePlugins(
 
   const installed = path.match(/^\/api\/plugins\/installed\/([^/]+)$/)
   if (installed && req.method === "DELETE") {
+    keepAlive()
     const pluginId = decodeURIComponent(installed[1] ?? "")
     const row = db.installedPlugin(user.id, pluginId)
     if (!row) return json({ error: "not found" }, 404)
@@ -635,9 +759,10 @@ export function handlePlugins(
   }
 
   const action = path.match(
-    /^\/api\/plugins\/installed\/([^/]+)\/(enable|disable|refresh)$/,
+    /^\/api\/plugins\/installed\/([^/]+)\/(enable|disable|refresh|setup)$/,
   )
   if (action && req.method === "POST") {
+    keepAlive()
     const pluginId = decodeURIComponent(action[1] ?? "")
     const what = action[2]
     const row = db.installedPlugin(user.id, pluginId)
@@ -654,96 +779,41 @@ export function handlePlugins(
           ),
         )
     }
-    const updated = db.setInstalledPluginEnabled(
-      user.id,
-      pluginId,
-      what === "enable",
-    )
-    // Disable/enable also toggles the plugin's OpenCode surfaces (plugin
-    // packages, MCP servers, agent workers, tool overrides, injected agent
-    // instructions) so a disabled plugin leaves the running agent alone.
-    const oc = (row.manifest as PluginManifest).opencode
-    if (
-      oc &&
-      (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools || oc.agentsMd)
-    ) {
-      const apply = async () => {
-        if (oc.agentsMd) {
-          const instructions = pluginAgentsMdPath(pluginId)
-          if (what === "enable") {
-            await syncPluginAgentsMd(user.id, pluginId, oc.agentsMd)
-          }
-          await syncOpencodePlugin(
-            user.id,
-            what === "enable"
-              ? {
-                  addPlugins: [],
-                  removePlugins: [],
-                  addMcp: {},
-                  removeMcp: [],
-                  addInstructions: [instructions],
-                  removeInstructions: [],
-                }
-              : {
-                  addPlugins: [],
-                  removePlugins: [],
-                  addMcp: {},
-                  removeMcp: [],
-                  addInstructions: [],
-                  removeInstructions: [instructions],
-                },
-          )
-        }
-        if (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools) {
-          const patch =
-            what === "enable"
-              ? {
-                  addPlugins: oc.plugin ?? [],
-                  removePlugins: [],
-                  addMcp: (oc.mcp ?? {}) as Record<string, unknown>,
-                  removeMcp: [],
-                  addAgents: oc.agents ?? {},
-                  removeAgents: [],
-                  addAgentTools: oc.agentTools ?? {},
-                  removeAgentTools: {},
-                }
-              : {
-                  addPlugins: [],
-                  removePlugins: oc.plugin ?? [],
-                  addMcp: {},
-                  removeMcp: Object.keys((oc.mcp ?? {}) as object),
-                  addAgents: {},
-                  removeAgents: Object.keys(oc.agents ?? {}),
-                  addAgentTools: {},
-                  removeAgentTools: oc.agentTools ?? {},
-                }
-          await syncOpencodePlugin(user.id, patch)
-        }
-      }
-      return apply()
-        .then(async () => restartOpencode(user.id).catch(() => {}))
-        .then(() => {
+    if (what === "setup") {
+      return retryPluginSetup(db, user, row)
+        .then((init) => {
           hub.emit(user.id, { type: "plugins.changed" })
-          return json({ plugin: updated ? publicInstalled(updated) : null })
+          return json({ ok: true, init: init ?? null })
         })
         .catch((error: unknown) =>
           json(
-            {
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "could not toggle the agent surfaces",
-            },
+            { error: error instanceof Error ? error.message : "setup failed" },
             502,
           ),
         )
     }
-    hub.emit(user.id, { type: "plugins.changed" })
-    return json({ plugin: updated ? publicInstalled(updated) : null })
+    // Deep disable/enable: cron pause, skill unload, config-file (vault
+    // secrets) drop, plus the OpenCode surfaces — all reversed on enable.
+    return setPluginEnabled(db, user, row, what === "enable")
+      .then((updated) => {
+        hub.emit(user.id, { type: "plugins.changed" })
+        return json({ plugin: publicInstalled(db, updated) })
+      })
+      .catch((error: unknown) =>
+        json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "could not toggle the plugin",
+          },
+          502,
+        ),
+      )
   }
-
   const settings = path.match(/^\/api\/plugins\/installed\/([^/]+)\/settings$/)
   if (settings && req.method === "PUT") {
+    keepAlive()
     const pluginId = decodeURIComponent(settings[1] ?? "")
     const row = db.installedPlugin(user.id, pluginId)
     if (!row) return json({ error: "not found" }, 404)
@@ -754,8 +824,20 @@ export function handlePlugins(
           body.settings && typeof body.settings === "object"
             ? (body.settings as Record<string, unknown>)
             : {}
+        const manifest = row.manifest as PluginManifest
+        const configs = new Map(
+          (manifest.configs ?? []).map((config) => [config.key, config]),
+        )
         for (const [key, value] of Object.entries(values)) {
-          db.setPluginSetting(user.id, pluginId, key, String(value))
+          const config = configs.get(key)
+          if (!config) {
+            return json({ error: `unknown config key: ${key}` }, 400)
+          }
+          const result = validateConfigValue(config, value)
+          if (!result.ok) {
+            return json({ error: `${config.key}: ${result.error}` }, 400)
+          }
+          db.setPluginSetting(user.id, pluginId, key, result.value)
         }
         await reapplyPluginConfig(db, user, row)
         return json({
@@ -781,6 +863,7 @@ export function handlePlugins(
   }
 
   if (path === "/api/plugins/publish" && req.method === "POST") {
+    keepAlive()
     return req
       .json()
       .then(async (body: Record<string, unknown>) => {
@@ -830,6 +913,53 @@ export function handlePlugins(
           ok: true,
           permissions: pluginPermissionSummary(result.manifest),
         })
+      })
+      .catch(() => json({ error: "invalid json" }, 400))
+  }
+
+  if (path === "/api/plugins/notice" && req.method === "POST") {
+    return req
+      .json()
+      .then((body: Record<string, unknown>) => {
+        const pluginId = String(body.pluginId ?? "").trim()
+        const title = String(body.title ?? "").trim()
+        const text = String(body.body ?? "").trim()
+        if (!pluginId || !title) {
+          return json({ error: "pluginId and title are required" }, 400)
+        }
+        if (title.length > 120) {
+          return json({ error: "title is too long (max 120)" }, 400)
+        }
+        if (text.length > 500) {
+          return json({ error: "body is too long (max 500)" }, 400)
+        }
+        const installed = db.installedPlugin(user.id, pluginId)
+        if (!installed) return json({ error: "plugin is not installed" }, 404)
+        if (!installed.enabled)
+          return json({ error: "plugin is disabled" }, 409)
+        const manifest = installed.manifest as PluginManifest
+        if (!manifest.permissions?.notifications) {
+          return json(
+            { error: "plugin does not declare permissions.notifications" },
+            403,
+          )
+        }
+        if (!recentLimiter(noticeLog, `${user.id}:${pluginId}`, 30)) {
+          return json(
+            { error: "too many notices from this plugin, try again later" },
+            429,
+          )
+        }
+        hub.emit(user.id, {
+          type: "plugin.notice",
+          properties: {
+            pluginId,
+            name: typeof manifest.name === "string" ? manifest.name : pluginId,
+            title: title.slice(0, 120),
+            body: text.slice(0, 500),
+          },
+        })
+        return json({ ok: true })
       })
       .catch(() => json({ error: "invalid json" }, 400))
   }

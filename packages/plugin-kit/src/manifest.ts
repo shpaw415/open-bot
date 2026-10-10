@@ -107,11 +107,108 @@ export type PluginSetup = {
   uninstall?: string[]
 }
 
+// Hook events: the upstream opencode event each manifest hook fires on.
+// "thread.created" maps to opencode's session.created.
+export const PLUGIN_HOOK_EVENTS = ["session.idle", "thread.created"] as const
+export type PluginHookEvent = (typeof PLUGIN_HOOK_EVENTS)[number]
+
+// A hook runs the message as a prompt in a hidden worker session whenever the
+// event fires. Loop-guarded by the control plane (worker: sessions and a
+// per-plugin daily cap never re-trigger hooks).
+export type PluginHook = {
+  event: PluginHookEvent
+  message: string
+}
+
+// Settings types: absent type means "string" (legacy manifests keep working).
+// "secret" renders hidden on the Plugins page; `secret: true` is a legacy alias.
+export const PLUGIN_CONFIG_TYPES = [
+  "string",
+  "bool",
+  "number",
+  "enum",
+  "secret",
+] as const
+export type PluginConfigType = (typeof PLUGIN_CONFIG_TYPES)[number]
+
 export type PluginConfig = {
   key: string
   label: string
   def: string
+  type?: PluginConfigType
+  // Allowed values for type "enum" (required for enum, ignored otherwise).
+  options?: string[]
+  // Bounds for type "number" (optional; enforced by validateConfigValue).
+  min?: number
+  max?: number
+  // Legacy alias for type: "secret".
   secret?: boolean
+}
+
+export function configType(config: PluginConfig): PluginConfigType {
+  if (config.type) return config.type
+  return config.secret === true ? "secret" : "string"
+}
+
+export function configIsSecret(config: PluginConfig): boolean {
+  return configType(config) === "secret"
+}
+
+// Validates + coerces one user-entered setting against its manifest config.
+// Stored values are always strings (plugin_settings is a string table).
+export type ConfigValueResult =
+  | { ok: true; value: string }
+  | { ok: false; error: string }
+
+export function validateConfigValue(
+  config: PluginConfig,
+  value: unknown,
+): ConfigValueResult {
+  const type = configType(config)
+  const text = typeof value === "string" ? value : String(value ?? "")
+  if (text.length > 2000) return { ok: false, error: "too long (max 2000)" }
+  switch (type) {
+    case "bool": {
+      const norm = text.trim().toLowerCase()
+      if (value === true || norm === "true" || norm === "1")
+        return { ok: true, value: "true" }
+      if (value === false || norm === "false" || norm === "0")
+        return { ok: true, value: "false" }
+      return { ok: false, error: "must be true or false" }
+    }
+    case "number": {
+      const norm = text.trim()
+      if (norm !== "" && !Number.isFinite(Number(norm)))
+        return { ok: false, error: "must be a number" }
+      if (norm !== "") {
+        const value = Number(norm)
+        if (
+          (config.min !== undefined && value < config.min) ||
+          (config.max !== undefined && value > config.max)
+        ) {
+          const bounds =
+            config.min !== undefined && config.max !== undefined
+              ? `between ${config.min} and ${config.max}`
+              : config.min !== undefined
+                ? `at least ${config.min}`
+                : `at most ${config.max}`
+          return { ok: false, error: `must be ${bounds}` }
+        }
+      }
+      return { ok: true, value: norm }
+    }
+    case "enum": {
+      const options = config.options ?? []
+      if (!options.includes(text))
+        return {
+          ok: false,
+          error: `must be one of: ${options.join(", ") || "(no options declared)"}`,
+        }
+      return { ok: true, value: text }
+    }
+    default:
+      return { ok: true, value: text }
+  }
 }
 
 export type PluginTab = {
@@ -153,6 +250,9 @@ export type PluginPermissions = {
   vaultCreate?: string[]
   desktopTools?: boolean
   opencode?: boolean
+  // Lets the plugin's tools/skills post dashboard notifications
+  // (POST /api/plugins/notice → toast + native notification).
+  notifications?: boolean
 }
 
 export type PluginManifest = {
@@ -172,6 +272,7 @@ export type PluginManifest = {
   files?: PluginFile[]
   configs?: PluginConfig[]
   setup?: PluginSetup
+  hooks?: PluginHook[]
   dashboard?: {
     tabs?: PluginTab[]
   }
@@ -251,6 +352,10 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     )
   if ((manifest.setup?.uninstall?.length ?? 0) > 0)
     summary.push("Runs shell commands on uninstall")
+  if (manifest.hooks?.length)
+    summary.push(
+      `Runs agent sessions on thread events (${manifest.hooks.map((hook) => hook.event).join(", ")}) in hidden worker threads`,
+    )
   if (manifest.dashboard?.tabs?.length) summary.push("Adds dashboard tabs")
   if (manifest.textbox) summary.push("Extends the chat composer")
   const agents = Object.keys(manifest.opencode?.agents ?? {})
@@ -263,6 +368,7 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push("Adds standing instructions to the agent (AGENTS.md)")
   if (perms.opencode || manifest.opencode)
     summary.push("Extends the agent (OpenCode plugins / MCP)")
+  if (perms.notifications) summary.push("Sends dashboard notifications")
   return summary
 }
 
@@ -654,6 +760,29 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
   const setupCommands = validateSetupCommands(input.setup, "commands", issues)
   const setupUninstall = validateSetupCommands(input.setup, "uninstall", issues)
 
+  const hooks = input.hooks === undefined ? [] : input.hooks
+  if (!Array.isArray(hooks) || hooks.length > 8) {
+    issues.push({ path: "hooks", message: "hooks must be a list (max 8)" })
+  } else {
+    for (const [index, hook] of hooks.entries()) {
+      const path = `hooks[${index}]`
+      const hookEvent = str(hook?.event)
+      if (!hookEvent || !PLUGIN_HOOK_EVENTS.includes(hookEvent as never)) {
+        issues.push({
+          path,
+          message: `hook.event must be one of ${PLUGIN_HOOK_EVENTS.join(", ")}`,
+        })
+      }
+      const hookMessage = str(hook?.message)
+      if (!hookMessage || hookMessage.length > 2000) {
+        issues.push({
+          path,
+          message: "hook.message is required (max 2000)",
+        })
+      }
+    }
+  }
+
   const configs = input.configs === undefined ? [] : input.configs
   if (!Array.isArray(configs) || configs.length > 64) {
     issues.push({ path: "configs", message: "configs must be a list (max 64)" })
@@ -670,6 +799,116 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       }
       if (typeof config?.def !== "string" || config.def.length > 2000) {
         issues.push({ path, message: "config.def must be a string (max 2000)" })
+      }
+      const configType = config?.type
+      if (
+        configType !== undefined &&
+        (typeof configType !== "string" ||
+          !PLUGIN_CONFIG_TYPES.includes(configType as never))
+      ) {
+        issues.push({
+          path,
+          message: `config.type must be one of ${PLUGIN_CONFIG_TYPES.join(", ")}`,
+        })
+      }
+      if (config?.secret !== undefined && typeof config.secret !== "boolean") {
+        issues.push({ path, message: "config.secret must be a boolean" })
+      }
+      const resolvedType =
+        typeof configType === "string" &&
+        PLUGIN_CONFIG_TYPES.includes(configType as never)
+          ? configType
+          : config?.secret === true
+            ? "secret"
+            : "string"
+      if (resolvedType === "enum") {
+        const options = strArray(config?.options, 16)
+        if (
+          !options ||
+          options.length === 0 ||
+          options.some((option) => !option.trim() || option.length > 100)
+        ) {
+          issues.push({
+            path,
+            message:
+              "config.options is required for enum type (1-16 values, max 100 chars each)",
+          })
+        } else if (
+          typeof config?.def === "string" &&
+          config.def !== "" &&
+          !options.includes(config.def)
+        ) {
+          issues.push({
+            path,
+            message: "config.def must be one of config.options for enum type",
+          })
+        }
+      }
+      if (
+        resolvedType === "bool" &&
+        typeof config?.def === "string" &&
+        config.def !== "" &&
+        config.def !== "true" &&
+        config.def !== "false"
+      ) {
+        issues.push({
+          path,
+          message: 'config.def for bool type must be "true", "false", or empty',
+        })
+      }
+      if (
+        resolvedType === "number" &&
+        typeof config?.def === "string" &&
+        config.def !== "" &&
+        !Number.isFinite(Number(config.def))
+      ) {
+        issues.push({
+          path,
+          message: "config.def for number type must be numeric",
+        })
+      }
+      for (const bound of ["min", "max"] as const) {
+        const value = config?.[bound]
+        if (value !== undefined && typeof value !== "number") {
+          issues.push({
+            path,
+            message: `config.${bound} must be a number (number type only)`,
+          })
+        }
+      }
+      if (
+        resolvedType !== "number" &&
+        (config?.min !== undefined || config?.max !== undefined)
+      ) {
+        issues.push({
+          path,
+          message: "config.min/max only apply to the number type",
+        })
+      }
+      if (
+        typeof config?.min === "number" &&
+        typeof config?.max === "number" &&
+        config.min > config.max
+      ) {
+        issues.push({ path, message: "config.min must be <= config.max" })
+      }
+      if (
+        resolvedType === "number" &&
+        typeof config?.def === "string" &&
+        config.def !== "" &&
+        typeof config?.min === "number" &&
+        Number(config.def) < config.min
+      ) {
+        issues.push({ path, message: "config.def is below config.min" })
+      }
+      if (
+        resolvedType === "number" &&
+        typeof config?.def === "string" &&
+        config.def !== "" &&
+        typeof config?.max === "number" &&
+        Number(config.def) > config.max
+      ) {
+        issues.push({ path, message: "config.def is above config.max" })
       }
     }
   }
@@ -885,6 +1124,8 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       vaultCreate: vaultCreate ?? [],
       desktopTools: isRecord(permissions) && permissions.desktopTools === true,
       opencode: isRecord(permissions) && permissions.opencode === true,
+      notifications:
+        isRecord(permissions) && permissions.notifications === true,
     },
     skills: skills as PluginSkill[],
     personas: personas as PluginPersona[],
@@ -898,6 +1139,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
           uninstall: setupUninstall,
         }
       : undefined,
+    hooks: hooks as PluginHook[],
     dashboard: isRecord(input.dashboard)
       ? { tabs: (input.dashboard.tabs ?? []) as PluginTab[] }
       : undefined,

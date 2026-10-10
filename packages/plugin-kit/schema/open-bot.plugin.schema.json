@@ -82,7 +82,11 @@
           "description": "Vault key slugs the plugin adds (empty) for the user to fill on the Config page."
         },
         "desktopTools": { "type": "boolean" },
-        "opencode": { "type": "boolean" }
+        "opencode": { "type": "boolean" },
+        "notifications": {
+          "type": "boolean",
+          "description": "Lets the plugin's tools and skills post dashboard notifications (toast + native notification). Rate-limited per plugin."
+        }
       }
     },
     "skills": {
@@ -210,7 +214,30 @@
           "def": {
             "type": "string",
             "maxLength": 2000,
-            "description": "Default value; secrets render hidden on the Plugins page."
+            "description": "Default value; must match the type (bool: true/false, number: numeric, enum: one of options). Secrets render hidden on the Plugins page."
+          },
+          "type": {
+            "enum": ["string", "bool", "number", "enum", "secret"],
+            "description": "Setting type driving validation and the Plugins-page input: string (default, text field), bool (switch), number (numeric field), enum (select from options), secret (password field). Absent = string."
+          },
+          "options": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "description": "Required for type enum: the allowed values the select offers."
+          },
+          "min": {
+            "type": "number",
+            "description": "Inclusive lower bound for type number (optional)."
+          },
+          "max": {
+            "type": "number",
+            "description": "Inclusive upper bound for type number (optional)."
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "Legacy alias for type: \"secret\"."
           }
         }
       }
@@ -230,6 +257,27 @@
           "maxItems": 16,
           "items": { "type": "string", "minLength": 1, "maxLength": 500 },
           "description": "Best-effort cleanup run as root at uninstall."
+        }
+      }
+    },
+    "hooks": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event", "message"],
+        "properties": {
+          "event": {
+            "enum": ["session.idle", "thread.created"],
+            "description": "Upstream event the hook fires on: session.idle after any thread turn goes idle, thread.created when a new thread appears."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Prompt run in a hidden worker thread (worker: prefix, invisible in the dashboard list) each time the event fires. Loop-guarded: worker threads never re-trigger hooks, and a plugin's hooks are capped at 20 runs/day and 2 concurrent."
+          }
         }
       }
     },

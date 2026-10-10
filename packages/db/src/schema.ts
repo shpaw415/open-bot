@@ -275,6 +275,8 @@ export const installedPlugins = sqliteTable(
     applied: text("applied").notNull().default("{}"),
     source: text("source").notNull().default("marketplace"),
     localPath: text("local_path"),
+    latestVersion: text("latest_version"),
+    latestCheckedAt: integer("latest_checked_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -323,5 +325,50 @@ export const workspaceMedia = sqliteTable(
     uniqueIndex("workspace_media_message_path").on(table.messageId, table.path),
     index("workspace_media_session").on(table.userId, table.sessionId),
     index("workspace_media_created").on(table.createdAt),
+  ],
+)
+
+export const mediaAlbums = sqliteTable(
+  "media_albums",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    sessionId: text("session_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("media_albums_user_name").on(table.userId, table.name),
+    uniqueIndex("media_albums_user_session").on(table.userId, table.sessionId),
+    index("media_albums_user").on(table.userId, table.createdAt),
+  ],
+)
+
+export const mediaItems = sqliteTable(
+  "media_items",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    albumId: text("album_id").notNull(),
+    kind: text("kind").notNull(),
+    name: text("name").notNull(),
+    title: text("title").notNull(),
+    mime: text("mime").notNull(),
+    bytes: integer("bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    sourcePath: text("source_path").notNull(),
+    sessionId: text("session_id"),
+    messageId: text("message_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("media_items_album_sha").on(table.albumId, table.sha256),
+    uniqueIndex("media_items_message_path").on(
+      table.messageId,
+      table.sourcePath,
+    ),
+    index("media_items_album").on(table.albumId, table.createdAt),
+    index("media_items_user").on(table.userId),
+    index("media_items_created").on(table.createdAt),
   ],
 )

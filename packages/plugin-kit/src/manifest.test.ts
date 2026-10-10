@@ -6,6 +6,7 @@ import {
   pluginPermissionSummary,
   renderTemplate,
   resolveCardData,
+  validateConfigValue,
   validatePluginManifest,
 } from "./manifest"
 
@@ -319,5 +320,219 @@ describe("plugin manifest", () => {
     if (!tooLong.ok) {
       expect(manifestIssuesText(tooLong.issues)).toContain("opencode.agentsMd")
     }
+  })
+
+  test("accepts typed configs", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      configs: [
+        {
+          key: "units",
+          label: "Units",
+          def: "metric",
+          type: "enum",
+          options: ["metric", "imperial"],
+        },
+        { key: "alerts", label: "Alerts", def: "true", type: "bool" },
+        { key: "days", label: "Days", def: "3", type: "number" },
+        { key: "token", label: "Token", def: "", type: "secret" },
+        { key: "note", label: "Note", def: "plain" },
+        { key: "legacy", label: "Legacy", def: "", secret: true },
+      ],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.configs).toHaveLength(6)
+      const summary = pluginPermissionSummary(result.manifest)
+      expect(summary).toContain("Adds settings")
+    }
+  })
+
+  test("rejects bad config types and defs", () => {
+    const badType = validatePluginManifest({
+      ...valid,
+      configs: [{ key: "a", label: "A", def: "", type: "float" }],
+    })
+    expect(badType.ok).toBe(false)
+    const enumWithoutOptions = validatePluginManifest({
+      ...valid,
+      configs: [{ key: "a", label: "A", def: "x", type: "enum" }],
+    })
+    expect(enumWithoutOptions.ok).toBe(false)
+    if (!enumWithoutOptions.ok) {
+      expect(manifestIssuesText(enumWithoutOptions.issues)).toContain(
+        "config.options",
+      )
+    }
+    const enumDefMismatch = validatePluginManifest({
+      ...valid,
+      configs: [
+        { key: "a", label: "A", def: "nope", type: "enum", options: ["yes"] },
+      ],
+    })
+    expect(enumDefMismatch.ok).toBe(false)
+    const badBool = validatePluginManifest({
+      ...valid,
+      configs: [{ key: "a", label: "A", def: "maybe", type: "bool" }],
+    })
+    expect(badBool.ok).toBe(false)
+    const badNumber = validatePluginManifest({
+      ...valid,
+      configs: [{ key: "a", label: "A", def: "soon", type: "number" }],
+    })
+    expect(badNumber.ok).toBe(false)
+  })
+
+  test("number configs validate min/max bounds", () => {
+    const config = {
+      key: "a",
+      label: "A",
+      def: "50",
+      type: "number" as const,
+      min: 0,
+      max: 100,
+    }
+    expect(validateConfigValue(config, "0")).toEqual({ ok: true, value: "0" })
+    expect(validateConfigValue(config, "100")).toEqual({
+      ok: true,
+      value: "100",
+    })
+    expect(validateConfigValue(config, "200")).toMatchObject({ ok: false })
+    expect(validateConfigValue(config, -5)).toMatchObject({ ok: false })
+
+    const badManifest = validatePluginManifest({
+      ...valid,
+      configs: [
+        {
+          key: "a",
+          label: "A",
+          def: "x",
+          type: "enum",
+          options: ["x"],
+          min: 1,
+        },
+      ],
+    })
+    expect(badManifest.ok).toBe(false)
+    const crossed = validatePluginManifest({
+      ...valid,
+      configs: [
+        { key: "a", label: "A", def: "5", type: "number", min: 10, max: 1 },
+      ],
+    })
+    expect(crossed.ok).toBe(false)
+    const badDef = validatePluginManifest({
+      ...valid,
+      configs: [{ key: "a", label: "A", def: "50", type: "number", max: 10 }],
+    })
+    expect(badDef.ok).toBe(false)
+    const good = validatePluginManifest({
+      ...valid,
+      configs: [
+        { key: "a", label: "A", def: "50", type: "number", min: 0, max: 100 },
+      ],
+    })
+    expect(good.ok).toBe(true)
+  })
+
+  test("hooks validate event names and messages", () => {
+    const good = validatePluginManifest({
+      ...valid,
+      hooks: [{ event: "session.idle", message: "Check the thread" }],
+    })
+    expect(good.ok).toBe(true)
+    if (good.ok) {
+      expect(good.manifest.hooks).toHaveLength(1)
+      const summary = pluginPermissionSummary(good.manifest)
+      expect(
+        summary.some((line) =>
+          line.startsWith("Runs agent sessions on thread events"),
+        ),
+      ).toBe(true)
+    }
+    const badEvent = validatePluginManifest({
+      ...valid,
+      hooks: [{ event: "desktop.exploded", message: "boom" }],
+    })
+    expect(badEvent.ok).toBe(false)
+    const badMessage = validatePluginManifest({
+      ...valid,
+      hooks: [{ event: "thread.created", message: "" }],
+    })
+    expect(badMessage.ok).toBe(false)
+    const tooMany = validatePluginManifest({
+      ...valid,
+      hooks: Array.from({ length: 9 }, (_, index) => ({
+        event: "session.idle",
+        message: `hook ${index}`,
+      })),
+    })
+    expect(tooMany.ok).toBe(false)
+  })
+})
+
+describe("validateConfigValue", () => {
+  test("strings pass through and cap length", () => {
+    expect(
+      validateConfigValue({ key: "a", label: "A", def: "" }, "hi"),
+    ).toEqual({ ok: true, value: "hi" })
+    expect(
+      validateConfigValue({ key: "a", label: "A", def: "" }, "x".repeat(2001)),
+    ).toMatchObject({ ok: false })
+  })
+
+  test("bools coerce accepted spellings and reject the rest", () => {
+    const config = { key: "a", label: "A", def: "false", type: "bool" as const }
+    expect(validateConfigValue(config, true)).toEqual({
+      ok: true,
+      value: "true",
+    })
+    expect(validateConfigValue(config, false)).toEqual({
+      ok: true,
+      value: "false",
+    })
+    expect(validateConfigValue(config, "1")).toEqual({
+      ok: true,
+      value: "true",
+    })
+    expect(validateConfigValue(config, "FALSE")).toEqual({
+      ok: true,
+      value: "false",
+    })
+    expect(validateConfigValue(config, "maybe")).toMatchObject({ ok: false })
+  })
+
+  test("numbers must parse", () => {
+    const config = { key: "a", label: "A", def: "", type: "number" as const }
+    expect(validateConfigValue(config, "3.5")).toEqual({
+      ok: true,
+      value: "3.5",
+    })
+    expect(validateConfigValue(config, 7)).toEqual({ ok: true, value: "7" })
+    expect(validateConfigValue(config, "")).toEqual({ ok: true, value: "" })
+    expect(validateConfigValue(config, "soon")).toMatchObject({ ok: false })
+  })
+
+  test("enums must be declared options", () => {
+    const config = {
+      key: "a",
+      label: "A",
+      def: "metric",
+      type: "enum" as const,
+      options: ["metric", "imperial"],
+    }
+    expect(validateConfigValue(config, "imperial")).toEqual({
+      ok: true,
+      value: "imperial",
+    })
+    expect(validateConfigValue(config, "kelvin")).toMatchObject({ ok: false })
+  })
+
+  test("secret configs behave like strings", () => {
+    const config = { key: "a", label: "A", def: "", type: "secret" as const }
+    expect(validateConfigValue(config, "hunter2")).toEqual({
+      ok: true,
+      value: "hunter2",
+    })
   })
 })

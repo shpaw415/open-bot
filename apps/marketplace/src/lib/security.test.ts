@@ -1,9 +1,44 @@
 import { describe, expect, test } from "bun:test"
+import { gzipSync } from "node:zlib"
 import {
+  extractPayloadSources,
   GLM_REVIEW_MAX_TOKENS,
   glmReviewRequest,
   verdictFromModelResult,
 } from "./security"
+
+function tarEntry(path: string, content: string): Uint8Array[] {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(content)
+  const header = new Uint8Array(512)
+  header.set(encoder.encode(path.slice(0, 100)), 0)
+  header.set(
+    encoder.encode(`${data.length.toString(8).padStart(11, "0")}\0`),
+    124,
+  )
+  header[156] = 0x30 // '0' — regular file
+  header.set(encoder.encode("ustar"), 257)
+  const block = new Uint8Array(Math.ceil(data.length / 512) * 512 || 512)
+  block.set(data)
+  return [header, block]
+}
+
+function gzTar(files: [string, string][]): ArrayBuffer {
+  const chunks = files.flatMap(([path, content]) => tarEntry(path, content))
+  const tar = new Uint8Array(
+    chunks.reduce((total, chunk) => total + chunk.length, 0),
+  )
+  let offset = 0
+  for (const chunk of chunks) {
+    tar.set(chunk, offset)
+    offset += chunk.length
+  }
+  const buf = gzipSync(tar)
+  return buf.buffer.slice(
+    buf.byteOffset,
+    buf.byteOffset + buf.byteLength,
+  ) as ArrayBuffer
+}
 
 describe("security review model call", () => {
   test("asks for high reasoning and a json verdict", () => {
@@ -27,7 +62,8 @@ describe("security review model call", () => {
         {
           finish_reason: "length",
           message: {
-            content: '{"verdict":"concern","severity":"high","findings":[{"title":"pip install","severity":"medium","detail":"installs a package","path":"setup"}]}',
+            content:
+              '{"verdict":"concern","severity":"high","findings":[{"title":"pip install","severity":"medium","detail":"installs a package","path":"setup"}]}',
             reasoning_content: "still thinking about apt-get",
           },
         },
@@ -62,5 +98,39 @@ describe("security review model call", () => {
     })
     expect(parsed.verdict).toBe("pass")
     expect(parsed.exhausted).toBe(false)
+  })
+})
+
+describe("payload extraction", () => {
+  test("pulls declared payload files out of the release tarball", async () => {
+    const tarball = gzTar([
+      ["weather-pro-1.0.0/README.md", "docs only"],
+      [
+        "weather-pro-1.0.0/tools/weather.sh",
+        "#!/bin/sh\ncurl https://example.invalid\n",
+      ],
+      ["weather-pro-1.0.0/tools/other.py", "print('hi')\n"],
+    ])
+    const extracted = await extractPayloadSources(tarball, [
+      "tools/weather.sh",
+      "tools/other.py",
+      "tools/missing.sh",
+    ])
+    expect(extracted.get("tools/weather.sh")).toContain("example.invalid")
+    expect(extracted.get("tools/other.py")).toContain("print")
+    expect(extracted.has("tools/missing.sh")).toBe(false)
+    expect(extracted.has("README.md")).toBe(false)
+  })
+
+  test("returns empty for a corrupt tarball instead of throwing", async () => {
+    const bogus = new TextEncoder().encode("not a gzip file at all")
+    const extracted = await extractPayloadSources(
+      bogus.buffer.slice(
+        bogus.byteOffset,
+        bogus.byteOffset + bogus.byteLength,
+      ) as ArrayBuffer,
+      ["tools/weather.sh"],
+    )
+    expect(extracted.size).toBe(0)
   })
 })

@@ -87,15 +87,29 @@ function formatBytes(value: number) {
 type AdminSettings = {
   mediaSnapshotCapMb: number
   mediaSnapshotUsedBytes: number
+  mediaVaultCapMb: number
+  mediaVaultUsedBytes: number
 }
 
 function MediaSettings() {
   const [capGb, setCapGb] = useState("")
   const [usedBytes, setUsedBytes] = useState(0)
   const [savedCapMb, setSavedCapMb] = useState<number | null>(null)
+  const [vaultGb, setVaultGb] = useState("")
+  const [vaultUsed, setVaultUsed] = useState(0)
+  const [savedVaultMb, setSavedVaultMb] = useState<number | null>(null)
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState("")
+
+  function applySettings(body: AdminSettings) {
+    setUsedBytes(body.mediaSnapshotUsedBytes)
+    setSavedCapMb(body.mediaSnapshotCapMb)
+    setCapGb((body.mediaSnapshotCapMb / 1024).toString())
+    setVaultUsed(body.mediaVaultUsedBytes ?? 0)
+    setSavedVaultMb(body.mediaVaultCapMb ?? 3072)
+    setVaultGb(((body.mediaVaultCapMb ?? 3072) / 1024).toString())
+  }
 
   useEffect(() => {
     void (async () => {
@@ -104,16 +118,20 @@ function MediaSettings() {
         setUsedBytes(body.mediaSnapshotUsedBytes)
         setSavedCapMb(body.mediaSnapshotCapMb)
         setCapGb((body.mediaSnapshotCapMb / 1024).toString())
+        setVaultUsed(body.mediaVaultUsedBytes ?? 0)
+        setSavedVaultMb(body.mediaVaultCapMb ?? 3072)
+        setVaultGb(((body.mediaVaultCapMb ?? 3072) / 1024).toString())
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "failed to load")
       }
     })()
   }, [])
 
-  async function save() {
+  async function save(which: "snapshot" | "vault") {
     setError("")
     setNotice("")
-    const gb = Number.parseFloat(capGb)
+    const raw = which === "snapshot" ? capGb : vaultGb
+    const gb = Number.parseFloat(raw)
     if (!Number.isFinite(gb) || gb < 0 || gb > 100) {
       setError("Enter a size between 0 and 100 GB")
       return
@@ -124,12 +142,14 @@ function MediaSettings() {
       const body = await api<AdminSettings>("/api/admin/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mediaSnapshotCapMb: capMb }),
+        body: JSON.stringify(
+          which === "snapshot"
+            ? { mediaSnapshotCapMb: capMb }
+            : { mediaVaultCapMb: capMb },
+        ),
       })
-      setUsedBytes(body.mediaSnapshotUsedBytes)
-      setSavedCapMb(body.mediaSnapshotCapMb)
-      setCapGb((body.mediaSnapshotCapMb / 1024).toString())
-      setNotice("Media cap saved")
+      applySettings(body)
+      setNotice(which === "snapshot" ? "Snapshot cap saved" : "Vault cap saved")
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "save failed")
     } finally {
@@ -161,7 +181,7 @@ function MediaSettings() {
         <Button
           variant="contained"
           disabled={busy || capGb === ""}
-          onClick={() => void save()}
+          onClick={() => void save("snapshot")}
         >
           Save
         </Button>
@@ -177,6 +197,40 @@ function MediaSettings() {
           {error}
         </Alert>
       ) : null}
+      <Typography variant="subtitle2" sx={{ mt: 2 }}>
+        Media vault
+      </Typography>
+      <Typography variant="caption" color="textSecondary">
+        Albums the agent files, including pictures, 3D models, and other files.
+        Copies stay when a thread is deleted. 0 GB turns the vault off and
+        clears it. Oldest items go first when the cap is exceeded.
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
+      >
+        <TextField
+          label="Vault max (GB)"
+          value={vaultGb}
+          onChange={(event) => setVaultGb(event.currentTarget.value)}
+          sx={{ width: 140 }}
+        />
+        <Button
+          variant="contained"
+          disabled={busy || vaultGb === ""}
+          onClick={() => void save("vault")}
+        >
+          Save
+        </Button>
+        <Chip size="small" sx={{ ml: "auto" }}>
+          {formatBytes(vaultUsed)} used
+          {savedVaultMb != null
+            ? ` of ${formatBytes(savedVaultMb * 1024 * 1024)}`
+            : ""}
+        </Chip>
+      </Stack>
       {notice ? (
         <Alert severity="success" sx={{ mt: 1 }} onClose={() => setNotice("")}>
           {notice}

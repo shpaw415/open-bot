@@ -30,6 +30,15 @@ if [ -d "$run_dir" ]; then
   done
   rm -rf "$run_dir"
 fi
+apps_dir=/home/agent/.open-bot/apps/$session
+if [ -d "$apps_dir" ]; then
+  for pidfile in "$apps_dir"/*.pid; do
+    [ -f "$pidfile" ] || continue
+    pid=$(cat "$pidfile")
+    kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  done
+  rm -rf "$apps_dir"
+fi
 profile=/home/agent/.config/chromium-threads/$session
 pkill -f "user-data-dir=$profile" 2>/dev/null || true
 if [ -x /opt/open-bot/sync-chromium.sh ]; then
@@ -42,6 +51,7 @@ fi
 rm -f "/home/agent/.open-bot/vnc/$session" "/home/agent/.open-bot/vnc/$session.hold"
 if [ "$purge" -eq 1 ]; then
   rm -rf "$profile"
+  rm -rf "/home/agent/.config/apps/chrome/$session" "/home/agent/.config/apps/chrome/$session"-* 2>/dev/null || true
   rm -f "/home/agent/.open-bot/screens/$session.url"
 fi
 echo ok

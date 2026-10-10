@@ -543,7 +543,7 @@ async function opencodeJson(
   return res
 }
 
-async function createSession(
+export async function createSession(
   base: string,
   headers: Record<string, string>,
   title: string,

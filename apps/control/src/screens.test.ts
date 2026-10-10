@@ -36,6 +36,8 @@ describe("thread screens", () => {
     expect(line).toContain("ob-vnc paste")
     expect(line).toContain("xclip")
     expect(line).toContain("ob-nav --session ses_abc")
+    expect(line).toContain("ob-app --session ses_abc")
+    expect(line).toContain("ob-app launch chrome")
     expect(line).toContain(capturePath(5904))
     expect(line).toContain("$OPEN_BOT_VNC")
     expect(line).toContain("![screen](open-bot://screen)")

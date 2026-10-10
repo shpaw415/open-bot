@@ -444,6 +444,27 @@ test("headers keep the gateway token off the provider key", () => {
     questions: { operation: { type: "choice", instructions: "Pick." } },
     images: [{ content_type: "image/jpeg", base64: "abc" }],
   })
+  // Regression: llama.cpp /v1/systemone (selfhosted-clef) rejects the Workers
+  // AI image shape with "images must be data URLs" — send data URLs instead.
+  expect(
+    decisionBody(
+      {
+        endpoint: "http://clef:8011/v1/systemone",
+        apiKey: "",
+        gatewayToken: "",
+        model: "clef-flash",
+        provider: "selfhosted-clef",
+      },
+      "{}",
+      { operation: { type: "choice", instructions: "Pick." } },
+      [{ content_type: "image/jpeg", base64: "abc" }],
+    ),
+  ).toEqual({
+    model: "clef-flash",
+    state: "{}",
+    questions: { operation: { type: "choice", instructions: "Pick." } },
+    images: ["data:image/jpeg;base64,abc"],
+  })
   expect(
     decisionBody(
       {

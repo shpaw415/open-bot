@@ -55,6 +55,7 @@ export function vncSystemLine(sessionId: string, port: number) {
     `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}. Add 2 when text is hard to read. That restores the screen. Clicks stay in live-screen pixels.`,
     `For a page goal, run ob-nav --session ${sessionId} --goal "..." before clicking.`,
     "The screen relaunches Chromium on this thread's last page on its own. A blank or black page only means Chromium was closed or is loading: run ob-nav to the page. Do not call the screen dark.",
+    `Native apps: install with sudo apt-get and launch with ob-app --session ${sessionId}; a standalone Chrome window is ob-app launch chrome. Pages stay on ob-nav.`,
     "If ob-nav is unconfigured, blocked, low_confidence, or errors, use ob-page for DOM control (read, scroll, click, type); ob-vnc pixels are the last resort.",
     "Twenty fallback actions per task is the budget. Finish the task yourself; only after the budget, stop input and end with ![screen](open-bot://screen).",
     "If ob-nav needs the user, stop and end with ![screen](open-bot://screen).",

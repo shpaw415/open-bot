@@ -187,6 +187,11 @@ export async function searchPlugins(
   const clauses: string[] = []
   const params: (string | number)[] = []
   if (!opts.includeAll) clauses.push("status = 'approved'")
+  // Dev-only listings (the current listing version is a dev tag or a semver
+  // prerelease) stay out of search until a stable version publishes.
+  if (!opts.includeAll) {
+    clauses.push("version GLOB '[0-9]*' AND version NOT LIKE '%-%'")
+  }
   if (opts.q) {
     clauses.push(
       "(id LIKE ? OR name LIKE ? OR description LIKE ? OR tags LIKE ? OR author LIKE ?)",

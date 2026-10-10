@@ -59,8 +59,17 @@ export type InstalledPluginInfo = {
   permissions: string[]
   setupCommands?: string[]
   init?: { ranAt: number; ok: boolean; output: string } | null
+  settings?: Record<string, string>
+  updateAvailable?: string | null
   manifest: {
-    configs?: { key: string; label: string; def: string }[]
+    configs?: {
+      key: string
+      label: string
+      def: string
+      type?: "string" | "bool" | "number" | "enum" | "secret"
+      options?: string[]
+      secret?: boolean
+    }[]
     dashboard?: {
       tabs?: {
         id: string
@@ -80,12 +89,14 @@ export type InstalledPluginInfo = {
 export type InstalledResponse = {
   plugins: InstalledPluginInfo[]
   policy: "manual" | "auto"
+  autoUpdate?: "off" | "stable"
   configured: boolean
 }
 
 export function useInstalledPlugins() {
   const [plugins, setPlugins] = useState<InstalledPluginInfo[]>([])
   const [policy, setPolicy] = useState<"manual" | "auto">("manual")
+  const [autoUpdate, setAutoUpdate] = useState<"off" | "stable">("off")
   const [configured, setConfigured] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -94,6 +105,7 @@ export function useInstalledPlugins() {
       const body = await api<InstalledResponse>("/api/plugins/installed")
       setPlugins(body.plugins ?? [])
       setPolicy(body.policy ?? "manual")
+      setAutoUpdate(body.autoUpdate ?? "off")
       setConfigured(body.configured ?? false)
       setLoaded(true)
     } catch {
@@ -105,7 +117,7 @@ export function useInstalledPlugins() {
     void refresh()
   }, [refresh])
 
-  return { plugins, policy, configured, loaded, refresh }
+  return { plugins, policy, autoUpdate, configured, loaded, refresh }
 }
 
 export function resolveSpecField(

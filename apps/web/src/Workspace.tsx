@@ -41,6 +41,7 @@ import {
   type Me,
   waitForDesktop,
 } from "./api"
+import { type AppEntry, filterApps } from "./app-launcher"
 import {
   ACTIVITY_LABEL,
   type ChatMessage,
@@ -90,6 +91,7 @@ import {
   MoreVertIcon,
   OpenInNewIcon,
   PauseIcon,
+  PhotoLibraryIcon,
   PlayArrowIcon,
   RefreshIcon,
   ScheduleIcon,
@@ -107,6 +109,7 @@ import {
   readJoinedFile,
 } from "./join-file"
 import { MediaDownloadButton } from "./MediaDownload"
+import { MediaVault } from "./MediaVault"
 import { Model3dView } from "./Model3dView"
 import { ModelSelect } from "./ModelSelect"
 import {
@@ -284,6 +287,124 @@ function openVnc(path: string, interactive: boolean) {
   const lock = () => lockVnc(pop as VncWindow, interactive)
   pop.addEventListener("load", lock)
   window.setTimeout(lock, 800)
+}
+
+function AppLauncher({
+  sessionId,
+  disabled,
+  onError,
+}: {
+  sessionId: string
+  disabled: boolean
+  onError: (message: string) => void
+}) {
+  const [query, setQuery] = useState("")
+  const [apps, setApps] = useState<AppEntry[]>([])
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const loadedAtRef = useRef(0)
+  const anchorRef = useRef<HTMLDivElement | null>(null)
+
+  const load = useCallback(
+    async (force: boolean) => {
+      if (!force && Date.now() - loadedAtRef.current < 30_000) return
+      try {
+        const body = await api<{ apps: AppEntry[] }>("/api/desktop/apps")
+        setApps(body.apps)
+        loadedAtRef.current = Date.now()
+      } catch (err) {
+        onError(err instanceof Error ? err.message : String(err))
+      }
+    },
+    [onError],
+  )
+
+  const suggestions = useMemo(() => filterApps(apps, query), [apps, query])
+
+  const launch = useCallback(
+    async (app: AppEntry) => {
+      setOpen(false)
+      setBusy(true)
+      try {
+        await api("/api/desktop/apps/launch", {
+          method: "POST",
+          body: JSON.stringify({ sessionId, appId: app.id }),
+        })
+        setQuery("")
+      } catch (err) {
+        onError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [sessionId, onError],
+  )
+
+  return (
+    <Box
+      ref={anchorRef}
+      sx={{ display: "flex", gap: 0.5, alignItems: "center" }}
+    >
+      <TextField
+        placeholder="Open app…"
+        aria-label="Open app"
+        value={query}
+        disabled={disabled || busy}
+        sx={{ width: 170 }}
+        onFocus={() => {
+          setOpen(true)
+          void load(false)
+        }}
+        onChange={(event) => {
+          setQuery(event.currentTarget.value)
+          setOpen(true)
+          void load(false)
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false)
+          if (event.key === "ArrowDown") setOpen(true)
+          if (event.key === "Enter" && suggestions[0] && !busy) {
+            void launch(suggestions[0])
+          }
+        }}
+      />
+      <ToolTip
+        title={
+          suggestions[0]
+            ? `Launch ${suggestions[0].name}`
+            : "Type to pick an app"
+        }
+      >
+        <Button
+          size="small"
+          variant="text"
+          startIcon={busy ? <CircularProgress size={1} /> : <PlayArrowIcon />}
+          disabled={disabled || busy || !suggestions[0]}
+          onClick={() => {
+            const app = suggestions[0]
+            if (app) void launch(app)
+          }}
+        >
+          Launch
+        </Button>
+      </ToolTip>
+      <Menu
+        open={open && suggestions.length > 0}
+        anchorEl={anchorRef}
+        onClose={() => setOpen(false)}
+      >
+        {suggestions.map((app) => (
+          <ListItemButton key={app.id} onClick={() => void launch(app)}>
+            <PlayArrowIcon />
+            <ListItemText
+              primary={app.name}
+              secondary={app.name === app.id ? undefined : app.id}
+            />
+          </ListItemButton>
+        ))}
+      </Menu>
+    </Box>
+  )
 }
 
 function chatUrl(url: string, key: string): string {
@@ -3407,7 +3528,9 @@ export function Workspace({ me }: { me: Me }) {
                 ? "Desktop"
                 : tab === "projects"
                   ? "Projects"
-                  : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
+                  : tab === "media"
+                    ? "Media"
+                    : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
           </Typography>
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
             {stopping
@@ -3897,6 +4020,11 @@ export function Workspace({ me }: { me: Me }) {
                     Pop out
                   </Button>
                 </ToolTip>
+                <AppLauncher
+                  sessionId={sessionId}
+                  disabled={!screen || screen.sessionId !== sessionId}
+                  onError={setError}
+                />
               </Stack>
               {screen?.sessionId === sessionId ? (
                 <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
@@ -4136,6 +4264,17 @@ export function Workspace({ me }: { me: Me }) {
           />
         </Box>
 
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: tab === "media" ? "flex" : "none",
+            flexDirection: "column",
+          }}
+        >
+          <MediaVault subscribe={subscribe} />
+        </Box>
+
         <Drawer
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
@@ -4179,6 +4318,13 @@ export function Workspace({ me }: { me: Me }) {
               >
                 <FolderIcon />
                 <ListItemText primary="Projects" />
+              </ListItemButton>
+              <ListItemButton
+                selected={tab === "media"}
+                onClick={() => goTab("media")}
+              >
+                <PhotoLibraryIcon />
+                <ListItemText primary="Media" />
               </ListItemButton>
             </List>
             <Divider />

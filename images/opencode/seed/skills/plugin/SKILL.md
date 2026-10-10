@@ -12,7 +12,7 @@ Plugins extend what you can do: skills, personalities, scheduled jobs, desktop t
 When a task needs something you cannot do with current tools, skills, or plugins, plan a plugin instead of giving up or hand-rolling a one-off:
 
 1. Scaffold: `ob-plugin new <slug>` creates `~/plugins-create/<slug>/` with `open-bot.plugin.json` and a README.
-2. Implement: fill the manifest following the JSON schema at `~/.config/opencode/skills/plugin/open-bot.plugin.schema.json` — read it before writing any field you are unsure about; every field name, pattern, and limit is defined there, and unknown fields are rejected. Inline sections: `skills`, `personas`, `cron`, `tools`, `configs`, `setup`, `permissions`, `dashboard`, `textbox`, `opencode`. Tool files are plain scripts installed into `/usr/local/bin`. Larger text payloads go in `files[]` (`{name, source, exec}` — repo-relative paths shipped in the release tarball, installed next to tools). `opencode.agents` registers new agent workers (built-in names are rejected); `opencode.agentTools` patches tool globs on existing agents (e.g. `{"build": {"myplugin_*": false}}`); `opencode.agentsMd` is a short block of standing instructions (max 4000 chars) injected next to AGENTS.md for as long as the plugin is installed — durable behavioral rules the agent must always follow, never secrets and never per-task prompts. `setup.commands` are shell commands run as root in the desktop at install and re-run after every desktop recreate — use them for environment setup the plugin needs (e.g. `"sudo apt-get install -y figlet"`); keep them idempotent and minimal, and pair destructive ones with `setup.uninstall` cleanup. Helper sessions the plugin spawns (worker pipelines, batch jobs) must be titled with the `worker:` prefix so they stay out of the dashboard thread list (same convention as `cron-run:`).
+2. Implement: fill the manifest following the JSON schema at `~/.config/opencode/skills/plugin/open-bot.plugin.schema.json` — read it before writing any field you are unsure about; every field name, pattern, and limit is defined there, and unknown fields are rejected. Inline sections: `skills`, `personas`, `cron`, `tools`, `configs`, `setup`, `hooks`, `permissions`, `dashboard`, `textbox`, `opencode`. Tool files are plain scripts installed into `/usr/local/bin`. Larger text payloads go in `files[]` (`{name, source, exec}` — repo-relative paths shipped in the release tarball, installed next to tools). `configs[]` are settings shown on the Plugins page — give each a `type` (`string` default, `bool`, `number`, `enum` with `options[]`, `secret`) so the user gets a proper input and values are validated. `hooks[]` run a short prompt in a hidden worker thread when `session.idle` or `thread.created` fires (max 8, capped at 20 runs/day per plugin; worker threads never re-trigger hooks — use them for reactive automation, not loops). `permissions.notifications: true` lets the plugin's tools and skills post dashboard notifications with `ob-plugin notify <id> "title" "body"`. `opencode.agents` registers new agent workers (built-in names are rejected); `opencode.agentTools` patches tool globs on existing agents (e.g. `{"build": {"myplugin_*": false}}`); `opencode.agentsMd` is a short block of standing instructions (max 4000 chars) injected next to AGENTS.md for as long as the plugin is installed — durable behavioral rules the agent must always follow, never secrets and never per-task prompts. `setup.commands` are shell commands run as root in the desktop at install and re-run after every desktop recreate — use them for environment setup the plugin needs (e.g. `"sudo apt-get install -y figlet"`); keep them idempotent and minimal, and pair destructive ones with `setup.uninstall` cleanup. Helper sessions the plugin spawns (worker pipelines, batch jobs) must be titled with the `worker:` prefix so they stay out of the dashboard thread list (same convention as `cron-run:`).
 3. Test locally: run the tool scripts yourself, walk through the skill steps, and check the cron prompt reads well.
 4. Validate: `ob-plugin validate ~/plugins-create/<slug>` and fix every issue.
 5. Install locally: `ob-plugin install --path ~/plugins-create/<slug>`. It lands in the installed list with (local) beside the name. Re-run that command, or Re-install on the Plugins page, to pick up edits. Remove works like any other install.
@@ -41,7 +41,13 @@ ob-plugin install NAME
 
 ## Staging a release (dev tags)
 
-For stress-testing and staging before a stable release, publish a dev tag instead of bumping semver. Set the manifest `version` to a short lowercase tag (e.g. `beta-1`, `staging.2`), then move the tag and publish — republishing the same tag overwrites it:
+For stress-testing and staging before a stable release, publish a dev tag instead of bumping semver. Set the manifest `version` to a short lowercase tag (e.g. `beta-1`, `staging.2`), then let one command do the whole loop — commit, push, force-move the `v<tag>` tag, clobber the release, publish, wait for the review, and reinstall the pinned version if the plugin is already installed:
+
+```sh
+ob-plugin publish ~/plugins-create/NAME --dev
+```
+
+`--no-commit` skips the git commit step if you already committed. The manual equivalent is:
 
 ```sh
 git add -A && git commit -m "beta-1"
@@ -52,9 +58,11 @@ ob-plugin install NAME --version beta-1
 ```
 
 - Dev versions pass the same security review, consent flow, and policy as stable ones, but stay out of marketplace search and never become the listing's "latest".
-- `ob-plugin publish` returns after the marketplace queues the security review, then waits up to 8 minutes for `queued` / `running` to become `pass`, `concern`, or `error`. A previous review's error does not skip that wait.
+- `ob-plugin publish` returns after the marketplace queues the security review, then waits up to 8 minutes for `queued` / `running` to become `pass`, `concern`, or `error`. A previous review's error does not skip that wait. The review is flaky sometimes (slow or unparsable verdicts) — republishing re-reviews and eventually passes; space retries out.
 - Reinstalling the pinned version (`ob-plugin install NAME --version beta-1` again, or Re-install on the dashboard Plugins tab) picks up the republish: it re-pulls the release and re-runs setup. Uninstall from the same tab any time.
 - When the plugin passes, bump to semver (`1.0.0`), tag, and publish — the stable version becomes the marketplace latest, and a plain `ob-plugin install NAME` upgrades installs pinned to the dev tag.
+
+Before a first publish, `ob-plugin doctor ~/plugins-create/NAME` checks the manifest, repo reachability, and the `v<version>` tag in one pass.
 
 ## Maintaining your plugins (guard cron)
 
@@ -66,6 +74,8 @@ When a message starts with `[cron: plugin:NAME:guard]`, do the maintenance pass 
 4. If merged changes warrant a release: bump the version, commit, release the new tag, `ob-plugin publish ~/plugins-create/NAME`.
 5. End with what you did. If there was nothing to do, say exactly that.
 
+`ob-plugin guard status NAME` shows the job; `ob-plugin guard off NAME` deletes it when you (or the user) decide to stop maintaining a plugin. Only use `guard off` on plugins you published — never on another creator's guard cron.
+
 ## Using and installing plugins
 
 ```sh
@@ -74,9 +84,12 @@ ob-plugin info weather-pro     # details, versions, repo
 ob-plugin install weather-pro  # installs skills, personas, cron, tools, tabs
 ob-plugin install --path ~/plugins-create/weather-pro  # local dev install, shown as (local)
 ob-plugin list                 # installed plugins
+ob-plugin outdated             # installed plugins with a newer marketplace version
+ob-plugin update weather-pro   # update to the newest known stable
 ob-plugin remove weather-pro   # uninstall (reverses everything it created)
 ob-plugin issue weather-pro "Title" "Details"   # file a GitHub issue
-ob-plugin settings weather-pro units=imperial   # change settings
+ob-plugin settings weather-pro units=imperial   # change settings (validated against the manifest types)
+ob-plugin notify weather-pro "Backup done" "3 files copied"   # dashboard notification (needs permissions.notifications)
 ```
 
 Install respects the instance policy: `manual` asks the user to confirm the permission list (a `--yes` flag skips only when the policy allows it), `auto` installs immediately. To report a bug in a plugin you use, prefer `ob-plugin issue` — the creator's guard cron picks it up within a day.
