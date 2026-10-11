@@ -152,6 +152,21 @@ def load_part_mesh(directory, file):
     return mesh
 
 
+def slicer_stats(stl_path):
+    # A slicer merges the STL's duplicated vertices, so edges shared by 3+
+    # faces (or left open) are what it chokes on. Check the merged view, not
+    # the per-shell glTF one.
+    import numpy as np
+    import trimesh
+
+    stl = trimesh.load(stl_path, force="mesh")
+    if not isinstance(stl, trimesh.Trimesh) or len(stl.faces) == 0:
+        raise Gpio3dError(f"{Path(stl_path).name} is not one mesh")
+    _, counts = np.unique(stl.edges_sorted, axis=0, return_counts=True)
+    nonmanifold = int((counts > 2).sum())
+    return bool(stl.is_watertight), nonmanifold
+
+
 def inspect_dir(directory, name=None):
     from gpio_3d.mesh import count_bodies
 
@@ -167,10 +182,17 @@ def inspect_dir(directory, name=None):
         mesh = load_part_mesh(directory, part["file"])
         size = mesh.extents
         fits = ",".join(part.get("fits", []))
-        watertight = "yes" if mesh.is_watertight else "no"
+        stl = Path(part["file"]).with_suffix(".stl")
+        if (directory / stl).is_file():
+            watertight, nonmanifold = slicer_stats(directory / stl)
+        else:
+            watertight, nonmanifold = mesh.is_watertight, 0
+        watertight = "yes" if watertight else "no"
         print(
             f"{part['name']} {part['file']} fits {fits} bbox {size[0]:.1f}x{size[1]:.1f}x{size[2]:.2f}mm "
-            f"volume {mesh.volume:.0f}mm3 watertight {watertight} bodies {count_bodies(mesh)} tris {len(mesh.faces)}"
+            f"volume {mesh.volume:.0f}mm3 watertight {watertight}"
+            + (f" nonmanifold {nonmanifold}" if nonmanifold else "")
+            + f" bodies {count_bodies(mesh)} tris {len(mesh.faces)}"
         )
 
 

@@ -80,6 +80,7 @@ import {
 } from "./key-vault"
 import { handleLlm } from "./llm"
 import { handleMedia, isMediaRequest } from "./media-vault"
+import { trimDashboardMessages } from "./messages-trim"
 import {
   model3dAuthReady,
   model3dProviderById,
@@ -110,6 +111,12 @@ import {
   slugifyName,
 } from "./projects"
 import { resolveReferenceLine } from "./references"
+import {
+  desktopReports,
+  isReportStatus,
+  setReportStatus,
+  summarizeByPlugin,
+} from "./reports"
 import { startReset } from "./reset"
 import { ResetApprovals } from "./reset-approvals"
 import {
@@ -120,6 +127,7 @@ import {
   setScreenHold,
   stopThreadScreen,
 } from "./screens"
+import { hardwareStats } from "./stats"
 import {
   system1EndpointError,
   system1FieldError,
@@ -1215,6 +1223,44 @@ async function api(
     const apps = await desktopAppCatalog(user.id)
     return json({ apps: apps.map(({ id, name }) => ({ id, name })) })
   }
+  if (url.pathname === "/api/reports" && req.method === "GET") {
+    await ensure(user, db)
+    const status = url.searchParams.get("status") ?? "all"
+    if (status !== "all" && !isReportStatus(status))
+      return json({ error: "status must be open, done, wontfix, or all" }, 400)
+    const plugin = url.searchParams.get("plugin") ?? ""
+    const reports = await desktopReports(user.id, {
+      status,
+      plugin: plugin || undefined,
+    })
+    return json({ reports, plugins: summarizeByPlugin(reports) })
+  }
+  const reportMatch = url.pathname.match(/^\/api\/reports\/([^/]+)$/)
+  if (reportMatch && req.method === "PATCH") {
+    const body = await readJson(req)
+    const status = typeof body.status === "string" ? body.status : ""
+    if (!isReportStatus(status))
+      return json({ error: "status must be open, done, or wontfix" }, 400)
+    let note: string | undefined
+    if (body.note !== undefined) {
+      if (typeof body.note !== "string")
+        return json({ error: "note must be a string" }, 400)
+      note = body.note
+    }
+    await ensure(user, db)
+    await setReportStatus(
+      user.id,
+      decodeURIComponent(reportMatch[1] ?? ""),
+      status,
+      note,
+    )
+    hub.emit(user.id, { type: "reports.changed" })
+    return json({ ok: true })
+  }
+  if (url.pathname === "/api/hardware" && req.method === "GET") {
+    await ensure(user, db)
+    return json(await hardwareStats(user.id, db))
+  }
   if (url.pathname === "/api/desktop/apps/launch" && req.method === "POST") {
     const body = await readJson(req)
     const desktop = await ensure(user, db)
@@ -2189,6 +2235,25 @@ async function api(
           system: mergeSystem(outbound.system, line),
         }),
       )
+    }
+    const messageList = url.pathname.match(
+      /^\/api\/opencode\/session\/([^/]+)\/message$/,
+    )
+    if (messageList && req.method === "GET") {
+      // The dashboard polls this on every stream tick; tool parts can carry
+      // megabytes of read output and base64 attachments the chat never
+      // renders, so slim them before the payload crosses to the browser.
+      const upstream = await fetch(
+        new URL(
+          `${url.pathname.replace("/api/opencode", "")}${url.search}`,
+          base,
+        ),
+        { headers: auth, signal: AbortSignal.timeout(30_000) },
+      ).catch(() => null)
+      if (upstream?.ok) {
+        const parsed: unknown = await upstream.json().catch(() => null)
+        if (Array.isArray(parsed)) return json(trimDashboardMessages(parsed))
+      }
     }
     return proxy(req, base, "/api/opencode", auth)
   }

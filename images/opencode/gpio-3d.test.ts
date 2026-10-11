@@ -98,6 +98,13 @@ test("vendored cli ships the improvement-report features", () => {
   expect(mesh).toContain("enclosed void")
   expect(mesh).toContain("FACE_AXES")
   expect(mesh).toContain("count_bodies")
+  expect(mesh).toContain("stray fragment")
+  expect(mesh).toContain("clean_solid(as_mesh(result, label), label)")
+  const render = readFileSync(join(vendoredDir, "gpio_3d/render.py"), "utf8")
+  expect(render).toContain("depth < sub")
+  const exporter = readFileSync(join(vendoredDir, "gpio_3d/export.py"), "utf8")
+  expect(exporter).toContain("slicer_stats")
+  expect(exporter).toContain("nonmanifold")
   const recipe = readFileSync(join(vendoredDir, "gpio_3d/recipe.py"), "utf8")
   expect(recipe).toContain("LAST_RECIPE")
   const skill = readFileSync(join(skillDir, "SKILL.md"), "utf8")
@@ -105,6 +112,7 @@ test("vendored cli ships the improvement-report features", () => {
   expect(skill).toContain("`face`")
   expect(skill).toContain("gpio-3d inspect")
   expect(skill).toContain("/opt/gpio-3d/venv/bin/python")
+  expect(skill).toContain("degrees above the horizon")
 })
 
 test("validates a model directory with custom fits", () => {

@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { marksFromSpace, parseDecision } from "./action-space"
+import { marksFromSpace, parseDecision, withGoalUrl } from "./action-space"
 import { connectCdp } from "./cdp"
 import { runNav } from "./loop"
 import { writeFieldText } from "./text"
@@ -65,13 +65,14 @@ function note(home: string, row: Record<string, unknown>) {
 
 async function main() {
   const session = arg("--session")
-  const goal = arg("--goal")
+  const url = arg("--url")
+  const goal = withGoalUrl(arg("--goal"), url)
   const value = arg("--value")
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(session) || !goal) {
     emit(
       {
         status: "error",
-        detail: "usage: ob-nav --session SESSION --goal TEXT",
+        detail: "usage: ob-nav --session SESSION --goal TEXT [--url URL]",
       },
       1,
     )

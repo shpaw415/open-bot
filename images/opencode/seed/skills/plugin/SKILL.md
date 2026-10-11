@@ -92,7 +92,7 @@ ob-plugin settings weather-pro units=imperial   # change settings (validated aga
 ob-plugin notify weather-pro "Backup done" "3 files copied"   # dashboard notification (needs permissions.notifications)
 ```
 
-Install respects the instance policy: `manual` asks the user to confirm the permission list (a `--yes` flag skips only when the policy allows it), `auto` installs immediately. To report a bug in a plugin you use, prefer `ob-plugin issue` — the creator's guard cron picks it up within a day.
+Install respects the instance policy: `manual` asks the user to confirm the permission list (a `--yes` flag skips only when the policy allows it), `auto` installs immediately. To report a bug in a plugin you use, prefer `ob-plugin issue` — the creator's guard cron picks it up within a day. While developing or stress-testing a plugin from a local checkout, file findings with `ob-report` instead (see the `report` skill): reports stay on this desktop, other threads can fix them, and the user tracks them in the dashboard Reports view with `@reports/<slug>` mentions.
 
 ## Rules
 
@@ -100,3 +100,4 @@ Install respects the instance policy: `manual` asks the user to confirm the perm
 - Only publish manifests you validated. Never publish another creator's plugin under your name.
 - Do not edit installed plugin payloads by hand (skills, cron jobs named `plugin:<id>:...`, `/usr/local/bin/ob-plugin-<id>-*` tools, `~/.config/open-bot/plugin-<id>.json`, `~/.open-bot/plugin-init/<id>.log` setup logs). Uninstall, reinstall from `--path`, or republish instead.
 - Do not touch the guard cron of a plugin you did not publish.
+- Plugin tools and skills can use the desktop's built-in CLIs instead of bundling their own API keys: `ob-media`, `ob-report`, `ob-system1` (the System 1 decision model — quick picks, scores, or vision checks), and the rest of the `ob-*` CLIs. Handle their error JSON gracefully; do not print tokens.

@@ -32,6 +32,7 @@ import { hashPassword, randomToken, verifyPassword } from "./passwords"
 import { dispatchPluginHooks } from "./plugin-hooks"
 import { reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
+import { startStatsSampler } from "./stats"
 import { startStuckWatch } from "./stuck"
 import { onUpstreamEvent } from "./workspace-snapshots"
 
@@ -113,6 +114,7 @@ if (servers.length === 0) {
 startCronScheduler(db, hub)
 startStuckWatch(db, hub)
 startBackupScheduler(db)
+startStatsSampler(db)
 
 const RESTART_COOLDOWN_MS = 5 * 60_000
 const restartAttempts = new Map<string, number>()

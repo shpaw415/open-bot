@@ -289,4 +289,52 @@ describe("resolve reference line", () => {
     )
     expect(line.match(/id p-1/g)?.length).toBe(1)
   })
+
+  test("plugin reports resolve with the ob-report hints", async () => {
+    const db = memoryDb()
+    const items = async () => [
+      {
+        id: "weather-pro",
+        name: "weather-pro",
+        detail: "2 open plugin reports (3 total) for weather-pro",
+        hint: "list with ob-report list --plugin weather-pro --status open, read one with ob-report show ID",
+      },
+    ]
+    const originalReports = refSections.reports
+    const originalReport = refSections.report
+    refSections.reports = { items }
+    refSections.report = { items }
+    try {
+      for (const text of [
+        "fix @reports/weather-pro please",
+        "fix @report/weather-pro please",
+      ]) {
+        const line = await resolveReferenceLine(db, { id: "u" } as never, text)
+        expect(line).toContain('plugin report "weather-pro" (id weather-pro)')
+        expect(line).toContain("ob-report list --plugin weather-pro")
+      }
+    } finally {
+      refSections.reports = originalReports
+      refSections.report = originalReport
+    }
+  })
+
+  test("unknown plugin reports report missing", async () => {
+    const db = memoryDb()
+    const originalReports = refSections.reports
+    const originalReport = refSections.report
+    refSections.reports = { items: async () => [] }
+    refSections.report = { items: async () => [] }
+    try {
+      const line = await resolveReferenceLine(
+        db,
+        { id: "u" } as never,
+        "@reports/weather-pro",
+      )
+      expect(line).toContain('no plugin report named "weather-pro"')
+    } finally {
+      refSections.reports = originalReports
+      refSections.report = originalReport
+    }
+  })
 })

@@ -2,6 +2,7 @@ import type { CronJob, Db, User } from "@open-bot/db"
 import { endpoint } from "./docker"
 import { listPersonas } from "./personas"
 import { slugifyName } from "./projects"
+import { desktopReports, summarizeByPlugin } from "./reports"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
@@ -30,6 +31,8 @@ export const refSectionLabels: Record<string, string> = {
   cron: "cron job",
   skills: "skill",
   projects: "project",
+  reports: "plugin report",
+  report: "plugin report",
 }
 async function skillItems(db: Db, userId: string): Promise<RefItem[]> {
   const desktop = db.desktop(userId)
@@ -74,6 +77,9 @@ export const refSections: Record<string, RefSection> = {
   },
   // "@project/<name>" (singular) resolves the same list as "@projects/<name>"
   project: { items: projectItems },
+  reports: { items: reportItems },
+  // "@report/<name>" (singular) resolves the same list as "@reports/<name>"
+  report: { items: reportItems },
 }
 
 async function projectItems(db: Db, userId: string): Promise<RefItem[]> {
@@ -97,6 +103,21 @@ async function projectItems(db: Db, userId: string): Promise<RefItem[]> {
 function compact(text: string, max = 200): string {
   const flat = text.replace(/\s+/g, " ").trim()
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat
+}
+
+/**
+ * One mention item per plugin slug that has reports on the desktop. Fails
+ * (→ "list unavailable") when the desktop is down or its image predates
+ * ob-report, so the agent is never told to run a CLI that does not exist.
+ */
+export async function reportItems(_db: Db, userId: string): Promise<RefItem[]> {
+  const reports = await desktopReports(userId, { status: "all" })
+  return summarizeByPlugin(reports).map((summary) => ({
+    id: summary.plugin,
+    name: summary.plugin,
+    detail: `${summary.open} open plugin report${summary.open === 1 ? "" : "s"} (${summary.total} total) for ${summary.plugin} on this desktop`,
+    hint: `list with ob-report list --plugin ${summary.plugin} --status open, read one with ob-report show ID, close a fixed one with ob-report done ID --note "..."; reports are the plugin development queue shared by every thread on this desktop`,
+  }))
 }
 
 function cronDetail(job: CronJob): string {

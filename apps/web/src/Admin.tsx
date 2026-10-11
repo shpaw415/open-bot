@@ -27,6 +27,7 @@ import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "./api"
+import { ChartView } from "./ChartView"
 import { useMobile } from "./hooks"
 import { Improvements } from "./Improvements"
 import {
@@ -89,6 +90,7 @@ type AdminSettings = {
   mediaSnapshotUsedBytes: number
   mediaVaultCapMb: number
   mediaVaultUsedBytes: number
+  desktopDiskMaxGb: number
 }
 
 function MediaSettings() {
@@ -240,6 +242,95 @@ function MediaSettings() {
   )
 }
 
+function DiskSettings() {
+  const [diskGb, setDiskGb] = useState("0")
+  const [savedGb, setSavedGb] = useState<number | null>(null)
+  const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState("")
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const body = await api<AdminSettings>("/api/admin/settings")
+        setSavedGb(body.desktopDiskMaxGb ?? 0)
+        setDiskGb((body.desktopDiskMaxGb ?? 0).toString())
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "failed to load")
+      }
+    })()
+  }, [])
+
+  async function save() {
+    setError("")
+    setNotice("")
+    const gb = Number.parseFloat(diskGb)
+    if (!Number.isFinite(gb) || gb < 0) {
+      setError("Enter a size of 0 GB or more")
+      return
+    }
+    setBusy(true)
+    try {
+      const body = await api<AdminSettings>("/api/admin/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ desktopDiskMaxGb: Math.round(gb) }),
+      })
+      setSavedGb(body.desktopDiskMaxGb ?? 0)
+      setDiskGb((body.desktopDiskMaxGb ?? 0).toString())
+      setNotice("Disk max saved")
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "save failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Typography variant="subtitle1">Desktop disk max</Typography>
+      <Typography variant="caption" color="textSecondary">
+        Cap shown to users on the Hardware view for their desktop disk. 0 GB
+        uses the full size the disk reports. Nothing is deleted automatically
+        when the cap is exceeded.
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
+      >
+        <TextField
+          label="Disk max (GB)"
+          value={diskGb}
+          onChange={(event) => setDiskGb(event.currentTarget.value)}
+          sx={{ width: 140 }}
+        />
+        <Button
+          variant="contained"
+          disabled={busy || diskGb === ""}
+          onClick={() => void save()}
+        >
+          Save
+        </Button>
+        <Chip size="small" sx={{ ml: "auto" }}>
+          {savedGb != null && savedGb > 0 ? `${savedGb} GB cap` : "full disk"}
+        </Chip>
+      </Stack>
+      {error ? (
+        <Alert severity="error" sx={{ mt: 1 }} onClose={() => setError("")}>
+          {error}
+        </Alert>
+      ) : null}
+      {notice ? (
+        <Alert severity="success" sx={{ mt: 1 }} onClose={() => setNotice("")}>
+          {notice}
+        </Alert>
+      ) : null}
+    </Paper>
+  )
+}
+
 function formatAgo(ts: number | null) {
   if (!ts) return "—"
   const minutes = Math.round((Date.now() - ts) / 60_000)
@@ -248,34 +339,6 @@ function formatAgo(ts: number | null) {
   const hours = Math.round(minutes / 60)
   if (hours < 48) return `${hours}h ago`
   return `${Math.round(hours / 24)}d ago`
-}
-
-function ChartView({ option, height }: { option: object; height: number }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const signature = JSON.stringify(option)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    let dead = false
-    let chart: {
-      dispose: () => void
-      resize: () => void
-      setOption: (value: unknown, notMerge?: boolean) => void
-    } | null = null
-    const observer = new ResizeObserver(() => chart?.resize())
-    observer.observe(el)
-    void import("echarts").then((ec) => {
-      if (dead) return
-      chart = ec.init(el)
-      chart.setOption(JSON.parse(signature), true)
-    })
-    return () => {
-      dead = true
-      observer.disconnect()
-      chart?.dispose()
-    }
-  }, [signature])
-  return <Box ref={ref} sx={{ width: "100%", height }} />
 }
 
 export function Admin({ meId }: { meId: string }) {
@@ -503,6 +566,7 @@ export function Admin({ meId }: { meId: string }) {
           <Chip size="small">{usage?.totals.calls ?? 0} calls</Chip>
         </Stack>
         <MediaSettings />
+        <DiskSettings />
         <Paper variant="outlined" sx={{ p: 1.5 }}>
           <Typography variant="subtitle1">Proxy tokens by user</Typography>
           <Typography variant="caption" color="textSecondary">

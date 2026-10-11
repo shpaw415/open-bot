@@ -2,11 +2,13 @@ import { expect, test } from "bun:test"
 import {
   buildActionSpace,
   buildQuestions,
+  goalUrl,
   goalValues,
   marksFromSpace,
   NONE_VALUE,
   parseDecision,
   type Snapshot,
+  withGoalUrl,
 } from "./action-space"
 
 function page(elements: Snapshot["elements"]): Snapshot {
@@ -63,6 +65,27 @@ test("goal values come from quotes, urls, and search phrasing", () => {
     "https://example.test/a",
   ])
   expect(goalValues("search for lasagna")).toEqual(["lasagna"])
+})
+
+test("--url folds into the goal so goalUrl navigates straight to it", () => {
+  expect(
+    withGoalUrl(
+      "open the messages and read the last one",
+      "https://www.facebook.com/messages",
+    ),
+  ).toBe(
+    "open the messages and read the last one https://www.facebook.com/messages",
+  )
+  expect(withGoalUrl("", "https://www.messenger.com/")).toBe(
+    "https://www.messenger.com/",
+  )
+  expect(withGoalUrl("open https://a.test/x", "https://a.test/x")).toBe(
+    "open https://a.test/x",
+  )
+  expect(withGoalUrl("just a goal", "")).toBe("just a goal")
+  expect(goalUrl(withGoalUrl("", "https://www.facebook.com/messages."))).toBe(
+    "https://www.facebook.com/messages",
+  )
 })
 
 test("occluded and dead controls are not click targets", () => {

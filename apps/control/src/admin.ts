@@ -9,6 +9,7 @@ import {
   vaultCapMb,
 } from "./media-vault"
 import { randomToken } from "./passwords"
+import { DISK_CAP_KEY, desktopDiskMaxGb, MAX_DISK_CAP_GB } from "./stats"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
 import {
   deleteUserMedia,
@@ -58,6 +59,7 @@ export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
       mediaSnapshotUsedBytes: db.workspaceMediaUsedBytes(),
       mediaVaultCapMb: vaultCapMb(db),
       mediaVaultUsedBytes: db.mediaVaultUsedBytes(),
+      desktopDiskMaxGb: desktopDiskMaxGb(db),
     })
   }
   if (url.pathname === "/api/admin/settings" && req.method === "PUT") {
@@ -90,13 +92,31 @@ export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
       db.setSetting(VAULT_CAP_KEY, String(value))
       pruneMediaVault(db)
     }
-    if (!("mediaSnapshotCapMb" in body) && !("mediaVaultCapMb" in body))
+    if ("desktopDiskMaxGb" in body) {
+      const raw = body.desktopDiskMaxGb
+      const value =
+        typeof raw === "number" && Number.isInteger(raw) ? raw : Number.NaN
+      if (!Number.isFinite(value) || value < 0 || value > MAX_DISK_CAP_GB)
+        return json(
+          {
+            error: `desktopDiskMaxGb must be an integer between 0 and ${MAX_DISK_CAP_GB}`,
+          },
+          400,
+        )
+      db.setSetting(DISK_CAP_KEY, String(value))
+    }
+    if (
+      !("mediaSnapshotCapMb" in body) &&
+      !("mediaVaultCapMb" in body) &&
+      !("desktopDiskMaxGb" in body)
+    )
       return json({ error: "nothing to update" }, 400)
     return json({
       mediaSnapshotCapMb: mediaCapMb(db),
       mediaSnapshotUsedBytes: db.workspaceMediaUsedBytes(),
       mediaVaultCapMb: vaultCapMb(db),
       mediaVaultUsedBytes: db.mediaVaultUsedBytes(),
+      desktopDiskMaxGb: desktopDiskMaxGb(db),
     })
   }
   if (url.pathname === "/api/admin/users" && req.method === "GET") {

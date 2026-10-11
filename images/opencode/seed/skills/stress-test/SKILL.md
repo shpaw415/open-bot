@@ -36,7 +36,8 @@ Anything broken — an error, a wrong result, confusing output, a step you had t
 
 ## 3. File what you find
 
-- Defect in your plugin: file it on the plugin repo so users see it being handled, then fix it now. `ob-plugin issue <slug> "Title" "Expected: ... Actual: ... Repeat: ..."` — close it in the release notes of the version that fixes it.
+- Defect in your plugin that needs work after this thread: file it on this desktop so any thread can pick it up. `ob-report add --plugin <slug> --kind bug --title "..." --detail "Expected: ... Actual: ... Repeat: ..."`. Close it with `ob-report done <id> --note "..."` in the release notes round.
+- Defect users of the published plugin should see handled publicly: also file a GitHub issue. `ob-plugin issue <slug> "Title" "Expected: ... Actual: ... Repeat: ..."` — close it in the release notes of the version that fixes it.
 - Friction or bug in open-bot itself that this test surfaced (install flow, `ob-plugin`/`ob-improve`/`ob-cron`, the apply engine): `ob-improve add --kind bug|friction|feature --surface other --title "..." --detail "..."`. This skill exists only on development desktop images; if `ob-improve` is missing, stop — do not invent a curl call.
 - Never put tokens, passwords, or API keys in an issue or report.
 
@@ -57,4 +58,4 @@ Then re-run the case that failed **and** the whole plan again (regression). Sati
 
 ## 5. Report
 
-One final message: cases passed and failed, issues filed and closed, versions published, improve reports filed. Remove any stress cron jobs you created. Leave the `plugin:<slug>:guard` cron alone.
+One final message: cases passed and failed, issues filed and closed, versions published, `ob-report` findings filed or closed, improve reports filed. Remove any stress cron jobs you created. Leave the `plugin:<slug>:guard` cron alone.

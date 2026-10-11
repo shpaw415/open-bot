@@ -127,7 +127,7 @@ Modifiers:
 - `mirror` — `axis` (`x`, `y`, or `z`) and `ops` (solid ops only); adds the group plus its flip across that axis's plane through the origin. Build one half touching the origin, mirror the other. Also accepts `"mode": "cut"`.
 - `hull` — `ops` (solid ops only); stretches a skin over the part and the group — smooth necks joining a head to a body, blended limb roots, capes. With no part yet it is just the hull of the group.
 - `text` — `value` (1–40 characters, one line), `size` (mm cap height), `depth` (mm), and `at` (required). `mode` is `engrave` (default; `at` is the face and the text cuts `depth` below it) or `emboss` (`at` is the base and the text grows `depth` above it). `face` picks the surface: `top` (default), `bottom`, `front` (`-y`), `back` (`+y`), `left` (`-x`), `right` (`+x`); `at` sits on that surface and the cut runs into the part along its normal. `valign` positions the text block along its height axis (`center` default — the block is centered on `at`; `baseline` — the type baseline sits at `at`; `top` — the block's top edge sits at `at`). On a `top`/`bottom` face the height axis is world `y`; on walls it is world `z`. `align` (`left`, `center`, `right` — where `at` sits along the text line) and `bold` are optional. DejaVu Sans is built in; accents work. Use one `text` op per part.
-- A cut or engrave that misses the part prints a `gpio-3d: warning` on stderr and leaves the mesh unchanged; a cut that traps an enclosed void warns too. Read the warnings, do not ignore them.
+- A cut or engrave that misses the part prints a `gpio-3d: warning` on stderr and leaves the mesh unchanged; a cut that traps an enclosed void warns too. Boolean ops drop stray sub-millimetre fragments the engine sheds and warn with their volume. Read the warnings, do not ignore them.
 
 Pitch is 2.54 mm. Do not add `pitch`, a file path, or any other field. Do not
 nest `pattern` or `mirror` inside another `pattern` or `mirror`; one level
@@ -223,10 +223,13 @@ bun ~/.config/opencode/skills/gpio-3d/validate-manifest.ts /home/agent/workspace
 
 `gpio-3d inspect /home/agent/workspace/model` prints every manifest part with
 its bbox, volume, watertightness, body count, and triangle count; `--name
-<part>` limits it to one part. `gpio-3d preview` renders shaded PNGs
-(`.gpio-3d/preview/<part>.png`) so you can eyeball organic shapes between
-builds — pick a part with `--name`, aim with `--turn`/`--elev`, resize with
-`--size`:
+<part>` limits it to one part. `watertight` reflects the STL the way a slicer
+reads it; a `nonmanifold <n>` count means n edges are shared by 3+ faces —
+fix the geometry before sending the part to a printer. `gpio-3d preview`
+renders shaded PNGs (`.gpio-3d/preview/<part>.png`) so you can eyeball organic
+shapes between builds — pick a part with `--name`, aim with `--turn`/`--elev`,
+resize with `--size`. `--turn` is degrees around z (`0` faces the front `-y`
+side); `--elev` is degrees above the horizon (positive looks down from above).
 
 ```sh
 gpio-3d inspect /home/agent/workspace/model

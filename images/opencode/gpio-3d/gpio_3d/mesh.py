@@ -287,7 +287,7 @@ def subtract(mesh, cuts, label):
         result = trimesh.boolean.difference([mesh, tool], engine="manifold")
     except Exception as exc:
         raise Gpio3dError(f"{label} failed") from exc
-    return as_mesh(result, label)
+    return clean_solid(as_mesh(result, label), label)
 
 
 def unite(mesh, other, label):
@@ -296,7 +296,7 @@ def unite(mesh, other, label):
         result = trimesh.boolean.union([mesh, other], engine="manifold")
     except Exception as exc:
         raise Gpio3dError(f"{label} failed") from exc
-    return as_mesh(result, label)
+    return clean_solid(as_mesh(result, label), label)
 
 
 def intersect_with(mesh, solid, label):
@@ -305,7 +305,69 @@ def intersect_with(mesh, solid, label):
         result = trimesh.boolean.intersection([mesh, solid], engine="manifold")
     except Exception as exc:
         raise Gpio3dError(f"{label} failed") from exc
-    return as_mesh(result, label)
+    return clean_solid(as_mesh(result, label), label)
+
+
+FRAGMENT_ABS_MM3 = 0.01
+FRAGMENT_REL = 5e-4
+
+
+def body_groups(mesh):
+    parent = list(range(len(mesh.faces)))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    seen = {}
+    for index, face in enumerate(mesh.faces):
+        for a, b in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+            key = (a, b) if a < b else (b, a)
+            if key in seen:
+                parent[find(index)] = find(seen[key])
+            else:
+                seen[key] = index
+    groups = {}
+    for index in range(len(mesh.faces)):
+        groups.setdefault(find(index), []).append(index)
+    return [np.asarray(group) for group in groups.values()]
+
+
+def count_bodies(mesh):
+    return len(body_groups(mesh))
+
+
+# Boolean unions on tangent surfaces can shed stray micro-solids (sub-mm
+# crashers floating next to the part). Keep the main body plus enclosed-void
+# shells (negative volume) and any detached body big enough to be intent.
+def clean_solid(mesh, label):
+    groups = body_groups(mesh)
+    if len(groups) <= 1:
+        return mesh
+    volumes = [float(mesh.submesh([group], append=True).volume) for group in groups]
+    main = max(range(len(groups)), key=lambda i: volumes[i])
+    limit = max(FRAGMENT_ABS_MM3, FRAGMENT_REL * abs(volumes[main]))
+    keep = [main]
+    dropped = 0.0
+    count = 0
+    for index, volume in enumerate(volumes):
+        if index == main or volume < 0 or volume >= limit:
+            if index != main:
+                keep.append(index)
+            continue
+        dropped += volume
+        count += 1
+    if not count:
+        return mesh
+    print(
+        f"gpio-3d: warning: {label} left {count} stray fragment(s) totalling "
+        f"{dropped:.3f} mm3; dropped them",
+        file=sys.stderr,
+    )
+    faces = np.concatenate([mesh.faces[groups[index]] for index in keep])
+    return trimesh.Trimesh(vertices=mesh.vertices, faces=faces, process=False)
 
 
 def clip_mesh(cols, rows, thickness):
@@ -583,26 +645,6 @@ def face_matrix(face):
     return matrix
 
 
-def count_bodies(mesh):
-    parent = list(range(len(mesh.faces)))
-
-    def find(index):
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    seen = {}
-    for index, face in enumerate(mesh.faces):
-        for a, b in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
-            key = (a, b) if a < b else (b, a)
-            if key in seen:
-                parent[find(index)] = find(seen[key])
-            else:
-                seen[key] = index
-    return len({find(index) for index in range(len(mesh.faces))})
-
-
 def move_center(mesh, at):
     center = mesh.bounds.mean(axis=0)
     mesh.apply_translation((at[0] - center[0], at[1] - center[1], at[2] - center[2]))
@@ -691,12 +733,25 @@ def compose(mesh, op, label):
                 offset[{"x": 0, "y": 1, "z": 2}[axis_name]] = step * index
                 copy.apply_translation(offset)
             copies.append(copy)
-    tool = copies[0] if len(copies) == 1 else trimesh.util.concatenate(copies)
+    # Fold the copies one boolean at a time: a concatenated soup of
+    # self-overlapping solids makes the manifold engine shed internal walls
+    # and stray micro-bodies.
     if mode == "cut":
         if mesh is None:
             raise Gpio3dError(f"{label} needs a mesh first")
-        return subtract(mesh, [tool], label)
-    return tool if mesh is None else unite(mesh, tool, label)
+        result = mesh
+        for index, copy in enumerate(copies):
+            result = subtract(result, [copy], f"{label}.copies[{index}]")
+        return result
+    if mesh is None:
+        result = copies[0]
+        rest = copies[1:]
+    else:
+        result = mesh
+        rest = copies
+    for index, copy in enumerate(rest):
+        result = unite(result, copy, f"{label}.copies[{index}]")
+    return result
 
 
 def hull_with(mesh, op, label):

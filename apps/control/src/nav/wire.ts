@@ -7,7 +7,7 @@ export type System1Auth = {
 }
 
 export type DecisionImage = {
-  content_type: "image/jpeg"
+  content_type: "image/jpeg" | "image/png" | "image/webp"
   base64: string
 }
 
@@ -49,6 +49,19 @@ export function decisionBody(
         : shots.map((item) => `data:${item.content_type};base64,${item.base64}`)
   }
   return body
+}
+
+export function unwrapAnswers(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object") return null
+  // Jev and Laya return answers at the top level; Workers AI (Clef) wraps them
+  // in a result envelope.
+  const outer = raw as { result?: unknown; answers?: unknown }
+  const body = (outer.answers ? outer : (outer.result ?? null)) as {
+    answers?: unknown
+  } | null
+  const answers = body && typeof body === "object" ? body.answers : undefined
+  if (!answers || typeof answers !== "object") return null
+  return answers as Record<string, unknown>
 }
 
 export function annotateQuestions<

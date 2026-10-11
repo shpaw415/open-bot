@@ -1,3 +1,5 @@
+import { unwrapAnswers } from "./wire"
+
 export const CONFIDENCE_MIN = 0.55
 export const MAX_ELEMENTS = 16
 export const MAX_STEPS = 32
@@ -98,6 +100,17 @@ export function goalValues(goal: string, extra: string[] = []) {
 export function goalUrl(goal: string) {
   const match = goal.match(/https?:\/\/\S+/i)
   return match ? match[0].replace(/[),.;]+$/, "") : ""
+}
+
+// ob-nav takes the page url either inside the goal or as --url. Folding --url
+// into the goal keeps one extraction path (goalUrl/goalValues) so the run
+// navigates straight to it instead of clicking around the current page.
+export function withGoalUrl(goal: string, url: string) {
+  const trimmedUrl = url.trim().replace(/[),.;]+$/, "")
+  if (!trimmedUrl) return goal.trim()
+  if (!goal.trim()) return trimmedUrl
+  if (goal.includes(trimmedUrl)) return goal.trim()
+  return `${goal.trim()} ${trimmedUrl}`
 }
 
 export function isBlankPage(url: string) {
@@ -362,16 +375,8 @@ export function parseDecision(
   raw: unknown,
   space: ActionSpace,
 ): Decision | null {
-  if (!raw || typeof raw !== "object") return null
-  // Jev and Laya return answers at the top level; Workers AI (Clef) wraps them
-  // in a result envelope.
-  const outer = raw as { result?: unknown; answers?: unknown }
-  const body = (outer.answers ? outer : (outer.result ?? null)) as {
-    answers?: unknown
-  } | null
-  const answers = body && typeof body === "object" ? body.answers : undefined
-  if (!answers || typeof answers !== "object") return null
-  const record = answers as Record<string, unknown>
+  const record = unwrapAnswers(raw)
+  if (!record) return null
   const operation = choiceOf(record.operation)
   if (!operation || !space.operations.includes(operation.key)) return null
   const head = space.heads[operation.key]

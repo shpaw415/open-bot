@@ -56,7 +56,6 @@ import {
   previewFrameSrc,
   type SendReceipt,
   type SendStatus,
-  samePayload,
   showLivePreview,
   showLiveScreen,
   speakableText,
@@ -69,6 +68,7 @@ import {
   vncFrameSrc,
 } from "./chat-view"
 import { readDraft, writeDraft } from "./draft"
+import { Hardware } from "./Hardware"
 import {
   useDebounced,
   useEventStream,
@@ -79,6 +79,7 @@ import {
   AddIcon,
   AttachFileIcon,
   BlockIcon,
+  BugReportIcon,
   ChatIcon,
   CheckCircleIcon,
   CloseIcon,
@@ -86,6 +87,7 @@ import {
   DeleteIcon,
   EditIcon,
   FolderIcon,
+  MemoryIcon,
   MenuIcon,
   MicIcon,
   MoreVertIcon,
@@ -137,6 +139,7 @@ import {
   useProjectRefs,
 } from "./project-refs"
 import ReferenceOverlay from "./ReferenceOverlay"
+import { Reports } from "./Reports"
 import {
   detectMention,
   mentionSuggestions,
@@ -163,6 +166,11 @@ type ProjectMention = {
   name: string
   path: string
   createdAt?: number
+}
+type ReportMention = {
+  plugin: string
+  open: number
+  total: number
 }
 type SessionInfo = {
   id: string
@@ -1093,6 +1101,8 @@ function Composer({
   migrateDraft,
   projects,
   onEnsureProjects,
+  reports,
+  onEnsureReports,
 }: {
   sessionId: string
   running: boolean
@@ -1117,6 +1127,8 @@ function Composer({
   migrateDraft: string
   projects: ProjectMention[]
   onEnsureProjects: () => void
+  reports: ReportMention[]
+  onEnsureReports: () => void
 }) {
   const [draft, setDraft] = useState(() => {
     const stored = readDraft(localStorage, sessionId)
@@ -1314,8 +1326,26 @@ function Composer({
             },
           ]
         : []),
+      ...(reports.length
+        ? [
+            {
+              key: "reports",
+              label: "Plugin reports",
+              items: reports.map(
+                (report): RefItemView => ({
+                  id: report.plugin,
+                  name: report.plugin,
+                  description:
+                    report.open === report.total
+                      ? `${report.open} open report${report.open === 1 ? "" : "s"}`
+                      : `${report.open} open / ${report.total} total`,
+                }),
+              ),
+            },
+          ]
+        : []),
     ],
-    [baseSections, skillList, projects],
+    [baseSections, skillList, projects, reports],
   )
   const mentionKeys = useMemo(
     () => mentionSections.map((section) => section.key),
@@ -1372,6 +1402,7 @@ function Composer({
     setMentionHidden(false)
     ensureSkills()
     onEnsureProjects()
+    onEnsureReports()
     rememberDraft(next)
     restoreCaret()
   }
@@ -1608,7 +1639,10 @@ function Composer({
               multiline
               ref={messageInputRef}
               disabled={!running || sending || stopping}
-              onFocus={() => onEnsureProjects()}
+              onFocus={() => {
+                onEnsureProjects()
+                onEnsureReports()
+              }}
               onChange={(event) => {
                 const el = event.currentTarget
                 setMentionHidden(false)
@@ -1618,6 +1652,7 @@ function Composer({
                 if (el.value.includes("@")) {
                   ensureSkills()
                   onEnsureProjects()
+                  onEnsureReports()
                 }
                 rememberDraft(el.value)
                 setCaret(el.selectionStart ?? el.value.length)
@@ -1852,6 +1887,8 @@ export function Workspace({ me }: { me: Me }) {
   const [error, setError] = useState("")
   const [projectList, setProjectList] = useState<ProjectMention[]>([])
   const projectsRequestedRef = useRef(false)
+  const [reportList, setReportList] = useState<ReportMention[]>([])
+  const reportsRequestedRef = useRef(false)
   const [sessionId, setSessionId] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
@@ -1944,6 +1981,14 @@ export function Workspace({ me }: { me: Me }) {
     api<{ projects?: ProjectMention[] }>("/api/projects")
       .then((body) => setProjectList(body.projects ?? []))
       .catch(() => setProjectList([]))
+  }, [])
+  // plugins with reports power @reports/ mentions in the composer
+  const ensureReports = useCallback(() => {
+    if (reportsRequestedRef.current) return
+    reportsRequestedRef.current = true
+    api<{ plugins?: ReportMention[] }>("/api/reports?status=all")
+      .then((body) => setReportList(body.plugins ?? []))
+      .catch(() => setReportList([]))
   }, [])
   const { plugins: installedPlugins } = useInstalledPlugins()
   const pluginRenderers = useMemo(() => {
@@ -2501,8 +2546,9 @@ export function Workspace({ me }: { me: Me }) {
       )
       const body = await messageRes.json()
       const next = Array.isArray(body) ? body : []
-      if (!samePayload(messagesJsonRef.current, next)) {
-        messagesJsonRef.current = JSON.stringify(next)
+      const payload = JSON.stringify(next)
+      if (payload !== messagesJsonRef.current) {
+        messagesJsonRef.current = payload
         setMessages(next)
       }
     } catch {
@@ -3526,11 +3572,15 @@ export function Workspace({ me }: { me: Me }) {
                   : "Chat"
               : tab === "desktop"
                 ? "Desktop"
-                : tab === "projects"
-                  ? "Projects"
-                  : tab === "media"
-                    ? "Media"
-                    : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
+                : tab === "hardware"
+                  ? "Hardware"
+                  : tab === "projects"
+                    ? "Projects"
+                    : tab === "media"
+                      ? "Media"
+                      : tab === "reports"
+                        ? "Reports"
+                        : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
           </Typography>
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
             {stopping
@@ -3919,6 +3969,8 @@ export function Workspace({ me }: { me: Me }) {
                   migrateDraft={migrateDraft}
                   projects={projectList}
                   onEnsureProjects={ensureProjects}
+                  reports={reportList}
+                  onEnsureReports={ensureReports}
                 />
               </Paper>
             </Dock>
@@ -4275,6 +4327,28 @@ export function Workspace({ me }: { me: Me }) {
           <MediaVault subscribe={subscribe} />
         </Box>
 
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: tab === "hardware" ? "flex" : "none",
+            flexDirection: "column",
+          }}
+        >
+          <Hardware />
+        </Box>
+
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: tab === "reports" ? "flex" : "none",
+            flexDirection: "column",
+          }}
+        >
+          <Reports subscribe={subscribe} />
+        </Box>
+
         <Drawer
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
@@ -4304,6 +4378,13 @@ export function Workspace({ me }: { me: Me }) {
                 <ListItemText primary="Desktop" />
               </ListItemButton>
               <ListItemButton
+                selected={tab === "hardware"}
+                onClick={() => goTab("hardware")}
+              >
+                <MemoryIcon />
+                <ListItemText primary="Hardware" />
+              </ListItemButton>
+              <ListItemButton
                 selected={tab === "cron"}
                 onClick={() => goTab("cron")}
               >
@@ -4325,6 +4406,13 @@ export function Workspace({ me }: { me: Me }) {
               >
                 <PhotoLibraryIcon />
                 <ListItemText primary="Media" />
+              </ListItemButton>
+              <ListItemButton
+                selected={tab === "reports"}
+                onClick={() => goTab("reports")}
+              >
+                <BugReportIcon />
+                <ListItemText primary="Reports" />
               </ListItemButton>
             </List>
             <Divider />

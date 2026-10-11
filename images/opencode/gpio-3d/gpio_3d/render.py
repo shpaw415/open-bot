@@ -46,7 +46,9 @@ def render_png(stl_path, out_path, size=520, elev=18.0, turn=0.0, base=(236, 225
     cy = (sy.min() + sy.max()) / 2
 
     img = np.full((size, size, 3), 245, dtype=np.float64)
-    zbuf = np.full((size, size), -1e9)
+    # nearest triangle along the view axis wins: the camera sits on the -fwd
+    # side, so the smallest depth is the closest surface
+    zbuf = np.full((size, size), np.inf)
     normal = np.cross(v2 - v1, v3 - v1)
     length = np.linalg.norm(normal, axis=1, keepdims=True)
     length[length == 0] = 1
@@ -78,7 +80,7 @@ def render_png(stl_path, out_path, size=520, elev=18.0, turn=0.0, base=(236, 225
             continue
         depth = l1 * zs3[0] + l2 * zs3[1] + l3 * zs3[2]
         sub = zbuf[y0:y1 + 1, x0:x1 + 1]
-        upd = mask & (depth > sub)
+        upd = mask & (depth < sub)
         if not upd.any():
             continue
         sub[upd] = depth[upd]
