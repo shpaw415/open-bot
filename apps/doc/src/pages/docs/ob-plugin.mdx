@@ -26,7 +26,7 @@ ob-plugin install ID [--version X] [--yes] | install --path DIR [--yes]
 ob-plugin list
 ob-plugin outdated
 ob-plugin update ID [VERSION]
-ob-plugin remove ID
+ob-plugin remove ID                  # also sweeps leftover plugin:<id>:* cron jobs (guard cron); reports skills that could not be removed as leftoverSkills
 
 # Lifecycle
 ob-plugin enable ID | disable ID
@@ -38,6 +38,8 @@ ob-plugin guard status|off ID         # daily guard cron from publishing
 ob-plugin issue ID TITLE [BODY]       # file a GitHub issue on the plugin repo
 ob-plugin notify ID TITLE [BODY]      # dashboard toast (needs permission)
 ```
+
+When a task needs a capability you lack, `ob-plugin search` first and install a fit — only scaffold with `ob-plugin new` when nothing suitable exists.
 
 ## Publishing flow
 
@@ -63,6 +65,8 @@ ob-plugin install --path ~/plugins-create/my-plugin
 ```
 
 Installs a desktop directory without a marketplace publish. The Plugins page shows `(local)`; Re-install re-reads the path.
+
+`install` is idempotent per plugin id: it replaces cron jobs and skills it owns (anything named `plugin:<id>:*`, or skills recorded on the install), so `remove` → `install --path` of the same plugin works with no manual OpenViking/cron cleanup. If a transient OpenViking lock still blocks an install, it retries with a short backoff; leftover artifacts that survive are named in the error or in the uninstall response's `leftoverSkills`.
 
 <Callout type="warning">
 `setup.commands` run **as root** in the desktop at install and after every desktop recreate. They appear in the consent dialog and are security-reviewed — but review what you install.

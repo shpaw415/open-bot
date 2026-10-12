@@ -1,12 +1,17 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { User } from "@open-bot/db"
-import { type Db, openDatabase } from "@open-bot/db"
+import { type Db, emptyAppliedLog, openDatabase } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import { ensureGuardCron, handlePlugins } from "./plugins"
-import { applyPluginInstall } from "./plugins-apply"
+import {
+  applyPluginInstall,
+  applyPluginUninstall,
+  reapplyPluginSetup,
+  withVikingRetries,
+} from "./plugins-apply"
 
 const manifest = {
   id: "weather-pro",
@@ -630,5 +635,210 @@ describe("plugins router", () => {
     expect(retryRes?.status).toBe(502)
     const body = (await retryRes?.json()) as { error?: string }
     expect(body.error).toBeTruthy()
+  })
+})
+
+describe("plugin boot re-apply", () => {
+  let db: Db
+  beforeEach(() => {
+    db = openDatabase(join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"))
+    db.createUser(user())
+  })
+
+  function installRow(
+    pluginId: string,
+    overrides: {
+      enabled?: boolean
+      setup?: boolean
+      files?: boolean
+      createdAt?: number
+    } = {},
+  ) {
+    const extra: Record<string, unknown> = {}
+    if (overrides.setup) {
+      extra.setup = { commands: ["echo hello"] }
+    }
+    if (overrides.files) {
+      extra.files = [{ name: "tool", source: "files/tool" }]
+    }
+    db.createInstalledPlugin({
+      id: `row-${pluginId}`,
+      userId: "a",
+      pluginId,
+      version: "1.0.0",
+      manifest: JSON.stringify({ ...manifest, id: pluginId, ...extra }),
+      readme: null,
+      enabled: overrides.enabled ?? true,
+      applied: "{}",
+      createdAt: overrides.createdAt ?? 1,
+      updatedAt: 1,
+      ...(overrides.files
+        ? { source: "local", localPath: "/home/agent/plugins" }
+        : {}),
+    })
+  }
+
+  test("continues past a failing plugin and skips disabled ones", async () => {
+    installRow("local-pro", { files: true, createdAt: 1 })
+    installRow("disabled-pro", { files: true, enabled: false, createdAt: 2 })
+    installRow("setup-pro", { setup: true, createdAt: 3 })
+
+    // No desktop runs in tests: the local file read fails with a surfaced
+    // 409, and every other step no-ops. The boot loop must still process
+    // every enabled plugin instead of stopping at the first failure.
+    const errors: string[] = []
+    const spy = spyOn(console, "error").mockImplementation((message) => {
+      errors.push(String(message))
+    })
+    try {
+      await reapplyPluginSetup(db, "a")
+    } finally {
+      spy.mockRestore()
+    }
+    expect(errors).toHaveLength(2)
+    expect(errors[0]).toContain("local-pro boot file sync failed")
+    // The setup plugin reached its commands and found no desktop (expected in
+    // tests); the disabled plugin was never processed.
+    expect(errors[1]).toContain("setup-pro boot setup failed")
+    expect(errors.join("\n")).not.toContain("disabled-pro")
+  })
+
+  test("keeps the recorded init when the desktop is not running", async () => {
+    const recorded = {
+      ranAt: 42,
+      ok: true,
+      output: "earlier install run",
+    }
+    installRow("setup-pro", { setup: true })
+    db.setInstalledPluginApplied("a", "setup-pro", {
+      ...emptyAppliedLog(),
+      init: recorded,
+    })
+
+    const spy = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      await reapplyPluginSetup(db, "a")
+    } finally {
+      spy.mockRestore()
+    }
+    const row = db.installedPlugin("a", "setup-pro")
+    expect(row?.applied.init).toEqual(recorded)
+  })
+})
+
+describe("plugin remove/reinstall orphans", () => {
+  let db: Db
+  beforeEach(() => {
+    db = openDatabase(join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"))
+    db.createUser(user())
+  })
+
+  function installRow(pluginId: string, cron?: { name: string }) {
+    db.createInstalledPlugin({
+      id: `row-${pluginId}`,
+      userId: "a",
+      pluginId,
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        ...manifest,
+        id: pluginId,
+        ...(cron ? { cron: [{ ...cron, message: "tick", everySeconds: 60 }] } : {}),
+      }),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+  }
+
+  test("uninstall sweeps orphaned plugin crons (guard cron) and keeps foreign ones", async () => {
+    installRow("weather-pro")
+    // The publish flow creates this outside apply — not on applied.cronJobIds.
+    ensureGuardCron(db, user(), manifest)
+    ensureGuardCron(db, user(), { ...manifest, id: "other-pro" })
+    expect(db.cronJobs("a")).toHaveLength(2)
+
+    const result = await applyPluginUninstall(db, user(), {
+      ...(db.installedPlugin("a", "weather-pro") as NonNullable<
+        ReturnType<typeof db.installedPlugin>
+      >),
+    })
+
+    expect(result).toEqual({ leftoverSkills: [] })
+    const names = db.cronJobs("a").map((job) => job.name)
+    expect(names).toEqual(["plugin:other-pro:guard"])
+  })
+
+  test("install replaces stale plugin crons instead of refusing", async () => {
+    const cronManifest = {
+      ...manifest,
+      cron: [{ name: "tick", message: "tick", everySeconds: 60 }],
+    } as unknown as PluginManifest
+    const entry = {
+      id: "weather-pro",
+      version: "1.0.0",
+      status: "approved" as const,
+      manifest: cronManifest,
+      readme: null,
+      downloads: 0,
+    }
+    await applyPluginInstall(db, user(), entry)
+    expect(
+      db
+        .cronJobs("a")
+        .filter((job) => job.name === "plugin:weather-pro:tick"),
+    ).toHaveLength(1)
+
+    // Simulate the old leak: the row disappears but the job stays behind.
+    db.deleteInstalledPlugin("a", "weather-pro")
+    const freshId = db.cronJobs("a")[0]?.id
+    const row = await applyPluginInstall(db, user(), entry)
+
+    expect(row.pluginId).toBe("weather-pro")
+    const jobs = db
+      .cronJobs("a")
+      .filter((job) => job.name === "plugin:weather-pro:tick")
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0]?.id).not.toBe(freshId)
+    expect(row.applied.cronJobIds).toEqual([jobs[0]?.id])
+  })
+
+  test("withVikingRetries backs off transient errors and fails fast otherwise", async () => {
+    let calls = 0
+    const ok = await withVikingRetries(
+      async () => {
+        calls++
+        if (calls < 3) throw new Error("lock acquire timed out after 0ms")
+        return "ok"
+      },
+      [1, 1],
+    )
+    expect(ok).toBe("ok")
+    expect(calls).toBe(3)
+
+    calls = 0
+    let caught = ""
+    await withVikingRetries(
+      async () => {
+        calls++
+        throw new Error("a skill named x is a built-in")
+      },
+      [1, 1],
+    ).catch((error: unknown) => {
+      caught = error instanceof Error ? error.message : ""
+    })
+    expect(caught).toBe("a skill named x is a built-in")
+    expect(calls).toBe(1)
+
+    calls = 0
+    await withVikingRetries(
+      async () => {
+        calls++
+        throw new Error("lock acquire timed out after 0ms")
+      },
+      [1, 1],
+    ).catch(() => {})
+    expect(calls).toBe(3)
   })
 })

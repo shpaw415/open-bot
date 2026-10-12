@@ -22,10 +22,41 @@ import {
 } from "./docker"
 import { extractPluginFiles, fetchPluginArtifact } from "./plugin-artifact"
 import { readLocalPluginFiles } from "./plugin-local"
+import { ensurePluginPageServer, stopPluginPageServer } from "./plugin-pages"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
 const INIT_OUTPUT_LIMIT = 8 * 1024
+
+// OpenViking pathlocks are held briefly by a previous op; an immediate
+// follow-up (remove → reinstall) can hit "lock acquire timed out". Retry the
+// transient failures with a small backoff instead of failing the whole apply.
+const VIKING_RETRY_DELAYS_MS = [300, 900]
+
+function isTransientVikingError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /lock|timed out|not reachable|ECONNREFUSED|50[234]/i.test(message)
+}
+
+export async function withVikingRetries<T>(
+  run: () => Promise<T>,
+  delays: number[] = VIKING_RETRY_DELAYS_MS,
+): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; ; attempt++) {
+    if (attempt > 0) {
+      const delay = delays[attempt - 1]
+      if (delay === undefined) throw lastError
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+    try {
+      return await run()
+    } catch (error) {
+      lastError = error
+      if (!isTransientVikingError(error)) throw error
+    }
+  }
+}
 
 function initLogEntry(result: {
   ran: boolean
@@ -145,6 +176,9 @@ export async function applyPluginInstall(
   if (source === "local" && !localPath) {
     throw new Error("local install is missing a path")
   }
+  // A running page server would keep serving the previous release's code
+  // after an upgrade — stop it; the proxy lazily restarts the new binary.
+  await stopPluginPageServer(user.id, manifest.id).catch(() => {})
   const applied: PluginAppliedLog = {
     personaIds: [],
     cronJobIds: [],
@@ -217,12 +251,14 @@ export async function applyPluginInstall(
       const previousOwned = previous?.cronJobIds.find(
         (id) => db.cronJobById(id, user.id)?.name === name,
       )
+      // Everything named `plugin:<id>:*` belongs to this plugin (including
+      // jobs created outside apply, like the publish guard cron) — replace
+      // stale leftovers instead of refusing the install.
       if (previousOwned) {
         db.deleteCronJob(previousOwned, user.id)
       } else {
         const clash = db.cronJobs(user.id).find((row) => row.name === name)
-        if (clash)
-          throw new Error(`a scheduled job named ${name} already exists`)
+        if (clash) db.deleteCronJob(clash.id, user.id)
       }
       const id = crypto.randomUUID()
       const row: CronJob = {
@@ -256,16 +292,22 @@ export async function applyPluginInstall(
     if ((manifest.skills?.length ?? 0) > 0) {
       const skills = await vikingSkills(user, db)
       const owned = new Set(previous?.skills ?? [])
-      const existingNames = new Set((await skills.list()).map((s) => s.name))
+      const existingNames = new Set(
+        (await withVikingRetries(() => skills.list())).map((s) => s.name),
+      )
       for (const skill of manifest.skills ?? []) {
         if (existingNames.has(skill.name) && !owned.has(skill.name)) {
-          throw new Error(`a skill named ${skill.name} already exists`)
+          throw new Error(
+            `a skill named ${skill.name} already exists and was not created by this install — clear it with DELETE /api/v1/skills/${skill.name} on the desktop OpenViking (or uninstall the plugin that owns it), then retry`,
+          )
         }
-        await skills.save({
-          name: skill.name,
-          description: skill.description,
-          body: skill.body,
-        })
+        await withVikingRetries(() =>
+          skills.save({
+            name: skill.name,
+            description: skill.description,
+            body: skill.body,
+          }),
+        )
         if (!applied.skills.includes(skill.name))
           applied.skills.push(skill.name)
       }
@@ -381,9 +423,27 @@ export async function applyPluginInstall(
     })
   }
   db.setInstalledPluginApplied(user.id, manifest.id, applied)
+  // Fresh installs with a page server boot it right away when the desktop is
+  // up; failures are fine — the proxy lazily restarts on the first request.
+  if (manifest.dashboard?.pages) {
+    const row = db.installedPlugin(user.id, manifest.id)
+    if (row?.enabled) {
+      await ensurePluginPageServer(user.id, row).catch((error) => {
+        console.error(
+          `plugin ${manifest.id} page server start failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      })
+    }
+  }
   const row = db.installedPlugin(user.id, manifest.id)
   if (!row) throw new Error("plugin row disappeared after install")
   return row
+}
+
+export type PluginRevertResult = {
+  leftoverSkills: string[]
 }
 
 async function revertApplied(
@@ -391,15 +451,28 @@ async function revertApplied(
   user: User,
   pluginId: string,
   applied: InstalledPlugin["applied"],
-) {
+): Promise<PluginRevertResult> {
   for (const id of applied.personaIds) {
     const persona = db.personaById(id, user.id)
     if (persona) db.deletePersona(id, user.id)
   }
   for (const id of applied.cronJobIds) db.deleteCronJob(id, user.id)
+  // Best-effort becomes verified: retry transient viking failures and report
+  // anything that survived so the uninstall result can name the leftovers.
+  const leftoverSkills: string[] = []
   if (applied.skills.length > 0) {
-    const skills = await vikingSkills(user, db)
-    for (const name of applied.skills) await skills.remove(name).catch(() => {})
+    const skills = await vikingSkills(user, db).catch(() => null)
+    if (!skills) {
+      leftoverSkills.push(...applied.skills)
+    } else {
+      for (const name of applied.skills) {
+        try {
+          await withVikingRetries(() => skills.remove(name))
+        } catch {
+          leftoverSkills.push(name)
+        }
+      }
+    }
   }
   for (const slug of applied.keys) {
     const key = db.getUserKey(user.id, slug)
@@ -434,14 +507,16 @@ async function revertApplied(
     }).catch(() => {})
     await syncPluginAgentsMd(user.id, pluginId, null).catch(() => {})
   }
+  return { leftoverSkills }
 }
 
 export async function applyPluginUninstall(
   db: Db,
   user: User,
   row: InstalledPlugin,
-) {
+): Promise<PluginRevertResult> {
   // Best-effort environment cleanup before the managed artifacts disappear.
+  await stopPluginPageServer(user.id, row.pluginId).catch(() => {})
   const cleanup = (row.manifest as PluginManifest).setup?.uninstall ?? []
   if (cleanup.length > 0) {
     await runPluginInitCommands(
@@ -451,9 +526,23 @@ export async function applyPluginUninstall(
       "uninstall",
     ).catch(() => {})
   }
-  await revertApplied(db, user, row.pluginId, row.applied)
+  const { leftoverSkills } = await revertApplied(
+    db,
+    user,
+    row.pluginId,
+    row.applied,
+  )
+  // Jobs created outside apply (the publish guard cron, plugin tooling) are
+  // owned by the `plugin:<id>:` name prefix — sweep them so remove→reinstall
+  // never hits a "scheduled job already exists" clash.
+  for (const job of db.cronJobs(user.id)) {
+    if (job.name.startsWith(`plugin:${row.pluginId}:`)) {
+      db.deleteCronJob(job.id, user.id)
+    }
+  }
   await syncPluginAuth(user.id, row.pluginId, null).catch(() => {})
   db.deleteInstalledPlugin(user.id, row.pluginId)
+  return { leftoverSkills }
 }
 
 // Re-runs the manifest's root setup commands (visible + retryable path for a
@@ -561,7 +650,13 @@ export async function setPluginEnabled(
         }`,
       )
     })
+    if (manifest.dashboard?.pages) {
+      await ensurePluginPageServer(user.id, updated ?? row).catch(() => {
+        // The proxy lazily restarts on the first request.
+      })
+    }
   } else {
+    await stopPluginPageServer(user.id, pluginId).catch(() => {})
     await syncPluginAuth(user.id, pluginId, null).catch((error) => {
       console.error(
         `plugin ${pluginId} config removal failed: ${
@@ -708,6 +803,17 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
           }`,
         )
       }
+    }
+    if (manifest.dashboard?.pages) {
+      // The desktop just (re)started; bring the page server back. Lazy proxy
+      // restarts cover anything missed here.
+      await ensurePluginPageServer(userId, row).catch((error) => {
+        console.error(
+          `plugin ${row.pluginId} boot page server failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      })
     }
     const agentsMd = manifest.opencode?.agentsMd
     if (agentsMd) {

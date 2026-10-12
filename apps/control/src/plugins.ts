@@ -15,6 +15,7 @@ import {
   readLocalPluginFiles,
   readLocalPluginManifest,
 } from "./plugin-local"
+import { restartPluginPageServer } from "./plugin-pages"
 import {
   applyPluginInstall,
   applyPluginUninstall,
@@ -268,27 +269,66 @@ async function fetchDetail(
   return body
 }
 
-export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
+export function guardMessage(manifest: PluginManifest): string {
   const name = GUARD_CRON_NAME(manifest.id)
-  const existing = db.cronJobs(user.id).find((job) => job.name === name)
-  const message = [
+  return [
     `[cron: ${name}] You publish and maintain the open-bot plugin "${manifest.id}" (${manifest.name}) at GitHub repo ${manifest.repo}.`,
-    "Check the repo for open issues and pull requests: `gh issue list -R " +
-      manifest.repo +
-      "` and `gh pr list -R " +
-      manifest.repo +
-      "`.",
+    "The script output lists the open issues, pull requests, and marketplace comments that need attention.",
     "For each: read it, judge it, and act — answer questions, fix clear bugs in ~/plugins-create/" +
       manifest.id +
       " (clone if missing), review and merge satisfying PRs, close invalid ones with a kind comment.",
-    "Also check the marketplace discussion: `ob-plugin comments " +
+    "Reply to the marketplace comments in the output; read them again with `ob-plugin comments " +
       manifest.id +
-      "` and reply.",
+      "` if you need more context.",
     "If merged changes warrant a release: bump the version in open-bot.plugin.json, update the changelog, then `ob-plugin publish ~/plugins-create/" +
       manifest.id +
       "` so the marketplace serves the new version.",
     "If there is nothing to do, say exactly that and stop.",
   ].join("\n")
+}
+
+const shq = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
+
+export function guardScript(manifest: PluginManifest): string {
+  const repo = shq(manifest.repo)
+  const id = shq(manifest.id)
+  return `issues=$(gh issue list -R ${repo} --state open --limit 30) || exit 1
+prs=$(gh pr list -R ${repo} --state open --limit 30) || exit 1
+comments=$(ob-plugin comments ${id}) || exit 1
+out=""
+if [ -n "$issues" ]; then
+  out="$out
+Open issues:
+$issues
+
+"
+fi
+if [ -n "$prs" ]; then
+  out="$out
+Open pull requests:
+$prs
+
+"
+fi
+if [ -n "$comments" ]; then
+  out="$out
+Marketplace comments:
+$comments
+
+"
+fi
+if [ -n "$out" ]; then
+  echo '[cron-agent]'
+  printf '%s\\n' "$out"
+fi
+`
+}
+
+export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
+  const name = GUARD_CRON_NAME(manifest.id)
+  const existing = db.cronJobs(user.id).find((job) => job.name === name)
+  const message = guardMessage(manifest)
+  const script = guardScript(manifest)
   const row: CronJob = {
     id: existing?.id ?? crypto.randomUUID(),
     userId: user.id,
@@ -309,8 +349,8 @@ export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
     providerId: null,
     modelId: null,
     personaId: null,
-    runKind: "prompt" as const,
-    script: null,
+    runKind: "auto" as const,
+    script,
   }
   row.nextRunAt = existing
     ? (existing.nextRunAt ?? nextRunMs(row))
@@ -318,6 +358,8 @@ export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
   if (existing) {
     db.updateCronJob(existing.id, user.id, {
       message,
+      script,
+      runKind: "auto",
       enabled: true,
       nextRunAt: row.nextRunAt,
     })
@@ -325,6 +367,48 @@ export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
   }
   db.createCronJob(row)
   return row.id
+}
+
+/** One-time sweep: rewrite legacy prompt guard jobs to script+auto. */
+export function convertGuardCrons(
+  db: Db,
+  hub?: {
+    emit: (
+      userId: string,
+      event: { type: string; properties?: unknown },
+    ) => void
+  },
+) {
+  for (const user of db.listUsers()) {
+    let changed = false
+    const installed = db.installedPlugins(user.id)
+    for (const job of db.cronJobs(user.id)) {
+      if (!job.name.startsWith("plugin:") || !job.name.endsWith(":guard"))
+        continue
+      const pluginId = job.name.slice("plugin:".length, -":guard".length)
+      if (!pluginId) continue
+      const manifest = installed.find((item) => item.pluginId === pluginId)
+        ?.manifest as PluginManifest | undefined
+      if (
+        !manifest ||
+        manifest.id !== pluginId ||
+        typeof manifest.repo !== "string" ||
+        !manifest.repo ||
+        typeof manifest.name !== "string" ||
+        !manifest.name
+      )
+        continue
+      const script = guardScript(manifest)
+      if (job.runKind === "auto" && job.script === script) continue
+      db.updateCronJob(job.id, user.id, {
+        message: guardMessage(manifest),
+        script,
+        runKind: "auto",
+      })
+      changed = true
+    }
+    if (changed) hub?.emit(user.id, { type: "cron.changed" })
+  }
 }
 
 const issueLog = new Map<string, number[]>()
@@ -744,9 +828,9 @@ export function handlePlugins(
     const row = db.installedPlugin(user.id, pluginId)
     if (!row) return json({ error: "not found" }, 404)
     return applyPluginUninstall(db, user, row)
-      .then(() => {
+      .then((result) => {
         hub.emit(user.id, { type: "plugins.changed" })
-        return json({ ok: true })
+        return json({ ok: true, leftoverSkills: result.leftoverSkills })
       })
       .catch((error: unknown) =>
         json(
@@ -840,6 +924,11 @@ export function handlePlugins(
           db.setPluginSetting(user.id, pluginId, key, result.value)
         }
         await reapplyPluginConfig(db, user, row)
+        // A page server caches nothing itself, but a restart guarantees it
+        // observes the new settings; cheap and safe.
+        if ((row.manifest as PluginManifest).dashboard?.pages) {
+          await restartPluginPageServer(user.id, row).catch(() => {})
+        }
         return json({
           ok: true,
           settings: db.pluginSettings(user.id, pluginId),
