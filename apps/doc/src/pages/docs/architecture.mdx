@@ -1,0 +1,70 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Architecture
+
+open-bot is three moving parts, orchestrated by Docker Compose:
+
+```text
+┌──────────────────────────── Docker host ────────────────────────────┐
+│                                                                     │
+│  ┌─────────────── Control plane (open-bot) ───────────────────────┐ │
+│  │  Bun server :8787                                              │ │
+│  │  • sqlite (users, sessions, cron, plugins, media, settings)    │ │
+│  │  • dashboard API + EventHub (WS /api/events)                   │ │
+│  │  • starts/stops desktop + viking containers                    │ │
+│  └──────────────┬──────────────────────────┬──────────────────────┘ │
+│                 │ docker API               │ docker API             │
+│  ┌──────────────▼───────────┐   ┌──────────▼──────────────────┐    │
+│  │ Desktop (per user)       │   │ OpenViking (per user)       │    │
+│  │  opencode server :4096   │   │  memory server :1933        │    │
+│  │  thread screen (Xvfb)    │   │  embeddings + VLM           │    │
+│  │  agent CLIs + skills     │   └─────────────────────────────┘    │
+│  └──────────────────────────┘                                      │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                          Browser dashboard
+```
+
+## Control plane
+
+A single Bun process (`apps/control`). Owns:
+
+- **Auth** — HttpOnly `ob_session` cookie for browsers; `Authorization: Bearer <llm token>` for desktop agents.
+- **Database** — sqlite via drizzle (see the [configuration reference](/docs/configuration) for the schema migrations).
+- **Orchestration** — creates desktop containers per user, boots OpenViking, restarts desktops.
+- **EventHub** — a WebSocket at `/api/events` that fans live events (`session.created`, `media.changed`, `projects.changed`, `reports.changed`, `plugin.notice`, ...) to the dashboard.
+
+Details in [Control plane](/docs/control-plane).
+
+## Desktop container
+
+One container per user. Runs the OpenCode server (port 4096, Basic auth), a virtual thread screen (Xvfb + openbox, VNC + CDP), and the agent's seed skills and CLIs. The agent is a **conversational bot** — the seed AGENTS.md shapes it, and plugins can inject more. Details in [Desktop containers](/docs/desktop).
+
+## OpenViking
+
+Per-user memory server (port 1933): persistent context, preferences, project docs, and skills, searched semantically before each turn. Details in [OpenViking setup](/docs/openviking).
+
+## Request flow (a chat turn)
+
+1. Browser posts the prompt; control plane resolves the user's desktop (starting it if needed).
+2. The prompt goes to the desktop's OpenCode server (`prompt_async`).
+3. OpenCode runs the agent: tools, CLIs, screen, memory — streaming events back through the EventHub.
+4. On `session.idle`, chat media are filed into the [media vault](/docs/media-vault) and plugin hooks may fire.
+
+## Enforcement points
+
+| Limit | Env / setting | Default |
+| --- | --- | --- |
+| Desktops per instance | `MAX_DESKTOPS` | 4 |
+| Concurrent thread screens | `MAX_THREAD_SCREENS` | 3 |
+| Desktop idle stop | `IDLE_MINUTES` | 15 |
+| Preview ports | `PREVIEW_PORT_MIN/MAX` | 4700–4719 |
+
+<Callout type="note">
+The control container never reads the host OpenCode config — all provider auth lives in the desktop or in the control's own sqlite.
+</Callout>
+
+</DocsShell>

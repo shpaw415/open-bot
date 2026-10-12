@@ -1,35 +1,47 @@
-import { appendFileSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { readFileSync } from "node:fs"
+import {
+  askSystem1,
+  noteSystem1,
+  readSystem1Config,
+  System1Error,
+} from "./client"
 import {
   DECISION_TIMEOUT_MS,
   type DecisionImage,
-  decisionBody,
-  decisionHeaders,
   providerHasVision,
-  type System1Auth,
-  unwrapAnswers,
   VISION_TIMEOUT_MS,
 } from "./wire"
 
 const USAGE = `usage: ob-system1 --state TEXT --choice "Question?" OPTION OPTION [OPTION...]
-  [--choice ...] [--score "Question?"] [--noul "Question?"]
+  [--choice ...] [--score "Question?" [LEVEL LEVEL ...]] [--noul "Question?"]
   [--image FILE|-] [--image-base64 B64|-] [--model MODEL] [--timeout MS]
 
 Asks the desktop's configured System 1 model (Laya, Clef, Jev) structured
 questions and prints one JSON line:
 {"ok":true,"provider":"...","model":"...","answers":{"q1":{"choice":"...","confidence":0.9,"valid":true}},"ms":812}
-At least one question is required; --choice needs two or more options. Piped
+At least one question is required; --choice needs two or more options. --score
+ranks the state on levels: pass 2-10 level labels or none for a default 5-point
+scale; the answer's "score" is the level index and "level" its label. Piped
 stdin becomes --state when --state is missing. --image - reads image bytes from
 stdin (jpeg, png, webp; max 4). Vision needs a Clef provider (cloudflare-clef
 or selfhosted-clef); other providers reject --image. --model overrides the
-configured model for this call. Exit codes: 0 ok, 1 error, 2 usage,
-3 unconfigured.`
+configured model for this call. 429, 5xx, and network errors retry once after
+1 s; other HTTP errors fail fast with the server's message. Exit codes:
+0 ok (including --help), 1 error, 2 usage, 3 unconfigured.`
 
 export class UsageError extends Error {}
 
+export const DEFAULT_SCORE_LEVELS = [
+  "not at all",
+  "a little",
+  "moderately",
+  "very",
+  "extremely",
+]
+
 type Spec =
   | { kind: "choice"; question: string; options: string[] }
-  | { kind: "score"; question: string }
+  | { kind: "score"; question: string; levels: string[] }
   | { kind: "noul"; question: string }
 
 type ImageArg = { path?: string; b64?: string }
@@ -63,6 +75,9 @@ export function parseArgs(argv: string[]): Parsed {
       return value
     }
     if (token === "--state") {
+      if (parsed.hasState) {
+        throw new UsageError("--state given more than once")
+      }
       parsed.state = rest()
       parsed.hasState = true
     } else if (token === "--choice") {
@@ -77,7 +92,17 @@ export function parseArgs(argv: string[]): Parsed {
       }
       parsed.specs.push({ kind: "choice", question, options })
     } else if (token === "--score") {
-      parsed.specs.push({ kind: "score", question: rest() })
+      const question = rest()
+      const levels: string[] = []
+      while (index + 1 < argv.length && !argv[index + 1].startsWith("--")) {
+        levels.push(argv[index + 1])
+        index += 1
+      }
+      if (levels.length === 0) levels.push(...DEFAULT_SCORE_LEVELS)
+      if (levels.length > 10) {
+        throw new UsageError("--score takes at most 10 levels")
+      }
+      parsed.specs.push({ kind: "score", question, levels })
     } else if (token === "--noul") {
       parsed.specs.push({ kind: "noul", question: rest() })
     } else if (token === "--image") {
@@ -112,6 +137,12 @@ export function buildCliQuestions(specs: Spec[]) {
         criteria: Object.fromEntries(
           spec.options.map((option) => [option, option]),
         ),
+      }
+    } else if (spec.kind === "score") {
+      questions[id] = {
+        type: "score",
+        instructions: spec.question,
+        criteria: spec.levels,
       }
     } else {
       questions[id] = { type: spec.kind, instructions: spec.question }
@@ -172,7 +203,9 @@ function loadImages(parsed: Parsed): DecisionImage[] {
     let bytes: Buffer
     if (item.path === "-" || item.b64 === "-") {
       if (process.stdin.isTTY) {
-        throw new UsageError("--image - / --image-base64 - need the image piped on stdin")
+        throw new UsageError(
+          "--image - / --image-base64 - need the image piped on stdin",
+        )
       }
       bytes =
         item.path === "-"
@@ -213,6 +246,16 @@ export function decorateAnswers(
         ...(answer as Record<string, unknown>),
         valid: typeof choice === "string" && spec.options.includes(choice),
       }
+    } else if (spec.kind === "score" && answer && typeof answer === "object") {
+      const raw = Number((answer as { score?: unknown }).score)
+      out[id] = {
+        ...(answer as Record<string, unknown>),
+        level: Number.isFinite(raw)
+          ? (spec.levels[
+              Math.min(Math.max(Math.round(raw), 0), spec.levels.length - 1)
+            ] ?? null)
+          : null,
+      }
     } else {
       out[id] = answer ?? null
     }
@@ -220,58 +263,16 @@ export function decorateAnswers(
   return out
 }
 
-function readConfig(home: string): System1Auth | null {
-  try {
-    const marker = JSON.parse(
-      readFileSync(join(home, ".config/open-bot/system1.json"), "utf8"),
-    ) as { endpoint?: string; model?: string; provider?: string }
-    if (!marker.endpoint) return null
-    let apiKey = ""
-    let gatewayToken = ""
-    try {
-      const auth = JSON.parse(
-        readFileSync(join(home, ".config/open-bot/system1-auth.json"), "utf8"),
-      ) as { apiKey?: string; gatewayToken?: string }
-      apiKey = auth.apiKey ?? ""
-      gatewayToken = auth.gatewayToken ?? ""
-    } catch {
-      apiKey = ""
-    }
-    return {
-      endpoint: marker.endpoint,
-      model: marker.model ?? "",
-      provider: marker.provider ?? "",
-      apiKey,
-      gatewayToken,
-    }
-  } catch {
-    return null
-  }
-}
-
 function emit(body: Record<string, unknown>, code: number) {
   console.log(JSON.stringify(body))
   process.exit(code)
 }
 
-function note(home: string, row: Record<string, unknown>) {
-  const line = JSON.stringify({
-    t: new Date().toISOString(),
-    cli: true,
-    ...row,
-  })
-  console.error(`system1 ${line}`)
-  try {
-    appendFileSync(join(home, ".open-bot/system1.log"), `${line}\n`)
-  } catch {
-    // the answer still returns if the log cannot be written
-  }
-}
-
 async function main() {
   const argv = process.argv.slice(2)
   if (argv.includes("--help") || argv.includes("-h")) {
-    emit({ ok: false, error: "usage", detail: USAGE }, 2)
+    console.log(USAGE)
+    process.exit(0)
     return
   }
   let parsed: Parsed
@@ -289,7 +290,7 @@ async function main() {
     return
   }
   const home = process.env.HOME || "/home/agent"
-  const auth = readConfig(home)
+  const auth = readSystem1Config(home)
   if (!auth) {
     emit(
       {
@@ -327,7 +328,24 @@ async function main() {
       )
       return
     }
-    if (!process.stdin.isTTY) state = readFileSync(0, "utf8").trim()
+    if (!process.stdin.isTTY) {
+      try {
+        state = readFileSync(0, "utf8").trim()
+      } catch {
+        state = ""
+      }
+      if (!state) {
+        emit(
+          {
+            ok: false,
+            error: "usage",
+            detail: "stdin was empty; pass --state TEXT",
+          },
+          2,
+        )
+        return
+      }
+    }
   }
   if (!state) {
     emit({ ok: false, error: "usage", detail: USAGE }, 2)
@@ -337,6 +355,10 @@ async function main() {
   try {
     images = loadImages(parsed)
   } catch (error) {
+    if (error instanceof UsageError) {
+      emit({ ok: false, error: "usage", detail: error.message }, 2)
+      return
+    }
     emit(
       {
         ok: false,
@@ -356,79 +378,58 @@ async function main() {
   const timeout =
     parsed.timeout ||
     (images.length > 0 ? VISION_TIMEOUT_MS : DECISION_TIMEOUT_MS)
-  const payload = JSON.stringify(
-    decisionBody(
-      effective,
+  try {
+    const outcome = await askSystem1(effective, {
       state,
       questions,
-      images.length > 0 ? images : undefined,
-    ),
-  )
-  const describe = (message: string) =>
-    message.replaceAll(effective.endpoint, "endpoint").slice(0, 200)
-  let lastError = ""
-  let response: Response | null = null
-  for (let attempt = 0; attempt < 2 && !response; attempt += 1) {
-    if (attempt > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-    }
-    try {
-      const attemptResponse = await fetch(effective.endpoint, {
-        method: "POST",
-        headers: decisionHeaders(effective),
-        body: payload,
-        signal: AbortSignal.timeout(timeout),
-      })
-      if (attemptResponse.ok) {
-        response = attemptResponse
-        break
-      }
-      lastError = `decision HTTP ${attemptResponse.status}`
-      note(home, {
-        ms: Date.now() - started,
-        http: attemptResponse.status,
-        error: lastError,
-      })
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "request failed"
-      note(home, { ms: Date.now() - started, http: 0, error: lastError })
-    }
-  }
-  if (!response) {
-    emit({ ok: false, error: describe(lastError) }, 1)
-    return
-  }
-  const ms = Date.now() - started
-  let raw: unknown
-  try {
-    raw = await response.json()
-  } catch {
-    note(home, { ms, http: response.status, error: "invalid json" })
-    emit({ ok: false, error: "invalid response" }, 1)
-    return
-  }
-  const answers = unwrapAnswers(raw)
-  if (!answers) {
-    note(home, { ms, http: response.status, error: "invalid" })
-    emit({ ok: false, error: "invalid response" }, 1)
-    return
-  }
-  note(home, {
-    ms,
-    http: response.status,
-    questions: parsed.specs.length,
-    images: images.length,
-  })
-  emit(
-    {
-      ok: true,
-      provider: effective.provider || "unknown",
-      model: effective.model || null,
-      answers: decorateAnswers(answers, parsed.specs),
+      images: images.length > 0 ? images : undefined,
+      timeout,
+      onAttempt: (attempt) => {
+        noteSystem1(home, {
+          cli: true,
+          ms: attempt.ms,
+          http: attempt.http,
+          error: attempt.error,
+        })
+      },
+    })
+    noteSystem1(home, {
+      cli: true,
+      ms: outcome.ms,
+      http: outcome.http,
+      questions: parsed.specs.length,
+      images: images.length,
+    })
+    emit(
+      {
+        ok: true,
+        provider: effective.provider || "unknown",
+        model: effective.model || null,
+        answers: decorateAnswers(outcome.answers, parsed.specs),
+        ms: outcome.ms,
+      },
+      0,
+    )
+  } catch (error) {
+    const ms = Date.now() - started
+    const http = error instanceof System1Error ? error.http : 0
+    const message = error instanceof Error ? error.message : "request failed"
+    noteSystem1(home, {
+      cli: true,
+      final: true,
       ms,
-    },
-    0,
-  )
+      http,
+      error: message,
+    })
+    emit(
+      {
+        ok: false,
+        error: message,
+        detail: error instanceof System1Error ? error.detail : undefined,
+      },
+      1,
+    )
+  }
 }
 
 if (import.meta.main) {

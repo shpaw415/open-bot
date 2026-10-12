@@ -40,6 +40,18 @@ const db = {
     id === "user-1" ? { opencodePassword: "pw" } : null,
 } as unknown as Db
 
+const effortDb = {
+  desktop: (id: string) =>
+    id === "user-1"
+      ? {
+          opencodePassword: "pw",
+          selectedProvider: "prov",
+          selectedModel: "reasoner",
+          thinkingEffort: "high",
+        }
+      : null,
+} as unknown as Db
+
 const originalFetch = globalThis.fetch
 let calls: { url: string; init?: RequestInit }[] = []
 let promptFails = false
@@ -52,6 +64,18 @@ function installFetch() {
     const url = String(input)
     const init = options
     calls.push({ url, init })
+    if (url.endsWith("/provider"))
+      return Response.json({
+        connected: ["prov"],
+        all: [
+          {
+            id: "prov",
+            models: {
+              reasoner: { name: "Reasoner", variants: { high: {}, low: {} } },
+            },
+          },
+        ],
+      })
     if (promptFails && url.endsWith("/prompt_async"))
       return new Response("nope", { status: 500 })
     if (url.endsWith("/session") && (!init?.method || init.method === "GET"))
@@ -175,6 +199,26 @@ describe("POST /api/threads", () => {
     })
     const body = (await res.json()) as { warning?: string }
     expect(body.warning).toBeUndefined()
+  })
+
+  test("applies the saved thinking effort to the first message", async () => {
+    installFetch()
+    const res = await handleThreads(
+      new Request("http://control/api/threads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Deep dive", message: "Go deep" }),
+      }),
+      new URL("http://control/api/threads"),
+      effortDb,
+      agent,
+    )
+    expect(res.status).toBe(201)
+    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
+    expect(JSON.parse(String(prompt?.init?.body))).toEqual({
+      parts: [{ type: "text", text: "Go deep" }],
+      variant: "high",
+    })
   })
 
   test("still returns the thread when the first message fails to post", async () => {

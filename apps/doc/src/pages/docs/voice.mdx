@@ -1,0 +1,42 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Voice
+
+Browser speech-to-text and read-aloud, added 2026-10-09 (`voice-providers.ts` + routes in `server.ts`). The desktop agent never sees audio — transcripts arrive as plain text in the prompt.
+
+## Configuration
+
+Per-user config lives on the `desktops` row (migration `0002`): `stt_/tts_` provider, account, key, model, `tts_voice`, and `voice_language`. Managed via:
+
+```text
+GET  /api/voice      # keys are never returned to the browser
+PUT  /api/voice
+DELETE /api/voice
+```
+
+The Config page's **Voice** tab (`VoiceProvider.tsx`) renders the form. Providers can fall back to a configured vault entry: Workers AI reuses the `cloudflare` slug, xAI → `xai`, OpenAI → `openai`.
+
+| Provider | STT | TTS |
+| --- | --- | --- |
+| xAI | `POST /v1/tts` for speech; Groq-compatible whisper for STT | ✓ |
+| OpenAI | `/audio/speech` | ✓ |
+| Cloudflare Workers AI | `@cf/openai/whisper` | `@cf/myshell-ai/melotts` |
+
+## Endpoints
+
+- `POST /api/stt` — multipart field `audio`, hard cap **25 MB**, returns `{text}`.
+- `POST /api/tts` — JSON `{text}`, hard cap **4000 chars**, returns audio bytes.
+
+## UI
+
+- **Hold-to-speak mic** in the composer — hold, talk, release to send the transcript as the prompt.
+- **Read-aloud toggle** — synthesizes assistant replies. `speakableText` in `chat-view.ts` strips markdown and plugin cards before synthesis.
+
+<Callout type="note">
+Voice is core (not dev-gated). Existing desktops need `bun run images && bun run update` after pulling the feature.
+</Callout>
+
+</DocsShell>

@@ -1,0 +1,49 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# ob-system1
+
+General-purpose access to the **System 1 decision model** behind `ob-nav` — Laya, Clef, or Jev, whichever the Config page configures. Implementation: `apps/control/src/nav/ob-system1.ts`, shim at `/usr/local/bin/ob-system1`. Reuses `~/.config/open-bot/system1.json` + `system1-auth.json` — no new config.
+
+## Usage
+
+```sh
+ob-system1 --state TEXT --choice "Which design?" a b [c...]
+ob-system1 --state TEXT --score "Rate the layout" [--score levels...]
+ob-system1 --state TEXT --noul "Any blockers?"
+ob-system1 --state TEXT --choice "..." a b --image shot.png --image shot2.png
+cat state.md | ob-system1 --choice "Ship it?" yes no
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--state TEXT` | Decision context. Piped stdin becomes the state when missing. `--state` twice is a usage error. |
+| `--choice "Q?" a b` | Multiple-choice question; needs ≥2 options. |
+| `--score "Q?" [LEVEL...]` | Likert-style scoring; optional 2–10 level labels (default 5-point); the returned level index maps back to a label. |
+| `--noul Q` | Yes/no question without ULF framing. |
+| `--image FILE\|-` / `--image-base64 B64\|-` | jpeg/png/webp, max 4, magic-byte sniffed; vision providers only (Jev/Laya hard-error otherwise). |
+| `--model X` | Override the model. |
+| `--timeout MS` | 8 s text / 20 s vision defaults. |
+| `--help` | Plain text, exit 0. |
+
+## Output and exit codes
+
+One JSON line on success:
+
+```json
+{"ok":true,"provider":"laya","model":"...","answers":{"...":""},"ms":812}
+```
+
+Out-of-list picks come back as `valid:false`. Exit codes: **0** ok (incl. `--help`), **1** error, **2** usage, **3** unconfigured. One retry after 1 s on 429/5xx/network only; other 4xx fail fast with the server body redacted into `detail` (240-char cap).
+
+## Logging
+
+Every run appends `{cli:true}` rows with per-attempt milliseconds to `~/.open-bot/system1.log`. Never image bytes; the `.open-bot` dir is created if missing.
+
+<Callout type="note">
+Stress-tested via desktop-agent threads (7 ob-report findings, six fixed, one wontfix). See the Config page's System1 tab for provider setup.
+</Callout>
+
+</DocsShell>

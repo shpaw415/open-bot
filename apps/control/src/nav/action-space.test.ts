@@ -224,3 +224,50 @@ test("a clef result envelope unwraps to the answers", () => {
     needsUser: 0.0088,
   })
 })
+
+test("trimProseUrl keeps balanced parens, strips prose punctuation", async () => {
+  const { goalUrl, withGoalUrl } = await import("./action-space")
+  expect(
+    goalUrl(
+      "Follow https://en.wikipedia.org/wiki/Olympic_Stadium_(Montreal) now",
+    ),
+  ).toBe("https://en.wikipedia.org/wiki/Olympic_Stadium_(Montreal)")
+  expect(goalUrl("see https://x.com/page).")).toBe("https://x.com/page")
+  expect(goalUrl("open https://x.com/page.")).toBe("https://x.com/page")
+  expect(
+    withGoalUrl("Follow the link", "https://en.wikipedia.org/wiki/X_(Y)"),
+  ).toBe("Follow the link https://en.wikipedia.org/wiki/X_(Y)")
+})
+
+test("pageNeedsUser recognizes verification phrasing without the word captcha", async () => {
+  const { pageNeedsUser } = await import("./action-space")
+  const base = {
+    url: "https://example.test/verify",
+    title: "Example",
+    text: "",
+    canScrollDown: false,
+    canScrollUp: false,
+    elements: [],
+  }
+  expect(
+    pageNeedsUser({
+      ...base,
+      text: "complete the human verification below by typing the characters you see in the image",
+    }),
+  ).toBe(true)
+  expect(
+    pageNeedsUser({ ...base, text: "Verify you are human to continue" }),
+  ).toBe(true)
+  expect(
+    pageNeedsUser({
+      ...base,
+      text: "This site is protected. Not a robot? Prove you are human",
+    }),
+  ).toBe(true)
+  expect(
+    pageNeedsUser({
+      ...base,
+      text: "Welcome to the knowledge base article collection",
+    }),
+  ).toBe(false)
+})

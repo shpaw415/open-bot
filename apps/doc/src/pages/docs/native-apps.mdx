@@ -1,0 +1,42 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Native apps
+
+Each thread screen (Xvfb + openbox) can run **real native apps**. The agent installs them with `sudo apt-get install` (persisted across updates by `record-apt.sh`/`restore-apt.sh`) and launches them with `ob-app` (seed skill `apps`).
+
+## ob-app
+
+```sh
+ob-app --session SESSION launch APP [ARGS...]   # start maximized, track pid
+ob-app launch chrome [URL] [--profile NAME]     # standalone Chrome
+ob-app list                                     # running apps for the session
+ob-app focus TITLE                              # raise a window
+ob-app close APP|PID
+ob-app catalog                                  # installed apps from .desktop files
+```
+
+- Launching tracks the pid under `~/.open-bot/apps/<session>/`; `screen-down.sh` sweeps leftover pids.
+- `launch chrome` opens a **standalone** Chrome with its own profile under `~/.config/apps/chrome/` — the managed per-thread browser (`ob-nav`/`ob-page`/CDP) is untouched. `chromium`/`google-chrome` stay denied in bash permissions; use the `chrome` entry.
+- A refused-list blocks screen-stack tools (`Xvfb`, `x11vnc`, `websockify`, `vncdo`, clipboard tools, `ttyd`, ...).
+
+## Dashboard launcher
+
+The Desktop tab has an autocomplete launcher backed by:
+
+```text
+GET  /api/desktop/apps          # catalog
+POST /api/desktop/apps/launch   # start on the current thread's screen
+```
+
+<Callout type="warning">
+The thread screen has no audio stack — apps render but are silent.
+</Callout>
+
+<Callout type="note">
+Existing desktops need `bun run images && bun run update` before the CLI and seed skill appear.
+</Callout>
+
+</DocsShell>

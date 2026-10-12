@@ -1,0 +1,54 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Plugin system
+
+Plugins extend the desktop agent. One manifest — `open-bot.plugin.json` — describes everything; GitHub repos hold the code and releases; the [marketplace](/docs/marketplace) is the searchable index.
+
+## Manifest
+
+Schema: `packages/plugin-kit/schema/open-bot.plugin.schema.json` (seeded into desktops and referenced by `ob-plugin new` scaffolds; kept in sync with `validatePluginManifest`).
+
+Key fields:
+
+| Field | Purpose |
+| --- | --- |
+| `files[]` | `{name, source, exec}` payload files fetched from the reviewed release tarball at install; text files only. |
+| `setup.commands` / `setup.uninstall` | Root commands run at install (and after every desktop recreate via `onDesktopReady` → `reapplyPluginSetup`); uninstall runs best-effort. Logged to `~/.open-bot/plugin-init/<id>.log`; shown in the consent dialog; security-reviewed. |
+| `opencode.agents` | Registers new agent workers (deep-merged into `opencode.json`; reserved names rejected). Helper sessions must use the `worker:` title prefix so the dashboard hides them. |
+| `opencode.agentTools` | Patches tool globs on existing agents, e.g. `{"build": {"blender_*": false}}`. |
+| `opencode.agentsMd` | Standing instructions injected next to AGENTS.md (file under `~/.config/open-bot/agents-md/`). |
+| `configs[]` | Typed settings: `string` (default), `bool`, `number`, `enum` + `options[]`, `secret`. Validated/coerced by `validateConfigValue`; unknown keys rejected; upgrades prune dropped keys. Secrets land in `~/.config/open-bot/plugin-<id>.json`. |
+| `hooks[]` | Max 8 `{event: "session.idle"\|"thread.created", message}` prompts run in hidden `worker: plugin-<id> <event>` sessions. Loop-guarded: worker/cron sessions never re-trigger; **20 runs/day per plugin**; **2 concurrent per event**. |
+| `permissions.notifications` | `true` unlocks `ob-plugin notify` → `POST /api/plugins/notice` (30/hour) → dashboard toast + native notification. |
+| `version` | Semver `X.Y.Z[-prerelease]` or dev tag (`beta-1`). |
+
+## Install surfaces
+
+- Tools land in `/usr/local/bin/ob-plugin-<id>-*`; `apply-plugin-auth.sh` writes the vault config.
+- The install log on the `installed_plugins` row reverses everything on uninstall.
+- Disable is deep: pauses cron, unloads OpenViking skills, drops vault config + opencode surfaces; enable restores from the stored manifest snapshot.
+- Failed root setup shows **“setup failed — retry”** on the Plugins page (`POST /api/plugins/installed/:id/setup`).
+
+## Updates
+
+- `installed_plugins.latest_version` refreshes from the marketplace (throttled, on `GET /api/plugins/installed`).
+- `ob-plugin outdated` / `update`; dashboard **“update to v…”** button.
+- `app_settings.plugin_auto_update`: `off` (default) or `stable` (auto-installs newer approved stables).
+- Install policy `app_settings.plugin_install_policy`: `manual` (default, confirm dialog) or `auto` (also installs pending-review plugins).
+
+## Local development
+
+```sh
+ob-plugin install --path <plugin-root>
+```
+
+No publish needed; Re-install re-reads the path; Remove uninstalls. Schema changes need `bun run db:generate` and an image rebuild for existing desktops.
+
+<Callout type="warning">
+`setup.commands` run as root. Install policy `auto` also installs pending-review plugins — use it only on trusted instances.
+</Callout>
+
+</DocsShell>

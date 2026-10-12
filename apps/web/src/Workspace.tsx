@@ -48,6 +48,7 @@ import {
   chatImageUrl,
   eventTouchesSession,
   handoffStamp,
+  lastHandoffStamp,
   type MediaMap,
   mediaKey,
   modelActivity,
@@ -236,8 +237,15 @@ function SendMark({ mark }: { mark: SendStatus }) {
   )
 }
 
-function messageKey(message: ChatMessage, index: number): string {
-  return `${index}:${message.info?.role ?? "m"}:${visibleText(message).slice(0, 48)}`
+function messageKey(
+  message: ChatMessage & { sentAt?: number | null },
+  index: number,
+): string {
+  const id = message.info?.id
+  if (id) return id
+  const role = message.info?.role ?? "m"
+  if (message.sentAt != null) return `${index}:${role}:${message.sentAt}`
+  return `${index}:${role}:${visibleText(message).slice(0, 48)}`
 }
 
 function clipNoticeLine(text: string | null): string {
@@ -713,6 +721,7 @@ type BubbleViewProps = {
   renderers: Map<string, PluginRenderer>
   onTakeControl: () => void
   onScreenDone: () => void
+  onScreenClose: () => void
   onOpenPreview: () => void
   previewLive: boolean
   previewOpened: boolean
@@ -741,6 +750,7 @@ const MessageBubble = memo(function MessageBubble({
   renderers,
   onTakeControl,
   onScreenDone,
+  onScreenClose,
   onOpenPreview,
   previewLive,
   previewOpened,
@@ -818,6 +828,9 @@ const MessageBubble = memo(function MessageBubble({
                   onClick={onScreenDone}
                 >
                   Done
+                </Button>
+                <Button size="small" variant="text" onClick={onScreenClose}>
+                  Close
                 </Button>
               </Stack>
             ) : null}
@@ -2316,12 +2329,14 @@ export function Workspace({ me }: { me: Me }) {
   const bubbleActionsRef = useRef({
     takeControl: () => {},
     screenDone: () => {},
+    screenClose: () => {},
     openPreview: () => {},
   })
   const bubbleActions = useMemo(
     () => ({
       takeControl: () => bubbleActionsRef.current.takeControl(),
       screenDone: () => bubbleActionsRef.current.screenDone(),
+      screenClose: () => bubbleActionsRef.current.screenClose(),
       openPreview: () => bubbleActionsRef.current.openPreview(),
     }),
     [],
@@ -2342,7 +2357,11 @@ export function Workspace({ me }: { me: Me }) {
   )
   bubbleActionsRef.current = {
     takeControl: () => void takeControl(),
-    screenDone: () => void prompt("Done on the screen."),
+    screenDone: () => {
+      dismissScreen()
+      void prompt("Done on the screen.")
+    },
+    screenClose: () => dismissScreen(),
     openPreview: () => {
       const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
       const next = clampPreviewWidth(widthRef.current, parent)
@@ -2923,8 +2942,7 @@ export function Workspace({ me }: { me: Me }) {
       if (cancelled) return
       setHeld(false)
       if (holdSession === sessionId) {
-        const last = [...shown].reverse().find((entry) => entry.message.handoff)
-        const stamp = last ? handoffStamp(last.message) : ""
+        const stamp = lastHandoffStamp(shown)
         if (stamp) {
           sessionStorage.setItem(`ob-screen-dismiss:${sessionId}`, stamp)
           setDismissedHandoff(stamp)
@@ -3218,10 +3236,17 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
+  function dismissScreen() {
+    if (!sessionId) return
+    const stamp = lastHandoffStamp(shown)
+    if (!stamp) return
+    sessionStorage.setItem(`ob-screen-dismiss:${sessionId}`, stamp)
+    setDismissedHandoff(stamp)
+  }
+
   async function releaseControl(notify = true) {
     if (!sessionId || controlBusy) return
-    const last = [...shown].reverse().find((entry) => entry.message.handoff)
-    const stamp = last ? handoffStamp(last.message) : ""
+    const stamp = lastHandoffStamp(shown)
     setControlBusy(true)
     setError("")
     try {
@@ -3874,6 +3899,7 @@ export function Workspace({ me }: { me: Me }) {
                         renderers={pluginRenderers}
                         onTakeControl={bubbleActions.takeControl}
                         onScreenDone={bubbleActions.screenDone}
+                        onScreenClose={bubbleActions.screenClose}
                         onOpenPreview={bubbleActions.openPreview}
                         previewLive={showLivePreview({
                           preview: Boolean(entry.message.preview),

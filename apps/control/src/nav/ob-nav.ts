@@ -1,16 +1,14 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { marksFromSpace, parseDecision, withGoalUrl } from "./action-space"
 import { connectCdp } from "./cdp"
+import { askSystem1, noteSystem1, readSystem1Config } from "./client"
 import { runNav } from "./loop"
 import { writeFieldText } from "./text"
 import {
   annotateQuestions,
   DECISION_TIMEOUT_MS,
-  decisionBody,
-  decisionHeaders,
   providerHasVision,
-  type System1Auth,
   VISION_TIMEOUT_MS,
 } from "./wire"
 
@@ -24,50 +22,25 @@ function emit(body: Record<string, unknown>, code: number) {
   process.exit(code)
 }
 
-function readConfig(home: string): System1Auth | null {
-  try {
-    const marker = JSON.parse(
-      readFileSync(join(home, ".config/open-bot/system1.json"), "utf8"),
-    ) as { endpoint?: string; model?: string; provider?: string }
-    if (!marker.endpoint) return null
-    let apiKey = ""
-    let gatewayToken = ""
-    try {
-      const auth = JSON.parse(
-        readFileSync(join(home, ".config/open-bot/system1-auth.json"), "utf8"),
-      ) as { apiKey?: string; gatewayToken?: string }
-      apiKey = auth.apiKey ?? ""
-      gatewayToken = auth.gatewayToken ?? ""
-    } catch {
-      apiKey = ""
-    }
-    return {
-      endpoint: marker.endpoint,
-      model: marker.model ?? "",
-      provider: marker.provider ?? "",
-      apiKey,
-      gatewayToken,
-    }
-  } catch {
-    return null
-  }
-}
-
-function note(home: string, row: Record<string, unknown>) {
-  const line = JSON.stringify({ t: new Date().toISOString(), ...row })
-  console.error(`system1 ${line}`)
-  try {
-    appendFileSync(join(home, ".open-bot/system1.log"), `${line}\n`)
-  } catch {
-    // the nav result still returns if the log cannot be written
-  }
-}
-
 async function main() {
   const session = arg("--session")
   const url = arg("--url")
   const goal = withGoalUrl(arg("--goal"), url)
   const value = arg("--value")
+  // System 1 never solves captchas: a captcha-solving goal is refused before
+  // any screen interaction, whatever the page shows.
+  if (/\bcaptcha/i.test(goal)) {
+    emit(
+      {
+        status: "needs_user",
+        steps: 0,
+        detail:
+          "ob-nav never solves captchas. Bring the page to the user instead.",
+      },
+      0,
+    )
+    return
+  }
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(session) || !goal) {
     emit(
       {
@@ -90,7 +63,7 @@ async function main() {
     )
     return
   }
-  const auth = readConfig(home)
+  const auth = readSystem1Config(home)
   if (!auth) {
     emit({ status: "unconfigured", steps: 0, detail: "no provider" }, 2)
     return
@@ -119,7 +92,6 @@ async function main() {
         return writeFieldText({ url, token, goal: fieldGoal, label, page })
       },
       ask: async ({ state, questions, space }) => {
-        const started = Date.now()
         let image = ""
         if (providerHasVision(auth.provider) && driver.capture) {
           image = (await driver.capture(marksFromSpace(space))) ?? ""
@@ -128,28 +100,34 @@ async function main() {
         const images = image
           ? [{ content_type: "image/jpeg" as const, base64: image }]
           : undefined
-        const response = await fetch(auth.endpoint, {
-          method: "POST",
-          headers: decisionHeaders(auth),
-          body: JSON.stringify(decisionBody(auth, state, asked, images)),
-          signal: AbortSignal.timeout(
-            image ? VISION_TIMEOUT_MS : DECISION_TIMEOUT_MS,
-          ),
-        })
-        const ms = Date.now() - started
         const vision = image ? { vision: true } : {}
-        if (!response.ok) {
-          note(home, { ms, http: response.status, ...vision })
-          throw new Error(`decision HTTP ${response.status}`)
-        }
-        const decision = parseDecision(await response.json(), space)
+        const outcome = await askSystem1(auth, {
+          state,
+          questions: asked,
+          images,
+          timeout: image ? VISION_TIMEOUT_MS : DECISION_TIMEOUT_MS,
+          onAttempt: (attempt) => {
+            noteSystem1(home, {
+              ms: attempt.ms,
+              http: attempt.http,
+              error: attempt.error,
+              ...vision,
+            })
+          },
+        })
+        const decision = parseDecision(outcome.body, space)
         if (!decision) {
-          note(home, { ms, http: response.status, error: "invalid", ...vision })
+          noteSystem1(home, {
+            ms: outcome.ms,
+            http: outcome.http,
+            error: "invalid",
+            ...vision,
+          })
           throw new Error("invalid decision")
         }
-        note(home, {
-          ms,
-          http: response.status,
+        noteSystem1(home, {
+          ms: outcome.ms,
+          http: outcome.http,
           op: decision.operation,
           conf: Number(decision.confidence.toFixed(2)),
           needs: Number(decision.needsUser.toFixed(2)),

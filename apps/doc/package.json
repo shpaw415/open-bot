@@ -1,0 +1,35 @@
+{
+  "name": "@open-bot/doc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_ENV=development bun --hot frame-master start",
+    "start": "NODE_ENV=production bun frame-master start",
+    "build": "NODE_ENV=production bun frame-master build",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tailwindcss/cli": "4.1.18",
+    "@tailwindcss/typography": "0.5.19",
+    "frame-master": "3.1.1",
+    "frame-master-plugin-apply-react": "0.2.6",
+    "frame-master-plugin-markdown-to-jsx": "0.1.0",
+    "frame-master-plugin-mdx-to-js-loader": "1.0.0",
+    "frame-master-plugin-react-to-html": "0.2.0",
+    "frame-master-plugin-tailwind": "1.1.2",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "rehype-pretty-code": "0.14.1",
+    "remark-gfm": "4.0.1",
+    "shiki": "3.21.0",
+    "tailwindcss": "4.1.18"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.1",
+    "@types/react": "19.1.12",
+    "@types/react-dom": "19.1.9",
+    "typescript": "5.9.2",
+    "wrangler": "4.59.2"
+  }
+}

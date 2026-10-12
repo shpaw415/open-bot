@@ -1,5 +1,10 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
+import Dialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
@@ -151,7 +156,7 @@ export function CustomSkills() {
       }
     >
       <Stack spacing={1.5}>
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error && !draft ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
         {loading && skills.length === 0 ? (
           <Typography variant="body2" color="textSecondary">
@@ -202,44 +207,57 @@ export function CustomSkills() {
           </Typography>
         ) : null}
         {draft ? (
-          <Stack spacing={1.5}>
-            <TextField
-              label="Name"
-              value={draft.name}
-              placeholder="my-skill"
-              onChange={(event) =>
-                setDraft({ ...draft, name: event.currentTarget.value })
-              }
-            />
-            <Typography variant="caption" color="textSecondary">
-              Kebab-case, up to 64 letters, numbers, hyphens, or underscores.
-            </Typography>
-            <TextField
-              label="Description"
-              value={draft.description}
-              placeholder="When the agent should load this skill"
-              onChange={(event) =>
-                setDraft({ ...draft, description: event.currentTarget.value })
-              }
-            />
-            <TextField
-              label="Instructions"
-              value={draft.body}
-              multiline
-              rows={8}
-              placeholder="# My skill"
-              onChange={(event) =>
-                setDraft({ ...draft, body: event.currentTarget.value })
-              }
-            />
-            <Stack direction="row" spacing={1}>
-              <Button
-                variant="contained"
-                disabled={busy || !draft.name.trim()}
-                onClick={() => void save()}
-              >
-                Save skill
-              </Button>
+          <Dialog
+            open
+            fullWidth
+            scroll="paper"
+            slotProps={{ paper: { sx: { maxWidth: 900 } } }}
+            onClose={() => {
+              if (!busy) setDraft(null)
+            }}
+          >
+            <DialogTitle>
+              {draft.previousName ? "Edit skill" : "New skill"}
+            </DialogTitle>
+            <DialogContent>
+              <Stack spacing={1.5}>
+                {error ? <Alert severity="error">{error}</Alert> : null}
+                <TextField
+                  label="Name"
+                  value={draft.name}
+                  placeholder="my-skill"
+                  onChange={(event) =>
+                    setDraft({ ...draft, name: event.currentTarget.value })
+                  }
+                />
+                <Typography variant="caption" color="textSecondary">
+                  Kebab-case, up to 64 letters, numbers, hyphens, or
+                  underscores.
+                </Typography>
+                <TextField
+                  label="Description"
+                  value={draft.description}
+                  placeholder="When the agent should load this skill"
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      description: event.currentTarget.value,
+                    })
+                  }
+                />
+                <TextField
+                  label="Instructions"
+                  value={draft.body}
+                  multiline
+                  rows={12}
+                  placeholder="# My skill"
+                  onChange={(event) =>
+                    setDraft({ ...draft, body: event.currentTarget.value })
+                  }
+                />
+              </Stack>
+            </DialogContent>
+            <DialogActions>
               <Button
                 variant="text"
                 disabled={busy}
@@ -247,17 +265,23 @@ export function CustomSkills() {
               >
                 Cancel
               </Button>
-            </Stack>
-          </Stack>
-        ) : (
-          <Button
-            variant="contained"
-            disabled={busy || loading}
-            onClick={openNew}
-          >
-            Add skill
-          </Button>
-        )}
+              <Button
+                variant="contained"
+                disabled={busy || !draft.name.trim()}
+                onClick={() => void save()}
+              >
+                Save skill
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+        <Button
+          variant="contained"
+          disabled={busy || loading}
+          onClick={openNew}
+        >
+          Add skill
+        </Button>
       </Stack>
     </ConfigSection>
   )

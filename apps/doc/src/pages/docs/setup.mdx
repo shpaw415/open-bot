@@ -1,0 +1,68 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Setup
+
+From a clean clone, one command starts an interactive wizard:
+
+```sh
+bun run setup
+```
+
+The wizard:
+
+1. Writes `deploy/.env` (mode 0600) with your publish host and port.
+2. Optionally installs dependencies, builds images, pulls OpenViking, and starts Compose.
+3. Prints the URL of your instance.
+
+It does **not** ask for an AI provider — chat models are connected later, per user, inside the desktop.
+
+## What it asks
+
+| Question | Default | Written to |
+| --- | --- | --- |
+| Publish host | `100.96.0.3` | `PUBLISH_HOST` |
+| Publish port | `8787` | `PUBLISH_PORT` |
+
+Both can be an IPv4 address or hostname. The Compose file maps `${PUBLISH_HOST}:${PUBLISH_PORT}` to the control plane's internal port 8787.
+
+## First login
+
+Open the printed URL (default `http://100.96.0.3:8787`) and sign in with:
+
+```text
+admin@localhost / changeme
+```
+
+The first login forces new credentials, stored hashed in sqlite.
+
+## Connect a chat model
+
+Chat models are per user, connected **inside** the desktop:
+
+1. Open a thread (the desktop starts on demand).
+2. On the **Providers** page — or via a terminal on the thread screen — run `opencode auth login` inside the user container.
+3. Pick the model per thread from the model selector.
+
+## Configure OpenViking memory
+
+Set the OpenViking embedding and VLM providers on the Config page. The full walkthrough — including the Cloudflare Workers AI option — is in [OpenViking setup](/docs/openviking).
+
+## Manual Compose
+
+Everything the wizard does, by hand:
+
+```sh
+bun install
+bun run images                                        # build control + desktop images
+docker pull ghcr.io/volcengine/openviking:latest
+docker compose --env-file deploy/.env -f deploy/compose.yml up --build -d
+```
+
+<Callout type="warning">
+The setup wizard refuses to run inside Docker — it manages the host's Docker daemon.
+</Callout>
+
+</DocsShell>

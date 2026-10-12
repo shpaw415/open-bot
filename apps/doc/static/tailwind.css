@@ -1,0 +1,375 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* ========================================
+   Theme CSS Variables
+   ======================================== */
+
+:root {
+  /* Default to dark theme variables */
+  --color-background: #0a0a0a;
+  --color-foreground: #fafafa;
+  --color-muted: #a1a1aa;
+  --color-border: #27272a;
+  --color-card: #18181b;
+  --color-card-hover: #27272a;
+  --color-accent: #8b5cf6;
+}
+
+/* Light theme */
+.light {
+  --color-background: #ffffff;
+  --color-foreground: #0a0a0a;
+  --color-muted: #71717a;
+  --color-border: #e4e4e7;
+  --color-card: #f4f4f5;
+  --color-card-hover: #e4e4e7;
+  --color-accent: #8b5cf6;
+}
+
+/* Dark theme */
+.dark {
+  --color-background: #0a0a0a;
+  --color-foreground: #fafafa;
+  --color-muted: #a1a1aa;
+  --color-border: #27272a;
+  --color-card: #18181b;
+  --color-card-hover: #27272a;
+  --color-accent: #8b5cf6;
+}
+
+/* ========================================
+   Custom Tailwind Theme
+   ======================================== */
+
+@theme {
+  --color-background: var(--color-background);
+  --color-foreground: var(--color-foreground);
+  --color-muted: var(--color-muted);
+  --color-border: var(--color-border);
+  --color-card: var(--color-card);
+  --color-card-hover: var(--color-card-hover);
+  --color-accent: var(--color-accent);
+}
+
+/* ========================================
+   GitHub-style markdown prose customization
+   ======================================== */
+
+/* Light theme prose */
+.light .prose {
+  --tw-prose-body: #24292f;
+  --tw-prose-headings: #1f2328;
+  --tw-prose-lead: #57606a;
+  --tw-prose-links: #0969da;
+  --tw-prose-bold: #1f2328;
+  --tw-prose-counters: #57606a;
+  --tw-prose-bullets: #6e7781;
+  --tw-prose-hr: #d0d7de;
+  --tw-prose-quotes: #57606a;
+  --tw-prose-quote-borders: var(--color-accent);
+  --tw-prose-captions: #57606a;
+  --tw-prose-code: #1f2328;
+  --tw-prose-pre-code: #24292f;
+  --tw-prose-pre-bg: #f6f8fa;
+  --tw-prose-th-borders: #d0d7de;
+  --tw-prose-td-borders: #d8dee4;
+}
+
+/* Dark theme prose */
+.dark .prose {
+  --tw-prose-body: #c9d1d9;
+  --tw-prose-headings: #f0f6fc;
+  --tw-prose-lead: #8b949e;
+  --tw-prose-links: #58a6ff;
+  --tw-prose-bold: #f0f6fc;
+  --tw-prose-counters: #8b949e;
+  --tw-prose-bullets: #6e7681;
+  --tw-prose-hr: #30363d;
+  --tw-prose-quotes: #8b949e;
+  --tw-prose-quote-borders: var(--color-accent);
+  --tw-prose-captions: #8b949e;
+  --tw-prose-code: #f0f6fc;
+  --tw-prose-pre-code: #c9d1d9;
+  --tw-prose-pre-bg: #161b22;
+  --tw-prose-th-borders: #30363d;
+  --tw-prose-td-borders: #21262d;
+}
+
+/* Default prose (fallback to dark) */
+.prose {
+  --tw-prose-body: #c9d1d9;
+  --tw-prose-headings: #f0f6fc;
+  --tw-prose-lead: #8b949e;
+  --tw-prose-links: #58a6ff;
+  --tw-prose-bold: #f0f6fc;
+  --tw-prose-counters: #8b949e;
+  --tw-prose-bullets: #6e7681;
+  --tw-prose-hr: #30363d;
+  --tw-prose-quotes: #8b949e;
+  --tw-prose-quote-borders: var(--color-accent);
+  --tw-prose-captions: #8b949e;
+  --tw-prose-code: #f0f6fc;
+  --tw-prose-pre-code: #c9d1d9;
+  --tw-prose-pre-bg: #161b22;
+  --tw-prose-th-borders: #30363d;
+  --tw-prose-td-borders: #21262d;
+  max-width: 65ch;
+}
+
+.prose :where(a):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  text-decoration: none;
+}
+
+.prose
+  :where(a):not(:where([class~="not-prose"], [class~="not-prose"] *)):hover {
+  text-decoration: underline;
+}
+
+.prose
+  :where(blockquote):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  border-left-width: 4px;
+  font-style: normal;
+}
+
+.light
+  .prose
+  :where(blockquote):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  color: #57606a;
+}
+
+.dark
+  .prose
+  :where(blockquote):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  color: #8b949e;
+}
+
+.prose :where(table):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.prose
+  :where(th, td):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  padding: 6px 13px;
+}
+
+/* Light theme table */
+.light .prose
+  :where(th, td):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  border: 1px solid #d0d7de;
+}
+
+.light
+  .prose
+  :where(tr):not(
+    :where([class~="not-prose"], [class~="not-prose"] *)
+  ):nth-child(2n) {
+  background-color: #f6f8fa;
+}
+
+/* Dark theme table */
+.dark .prose
+  :where(th, td):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  border: 1px solid #30363d;
+}
+
+.dark
+  .prose
+  :where(tr):not(
+    :where([class~="not-prose"], [class~="not-prose"] *)
+  ):nth-child(2n) {
+  background-color: #161b22;
+}
+
+/* ========================================
+   Rehype Pretty Code - Syntax Highlighting
+   ======================================== */
+
+/* Code block container styling */
+[data-rehype-pretty-code-figure] {
+  margin: 1rem 0;
+}
+
+[data-rehype-pretty-code-figure] pre {
+  overflow-x: auto;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+
+/* Light theme code block */
+.light [data-rehype-pretty-code-figure] pre {
+  background-color: #f6f8fa;
+  border: 1px solid #d0d7de;
+}
+
+/* Dark theme code block */
+.dark [data-rehype-pretty-code-figure] pre {
+  background-color: #161b22;
+  border: 1px solid #30363d;
+}
+
+/* Default (dark) code block */
+[data-rehype-pretty-code-figure] pre {
+  background-color: #161b22;
+  border: 1px solid #30363d;
+}
+
+/* Theme switching: show light theme in light mode, dark theme in dark mode */
+/* Shiki dual themes use CSS custom properties: --shiki-light and --shiki-dark */
+
+/* Light mode: use --shiki-light values */
+.light [data-rehype-pretty-code-figure] code span {
+  color: var(--shiki-light) !important;
+}
+
+/* Dark mode: use --shiki-dark values */
+.dark [data-rehype-pretty-code-figure] code span {
+  color: var(--shiki-dark) !important;
+}
+
+/* Default (dark): use --shiki-dark values */
+[data-rehype-pretty-code-figure] code span {
+  color: var(--shiki-dark) !important;
+}
+
+/* Code block with title */
+[data-rehype-pretty-code-title] {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: 0.5rem 0.5rem 0 0;
+  border: 1px solid;
+  border-bottom: none;
+}
+
+.light [data-rehype-pretty-code-title] {
+  background-color: #f6f8fa;
+  border-color: #d0d7de;
+  color: #57606a;
+}
+
+.dark [data-rehype-pretty-code-title] {
+  background-color: #21262d;
+  border-color: #30363d;
+  color: #8b949e;
+}
+
+[data-rehype-pretty-code-title] {
+  background-color: #21262d;
+  border-color: #30363d;
+  color: #8b949e;
+}
+
+[data-rehype-pretty-code-title] + pre {
+  margin-top: 0;
+  border-radius: 0 0 0.5rem 0.5rem;
+}
+
+/* Line numbers */
+[data-line-numbers] {
+  counter-reset: line;
+}
+
+[data-line-numbers] > [data-line]::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 1rem;
+  margin-right: 1.5rem;
+  text-align: right;
+  color: #6e7681;
+}
+
+/* Highlighted lines */
+[data-highlighted-line] {
+  background-color: rgba(56, 139, 253, 0.15);
+  border-left: 2px solid #388bfd;
+  margin-left: -1rem;
+  margin-right: -1rem;
+  padding-left: calc(1rem - 2px);
+  padding-right: 1rem;
+}
+
+.light [data-highlighted-line] {
+  background-color: rgba(255, 215, 0, 0.1);
+  border-left-color: #bf8700;
+}
+
+/* Highlighted words/chars */
+[data-highlighted-chars] {
+  background-color: rgba(56, 139, 253, 0.3);
+  border-radius: 0.25rem;
+  padding: 0.125rem;
+}
+
+.light [data-highlighted-chars] {
+  background-color: rgba(255, 215, 0, 0.3);
+}
+
+/* Inline code - not inside pre */
+.prose
+:where(code):not(:where(pre *, [class~="not-prose"], [class~="not-prose"] *)) {
+  padding: 0.2em 0.4em;
+  border-radius: 6px;
+  font-size: 85%;
+  font-weight: 400;
+}
+
+.light
+  .prose
+  :where(code):not(
+    :where(pre *, [class~="not-prose"], [class~="not-prose"] *)
+  ) {
+  background-color: rgba(175, 184, 193, 0.2);
+  color: #1f2328;
+}
+
+.dark
+  .prose
+  :where(code):not(
+    :where(pre *, [class~="not-prose"], [class~="not-prose"] *)
+  ) {
+  background-color: rgba(110, 118, 129, 0.4);
+  color: #f0f6fc;
+}
+
+.prose
+  :where(code):not(
+    :where(pre *, [class~="not-prose"], [class~="not-prose"] *)
+  ) {
+  background-color: rgba(110, 118, 129, 0.4);
+  color: #f0f6fc;
+}
+
+/* Code inside pre should have no background */
+.prose pre code {
+  background-color: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  font-size: inherit !important;
+}
+
+/* ========================================
+   Docs sidebar utilities
+   ======================================== */
+
+.docs-sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.docs-sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.docs-sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.docs-sidebar::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 9999px;
+}

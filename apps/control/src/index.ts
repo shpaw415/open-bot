@@ -65,6 +65,7 @@ if (db.userCount() === 0) {
     vikingKey: randomToken(),
     selectedProvider: null,
     selectedModel: null,
+    thinkingEffort: null,
     lastActiveAt: Date.now(),
   })
 } else {

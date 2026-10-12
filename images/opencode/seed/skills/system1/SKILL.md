@@ -34,13 +34,13 @@ Output is one JSON line on stdout:
 {"ok":true,"provider":"cloudflare-clef","model":"clef","answers":{"q1":{"choice":"yes","confidence":0.94,"valid":true}},"ms":812}
 ```
 
-Questions are numbered `q1`, `q2`, … in flag order. `valid: false` means the model picked something outside your option list. Exit codes: 0 ok, 1 error, 2 usage, 3 unconfigured. On any failure check `ok` before trusting the answers; `unconfigured` means the desktop has no System 1 provider — say so instead of retrying.
+Questions are numbered `q1`, `q2`, … in flag order. `valid: false` means the model picked something outside your option list. Exit codes: 0 ok (including `--help`), 1 error, 2 usage, 3 unconfigured. On any failure check `ok` before trusting the answers; HTTP errors carry the server's message (redacted) in `detail`; `unconfigured` means the desktop has no System 1 provider — say so instead of retrying.
 
 Flags:
 
-- `--state TEXT` — context for the question; piped stdin is used when this is missing
+- `--state TEXT` — context for the question; piped stdin is used when this is missing (pass it twice and the call is rejected)
 - `--choice "Question?" OPTION OPTION [...]` — pick one of two or more options (repeatable)
-- `--score "Question?"` — a 0–1 rating (repeatable)
+- `--score "Question?" [LEVEL LEVEL ...]` — rate the state on levels; pass 2–10 level labels (e.g. `rough ok great`) or none for a default 5-point scale (`not at all` → `extremely`). The answer's `score` is the level index and `level` its label (repeatable)
 - `--noul "Question?"` — a yes/no-style signal (repeatable)
 - `--image FILE|-` and `--image-base64 B64|-` — jpeg, png, or webp, up to 4 per call; `-` reads stdin (then `--state` is required)
 - `--model MODEL` — override for this call (e.g. `clef-flash` for cheap bulk checks)

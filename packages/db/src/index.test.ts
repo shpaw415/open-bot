@@ -102,6 +102,7 @@ describe("drizzle migrations", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     db.setUserVikingProvider("a", {
@@ -301,6 +302,7 @@ describe("usage ledger", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     db.ensureDesktop({
@@ -310,6 +312,7 @@ describe("usage ledger", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     db.setVikingProvider({
@@ -343,6 +346,34 @@ describe("usage ledger", () => {
     expect(db.getVikingProvider("b")?.baseURL).toBe("https://default.test/v1")
   })
 
+  test("stores and clears the thinking effort", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "t",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      thinkingEffort: null,
+      lastActiveAt: 1,
+    })
+    expect(db.desktop("a")?.thinkingEffort).toBeNull()
+    db.setThinkingEffort("a", "high")
+    expect(db.desktop("a")?.thinkingEffort).toBe("high")
+    db.setThinkingEffort("a", " medium ")
+    expect(db.desktop("a")?.thinkingEffort).toBe("medium")
+    db.setThinkingEffort("a", "")
+    expect(db.desktop("a")?.thinkingEffort).toBeNull()
+    db.setThinkingEffort("a", "xhigh")
+    expect(db.desktop("a")?.thinkingEffort).toBe("xhigh")
+    db.setThinkingEffort("a", null)
+    expect(db.desktop("a")?.thinkingEffort).toBeNull()
+  })
+
   test("stores a per-desktop image provider and clears it", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
@@ -355,6 +386,7 @@ describe("usage ledger", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     expect(db.getImageProvider("a")).toBeNull()
@@ -386,6 +418,7 @@ describe("usage ledger", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     expect(db.getVideoProvider("a")).toBeNull()
@@ -417,6 +450,7 @@ describe("usage ledger", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     expect(db.getModel3dProvider("a")).toBeNull()
@@ -448,6 +482,7 @@ describe("usage ledger", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     expect(db.getSystem1("a")).toBeNull()
@@ -664,6 +699,7 @@ describe("cron store", () => {
       vikingKey: "v",
       selectedProvider: null,
       selectedModel: null,
+      thinkingEffort: null,
       lastActiveAt: 1,
     })
     expect(db.userIdByLlmToken("tok-1")).toBe("a")

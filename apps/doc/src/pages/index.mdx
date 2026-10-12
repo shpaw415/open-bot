@@ -1,0 +1,107 @@
+import { FeatureGrid } from "../components/FeatureGrid";
+import { Logo } from "../components/Logo";
+
+<div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
+
+  <div className="mx-auto max-w-3xl py-16 text-center sm:py-24">
+    <Logo className="mx-auto h-20 w-20" />
+    <h1 className="mt-6 text-5xl font-bold tracking-tight text-foreground sm:text-6xl">
+      {"open-bot"}
+    </h1>
+    <p className="mt-4 text-xl text-muted">
+      {"The self-hosted conversational bot with an operated desktop."}
+    </p>
+    <p className="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-muted">
+      {"Each user gets a chat plus an isolated Linux desktop the bot can see and operate — browse, run apps, write code, and manage files on your behalf."}
+    </p>
+    <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+      <a
+        href="/docs"
+        className="rounded-lg bg-accent px-6 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+      >
+        {"Read the docs"}
+      </a>
+      <a
+        href="https://github.com/shpaw415/open-bot"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="rounded-lg border border-border bg-card px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:bg-card-hover"
+      >
+        {"View on GitHub"}
+      </a>
+    </div>
+  </div>
+
+  <div className="mx-auto max-w-5xl pb-4">
+    <h2 className="text-2xl font-bold text-foreground">{"Why open-bot?"}</h2>
+    <p className="mt-2 text-base text-muted">
+      {"Chat is just the surface — every conversation is backed by a real desktop."}
+    </p>
+    <div className="mt-6">
+      <FeatureGrid
+        features={[
+          {
+            title: "Operated desktop",
+            description:
+              "Every user gets an isolated Linux desktop the bot can see and control — windows, apps, browser, terminal.",
+            icon: "🖥️",
+          },
+          {
+            title: "Chat-first control",
+            description:
+              "Drive the desktop from conversation. The agent opens apps, runs commands, and reports back with context.",
+            icon: "💬",
+          },
+          {
+            title: "Voice in and out",
+            description:
+              "Hold-to-talk speech input and read-aloud replies, with per-user provider configuration.",
+            icon: "🎙️",
+          },
+          {
+            title: "Media vault",
+            description:
+              "Images, video, and 3D models shared in chat are filed into per-thread albums automatically.",
+            icon: "🗂️",
+          },
+          {
+            title: "Plugin system",
+            description:
+              "Extend the agent with skills, personas, cron jobs, desktop tools, and dashboard tabs.",
+            icon: "🧩",
+          },
+          {
+            title: "Self-hosted",
+            description:
+              "Your server, your data. Multi-user with per-user config, key vault, and admin controls.",
+            icon: "🔒",
+          },
+        ]}
+      />
+    </div>
+  </div>
+
+  <div className="mx-auto max-w-3xl py-12">
+    <h2 className="text-2xl font-bold text-foreground">{"Quick start"}</h2>
+    <p className="mt-2 text-base text-muted">
+      {"Clone the repo and bring up your own instance:"}
+    </p>
+  </div>
+
+```bash
+git clone https://github.com/shpaw415/open-bot.git
+cd open-bot
+bun run setup
+```
+
+  <div className="mx-auto max-w-3xl pb-16">
+    <p className="mt-6 text-base text-muted">
+      {"New here? Start with the "}
+      <a href="/docs" className="font-medium text-accent hover:underline">
+        {"documentation"}
+      </a>
+      {"."}
+    </p>
+  </div>
+
+</div>

@@ -13,7 +13,7 @@ usage() {
   exit 1
 }
 
-REFUSED="chromium google-chrome chrome-sandbox Xvfb x11vnc websockify vncdo xclip xsel ttyd"
+REFUSED="chromium chromium-browser google-chrome google-chrome-stable chrome chrome-sandbox Xvfb x11vnc websockify vncdo xclip xsel ttyd"
 
 refused() {
   name=$1
@@ -34,13 +34,21 @@ catalog() {
   python3 - <<'PY'
 import configparser, glob, json, os, shlex
 
-files = glob.glob("/usr/share/applications/*.desktop")
-files += glob.glob(os.path.expanduser("~/.local/share/applications/*.desktop"))
+dirs = os.environ.get(
+    "OB_APP_DESKTOP_DIRS",
+    "/usr/share/applications:~/.local/share/applications",
+).split(":")
+files = []
+for d in dirs:
+    if not d:
+        continue
+    files += glob.glob(os.path.join(os.path.expanduser(d), "*.desktop"))
 entries = {}
 for path in files:
     cp = configparser.ConfigParser(interpolation=None, strict=False)
     try:
-        cp.read(path, encoding="utf-8", errors="replace")
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            cp.read_file(fh)
     except Exception:
         continue
     if not cp.has_section("Desktop Entry"):
@@ -68,7 +76,14 @@ for path in files:
         continue
     if not argv:
         continue
-    if os.path.basename(argv[0]) in ("chromium", "google-chrome", "chrome"):
+    if os.path.basename(argv[0]) in (
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+        "chrome-sandbox",
+    ):
         continue
     entries[ident] = {"id": ident, "name": name, "exec": " ".join(argv)}
 for row in sorted(entries.values(), key=lambda r: r["name"].lower()):
@@ -180,7 +195,7 @@ if [ "$cmd" = "launch" ]; then
     fi
   elif refused "$app"; then
     case "$app" in
-      chromium | google-chrome)
+      chromium | chromium-browser | google-chrome | google-chrome-stable)
         echo "the managed browser is not an app. Pages go through ob-nav; a standalone Chrome window is ob-app launch chrome." >&2
         ;;
       *)

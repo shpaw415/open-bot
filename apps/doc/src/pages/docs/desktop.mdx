@@ -1,0 +1,43 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Desktop containers
+
+Each user gets one desktop container (image `open-bot-opencode:local`). It is a full Linux desktop the bot can see and operate.
+
+## What runs inside
+
+| Piece | Detail |
+| --- | --- |
+| OpenCode server | The agent runtime, port **4096**, Basic auth (`opencode:<password>`). The control plane proxies it at `/api/opencode/*`. |
+| Thread screen | Xvfb + openbox, displays **2–9**. VNC on `5900 + display`, Chrome DevTools on `9222 + display`. Max concurrent screens: `MAX_THREAD_SCREENS` (default 3). |
+| Agent CLIs | `ob-nav`, `ob-page`, `ob-app`, `ob-plugin`, `ob-thread`, `ob-project`, `ob-media`, `ob-report`, `ob-preview`, `ob-cron`, `ob-persona`, `ob-backup`, `ob-system1` — in `/usr/local/bin`, authenticated with the desktop's LLM token. |
+| Seed skills | Copied into OpenCode's skill dir at start (apps, media, plugin, preview, project, report, system1, thread, persona...). |
+| AGENTS.md | The standing instructions for the bot persona, merged with persona system lines. |
+| Browser | A managed per-thread Chrome (CDP-driven by `ob-nav`/`ob-page`) plus optional standalone Chrome via `ob-app launch chrome`. |
+
+## Screens and input
+
+The screen state machine lives in `screens.ts` (control plane) and `screen-up.sh`/`screen-down.sh` (image):
+
+- Display numbers 2–9 map to VNC ports 5902–5909 and CDP ports 9224–9231.
+- A user **hold** (`POST /api/desktop/screen/hold`) pauses agent takeover so you can look yourself.
+- Screenshots go through `POST /api/desktop/screen`; the Hardware view reads docker stats instead.
+
+## Identity and persistence
+
+- Browser profiles and logins persist in volumes across `bun run update`.
+- Extra `sudo apt-get install` packages are recorded (`record-apt.sh`) and restored on image rebuild (`restore-apt.sh`).
+- `/home/agent` is the desktop home: workspace projects, `~/.open-bot` state (reports, previews, app pids), `~/.config/open-bot` (plugin configs, system1 config).
+
+## Projects workspace
+
+`/home/agent/workspace` holds auto-created projects; any existing folder under `/home/agent` can be registered with `ob-project add --path`. Registered projects power the Projects tab and `@projects` mentions. See [Other CLIs](/docs/ob-misc).
+
+<Callout type="note">
+The desktop agent is a conversational bot, not a coding agent. On user projects it behaves like staff IT: it owns tasks end-to-end (clone, branch, commit on feature branches, PR, CI) but never force-pushes shared `main`.
+</Callout>
+
+</DocsShell>

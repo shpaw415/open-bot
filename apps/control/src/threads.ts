@@ -1,6 +1,7 @@
 import type { Db, User } from "@open-bot/db"
 import { createSession } from "./cron"
 import { desktopPhase, endpoint } from "./docker"
+import { applyThinkingEffort } from "./effort"
 
 // Hidden threads reuse the worker: title prefix. The dashboard thread list and
 // the media vault already skip worker:/cron-run: titled sessions, so a hidden
@@ -124,12 +125,16 @@ async function startThread(req: Request, db: Db, agent: User) {
   }
   let warning: string | null = null
   if (message) {
+    const promptBody: Record<string, unknown> = {
+      parts: [{ type: "text", text: message }],
+    }
+    await applyThinkingEffort(db, agent.id, promptBody)
     const posted = await fetch(
       `${base}/session/${encodeURIComponent(sessionId)}/prompt_async`,
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ parts: [{ type: "text", text: message }] }),
+        body: JSON.stringify(promptBody),
         signal: AbortSignal.timeout(PROMPT_TIMEOUT_MS),
       },
     ).catch(() => null)

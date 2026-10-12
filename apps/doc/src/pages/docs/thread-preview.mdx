@@ -1,0 +1,41 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Thread preview
+
+The desktop agent can serve a Bun dev server from any project and embed it **inside the thread**. Skill: `images/opencode/seed/skills/preview`, CLI: `ob-preview`.
+
+## Usage
+
+```sh
+ob-preview up   --session SESSION DIR        # serve a directory (auto-detect entry)
+ob-preview up   --session SESSION --entry FILE
+ob-preview status --session SESSION
+ob-preview down --session SESSION
+```
+
+The agent includes one reply marker to embed it:
+
+```text
+![title](open-bot://preview)
+```
+
+## How it reaches the browser
+
+1. `ob-preview` binds a port in the allowlist **4700–4719** and registers it under `~/.open-bot`.
+2. The control plane proxies that port through a **capability-token frame URL**: `/api/preview/frame/<token>/`.
+3. On a wide screen the dashboard **lifts** the iframe into a resizable pane beside the thread; on a narrow screen it covers the viewport.
+
+| Limit | Value |
+| --- | --- |
+| Port range | 4700–4719 (`PREVIEW_PORT_MIN/MAX`) |
+| Preview TTL | 10 minutes |
+| Inline HTML cap | 2,000,000 bytes |
+
+<Callout type="warning">
+The preview frame renders desktop-served HTML in the dashboard origin proxy. It is capability-token scoped, but only serve content you trust.
+</Callout>
+
+</DocsShell>

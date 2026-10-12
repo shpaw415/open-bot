@@ -1,5 +1,6 @@
 import type { Db } from "@open-bot/db"
 import { desktopPhase, endpoint } from "./docker"
+import { applyThinkingEffort } from "./effort"
 import type { EventHub } from "./events"
 
 export const STUCK_TOOL_MS = 1_200_000
@@ -133,13 +134,15 @@ async function sweepUser(
     const nudgeKey = key
     if (now - (nudged.get(nudgeKey) ?? 0) >= NUDGE_MS) {
       nudged.set(nudgeKey, now)
+      const nudgeBody: Record<string, unknown> = {
+        agent: "build",
+        parts: [{ type: "text", text: WRAP_UP_PROMPT }],
+      }
+      await applyThinkingEffort(db, userId, nudgeBody)
       await fetch(`${base}/session/${sessionId}/prompt_async`, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          agent: "build",
-          parts: [{ type: "text", text: WRAP_UP_PROMPT }],
-        }),
+        body: JSON.stringify(nudgeBody),
         signal: AbortSignal.timeout(15_000),
       }).catch(() => undefined)
     }

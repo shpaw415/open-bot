@@ -1,5 +1,6 @@
 import type { CronJob, CronNotice, CronRunKind, Db } from "@open-bot/db"
 import { desktopPhase, endpoint, opencodeScript, startDesktop } from "./docker"
+import { applyThinkingEffort } from "./effort"
 import type { EventHub } from "./events"
 import { resolveDesktopProviders } from "./key-vault"
 import { personaSystem, resolvePersona } from "./personas"
@@ -837,23 +838,23 @@ export async function fireCronJob(
         sessionId,
       )
       const screen = await ensureThreadScreen(db, job.userId, runSessionId)
+      const runBody = cronRunBody({
+        name: job.name,
+        message: job.message,
+        providerId: job.providerId,
+        modelId: job.modelId,
+        screenSystem: screen.system,
+        personaLine,
+        scriptOutput,
+        scriptExit,
+      })
+      await applyThinkingEffort(db, job.userId, runBody)
       const prompt = await opencodeJson(
         `${base}/session/${runSessionId}/prompt_async`,
         headers,
         {
           method: "POST",
-          body: JSON.stringify(
-            cronRunBody({
-              name: job.name,
-              message: job.message,
-              providerId: job.providerId,
-              modelId: job.modelId,
-              screenSystem: screen.system,
-              personaLine,
-              scriptOutput,
-              scriptExit,
-            }),
-          ),
+          body: JSON.stringify(runBody),
         },
       )
       if (!prompt.ok) {

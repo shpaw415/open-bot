@@ -1,0 +1,1 @@
+ALTER TABLE `desktops` ADD `thinking_effort` text;

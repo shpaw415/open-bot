@@ -1,0 +1,38 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Media vault
+
+The Media tab in the workspace Views drawer lists **albums of immutable copies** of media, stored under `DATA_DIR/media-vault`.
+
+## Automatic filing
+
+On `session.idle`, chat images, video, and `.glb` models are filed into a per-thread album. Hidden sessions are skipped — titles with the reserved `worker:` or `cron-run:` prefixes never file.
+
+## Manual filing with ob-media
+
+The agent (or you, on the desktop) files other allowlisted files, or into a named album:
+
+```sh
+ob-media albums                 # list albums
+ob-media album "Screenshots"    # show one album
+ob-media push --album Vacation --path ./beach.jpg --title "Beach day"
+ob-media remove ITEM_ID
+ob-media remove-album ALBUM_ID
+```
+
+Routes live under `/api/media/*` (cookie or LLM token) and emit `media.changed` so the tab refreshes live.
+
+## Semantics
+
+- **Immutable copies** — the vault keeps its own copy; deleting the thread or the original file does not delete the album.
+- **Cap** — `app_settings.media_vault_cap_mb` (default **3072 MB**, max 102400). Setting `0` clears the cap. Managed on the Admin page.
+- Chat media snapshots have a separate cap: `media_snapshot_cap_mb` (default 3072).
+
+<Callout type="tip">
+Albums are the archival layer; the chat bubble still streams the original. If you need a file in the vault that the agent produced outside chat, ask it to `ob-media push` it.
+</Callout>
+
+</DocsShell>

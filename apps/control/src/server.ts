@@ -49,6 +49,13 @@ import {
   writeAgentUpload,
   writeProjectFile,
 } from "./docker"
+import {
+  applyThinkingEffort,
+  basicOpencodeAuth as basic,
+  clearModelVariants,
+  fetchModelVariants,
+  supportsEffort,
+} from "./effort"
 import { cookieSecure, devMode, names, webDist } from "./env"
 import type { EventHub, EventsSocketData, Upstream } from "./events"
 import { HttpError, httpErrorResponse } from "./http-error"
@@ -272,12 +279,6 @@ function userFromLlmToken(req: Request, db: Db) {
 
 async function readJson(req: Request) {
   return (await req.json()) as Record<string, unknown>
-}
-
-function basic(password: string) {
-  return {
-    authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
-  }
 }
 
 // Give up if the desktop does not return response headers within this budget;
@@ -1099,6 +1100,7 @@ async function api(
         ? {
             providerID: desktop.selectedProvider,
             modelID: desktop.selectedModel,
+            thinkingEffort: desktop.thinkingEffort,
           }
         : null,
     })
@@ -2028,7 +2030,38 @@ async function api(
     const modelID = String(body.modelID ?? "")
     if (!providerID || !modelID)
       return json({ error: "provider and model required" }, 400)
+    const rawEffort = body.thinkingEffort
+    if (
+      rawEffort !== undefined &&
+      rawEffort !== null &&
+      typeof rawEffort !== "string"
+    )
+      return json({ error: "invalid thinking effort" }, 400)
+    const explicitEffort =
+      typeof rawEffort === "string" && rawEffort.trim() !== ""
+        ? rawEffort.trim()
+        : null
+    if (explicitEffort && explicitEffort.length > 32)
+      return json({ error: "invalid thinking effort" }, 400)
+    const desktop = await ensure(user, db)
+    // An explicit effort is validated against the new model; a saved one is
+    // carried over only while the new model still supports it.
+    let effort: string | null = explicitEffort
+    const carried = effort ?? desktop.thinkingEffort
+    if (carried) {
+      clearModelVariants(user.id)
+      try {
+        const variants = await fetchModelVariants(user.id, desktop)
+        if (!supportsEffort(variants, providerID, modelID, carried))
+          effort = null
+      } catch {
+        if (explicitEffort)
+          return json({ error: "could not verify thinking effort" }, 502)
+        effort = desktop.thinkingEffort
+      }
+    }
     db.setModel(user.id, providerID, modelID)
+    db.setThinkingEffort(user.id, effort)
     if (await isRunning(names(user.id).opencode)) {
       await opencodeExec(user.id, [
         "sh",
@@ -2037,6 +2070,41 @@ async function api(
       ])
       await restartOpencode(user.id)
     }
+    return json({ ok: true })
+  }
+  if (url.pathname === "/api/thinking" && req.method === "PUT") {
+    const body = await readJson(req)
+    const rawEffort = body.effort
+    if (rawEffort !== undefined && typeof rawEffort !== "string")
+      return json({ error: "effort must be a string" }, 400)
+    const effort =
+      rawEffort && rawEffort.trim() !== "" ? rawEffort.trim() : null
+    if (effort && effort.length > 32)
+      return json({ error: "invalid thinking effort" }, 400)
+    const desktop = await ensure(user, db)
+    if (!desktop.selectedProvider || !desktop.selectedModel)
+      return json({ error: "pick a default model first" }, 400)
+    if (effort) {
+      clearModelVariants(user.id)
+      try {
+        const variants = await fetchModelVariants(user.id, desktop)
+        if (
+          !supportsEffort(
+            variants,
+            desktop.selectedProvider,
+            desktop.selectedModel,
+            effort,
+          )
+        )
+          return json(
+            { error: "model does not support this thinking effort" },
+            400,
+          )
+      } catch {
+        return json({ error: "could not verify thinking effort" }, 502)
+      }
+    }
+    db.setThinkingEffort(user.id, effort)
     return json({ ok: true })
   }
   if (url.pathname === "/api/models" && req.method === "GET")
@@ -2225,6 +2293,7 @@ async function api(
         )
         if (claimed) void refineThreadTitle(base, auth, db, user.id, root, text)
       }
+      await applyThinkingEffort(db, user.id, outbound)
       return proxy(
         req,
         base,
@@ -2276,18 +2345,35 @@ async function connectedModels(user: User, db: Db) {
     )
   }
   const body = (await response.json()) as {
-    all?: { id?: string; models?: Record<string, { name?: string }> }[]
+    all?: {
+      id?: string
+      models?: Record<string, { name?: string; variants?: unknown }> | undefined
+    }[]
     connected?: unknown
   }
   const connected = Array.isArray(body.connected)
     ? body.connected.filter((id): id is string => typeof id === "string")
     : []
   const connectedSet = new Set(connected)
-  const models: { providerID: string; modelID: string; name?: string }[] = []
+  const models: {
+    providerID: string
+    modelID: string
+    name?: string
+    variants: string[]
+  }[] = []
   for (const provider of body.all ?? []) {
     if (!provider.id || !connectedSet.has(provider.id)) continue
     for (const [modelID, info] of Object.entries(provider.models ?? {})) {
-      models.push({ providerID: provider.id, modelID, name: info?.name })
+      const variants =
+        info?.variants && typeof info.variants === "object"
+          ? Object.keys(info.variants)
+          : []
+      models.push({
+        providerID: provider.id,
+        modelID,
+        name: info?.name,
+        variants,
+      })
     }
   }
   models.sort((a, b) =>
@@ -2797,6 +2883,7 @@ function freshDesktop(userId: string) {
     vikingKey: randomToken(),
     selectedProvider: null,
     selectedModel: null,
+    thinkingEffort: null,
     lastActiveAt: Date.now(),
   }
 }

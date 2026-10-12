@@ -8,7 +8,8 @@
       "!data",
       "!**/.frame-master",
       "!**/.wrangler",
-      "!apps/marketplace/functions"
+      "!apps/marketplace/functions",
+      "!apps/doc/static/style.css"
     ]
   },
   "formatter": {
@@ -27,5 +28,20 @@
         "noExplicitAny": "off"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["apps/doc/static/tailwind.css"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noImportantStyles": "off"
+          },
+          "style": {
+            "noDescendingSpecificity": "off"
+          }
+        }
+      }
+    }
+  ]
 }

@@ -78,6 +78,7 @@ export const desktops = sqliteTable("desktops", {
   ttsModel: text("tts_model"),
   ttsVoice: text("tts_voice"),
   voiceLanguage: text("voice_language"),
+  thinkingEffort: text("thinking_effort"),
 })
 
 export const userKeys = sqliteTable(

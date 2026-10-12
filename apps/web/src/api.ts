@@ -4,7 +4,11 @@ export type Me = {
   role: "admin" | "user"
   mustChangePassword?: boolean
   desktop?: "starting" | "running" | "sleeping"
-  model?: { providerID: string | null; modelID: string | null } | null
+  model?: {
+    providerID: string | null
+    modelID: string | null
+    thinkingEffort?: string | null
+  } | null
 }
 
 export function clientId(): string {

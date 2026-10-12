@@ -1,0 +1,70 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Configuration reference
+
+Every knob in one place.
+
+## deploy/.env
+
+Written by the setup wizard (only the first two):
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `PUBLISH_HOST` | `100.96.0.3` | Published bind address |
+| `PUBLISH_PORT` | `8787` | Published port |
+| `OPEN_BOT_DEV` | `0` | `1` = devMode (product report filing, `POST /api/improvements`) |
+| `OPEN_BOT_MARKETPLACE_URL` | — | Marketplace base URL |
+| `OPEN_BOT_MARKETPLACE_TOKEN` | — | Instance marketplace write token fallback |
+| `OPEN_BOT_GITHUB_TOKEN` | — | Agent GitHub identity injected into desktops |
+| `DATA_DIR` | `/data` | sqlite + media vault volume |
+| `OPEN_BOT_AI_CONFIG` | `/app/config/ai.ts` | AI config bind mount (read-only) |
+
+Read by `apps/control/src/env.ts` (host-side or container defaults):
+
+| Var | Default |
+| --- | --- |
+| `WEB_DIST` | `apps/web/dist` |
+| `IDLE_MINUTES` | `15` |
+| `MAX_DESKTOPS` | `4` |
+| `MAX_THREAD_SCREENS` | `3` |
+| `OPENCODE_IMAGE` / `COMPUTER_IMAGE` | `open-bot-opencode:local` / `open-bot-computer:local` |
+| `VIKING_IMAGE` | `ghcr.io/volcengine/openviking:latest` |
+| `COOKIE_SECURE` | unset (`"1"` = Secure cookies) |
+
+## app_settings (Admin page / API)
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `media_snapshot_cap_mb` | `3072` | Chat media snapshot cap; `0` = off |
+| `media_vault_cap_mb` | `3072` | Media vault cap; `0` clears |
+| `desktop_disk_max_gb` | unset | Display-only Hardware disk max; `0` = full disk |
+| `plugin_install_policy` | `manual` | `manual` \| `auto` (also pending-review plugins) |
+| `plugin_auto_update` | `off` | `off` \| `stable` |
+| `marketplace_api_key` | — | `obm_…` key preferred over env token |
+| `backup_config` / `backup_status` / `backup_next_run_at` | — | Backup scheduler state |
+
+## Ports
+
+| Port | Use |
+| --- | --- |
+| 8787 | Control plane (published as `PUBLISH_HOST:PUBLISH_PORT`) |
+| 5173 | Web dev server (vite) |
+| 3001 | Docs dev server (`bun run dev:doc`) |
+| 4096 | Desktop OpenCode server |
+| 1933 | OpenViking server |
+| 5902–5909 | Thread screen VNC (display + 5900) |
+| 9224–9231 | Thread screen CDP (display + 9222) |
+| 4700–4719 | Thread preview allowlist |
+
+## Route index
+
+Grouped under `/api` — see [Control plane](/docs/control-plane) for the full list and auth rules. Highlights: `/auth/*`, `/me`, `/desktop*`, `/threads`, `/cron*`, `/personas*`, `/projects*`, `/plugins*`, `/media/*`, `/reports*`, `/voice`, `/stt`, `/tts`, `/keys`, `/providers*`, `/model`, `/models`, `/image`, `/video`, `/model3d`, `/system1`, `/viking`, `/skills`, `/backup*`, `/admin/*`, `/opencode/*`, `WS /events`, `/preview/frame/<token>/`.
+
+## Migrations
+
+`bun run db:generate` regenerates drizzle migrations in `packages/db/drizzle` — run it for any manifest or DB change, then rebuild images.
+
+</DocsShell>

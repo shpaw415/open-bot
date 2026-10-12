@@ -166,6 +166,7 @@ body.ob-preview-dragging iframe {
   gap: 8px;
   height: 420px;
   margin-top: 8px;
+  overflow-anchor: none;
 }
 
 .ob-screen iframe,

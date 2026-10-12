@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
+import { redactText } from "./client"
 import {
   buildCliQuestions,
+  DEFAULT_SCORE_LEVELS,
   decorateAnswers,
   normalizeBase64,
   parseArgs,
@@ -38,7 +40,11 @@ test("parseArgs reads every flag and variadic choice options", () => {
       question: "Which object is the mug?",
       options: ["left cup", "right cup", "neither"],
     },
-    { kind: "score", question: "How cluttered is the desk?" },
+    {
+      kind: "score",
+      question: "How cluttered is the desk?",
+      levels: DEFAULT_SCORE_LEVELS,
+    },
     { kind: "noul", question: "Is a person waiting?" },
   ])
   expect(parsed.images).toEqual([{ path: "/tmp/shot.jpg" }, { b64: "aGk=" }])
@@ -51,6 +57,58 @@ test("parseArgs rejects a choice with fewer than two options", () => {
   expect(() => parseArgs(["--choice", "Pick one?"])).toThrow(UsageError)
 })
 
+test("parseArgs defaults score levels and accepts custom ones", () => {
+  expect(parseArgs(["--score", "How much?"]).specs[0]).toEqual({
+    kind: "score",
+    question: "How much?",
+    levels: DEFAULT_SCORE_LEVELS,
+  })
+  expect(
+    parseArgs(["--score", "How hot?", "cold", "warm", "hot"]).specs[0],
+  ).toEqual({
+    kind: "score",
+    question: "How hot?",
+    levels: ["cold", "warm", "hot"],
+  })
+  expect(() =>
+    parseArgs([
+      "--score",
+      "Q?",
+      ...Array.from({ length: 11 }, (_, i) => `l${i}`),
+    ]),
+  ).toThrow("--score takes at most 10 levels")
+  // levels stop at the next flag
+  expect(
+    parseArgs(["--score", "Q?", "a", "b", "--noul", "Waiting?"]).specs[0],
+  ).toMatchObject({ levels: ["a", "b"] })
+})
+
+test("parseArgs rejects a duplicated --state", () => {
+  expect(() =>
+    parseArgs(["--state", "one", "--state", "two", "--choice", "Q?", "a", "b"]),
+  ).toThrow("--state given more than once")
+})
+
+test("parseArgs rejects more than four images", () => {
+  const images = [
+    "--image",
+    "a.jpg",
+    "--image",
+    "b.jpg",
+    "--image",
+    "c.jpg",
+    "--image",
+    "d.jpg",
+  ]
+  expect(() => parseArgs(["--state", "x", ...images])).not.toThrow()
+  expect(() =>
+    parseArgs(["--state", "x", ...images, "--image", "e.jpg"]),
+  ).toThrow("max 4 images per call")
+  expect(() =>
+    parseArgs(["--state", "x", ...images, "--image-base64", "aa=="]),
+  ).toThrow("max 4 images per call")
+})
+
 test("parseArgs rejects unknown flags and missing values", () => {
   expect(() => parseArgs(["--bogus"])).toThrow(UsageError)
   expect(() => parseArgs(["--state"])).toThrow(UsageError)
@@ -60,15 +118,21 @@ test("parseArgs rejects unknown flags and missing values", () => {
 test("buildCliQuestions numbers ids in flag order and maps choice criteria", () => {
   const questions = buildCliQuestions([
     { kind: "choice", question: "Which one?", options: ["a", "b"] },
+    { kind: "score", question: "How much?", levels: ["low", "high"] },
     { kind: "noul", question: "Waiting?" },
   ])
-  expect(Object.keys(questions)).toEqual(["q1", "q2"])
+  expect(Object.keys(questions)).toEqual(["q1", "q2", "q3"])
   expect(questions.q1).toEqual({
     type: "choice",
     instructions: "Which one?",
     criteria: { a: "a", b: "b" },
   })
   expect(questions.q2).toEqual({
+    type: "score",
+    instructions: "How much?",
+    criteria: ["low", "high"],
+  })
+  expect(questions.q3).toEqual({
     type: "noul",
     instructions: "Waiting?",
   })
@@ -123,7 +187,11 @@ test("decorateAnswers flags out-of-space choices and passes others through", () 
 test("decorateAnswers keeps a valid choice and fills missing answers with null", () => {
   const specs = [
     { kind: "choice" as const, question: "Which?", options: ["a", "b"] },
-    { kind: "score" as const, question: "How much?" },
+    {
+      kind: "score" as const,
+      question: "How much?",
+      levels: DEFAULT_SCORE_LEVELS,
+    },
   ]
   const decorated = decorateAnswers(
     {
@@ -137,4 +205,44 @@ test("decorateAnswers keeps a valid choice and fills missing answers with null",
   )
   expect(decorated.q1).toMatchObject({ choice: "b", valid: true })
   expect(decorated.q2).toBeNull()
+})
+
+test("decorateAnswers maps score level indexes to labels and clamps", () => {
+  const score = (question: string) => ({
+    kind: "score" as const,
+    question,
+    levels: ["none", "some", "lots"],
+  })
+  const specs = [score("a"), score("b"), score("c")]
+  const decorated = decorateAnswers(
+    {
+      q1: {
+        type: "score",
+        score: 1.8,
+        legend: { 0: "none", 1: "some", 2: "lots" },
+        confidence: 0.6,
+      },
+      q2: { type: "score", score: 9 },
+      q3: { type: "score", score: "junk" },
+    },
+    specs,
+  )
+  expect(decorated.q1).toMatchObject({ score: 1.8, level: "lots" })
+  expect(decorated.q2).toMatchObject({ score: 9, level: "lots" })
+  expect(decorated.q3).toMatchObject({ score: "junk", level: null })
+  const rounded = decorateAnswers({ q1: { score: 1.4 } }, specs)
+  expect(rounded.q1).toMatchObject({ level: "some" })
+})
+
+test("redact strips credentials from error bodies", () => {
+  expect(redactText("auth Bearer abc.def.ghi failed")).toBe(
+    "auth Bearer [redacted] failed",
+  )
+  expect(redactText('{"error":"bad key sk-abcdefgh12345678"}')).toBe(
+    '{"error":"bad key [redacted]"}',
+  )
+  expect(redactText('config {"apiKey":"super-secret","model":"clef"}')).toBe(
+    'config {"apiKey":"[redacted]","model":"clef"}',
+  )
+  expect(redactText("x".repeat(500))).toHaveLength(240)
 })

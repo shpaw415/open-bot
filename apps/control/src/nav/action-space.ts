@@ -1,7 +1,13 @@
 import { unwrapAnswers } from "./wire"
 
 export const CONFIDENCE_MIN = 0.55
-export const MAX_ELEMENTS = 16
+// Reversible, non-navigating moves get a lenient bar: a mid-confidence scroll
+// still beats stalling out on content-heavy pages.
+export const SCROLL_CONFIDENCE_MIN = 0.35
+// Navigating decisions just under the bar still execute, but the failure
+// counter stays warm so sustained near-misses hand off to the fallback.
+export const NEAR_MISS_MARGIN = 0.1
+export const MAX_ELEMENTS = 24
 export const MAX_STEPS = 32
 export const NONE_VALUE = "none"
 
@@ -21,6 +27,7 @@ export type Snapshot = {
   text: string
   canScrollDown: boolean
   canScrollUp: boolean
+  scrollY?: number
   elementsTruncated?: boolean
   elements: ProbeElement[]
 }
@@ -87,7 +94,7 @@ export function goalValues(goal: string, extra: string[] = []) {
     add(match[1] || match[2] || "")
   }
   for (const match of goal.matchAll(/https?:\/\/\S+/g)) {
-    add(match[0].replace(/[),.;]+$/, ""))
+    add(trimProseUrl(match[0]))
   }
   const lead = /(?:search for|type|enter|fill in|fill)\s+(.+)$/i.exec(
     goal.trim(),
@@ -97,16 +104,35 @@ export function goalValues(goal: string, extra: string[] = []) {
   return found
 }
 
+// Prose glues punctuation onto pasted urls ("see https://x.com."). Strip
+// trailing separators, but keep a closing paren that balances an opening
+// one so wiki-style titles like Page_(Montreal) survive.
+function trimProseUrl(url: string) {
+  let candidate = url
+  for (;;) {
+    const last = candidate.slice(-1)
+    if (!/^[),.;]$/i.test(last)) break
+    if (last === ")") {
+      const opens = (candidate.match(/\(/g) ?? []).length
+      const closes = (candidate.match(/\)/g) ?? []).length
+      if (closes <= opens) break
+    }
+    candidate = candidate.slice(0, -1)
+  }
+  return candidate
+}
+
 export function goalUrl(goal: string) {
   const match = goal.match(/https?:\/\/\S+/i)
-  return match ? match[0].replace(/[),.;]+$/, "") : ""
+  return match ? trimProseUrl(match[0]) : ""
 }
 
 // ob-nav takes the page url either inside the goal or as --url. Folding --url
 // into the goal keeps one extraction path (goalUrl/goalValues) so the run
 // navigates straight to it instead of clicking around the current page.
+// The --url flag is machine-supplied: it is used verbatim.
 export function withGoalUrl(goal: string, url: string) {
-  const trimmedUrl = url.trim().replace(/[),.;]+$/, "")
+  const trimmedUrl = url.trim()
   if (!trimmedUrl) return goal.trim()
   if (!goal.trim()) return trimmedUrl
   if (goal.includes(trimmedUrl)) return goal.trim()
@@ -166,7 +192,14 @@ export function pageNeedsUser(snapshot: Snapshot) {
   ) {
     return true
   }
-  return /\bcaptcha\b|\brecaptcha\b/i.test(snapshot.text)
+  return (
+    /\bcaptcha\b|\brecaptcha\b/i.test(snapshot.text) ||
+    // Verification gates often avoid the word captcha; these phrases mark
+    // the same hand-to-user moment.
+    /human verification|verify you are human|not a robot|prove you are human|type the characters (you see|shown)/i.test(
+      snapshot.text,
+    )
+  )
 }
 
 // Bot-walls and dead ends ("Error Page | eBay", "Access denied", …) load fine

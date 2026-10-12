@@ -2,6 +2,7 @@ import type { Db } from "@open-bot/db"
 import type { PluginHookEvent, PluginManifest } from "@open-bot/plugin-kit"
 import { createSession } from "./cron"
 import { endpoint } from "./docker"
+import { applyThinkingEffort } from "./effort"
 
 // Plugin event hooks: manifest hooks[] entries run their message as a prompt
 // in a hidden worker session whenever the mapped upstream event fires.
@@ -111,12 +112,14 @@ async function runHook(
     )
     spawnedSessions.add(sessionId)
     if (spawnedSessions.size > 1000) spawnedSessions.clear()
+    const hookBody: Record<string, unknown> = {
+      parts: [{ type: "text", text: prompt }],
+    }
+    await applyThinkingEffort(db, userId, hookBody)
     const response = await fetch(`${base}/session/${sessionId}/prompt_async`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        parts: [{ type: "text", text: prompt }],
-      }),
+      body: JSON.stringify(hookBody),
       signal: AbortSignal.timeout(30_000),
     })
     if (!response.ok) {

@@ -1,0 +1,58 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# OpenViking setup
+
+Each desktop's OpenViking instance (the memory server on port 1933) needs an **embedding model** and a **VLM**. Every user sets their own on the **Config** page; an admin sets a fallback under **Admin → OpenViking models (default)** for users who have not saved their own.
+
+## Prerequisites (Cloudflare Workers AI example)
+
+- A Cloudflare account with Workers AI enabled (Workers Paid for the models below)
+- An API token with Workers AI edit permission (dash.cloudflare.com → My Profile → API Tokens)
+- Your Cloudflare account ID (dashboard overview, right sidebar)
+
+## Set the models
+
+1. Log in to the control plane.
+2. Open **Config** (per user, saves to your own desktop) or **Admin → OpenViking models (default)** (account-wide fallback).
+3. Fill the form:
+
+| Field | Value |
+| --- | --- |
+| Base URL | `https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1` |
+| API key | your Workers AI token |
+| Embed model | `@cf/qwen/qwen3-embedding-0.6b` |
+| Embed dimension | `1024` |
+| VLM model | `@cf/zai-org/glm-5.3-flash` |
+
+4. **Save OpenViking models** — a blank API key keeps the already-saved key.
+
+The Base URL is the Workers AI OpenAI-compatible endpoint; model IDs keep the `@cf/` prefix.
+
+## Apply
+
+Sleep the desktop, then start it again — desktop start recreates the per-user OpenViking container with the saved config passed via the `OPENVIKING_CONF_CONTENT` env var (`apps/control/src/docker.ts`, `vikingConfig`). There is no config file to manage on the host.
+
+## Form limitations
+
+The Admin form sends no extra fields, so it cannot set:
+
+- `cf-aig-gateway-id` — the host `~/.openviking/ov.conf` can route embeddings through an AI Gateway (named `embeddings`) for caching and logs. Without it, requests go straight to Workers AI and still work.
+- `reasoning_effort: low` for the VLM — GLM-5.3-Flash answers without it.
+
+## Verify
+
+```sh
+curl http://127.0.0.1:8787/api/health          # {"ok":true}
+```
+
+- Start a desktop, then from inside the OpenCode container: `ov find "anything"` — results mean embeddings work.
+- Ask the agent to take a screenshot — a described image means the VLM works.
+
+<Callout type="note">
+Chat models are configured elsewhere: connect them on the **Providers** page with `opencode auth login` inside the user container.
+</Callout>
+
+</DocsShell>

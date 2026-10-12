@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const script = readFileSync(join(import.meta.dir, "ob-app.sh"), "utf8")
@@ -7,7 +8,9 @@ const script = readFileSync(join(import.meta.dir, "ob-app.sh"), "utf8")
 test("ob-app refuses the managed browser and screen infrastructure", () => {
   for (const name of [
     "chromium",
+    "chromium-browser",
     "google-chrome",
+    "google-chrome-stable",
     "chrome-sandbox",
     "Xvfb",
     "x11vnc",
@@ -69,11 +72,23 @@ test("catalog prefers user desktop entries and hides the managed browser", () =>
   expect(script).toContain(
     '{"id":"chrome","name":"Google Chrome","exec":"__chrome__"}',
   )
-  expect(script).toContain("/usr/share/applications/*.desktop")
-  expect(script).toContain("~/.local/share/applications/*.desktop")
+  expect(script).toContain("OB_APP_DESKTOP_DIRS")
+  expect(script).toContain("/usr/share/applications")
+  expect(script).toContain("~/.local/share/applications")
   expect(script).toContain("NoDisplay")
   expect(script).toContain("Terminal")
-  expect(script).toContain('in ("chromium", "google-chrome", "chrome")')
+  expect(script).toContain(
+    `"chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "chrome",
+        "chrome-sandbox",
+    )`,
+  )
+  // regression: ConfigParser.read() has no errors= kwarg; read_file() does
+  expect(script).toContain("cp.read_file(fh)")
+  expect(script).not.toContain("cp.read(path")
 })
 
 test("usage stays on stderr and catalog needs no session", () => {
@@ -83,3 +98,78 @@ test("usage stays on stderr and catalog needs no session", () => {
   )
   expect(script).toMatch(/= "catalog" \] && \[ "\$#" -eq 1 \]/)
 })
+
+const python3 = Bun.which("python3")
+
+type CatalogRow = { id: string; name: string; exec: string }
+
+function catalog(dir: string): CatalogRow[] {
+  const proc = Bun.spawnSync(
+    ["sh", join(import.meta.dir, "ob-app.sh"), "catalog"],
+    {
+      env: { ...process.env, OB_APP_DESKTOP_DIRS: dir },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
+  expect(proc.exitCode).toBe(0)
+  return new TextDecoder()
+    .decode(proc.stdout)
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as CatalogRow)
+}
+
+test.skipIf(!python3)(
+  "catalog parses real desktop entries (configparser read_file fix)",
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), "ob-app-catalog-"))
+    writeFileSync(
+      join(dir, "blender.desktop"),
+      "[Desktop Entry]\nName=Blender\nExec=blender %f\nTerminal=false\nType=Application\n",
+    )
+    writeFileSync(
+      join(dir, "hidden.desktop"),
+      "[Desktop Entry]\nName=Hidden App\nExec=nope\nNoDisplay=true\n",
+    )
+    writeFileSync(
+      join(dir, "tui.desktop"),
+      "[Desktop Entry]\nName=Tui\nExec=htop\nTerminal=true\n",
+    )
+    writeFileSync(
+      join(dir, "chromium.desktop"),
+      "[Desktop Entry]\nName=Managed Browser\nExec=chromium %U\n",
+    )
+    writeFileSync(
+      join(dir, "google-chrome.desktop"),
+      "[Desktop Entry]\nName=Google Chrome\nExec=/usr/bin/google-chrome-stable %U\n",
+    )
+    writeFileSync(join(dir, "broken.desktop"), "garbage [\n")
+    const apps = catalog(dir)
+    expect(apps).toEqual([
+      { id: "chrome", name: "Google Chrome", exec: "__chrome__" },
+      { id: "blender", name: "Blender", exec: "blender" },
+    ])
+  },
+)
+
+test.skipIf(!python3)(
+  "catalog lets a user desktop entry override a system one",
+  () => {
+    const system = mkdtempSync(join(tmpdir(), "ob-app-sys-"))
+    const user = mkdtempSync(join(tmpdir(), "ob-app-usr-"))
+    writeFileSync(
+      join(system, "app.desktop"),
+      "[Desktop Entry]\nName=System Name\nExec=old\n",
+    )
+    writeFileSync(
+      join(user, "app.desktop"),
+      "[Desktop Entry]\nName=User Name\nExec=new\n",
+    )
+    const apps = catalog(`${system}:${user}`)
+    expect(apps).toEqual([
+      { id: "chrome", name: "Google Chrome", exec: "__chrome__" },
+      { id: "app", name: "User Name", exec: "new" },
+    ])
+  },
+)

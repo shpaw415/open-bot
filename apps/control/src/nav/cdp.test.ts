@@ -6,6 +6,8 @@ import {
   evaluate,
   MARK_ROOT_ID,
   markScript,
+  normalize,
+  PROBE,
   probeSnapshot,
 } from "./cdp"
 
@@ -124,4 +126,51 @@ test("probeSnapshot retries once after a failed probe", async () => {
   expect(evaluateCalls).toBe(2)
   expect(snapshot.url).toBe("https://ebay.test/")
   expect(snapshot.title).toBe("ok")
+})
+
+test("enter script falls back to a submit button when Enter changes nothing", async () => {
+  const { actionScript } = (await import("./cdp")) as {
+    actionScript: (action: { kind: "enter"; targetId: string }) => string
+  }
+  const script = actionScript({ kind: "enter", targetId: "n3" })
+  expect(script).toContain("data-obnav")
+  expect(script).toContain("keyCode: 13")
+  expect(script).toContain("setTimeout(resolve, 700)")
+  expect(script).toContain("location.href + '|' + document.title")
+  expect(script).toContain("closest('form')")
+  expect(script).toContain("submit.click()")
+  expect(script).toContain("/effacer|clear|reset|cancel|wipe/i")
+  expect(script).toContain(
+    "if (item.type === 'submit' || item.type === 'image') return true",
+  )
+  expect(script).toContain("/search|submit|recherch|suchen|buscar|find/i")
+})
+
+test("probe ranks search, content, anchors, chrome — in that order", async () => {
+  const { PROBE } = (await import("./cdp")) as { PROBE: string }
+  expect(PROBE.startsWith("(() => {")).toBe(true)
+  expect(PROBE).toContain(
+    'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]',
+  )
+  const allAt = PROBE.indexOf("const tiers = [[], [], [], []]")
+  const sortAt = PROBE.indexOf("const reserve = Math.min(tiers[2].length, 6)")
+  const sliceAt = PROBE.indexOf(
+    "out.push(...tiers[2].slice(0, Math.min(reserve, remaining())))",
+  )
+  expect(allAt).toBeGreaterThan(-1)
+  expect(sortAt).toBeGreaterThan(allAt)
+  expect(sliceAt).toBeGreaterThan(sortAt)
+  expect(PROBE).toContain("if (el.closest('[role=\"search\"]')) tier = 0")
+  expect(PROBE).toContain("tier = el.closest(chrome) ? 2 : 1")
+  expect(PROBE).toContain(
+    "elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length > max",
+  )
+  expect(PROBE).not.toContain("if (out.length >= max) break")
+})
+
+test("normalize carries scroll position through the snapshot", () => {
+  expect(normalize({ scroll_y: 432 }).scrollY).toBe(432)
+  expect(normalize({}).scrollY).toBeUndefined()
+  expect(normalize({ scroll_y: "junk" }).scrollY).toBeUndefined()
+  expect(PROBE).toContain("scroll_y: Math.round(window.scrollY)")
 })

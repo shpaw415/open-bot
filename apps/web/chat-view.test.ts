@@ -4,6 +4,7 @@ import {
   chatImageUrl,
   eventTouchesSession,
   handoffStamp,
+  lastHandoffStamp,
   modelActivity,
   nearBottom,
   samePayload,
@@ -241,6 +242,20 @@ describe("visible text", () => {
       }),
     ).toBe(false)
     expect(handoffStamp({ text: "Sign in.", sentAt: 5 })).toBe("5:Sign in.")
+    expect(lastHandoffStamp([])).toBe("")
+    expect(
+      lastHandoffStamp([
+        { message: { handoff: false, text: "hi", sentAt: 1 } },
+        { message: { handoff: false, text: "yo", sentAt: 2 } },
+      ]),
+    ).toBe("")
+    expect(
+      lastHandoffStamp([
+        { message: { handoff: true, text: "First.", sentAt: 3 } },
+        { message: { handoff: false, text: "hi", sentAt: 4 } },
+        { message: { handoff: true, text: "Sign in.", sentAt: 5 } },
+      ]),
+    ).toBe("5:Sign in.")
     const src = vncFrameSrc("desktop/view/websockify?token=ses_abc", false)
     expect(src).toContain("view_only=1")
     expect(src).toContain("resize=scale")

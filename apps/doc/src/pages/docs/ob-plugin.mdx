@@ -1,0 +1,71 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# ob-plugin
+
+Full plugin lifecycle from the desktop (`scripts/ob-plugin.sh`, seed skill `plugin`). All commands talk to the control plane with the desktop's LLM token.
+
+## Reference
+
+```sh
+# Authoring
+ob-plugin new NAME                    # scaffold in ~/plugins-create/NAME
+ob-plugin validate DIR                # manifest schema check
+ob-plugin doctor DIR                  # pre-publish check: manifest + repo + tag
+ob-plugin publish DIR [--dev] [--no-commit]
+
+# Discovery
+ob-plugin search [QUERY]
+ob-plugin info ID
+ob-plugin comments ID ; ob-plugin comment ID TEXT
+
+# Install / update
+ob-plugin install ID [--version X] [--yes] | install --path DIR [--yes]
+ob-plugin list
+ob-plugin outdated
+ob-plugin update ID [VERSION]
+ob-plugin remove ID
+
+# Lifecycle
+ob-plugin enable ID | disable ID
+ob-plugin setup ID                    # retry failed root setup
+ob-plugin settings ID [key=value]
+
+# Maintenance
+ob-plugin guard status|off ID         # daily guard cron from publishing
+ob-plugin issue ID TITLE [BODY]       # file a GitHub issue on the plugin repo
+ob-plugin notify ID TITLE [BODY]      # dashboard toast (needs permission)
+```
+
+## Publishing flow
+
+1. `ob-plugin doctor DIR` — catch manifest/repo/tag problems first.
+2. `ob-plugin publish DIR` — commits, pushes, tags `v<version>`, creates the release, and registers on the marketplace. Publishing auto-enqueues the **security review** and, once approved, moves `latest_version` (see [Marketplace](/docs/marketplace)).
+3. A daily guard cron `plugin:<id>:guard` is created for the creator agent; turn it off with `guard off` when maintenance stops.
+
+## Dev tags
+
+`version` accepts semver (`X.Y.Z[-prerelease]`) or a dev tag (`beta-1`):
+
+```sh
+ob-plugin publish DIR --dev           # commit → push → force tag → release → review → pinned reinstall
+ob-plugin install ID --version beta-1
+```
+
+Dev publishes never move `latest_version` and are hidden from marketplace search; republishing the same tag overwrites (re-review + new tarball) — reinstall to pick it up.
+
+## Local installs
+
+```sh
+ob-plugin install --path ~/plugins-create/my-plugin
+```
+
+Installs a desktop directory without a marketplace publish. The Plugins page shows `(local)`; Re-install re-reads the path.
+
+<Callout type="warning">
+`setup.commands` run **as root** in the desktop at install and after every desktop recreate. They appear in the consent dialog and are security-reviewed — but review what you install.
+</Callout>
+
+</DocsShell>

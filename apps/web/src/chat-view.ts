@@ -136,6 +136,18 @@ export function handoffStamp(message: {
   return `${message.sentAt ?? 0}:${message.text.slice(0, 80)}`
 }
 
+export function lastHandoffStamp(
+  bubbles: {
+    message: { handoff: boolean; text: string; sentAt: number | null }
+  }[],
+): string {
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    const bubble = bubbles[i]
+    if (bubble?.message.handoff) return handoffStamp(bubble.message)
+  }
+  return ""
+}
+
 export function previewPath(raw: string): string {
   if (!raw || raw === "/") return "/"
   if (

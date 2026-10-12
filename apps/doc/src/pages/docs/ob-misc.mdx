@@ -1,0 +1,95 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Other CLIs
+
+Quick reference for the remaining desktop CLIs. All authenticate with the desktop's LLM token against the control plane unless noted.
+
+## ob-nav — autonomous browsing
+
+```sh
+ob-nav --session SESSION --goal "Open gmail and summarize unread" [--url URL]
+```
+
+CDP-driven agent browser on the thread screen. Refuses captcha goals (`needs_user`) and respects a user screen hold.
+
+## ob-page — page primitives
+
+```sh
+ob-page --session SESSION read
+ob-page --session SESSION scroll down|up [pages]
+ob-page --session SESSION click ID
+ob-page --session SESSION type ID TEXT
+```
+
+CDP port must match `922[4-9]|923[01]` (display + 9222).
+
+## ob-vnc — raw screen ops
+
+Screenshot/click/type via the VNC/CDP pair (VNC `5900+display`, CDP `9222+display`). Fallback when CDP-only tooling is not enough.
+
+## ob-project — project registration
+
+```sh
+ob-project list
+ob-project add --path ~/project/user-project [--name NAME]
+ob-project remove ID
+```
+
+Registers an **existing** folder (must exist under `/home/agent`) for the Projects tab and `@projects` mentions. `list`/`remove` use `GET/POST /api/projects` and `DELETE /api/projects/:id` only; file, search, and terminal routes stay session-only. Remove unlinks the row and keeps the files. Changes emit `projects.changed`.
+
+## ob-media — media vault
+
+See [Media vault](/docs/media-vault): `albums`, `album NAME`, `push --album NAME --path PATH [--title TITLE]`, `remove`, `remove-album`.
+
+## ob-report — plugin reports
+
+See [Plugin reports](/docs/plugin-reports): `add`, `list`, `show`, `done|wontfix|open`.
+
+## ob-cron — scheduled prompts
+
+```sh
+ob-cron add --name NAME (--message TEXT | --script TEXT | both)
+          (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601)
+          [--model PROVIDER/MODEL] [--persona ID]
+ob-cron list | models | set ID [...|--clear-script|--clear-model|--clear-persona] | run ID | remove ID
+```
+
+## ob-persona — personalities
+
+```sh
+ob-persona list
+ob-persona add --name NAME --instruction TEXT
+ob-persona update ID [--name ...] [--instruction ...]
+ob-persona remove ID
+```
+
+Built-ins (`assistant`, `designer`, `political-expert`, `software-designer`) cannot be edited; name ≤ 48 chars, instruction ≤ 2000.
+
+## ob-backup — backups
+
+```sh
+ob-backup create [--label TEXT] | list | show ID | restore ID
+```
+
+`restore` needs dashboard approval.
+
+## ob-improve — product reports (dev desktops)
+
+```sh
+ob-improve add --kind bug|friction|feature --surface ... --title TEXT --detail TEXT [--session ID]
+```
+
+See [Product reports](/docs/product-reports).
+
+## ob-thread — agent threads
+
+See [Agent threads](/docs/agent-threads): `start [--title TEXT] [--display] [--message TEXT]`, `list`.
+
+<Callout type="tip">
+Every CLI prints `--help`. Seed skills for each live in `images/opencode/seed/skills/`.
+</Callout>
+
+</DocsShell>

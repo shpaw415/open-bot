@@ -13,11 +13,13 @@ import {
   isBlankPage,
   MAX_STEPS,
   type NavMark,
+  NEAR_MISS_MARGIN,
   NONE_VALUE,
   pageIsError,
   pageKey,
   pageNeedsUser,
   type Question,
+  SCROLL_CONFIDENCE_MIN,
   type Snapshot,
   sameUrl,
 } from "./action-space"
@@ -80,13 +82,23 @@ export async function runNav(opts: {
     page: string
   }) => Promise<string>
 }): Promise<NavResult> {
-  const values = goalValues(opts.goal, opts.extraValues ?? [])
   const maxSteps = opts.maxSteps ?? MAX_STEPS
+  // System 1 never solves captchas: a captcha-solving goal is refused
+  // before any navigation or screen interaction.
+  if (/\bcaptcha/i.test(opts.goal)) {
+    return result(
+      blankSnapshot,
+      0,
+      "needs_user",
+      "ob-nav never solves captchas. Bring the page to the user instead.",
+    )
+  }
   const history: HistoryEntry[] = []
   let waits = 0
   let fails = 0
   let scrolledBlocked = false
   const excluded = new Set<string>()
+  const visitedY = new Set<number>()
   const target = goalUrl(opts.goal)
   let opened: Opened | NavResult
   try {
@@ -101,6 +113,12 @@ export async function runNav(opts: {
   let snapshot = opened.snapshot
   const requested = opened.requested
   const redirected = opened.redirected
+  // The navigation URL is a destination, never a field value: drop it from
+  // the typing pool so --url runs infer real field text instead of typing
+  // the URL into search boxes.
+  const values = goalValues(opts.goal, opts.extraValues ?? []).filter(
+    (value) => value !== requested,
+  )
   let retried = false
   const exit = (
     snap: Snapshot,
@@ -115,6 +133,28 @@ export async function runNav(opts: {
       ? { motive: "redirect" }
       : {}),
   })
+  // Goal words come from the goal text BEFORE the --url fold: for hop goals
+  // the start page's own slug words would otherwise match its own title.
+  const unfoldedGoal = requested ? opts.goal.replace(requested, " ") : opts.goal
+  const goalWords = new Set(
+    unfoldedGoal
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 3),
+  )
+  const titleArrived = (snap: Snapshot) => {
+    if (!history.some((h) => h.kind === "click" && h.pageChanged)) return null
+    const title = snap.title.split(/ [-—–|] /)[0]
+    const words = title
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 3)
+    return words.length > 0 && words.every((w) => goalWords.has(w))
+      ? result(snap, step, "done", snap.title || snap.url)
+      : null
+  }
   // A server-side redirect or a stray handoff can leave the run on a host the
   // goal never named. One re-navigation to the goal url, then give up for real.
   const retryGoal = async (snap: Snapshot): Promise<Snapshot | null> => {
@@ -124,6 +164,23 @@ export async function runNav(opts: {
     fails = 0
     await opts.driver.navigate(requested)
     return opts.driver.probe()
+  }
+  // Sitting on the exact goal-named URL is objective arrival — but only for
+  // pure-open goals. For hop goals requested is the --url START page, and a
+  // dead hop that never left it must not read as success.
+  const openOnlyGoal = (() => {
+    if (!requested) return false
+    const residual = opts.goal
+      .replace(requested, " ")
+      .replace(/\b(open|go to|visit|navigate to|load|jump to|browse)\b/gi, " ")
+      .replace(/[^a-zA-Z0-9]/g, "")
+    return residual.length === 0
+  })()
+  const arrivedExit = (snap: Snapshot, atStep: number) => {
+    if (requested && openOnlyGoal && sameUrl(snap.url, requested)) {
+      return result(snap, atStep, "done", snap.title || snap.url)
+    }
+    return null
   }
   // A page-world throw (bot-wall script, torn-down context) must hand off with
   // a usable message instead of aborting the run as a bare "Uncaught".
@@ -183,6 +240,8 @@ export async function runNav(opts: {
             snapshot = retry
             continue
           }
+          const arrived = arrivedExit(snapshot, step) ?? titleArrived(snapshot)
+          if (arrived) return arrived
           return exit(
             snapshot,
             step,
@@ -195,11 +254,19 @@ export async function runNav(opts: {
         }
         continue
       }
-      if (
-        decision.operation !== "BLOCKED" &&
-        decision.operation !== "DONE" &&
-        decision.confidence < CONFIDENCE_MIN
-      ) {
+      const reversible =
+        decision.operation === "SCROLL_DOWN" ||
+        decision.operation === "SCROLL_UP" ||
+        decision.operation === "WAIT"
+      // DONE claims the whole goal; a low-confidence DONE is a false success,
+      // the worst failure mode, so it keeps the full bar and no near-miss.
+      const floor =
+        decision.operation === "DONE"
+          ? CONFIDENCE_MIN
+          : reversible
+            ? SCROLL_CONFIDENCE_MIN
+            : CONFIDENCE_MIN - NEAR_MISS_MARGIN
+      if (decision.operation !== "BLOCKED" && decision.confidence < floor) {
         fails += 1
         if (decision.target) {
           excluded.add(`${decision.operation}:${decision.target}`)
@@ -210,6 +277,8 @@ export async function runNav(opts: {
             snapshot = retry
             continue
           }
+          const arrived = arrivedExit(snapshot, step) ?? titleArrived(snapshot)
+          if (arrived) return arrived
           return exit(
             snapshot,
             step,
@@ -234,11 +303,20 @@ export async function runNav(opts: {
             snapshot = retry
             continue
           }
+          const arrived = arrivedExit(snapshot, step) ?? titleArrived(snapshot)
+          if (arrived) return arrived
           return exit(snapshot, step, "blocked", "no offered move", "vnc")
         }
         continue
       }
-      fails = 0
+      const nearMiss =
+        !reversible &&
+        decision.operation !== "BLOCKED" &&
+        decision.operation !== "DONE" &&
+        decision.confidence < CONFIDENCE_MIN
+      if (!nearMiss && !reversible && decision.operation !== "TYPE_TEXT") {
+        fails = 0
+      }
       if (decision.operation === "DONE") {
         return result(snapshot, step, "done", snapshot.title || snapshot.url)
       }
@@ -298,26 +376,121 @@ export async function runNav(opts: {
           text,
         })
         snapshot = await opts.driver.probe()
+        const pageChanged = pageKey(snapshot) !== before
         history.push({
           action: candidate?.label || text,
           kind: "type",
-          pageChanged: pageKey(snapshot) !== before,
+          pageChanged,
         })
+        // A near-miss that visibly did something cools the counter; one that
+        // changed nothing warms it. Same for a full-confidence TYPE that
+        // changed nothing: repeating a dead keystroke is thrash.
+        if (!pageChanged) {
+          fails += 1
+          if (fails >= DECISION_FAILS) {
+            const arrived =
+              arrivedExit(snapshot, step) ?? titleArrived(snapshot)
+            if (arrived) return arrived
+            return exit(
+              snapshot,
+              step,
+              "low_confidence",
+              decision.operation,
+              "vnc",
+            )
+          }
+        } else {
+          fails = 0
+        }
         continue
       }
       const before = pageKey(snapshot)
-      await opts.driver.act(actFor(decision.operation, candidate))
+      const action = actFor(decision.operation, candidate)
+      const scrolling =
+        decision.operation === "SCROLL_DOWN" ||
+        decision.operation === "SCROLL_UP"
+      const beforeY = scrolling ? (snapshot.scrollY ?? -1) : -1
+      if (scrolling && beforeY >= 0) visitedY.add(Math.round(beforeY / 64))
+      try {
+        await opts.driver.act(action)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ""
+        if (!/target covered/i.test(message) || !decision.target) throw error
+        // The element sat behind a transient overlay: re-probe the fresh
+        // page, drop the covered target, and let the model re-decide.
+        excluded.add(`${decision.operation}:${decision.target}`)
+        snapshot = await opts.driver.probe()
+        const arrived = arrivedExit(snapshot, step) ?? titleArrived(snapshot)
+        if (arrived) return arrived
+        continue
+      }
       snapshot = await opts.driver.probe()
+      const pageChanged = pageKey(snapshot) !== before
+      if (scrolling) {
+        let scrollProgress = false
+        if (beforeY >= 0 && snapshot.scrollY !== undefined) {
+          const cell = Math.round(snapshot.scrollY / 64)
+          scrollProgress =
+            Math.abs(snapshot.scrollY - beforeY) >= 8 && !visitedY.has(cell)
+          if (scrollProgress) visitedY.add(cell)
+        }
+        if (!scrollProgress) {
+          // Scrolling in place or revisiting territory is thrash, not progress.
+          fails += 1
+          if (fails >= DECISION_FAILS) {
+            const retry = await retryGoal(snapshot)
+            if (retry) {
+              snapshot = retry
+              continue
+            }
+            const arrived =
+              arrivedExit(snapshot, step) ?? titleArrived(snapshot)
+            if (arrived) return arrived
+            return exit(
+              snapshot,
+              step,
+              "low_confidence",
+              "scroll made no progress",
+              "vnc",
+            )
+          }
+        } else {
+          fails = 0
+        }
+      }
       history.push({
         action: candidate?.label || decision.operation,
         kind:
           decision.operation === "CLICK"
             ? "click"
             : decision.operation.toLowerCase(),
-        pageChanged: pageKey(snapshot) !== before,
+        pageChanged,
       })
+      if (nearMiss) {
+        // A near-miss that navigated did its job; one that changed nothing
+        // warms the counter toward the fallback handoff.
+        if (pageChanged) {
+          fails = 0
+        } else {
+          fails += 1
+          if (fails >= DECISION_FAILS) {
+            const arrived =
+              arrivedExit(snapshot, step) ?? titleArrived(snapshot)
+            if (arrived) return arrived
+            return exit(
+              snapshot,
+              step,
+              "low_confidence",
+              decision.operation,
+              "vnc",
+            )
+          }
+        }
+      }
     }
   } catch (error) {
+    const arrived = openOnlyGoal ? arrivedExit(snapshot, step) : null
+    if (arrived) return arrived
     return exit(snapshot, step, "blocked", driverMessage(error), "vnc")
   }
   return exit(snapshot, maxSteps, "blocked", "step cap", "vnc")

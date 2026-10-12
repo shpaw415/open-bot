@@ -5,7 +5,7 @@ description: Drive this Linux desktop. Use before browser navigation or any clic
 
 # Desktop
 
-Page goals go only to `ob-nav`. Put the page URL in the goal when you know it (or pass it as `--url URL`). SESSION is the screen id in this thread's system instructions. Do not pass a host, a port, or a key. Do not print `system1-auth.json`. Do not open DevTools, CDP, port 9222-9231, `vncdo`, or a second browser.
+Page goals go only to `ob-nav`. Put the page URL in the goal when you know it (or pass it as `--url URL`). SESSION is the screen id in this thread's system instructions. Do not pass a host, a port, or a key. Do not print `system1-auth.json`. Do not open DevTools, CDP, port 9222-9231, `vncdo`, or a second browser. ob-nav never solves captchas: a captcha goal is refused outright, and a captcha or verification page ends `needs_user` — stop and show the screen.
 
 ```sh
 ob-nav --session SESSION --goal "what to do on the page"

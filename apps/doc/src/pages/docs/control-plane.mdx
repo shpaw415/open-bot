@@ -1,0 +1,65 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Control plane
+
+The control plane (`apps/control`) is the Bun server inside the `open-bot` container. It serves the dashboard, the API, the EventHub WebSocket, and orchestrates every Docker operation.
+
+## Auth model
+
+| Caller | Credential | How |
+| --- | --- | --- |
+| Browser | HttpOnly cookie `ob_session` | Set by `POST /api/auth/login` |
+| Desktop agent | `Authorization: Bearer <llm token>` | Token minted per desktop, resolves the owning user |
+| Public | none | `/api/health`, `/api/preview/frame/<token>/`, login/register |
+
+Admin routes additionally check the caller's role. `COOKIE_SECURE=1` marks cookies Secure (for HTTPS deployments).
+
+## Database
+
+sqlite via drizzle (`packages/db`). Migration history:
+
+| Migration | Adds |
+| --- | --- |
+| `0000` | Base tables: `users`, `sessions`, `desktops`, `cron_jobs`, `invites`, `usage_events`, `viking_provider` |
+| `0001` | `app_settings` key/value store, `cron_notices` |
+| `0002` | Voice columns on `desktops` (STT/TTS provider, key, model, voice, language) |
+| `0003` | `workspace_media` (chat media snapshots) |
+| `0004` | `installed_plugins.source` + `local_path` (local plugin installs) |
+| `0005` | `media_albums` + `media_items` (media vault) |
+| `0006` | `installed_plugins.latest_version` + check timestamp (update checks) |
+
+Generate new migrations with `bun run db:generate`.
+
+## Route groups
+
+All under `/api` (full index in the [configuration reference](/docs/configuration)):
+
+- **auth** — login, register (invite code), first-login credentials, logout, `/api/me`.
+- **desktop** — status/start/stop, screen screenshot + user hold, native-app catalog/launch.
+- **threads** — list/start threads (used by the dashboard and `ob-thread`).
+- **cron / personas / projects** — agent-facing managers (dual auth).
+- **plugins** — install/publish/validate/review/settings/policy, marketplace key, notices.
+- **media** — vault albums/items CRUD (`media.changed` events).
+- **reports** — product report queue read/review.
+- **voice** — `GET/PUT/DELETE /api/voice` per-user STT/TTS; `POST /api/stt` (multipart, 25 MB cap); `POST /api/tts` (`{text}`, 4000-char cap). Keys are never returned to the browser.
+- **keys / providers / models / image / video / model3d / system1 / viking / skills** — per-user config surfaces.
+- **backup** — config, run, list, restore (restore needs dashboard approval).
+- **admin** — settings, users (disable/reset), usage, improvements, invites.
+- **opencode/\*** — authenticated proxy to the desktop's OpenCode server.
+
+## EventHub
+
+`WS /api/events` pushes JSON events to the dashboard: `session.created`, `session.idle`, `media.changed`, `media.snapshot`, `projects.changed`, `reports.changed`, `plugin.notice`, cron notices, and more. Tabs and thread lists subscribe instead of polling.
+
+## Hardware sampler
+
+A sampler started with the server records one sample every 30 s into an in-memory ring buffer (60 samples ≈ 30 min; lost on restart) backing `GET /api/hardware`. It never wakes a sleeping desktop — opening the Hardware view does, like Reports and Media.
+
+<Callout type="warning">
+The control container has the Docker socket: anyone with an agent token or an admin session can start/stop containers and run setup commands. Keep the instance off the public internet without a reverse proxy.
+</Callout>
+
+</DocsShell>

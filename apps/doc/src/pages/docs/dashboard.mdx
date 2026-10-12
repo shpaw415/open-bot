@@ -1,0 +1,44 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Web dashboard
+
+The dashboard (`apps/web`) is a React SPA served by the control plane. It talks to `/api/*` and subscribes to the EventHub WebSocket for live updates.
+
+## Chat
+
+- **Composer** — markdown, file attachments, `@projects/<slug>` and `@reports/<plugin>` mentions that resolve like file references, persona picker, model selector, stop button.
+- **Transcript** — streaming replies, collapsible tool-call rows, plugin cards, embedded [previews](/docs/thread-preview), image/video/3D results.
+- **Personas** — choose a personality per new thread; persona is locked at thread create and injected as a system line on every prompt. Built-ins: Assistant, Designer, Political expert, Software designer. Manage your own on the Config page ([Other CLIs](/docs/ob-misc) covers `ob-persona`).
+
+## Workspace views (Views drawer)
+
+| Tab | What it shows |
+| --- | --- |
+| **Reports** | Product report queue — read, filter, mark done/wontfix/reopen, copy `@reports/<slug>`. |
+| **Media** | [Media vault](/docs/media-vault) albums per thread with immutable copies. |
+| **Hardware** | Desktop disk, RAM, CPU against the container limits; warning at 80%, error at 90%. |
+| **Projects** | Registered projects; create opens a stepper, `@projects` mentions refresh on `projects.changed`. |
+| **Plugins** | Marketplace browser, installed plugins, version picker with dev badges, re-install/update/remove, policy row. |
+
+## Config pages
+
+- **Providers** — chat model auth (`opencode auth login` state), image/video/3D model selection.
+- **Keys** — per-user vault secrets.
+- **Voice** — STT/TTS provider, key, model, voice, language ([Voice](/docs/voice)).
+- **OpenViking** — embedding + VLM config ([OpenViking setup](/docs/openviking)).
+- **System1** — decision-model provider (Laya / Clef / Jev).
+- **Personas** — CRUD for your personas.
+- **Admin** (role admin) — app settings (media caps, disk max), users, usage, invites, backups.
+
+## Desktop tab
+
+Start/stop the desktop, watch the live screen, take over (with hold), and launch any installed catalog app on the current thread's screen ([Native apps](/docs/native-apps)).
+
+<Callout type="tip">
+The thread list hides any session titled with the reserved `worker:` or `cron-run:` prefixes — those are background jobs, not conversations.
+</Callout>
+
+</DocsShell>

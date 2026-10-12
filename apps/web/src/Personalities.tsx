@@ -1,5 +1,10 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
+import Dialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
@@ -132,7 +137,7 @@ export function Personalities() {
       }
     >
       <Stack spacing={1.5}>
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error && !draft ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
         {loading && personas.length === 0 ? (
           <Typography variant="body2" color="textSecondary">
@@ -186,26 +191,52 @@ export function Personalities() {
           ))
         )}
         {draft ? (
-          <Stack spacing={1.5}>
-            <TextField
-              label="Name"
-              value={draft.name}
-              placeholder="Brand designer"
-              onChange={(event) =>
-                setDraft({ ...draft, name: event.currentTarget.value })
-              }
-            />
-            <TextField
-              label="How to behave"
-              value={draft.instruction}
-              multiline
-              rows={4}
-              placeholder="Speak as a brand designer. Prefer concrete visual choices. Keep replies short."
-              onChange={(event) =>
-                setDraft({ ...draft, instruction: event.currentTarget.value })
-              }
-            />
-            <Stack direction="row" spacing={1}>
+          <Dialog
+            open
+            fullWidth
+            scroll="paper"
+            slotProps={{ paper: { sx: { maxWidth: 900 } } }}
+            onClose={() => {
+              if (!busy) setDraft(null)
+            }}
+          >
+            <DialogTitle>
+              {draft.id ? "Edit personality" : "New personality"}
+            </DialogTitle>
+            <DialogContent>
+              <Stack spacing={1.5}>
+                {error ? <Alert severity="error">{error}</Alert> : null}
+                <TextField
+                  label="Name"
+                  value={draft.name}
+                  placeholder="Brand designer"
+                  onChange={(event) =>
+                    setDraft({ ...draft, name: event.currentTarget.value })
+                  }
+                />
+                <TextField
+                  label="How to behave"
+                  value={draft.instruction}
+                  multiline
+                  rows={6}
+                  placeholder="Speak as a brand designer. Prefer concrete visual choices. Keep replies short."
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      instruction: event.currentTarget.value,
+                    })
+                  }
+                />
+              </Stack>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                variant="text"
+                disabled={busy}
+                onClick={() => setDraft(null)}
+              >
+                Cancel
+              </Button>
               <Button
                 variant="contained"
                 disabled={
@@ -215,24 +246,16 @@ export function Personalities() {
               >
                 Save personality
               </Button>
-              <Button
-                variant="text"
-                disabled={busy}
-                onClick={() => setDraft(null)}
-              >
-                Cancel
-              </Button>
-            </Stack>
-          </Stack>
-        ) : (
-          <Button
-            variant="contained"
-            disabled={busy || loading}
-            onClick={openNew}
-          >
-            Add personality
-          </Button>
-        )}
+            </DialogActions>
+          </Dialog>
+        ) : null}
+        <Button
+          variant="contained"
+          disabled={busy || loading}
+          onClick={openNew}
+        >
+          Add personality
+        </Button>
       </Stack>
     </ConfigSection>
   )

@@ -67,6 +67,135 @@ test("a low-confidence click is skipped, then the run recovers", async () => {
   expect(result.status).toBe("done")
 })
 
+test("a mid-confidence scroll proceeds instead of stalling", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "find it",
+    ask: async () => {
+      asked += 1
+      if (asked <= 2)
+        return decision({ operation: "SCROLL_DOWN", confidence: 0.49 })
+      return decision({ operation: "DONE" })
+    },
+    driver: driver(acts),
+  })
+  expect(asked).toBe(3)
+  expect(acts).toEqual([
+    { kind: "scroll", direction: "down" },
+    { kind: "scroll", direction: "down" },
+  ])
+  expect(result.status).toBe("done")
+})
+
+test("a very low-confidence scroll still counts as a fail", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "find it",
+    ask: async () => {
+      asked += 1
+      return decision({ operation: "SCROLL_DOWN", confidence: 0.2 })
+    },
+    driver: driver(acts),
+  })
+  expect(result.status).toBe("low_confidence")
+  expect(asked).toBe(3)
+})
+test("near-miss clicks on a dead control end blocked after the space prunes it", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      return decision({ operation: "CLICK", target: "1", confidence: 0.49 })
+    },
+    driver: driver(acts),
+  })
+  expect(asked).toBe(3)
+  expect(acts.length).toBe(2)
+  expect(result.status).toBe("blocked")
+  expect(result.detail).toBe("missing target")
+})
+
+test("a full-confidence decision cools the near-miss counter", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      if (asked === 1)
+        return decision({ operation: "CLICK", target: "1", confidence: 0.49 })
+      return decision({ operation: "DONE" })
+    },
+    driver: driver(acts),
+  })
+  expect(asked).toBe(2)
+  expect(acts.length).toBe(1)
+  expect(result.status).toBe("done")
+})
+
+function scrollDriver(acts: Act[]) {
+  let y = 100
+  return {
+    async probe() {
+      return {
+        ...page,
+        scrollY: y,
+        canScrollDown: y < 3000,
+        canScrollUp: y > 0,
+      }
+    },
+    async act(action: Act) {
+      acts.push(action)
+      if (action.kind === "scroll") {
+        y = Math.max(0, y + (action.direction === "down" ? 1074 : -1074))
+      }
+    },
+  }
+}
+
+test("scroll thrash bails out instead of burning the step cap", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      const direction = asked % 2 === 1 ? ("down" as const) : ("up" as const)
+      return decision({
+        operation: `SCROLL_${direction.toUpperCase()}`,
+        confidence: 0.9,
+      })
+    },
+    driver: scrollDriver(acts),
+  })
+  expect(asked).toBe(4)
+  expect(acts.length).toBe(4)
+  expect(result.status).toBe("low_confidence")
+  expect(result.detail).toBe("scroll made no progress")
+})
+
+test("a steady scroll descent keeps the run alive", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      if (asked <= 3)
+        return decision({ operation: "SCROLL_DOWN", confidence: 0.9 })
+      return decision({ operation: "DONE" })
+    },
+    driver: scrollDriver(acts),
+  })
+  expect(asked).toBe(4)
+  expect(acts.length).toBe(3)
+  expect(result.status).toBe("done")
+})
+
 test("three bad decisions hand off to legacy navigation", async () => {
   const acts: Act[] = []
   const result = await runNav({
@@ -539,7 +668,7 @@ test("an error page exits blocked, not a false handoff", async () => {
   expect(asked).toBe(0)
 })
 
-test("a page-world throw hands off with the real message", async () => {
+test("a page-world throw on a pure-open goal at the target still succeeds", async () => {
   let current: Snapshot = {
     ...page,
     url: "about:blank",
@@ -549,6 +678,34 @@ test("a page-world throw hands off with the real message", async () => {
   }
   const result = await runNav({
     goal: "Open https://ebay.test/search?q=pi",
+    ask: async () =>
+      decision({ operation: "CLICK", target: "1", confidence: 0.9 }),
+    driver: {
+      async probe() {
+        return current
+      },
+      async navigate(url) {
+        current = { ...page, url, title: "Search" }
+      },
+      async act() {
+        throw new Error("page error: SecurityError: blocked by site script")
+      },
+    },
+  })
+  expect(result.status).toBe("done")
+  expect(result.url).toBe("https://ebay.test/search?q=pi")
+})
+
+test("a page-world throw on a compound goal keeps the real message", async () => {
+  let current: Snapshot = {
+    ...page,
+    url: "about:blank",
+    title: "",
+    text: "",
+    elements: [],
+  }
+  const result = await runNav({
+    goal: "Open https://ebay.test/search?q=pi and click the first result",
     ask: async () =>
       decision({ operation: "CLICK", target: "1", confidence: 0.9 }),
     driver: {
@@ -586,4 +743,233 @@ test("a throw before the page opens keeps the requested url", async () => {
   expect(result.status).toBe("error")
   expect(result.detail).toBe("page error: context destroyed")
   expect(result.requested_url).toBe("https://ebay.test/search?q=pi")
+})
+
+test("a near-miss click that navigates cools the counter", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  let visited = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      if (asked <= 2)
+        return decision({ operation: "CLICK", target: "1", confidence: 0.49 })
+      return decision({ operation: "DONE" })
+    },
+    driver: {
+      async probe() {
+        visited += 1
+        return { ...page, url: `https://example.test/page-${visited}` }
+      },
+      async act(action: Act) {
+        acts.push(action)
+      },
+    },
+  })
+  expect(asked).toBe(3)
+  expect(acts.length).toBe(2)
+  expect(result.status).toBe("done")
+})
+
+test("a low-confidence DONE is rejected until it clears the bar", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => {
+      asked += 1
+      if (asked === 1) return decision({ operation: "DONE", confidence: 0.35 })
+      return decision({ operation: "DONE" })
+    },
+    driver: driver(acts),
+  })
+  expect(asked).toBe(2)
+  expect(acts).toEqual([])
+  expect(result.status).toBe("done")
+})
+
+test("three low-confidence DONEs hand off instead of false-succeeding", async () => {
+  const acts: Act[] = []
+  const result = await runNav({
+    goal: "open the page",
+    ask: async () => decision({ operation: "DONE", confidence: 0.4 }),
+    driver: driver(acts),
+  })
+  expect(result.status).toBe("low_confidence")
+  expect(acts).toEqual([])
+})
+
+test("the navigation url is never typed into fields; writeText infers instead", async () => {
+  const acts: Act[] = []
+  let typed = ""
+  let asked = 0
+  let sawTextValueQuestion = false
+  const searchPage: Snapshot = {
+    url: "https://en.wikipedia.org/wiki/Main_Page",
+    title: "Wikipedia",
+    text: "search box here",
+    canScrollDown: false,
+    canScrollUp: false,
+    elements: [
+      {
+        targetId: "3",
+        role: "input",
+        label: "Search Wikipedia",
+        value: "",
+        editable: true,
+        actionable: true,
+      },
+    ],
+  }
+  const current: Snapshot = { ...searchPage }
+  const result = await runNav({
+    goal: "Use the search box to find the Montreal Biodome and open its article https://en.wikipedia.org/wiki/Main_Page",
+    writeText: async () => "Montreal Biodome",
+    ask: async (input) => {
+      asked += 1
+      if (input.questions.text_value) sawTextValueQuestion = true
+      if (asked === 1)
+        return decision({
+          operation: "TYPE_TEXT",
+          target: "1",
+          confidence: 0.95,
+        })
+      return decision({ operation: "DONE" })
+    },
+    driver: {
+      async probe() {
+        return current
+      },
+      async act(action: Act) {
+        acts.push(action)
+        if (action.kind === "type") typed = action.text
+      },
+    },
+  })
+  expect(sawTextValueQuestion).toBe(false)
+  expect(typed).toBe("Montreal Biodome")
+  expect(typed).not.toContain("https://")
+  expect(acts.some((a) => a.kind === "type")).toBe(true)
+  expect(result.status).toBe("done")
+})
+
+test("repeated TYPE_TEXT with an unchanged page warms the counter", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  const result = await runNav({
+    goal: "open the page",
+    writeText: async () => "some query",
+    ask: async () => {
+      asked += 1
+      return decision({
+        operation: "TYPE_TEXT",
+        target: "1",
+        confidence: 0.95,
+      })
+    },
+    driver: {
+      async probe() {
+        return {
+          ...page,
+          elements: [
+            {
+              targetId: "9",
+              role: "input",
+              label: "Search",
+              value: "",
+              editable: true,
+              actionable: true,
+            },
+          ],
+        }
+      },
+      async act(action: Act) {
+        acts.push(action)
+      },
+    },
+  })
+  expect(asked).toBe(3)
+  expect(acts.length).toBe(3)
+  expect(result.status).toBe("low_confidence")
+})
+
+test("a TYPE_TEXT that lands cools the counter", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  let current: Snapshot = {
+    ...page,
+    elements: [
+      {
+        targetId: "3",
+        role: "input",
+        label: "Search",
+        value: "",
+        editable: true,
+        actionable: true,
+      },
+    ],
+  }
+  const result = await runNav({
+    goal: "open the page",
+    writeText: async () => "montreal biodome",
+    ask: async () => {
+      asked += 1
+      if (asked === 1)
+        return decision({
+          operation: "TYPE_TEXT",
+          target: "1",
+          confidence: 0.95,
+        })
+      return decision({ operation: "DONE" })
+    },
+    driver: {
+      async probe() {
+        return current
+      },
+      async act(action: Act) {
+        acts.push(action)
+        if (action.kind === "type") {
+          current = {
+            ...current,
+            elements: current.elements.map((e) => ({
+              ...e,
+              value: action.kind === "type" ? action.text : e.value,
+            })),
+          }
+        }
+      },
+    },
+  })
+  expect(asked).toBe(2)
+  expect(result.status).toBe("done")
+})
+
+test("captcha-solving goals are refused before any interaction", async () => {
+  const acts: Act[] = []
+  let asked = 0
+  let navigated = 0
+  const result = await runNav({
+    goal: "Solve the CAPTCHA by typing the characters, then click Verify",
+    ask: async () => {
+      asked += 1
+      return decision({ operation: "DONE" })
+    },
+    driver: {
+      async probe() {
+        return page
+      },
+      async act(action: Act) {
+        acts.push(action)
+      },
+      async navigate() {
+        navigated += 1
+      },
+    },
+  })
+  expect(result.status).toBe("needs_user")
+  expect(result.detail).toContain("never solves captchas")
+  expect(asked).toBe(0)
+  expect(acts).toEqual([])
+  expect(navigated).toBe(0)
 })

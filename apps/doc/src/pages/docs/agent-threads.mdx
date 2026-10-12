@@ -1,0 +1,46 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Agent threads
+
+The desktop agent can start its own threads — background jobs and visible side-conversations — with `ob-thread` (seed skill `thread`). The control-plane route is `POST /api/threads` (`apps/control/src/threads.ts`).
+
+## Usage
+
+```sh
+ob-thread start [--title TEXT] [--display] [--message TEXT]
+ob-thread list
+```
+
+- `start` creates the OpenCode session directly (reusing cron's `createSession`).
+- `--message TEXT` posts the text via `prompt_async` as the first prompt.
+- **Without `--display`** the title gets the reserved `worker:` prefix: the dashboard thread list and the media vault skip it — a hidden background-job thread.
+- `list` returns the hidden threads (`GET /api/threads`).
+
+## Title rules
+
+- Titles cannot start with `worker:` or `cron-run:` (reserved prefixes).
+- Visible threads appear on the next thread-list refresh — opencode's `session.created` event already triggers it.
+
+## Cron uses the same machinery
+
+Cron jobs create a delivery thread per job, then a **child run session** titled `cron-run: <job name>`:
+
+1. The scheduler sweeps every 30 s for due jobs (`every` seconds / 5-field cron / one-shot `at`).
+2. The job optionally runs a script (timeout 120 s), then the prompt runs in the `cron-run:` session on a thread screen.
+3. The result is published to the delivery thread as `[cron-result: <name>]` (noReply) and the run session is deleted.
+
+```sh
+ob-cron add --name "inbox check" --message "Summarize my mail" --every 3600
+ob-cron list | set ID ... | run ID | remove ID
+```
+
+`--every` minimum is 60 seconds; prompts cap at 4000 chars.
+
+<Callout type="tip">
+Hidden threads are perfect for multi-step work you do not want cluttering the dashboard — the agent uses them for plugin hooks and long jobs.
+</Callout>
+
+</DocsShell>

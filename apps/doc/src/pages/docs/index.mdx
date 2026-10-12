@@ -1,0 +1,46 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Introduction
+
+**open-bot** is a self-hosted, multi-user conversational bot — not a coding agent. Each user gets a chat plus an isolated Linux desktop that the bot can *see and operate*: it browses, runs apps, writes and runs code, and manages files on your behalf. Long-term memory comes from [OpenViking](/docs/openviking), bound per desktop.
+
+OpenCode is only the runtime inside the desktop container. The control plane runs in Docker so it never reads the host OpenCode config.
+
+## Core concepts
+
+| Concept | What it is |
+| --- | --- |
+| **Control plane** | The Bun server in Docker: sqlite database, dashboard API, docker orchestration of desktops. |
+| **Desktop** | A per-user container running OpenCode, a thread screen (Xvfb), and the agent CLIs. |
+| **Thread** | One conversation. Threads map 1:1 to OpenCode sessions on the user's desktop. |
+| **Thread screen** | A virtual display the agent can see and drive — native apps, browser, terminal. |
+| **OpenViking** | The long-term memory/context database bound to each desktop. |
+| **Web dashboard** | The browser UI: chat, workspace views, config pages. |
+| **Persona** | A named personality (name + behavior instructions) applied to threads. |
+| **Plugin** | A marketplace-published extension: skills, tools, cron, dashboard surfaces. |
+
+## Feature tour
+
+- **Chat** — streaming replies, personas, `@projects` / `@reports` composer mentions, stop button, image/video/3D generation.
+- **Workspace views** — Reports, Media vault, Hardware, Projects, and Plugins tabs beside the thread.
+- **Voice** — hold-to-speak input and read-aloud replies with per-user STT/TTS providers ([Voice](/docs/voice)).
+- **Thread preview** — the agent serves a dev server and embeds it in the thread ([Thread preview](/docs/thread-preview)).
+- **Native apps** — the agent installs and launches real GUI apps on the thread screen ([Native apps](/docs/native-apps)).
+- **Reports** — the agent files product and plugin findings into reviewable queues ([Product reports](/docs/product-reports), [Plugin reports](/docs/plugin-reports)).
+- **Plugins + marketplace** — manifest-driven extensions with security review ([Plugin system](/docs/plugins), [Marketplace](/docs/marketplace)).
+- **Cron** — scheduled prompts that run as hidden sessions and post results back ([Agent threads](/docs/agent-threads)).
+
+## Where to go next
+
+- [Setup](/docs/setup) — install and first login.
+- [Architecture](/docs/architecture) — how the pieces fit.
+- [Configuration reference](/docs/configuration) — every env var and setting.
+
+<Callout type="tip">
+Everything in these docs describes the shipped product. For development on open-bot itself, start with the repo's `AGENTS.md`.
+</Callout>
+
+</DocsShell>

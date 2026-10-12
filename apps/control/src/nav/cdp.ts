@@ -45,8 +45,36 @@ export async function connectCdp(port: number): Promise<CdpDriver> {
       }
     },
     async act(action) {
-      const ok = await evaluate(socket, actionScript(action))
-      if (ok === false) throw new Error("target covered")
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const ok = await evaluate(socket, actionScript(action))
+          if (ok !== false) break
+          if (attempt === 0) {
+            // A transient overlay (search suggest, banner) often clears on
+            // its own; give it one chance before calling the target covered.
+            await Bun.sleep(700)
+            continue
+          }
+          throw new Error("target covered")
+        } catch (error) {
+          const message = error instanceof Error ? error.message : ""
+          // The enter fallback can navigate the page mid-script; that
+          // teardown is the action's effect, not a failure.
+          if (
+            /navigated or closed|cannot find context|target detached/i.test(
+              message,
+            )
+          ) {
+            await Bun.sleep(1200)
+            return
+          }
+          if (attempt === 0 && /target covered/i.test(message)) {
+            await Bun.sleep(700)
+            continue
+          }
+          throw error
+        }
+      }
       const pause =
         action.kind === "type" ? 200 : action.kind === "wait" ? 150 : 80
       await Bun.sleep(pause)
@@ -186,6 +214,9 @@ export function normalize(value: unknown): Snapshot {
     text: String(raw.text ?? ""),
     canScrollDown: Boolean(raw.can_scroll_down),
     canScrollUp: Boolean(raw.can_scroll_up),
+    scrollY: Number.isFinite(Number(raw.scroll_y))
+      ? Number(raw.scroll_y)
+      : undefined,
     elementsTruncated: Boolean(raw.elements_truncated),
     elements: elements.map((item) => {
       const row = item as Record<string, unknown>
@@ -278,19 +309,69 @@ export function actionScript(action: Act) {
     return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el) return false; el.focus(); if ('value' in el) { el.value = ${text}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } return true })()`
   }
   if (action.kind === "enter") {
-    return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el) return false; el.focus(); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true })()`
+    return `(async () => {
+    const el = document.querySelector('[data-obnav=' + ${JSON.stringify(action.targetId)} + ']')
+    if (!el) return false
+    el.focus()
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }))
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }))
+    const before = location.href + '|' + document.title
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    if (location.href + '|' + document.title !== before) return true
+    const text = (item) => ((item.innerText || '') + ' ' + (item.value || '') + ' ' + (item.getAttribute('aria-label') || '')).toLowerCase()
+    const usable = (item) => {
+      if (!item || item === el || item.disabled) return false
+      if (/effacer|clear|reset|cancel|wipe/i.test(text(item))) return false
+      // The form's own submit control is the right target even when the page
+      // styles it down to a zero-size icon (DDG's magnifier button).
+      if (item.type === 'submit' || item.type === 'image') return true
+      if (item.tagName === 'INPUT') return false
+      const rect = item.getBoundingClientRect()
+      if (rect.width < 2 || rect.height < 2) return false
+      return /search|submit|recherch|suchen|buscar|find/i.test(text(item))
+    }
+    const picks = []
+    const form = el.closest('form')
+    if (form) picks.push(...form.querySelectorAll('button, input'))
+    let scope = el.parentElement
+    for (let hop = 0; hop < 3 && scope; hop += 1) {
+      picks.push(...scope.querySelectorAll('button, [role=button], input'))
+      scope = scope.parentElement
+    }
+    const submit = picks.find(usable)
+    const moved = () => location.href + '|' + document.title !== before
+    if (submit) {
+      submit.click()
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      if (moved()) return true
+      if (form && form.requestSubmit) {
+        form.requestSubmit()
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        if (moved()) return true
+      }
+    }
+    if (form) {
+      form.submit()
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      if (moved()) return true
+    }
+    return true
+  })()`
   }
   const label = JSON.stringify(action.label)
   return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el || el.tagName !== 'SELECT') return false; const option = [...el.options].find((item) => item.label === ${label}); if (!option) return false; el.value = option.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
 }
 
 export const PROBE = `(() => {
+  // The action space consumes up to MAX_ELEMENTS (24) of these; the tier
+  // budget below reserves a bounded share for TOC anchors so content links
+  // and section jumps both stay offered.
   const max = 24
   const bag = window.__obnav || (window.__obnav = { map: new WeakMap(), n: 1 })
   const selector = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'
-  const out = []
+  const chrome = 'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]'
+  const tiers = [[], [], [], []]
   for (const el of document.querySelectorAll(selector)) {
-    if (out.length >= max) break
     const rect = el.getBoundingClientRect()
     if (rect.width < 2 || rect.height < 2) continue
     if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
@@ -315,15 +396,31 @@ export const PROBE = `(() => {
     const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
     item.actionable = !center || el === center || el.contains(center)
     if (el.tagName === "SELECT") item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
-    out.push(item)
+    // 0 search controls, 1 body content, 2 same-document anchors (TOC jumps),
+    // 3 site chrome and settings checkboxes. Anchors get a bounded reserve so
+    // sticky TOCs cannot crowd article links out of the window, while section
+    // jumps stay offered on content-heavy pages.
+    let tier = 3
+    if (el.closest('[role="search"]')) tier = 0
+    else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 2 : 1
+    else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 1
+    tiers[tier].push(item)
   }
+  const out = []
+  const remaining = () => max - out.length
+  const reserve = Math.min(tiers[2].length, 6)
+  out.push(...tiers[0].slice(0, remaining()))
+  out.push(...tiers[1].slice(0, Math.max(remaining() - reserve, 0)))
+  out.push(...tiers[2].slice(0, Math.min(reserve, remaining())))
+  out.push(...tiers[3].slice(0, remaining()))
   return {
     url: location.href,
     title: document.title,
     text: (document.body && document.body.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 2500),
     can_scroll_down: window.scrollY + window.innerHeight < document.documentElement.scrollHeight - 8,
     can_scroll_up: window.scrollY > 8,
+    scroll_y: Math.round(window.scrollY),
     elements: out,
-    elements_truncated: out.length >= max,
+    elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length > max,
   }
 })()`

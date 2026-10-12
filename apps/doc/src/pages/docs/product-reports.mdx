@@ -1,0 +1,44 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Product reports
+
+A queue of findings about open-bot itself, filed by the desktop agent while it works. The in-container agent is not a coding agent — but on a `--dev` desktop it stress-tests the product and reports what breaks.
+
+## Filing
+
+Dev-built desktops only (`bun run update -- --dev`):
+
+```sh
+ob-improve add --kind bug|friction|feature \
+  --surface chat|desktop|nav|cron|persona|config|other \
+  --title "Composer loses draft on tab switch" \
+  --detail "Steps to reproduce..." [--session ID]
+```
+
+Rows land in the control-plane sqlite. A later `bun run update` **without** `--dev` stops filing (review keeps working).
+
+## Reviewing
+
+Do not process the queue unless asked. When asked:
+
+```sh
+bun scripts/reports.ts                                   # list open
+bun scripts/reports.ts --filters status=open,kind=bug,surface=nav
+bun scripts/reports.ts done ID --note "what changed"
+bun scripts/reports.ts wontfix ID --note "why"
+```
+
+Patch clear bugs and broken friction; leave features and ambiguous items open until asked. Every shipped or rejected row gets marked with a note.
+
+## Dashboard
+
+The Reports entry in the Views drawer reads the same queue (filter by status/kind/surface) via `GET /api/reports`, and `PATCH /api/reports/:id` flips status + note.
+
+<Callout type="note">
+Product reports and [plugin reports](/docs/plugin-reports) are different queues: product reports describe open-bot itself; plugin reports describe a plugin under test and live as JSON files on the desktop.
+</Callout>
+
+</DocsShell>

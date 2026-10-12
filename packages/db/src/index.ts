@@ -191,6 +191,7 @@ export type Desktop = {
   vikingKey: string
   selectedProvider: string | null
   selectedModel: string | null
+  thinkingEffort: string | null
   lastActiveAt: number
 }
 
@@ -438,6 +439,7 @@ const desktopColumns = {
   vikingKey: desktops.vikingKey,
   selectedProvider: desktops.selectedProvider,
   selectedModel: desktops.selectedModel,
+  thinkingEffort: desktops.thinkingEffort,
   lastActiveAt: desktops.lastActiveAt,
 }
 
@@ -1080,6 +1082,16 @@ export function openDatabase(path: string) {
         .set({
           selectedProvider: provider,
           selectedModel: model,
+          lastActiveAt: Date.now(),
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    setThinkingEffort(userId: string, effort: string | null) {
+      orm
+        .update(desktops)
+        .set({
+          thinkingEffort: effort && effort.trim() !== "" ? effort.trim() : null,
           lastActiveAt: Date.now(),
         })
         .where(eq(desktops.userId, userId))

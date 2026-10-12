@@ -1,0 +1,48 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Desktop agent
+
+The desktop agent is the conversational bot living in each desktop container: **OpenCode as the runtime**, shaped by the seed `AGENTS.md`, seed skills, and any installed plugins.
+
+## Standing behavior
+
+From the seed AGENTS.md:
+
+- Staff-IT work style: when asked to do something, **act** — clone, branch, commit on feature branches, push via its own GitHub identity, open PRs, run CI, fix failures. Never force-push shared `main`, never touch global git config, no destructive ops without an explicit ask.
+- **OpenViking first reflex** — recall/search preferences and project facts at session start; keep the registry current; never delete durable memory without explicit confirmation.
+- Skills live in OpenViking (`viking://~/skills`) and sync at session start.
+
+## Surfaces the agent can use
+
+| Surface | Tooling |
+| --- | --- |
+| Thread screen | `ob-app` (native apps), `ob-nav`/`ob-page` (managed browser), screenshots via control API |
+| Projects | `ob-project`, OpenCode session per project |
+| Plugins | `ob-plugin` full lifecycle |
+| Background work | `ob-thread` (hidden `worker:` threads), cron via `ob-cron` |
+| Media | `ob-media`, automatic vault filing |
+| Reporting | `ob-improve` (product), `ob-report` (plugins) |
+| Decisions | `ob-system1` (System 1 model) |
+| Previews | `ob-preview` + `open-bot://preview` marker |
+
+## Personas
+
+The thread's persona is locked at creation (user + OpenCode session) and injected as a system line on every prompt. Custom personas live in sqlite; built-ins cannot be edited. The agent can manage personas with `ob-persona`.
+
+## Agent-side config
+
+- `PUT /api/agent-config` sets the image / video / model-3D models the agent uses for generation.
+- `GET /api/providers`, `POST /api/providers/login|logout`, `PUT /api/model`, `GET /api/models` manage chat provider auth — this is the dashboard's Providers page.
+
+## Skills
+
+Seed skills are copied into the image at build time (`images/opencode/seed/skills/*`): apps, media, plugin, preview, project, report, system1, thread, persona. **Existing desktops only get new seeds after `bun run images && bun run update`.**
+
+<Callout type="tip">
+Plugins add agent surfaces declaratively — new agent workers (`opencode.agents`), tool patches (`opencode.agentTools`), and standing instructions (`opencode.agentsMd`). See the [plugin system](/docs/plugins).
+</Callout>
+
+</DocsShell>

@@ -1,0 +1,43 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Plugin reports
+
+While the desktop agent builds, stress-tests, or exercises a plugin from a local checkout, it files findings with `ob-report` (seed skill `report`).
+
+## Storage
+
+Reports are **plain JSON files under `~/.open-bot/reports/` on the desktop** — no control-plane token, shared by every session thread on that desktop.
+
+```sh
+ob-report add --plugin my-plugin --kind bug \
+  --title "Manifest configs[] secret not masked in logs" \
+  --detail "..." [--session ID]
+
+ob-report list [--plugin SLUG] [--status open|done|wontfix|all] [--kind KIND] [--json]
+ob-report show ID
+ob-report done ID --note "..."     # or: wontfix / open
+```
+
+## Lifecycle rules
+
+- **Dedupe** — same kind + plugin + title **bumps hits** instead of duplicating.
+- **Rate limit** — 8 new reports per hour.
+- **Reopen** — a `done` report re-opens as a new row when the same defect reappears.
+
+## Control plane + dashboard
+
+The control plane reads the desktop's report directory by exec:
+
+- `GET /api/reports?status=&plugin=`
+- `PATCH /api/reports/:id` (emits `reports.changed`)
+
+The dashboard **Reports** view lists them with filters and done/wontfix/reopen actions, and offers a copyable `@reports/<slug>` mention. In the composer, `@reports/<plugin>` resolves per plugin like `@projects`.
+
+<Callout type="note">
+Core on all desktops (not dev-gated). Existing desktops need `bun run images && bun run update` after pulling the feature.
+</Callout>
+
+</DocsShell>

@@ -38,6 +38,7 @@ function freshDb() {
     vikingKey: "v",
     selectedProvider: null,
     selectedModel: null,
+    thinkingEffort: null,
     lastActiveAt: 1,
   })
   return db
