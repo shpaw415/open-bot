@@ -115,6 +115,104 @@ test("start without --display omits the flag from the body", async () => {
   }
 })
 
+test("--persona defaults to visible and sends the persona", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, [
+      "start",
+      "--title",
+      "Add export",
+      "--persona",
+      "Software manager",
+      "--message",
+      "do it",
+    ])
+    expect(result.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({
+      title: "Add export",
+      display: true,
+      persona: "Software manager",
+      message: "do it",
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("--hidden overrides the persona visibility default", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, [
+      "start",
+      "--title",
+      "bg",
+      "--persona",
+      "Software manager",
+      "--hidden",
+    ])
+    expect(result.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({
+      title: "bg",
+      persona: "Software manager",
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("prints the matched persona when the control plane returns one", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/bin/sh
+printf '%s\\n' '{"id":"ses_2","title":"worker:Add export","display":false,"persona":{"id":"p1","name":"Software manager","matched":"fuzzy"}}'
+`,
+    )
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, [
+      "start",
+      "--persona",
+      "softwre managr",
+      "--hidden",
+    ])
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: "ses_2",
+      title: "worker:Add export",
+      display: false,
+      persona: { id: "p1", name: "Software manager", matched: "fuzzy" },
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("an unknown persona fails with suggestions", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/bin/sh
+printf '%s\\n' '{"error":"unknown persona \\"zzz\\"","suggestions":["Software manager","Chef"]}'
+`,
+    )
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, ["start", "--persona", "zzz"])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("unknown persona")
+    expect(result.stderr).toContain("did you mean: Software manager, Chef")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test("bare start sends an empty body", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
   try {

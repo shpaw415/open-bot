@@ -9,10 +9,11 @@ A personality is a name plus how to behave. The user picks one when starting a t
 
 Use `ob-persona`. It talks to the control plane. Do not print the token. Do not write a local file, and do not edit `AGENTS.md`, to change your voice.
 
-List:
+List (one short line per personality; use `--verbose` for the full instruction text, e.g. before editing one):
 
 ```sh
 ob-persona list
+ob-persona list --verbose
 ```
 
 Add:
@@ -33,4 +34,6 @@ Rules:
 - Use this when the user wants a lasting voice, not a one-off tone for this reply.
 - Creating or editing a personality does not change the current thread.
 - Tell the user to start a new thread and pick it.
+- To hand a task to a personality right away, start a thread for it with
+  `ob-thread start --persona "Name" --message "task"` — see the `thread` skill.
 - The instruction is how to behave, not a secret and not a tool recipe.

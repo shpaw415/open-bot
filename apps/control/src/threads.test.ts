@@ -38,6 +38,8 @@ const agent = { id: "user-1", disabled: false } as unknown as User
 const db = {
   desktop: (id: string) =>
     id === "user-1" ? { opencodePassword: "pw" } : null,
+  personas: () => [],
+  setThreadPersona: () => {},
 } as unknown as Db
 
 const effortDb = {
@@ -50,7 +52,27 @@ const effortDb = {
           thinkingEffort: "high",
         }
       : null,
+  personas: () => [],
+  setThreadPersona: () => {},
 } as unknown as Db
+
+function personaDb(bound: string[][]) {
+  return {
+    desktop: (id: string) =>
+      id === "user-1" ? { opencodePassword: "pw" } : null,
+    personas: (userId: string) =>
+      userId === "user-1"
+        ? [{ id: "p1", name: "Software manager", instruction: "run the team" }]
+        : [],
+    setThreadPersona: (
+      userId: string,
+      sessionId: string,
+      personaId: string,
+    ) => {
+      bound.push([userId, sessionId, personaId])
+    },
+  } as unknown as Db
+}
 
 const originalFetch = globalThis.fetch
 let calls: { url: string; init?: RequestInit }[] = []
@@ -97,7 +119,7 @@ afterEach(() => {
   calls = []
 })
 
-function post(body: unknown) {
+function post(body: unknown, useDb: Db = db) {
   return handleThreads(
     new Request("http://control/api/threads", {
       method: "POST",
@@ -105,7 +127,7 @@ function post(body: unknown) {
       body: JSON.stringify(body),
     }),
     new URL("http://control/api/threads"),
-    db,
+    useDb,
     agent,
   )
 }
@@ -238,7 +260,94 @@ describe("POST /api/threads", () => {
     expect((await post({ display: "yes" })).status).toBe(400)
     expect((await post({ message: 42 })).status).toBe(400)
     expect((await post({ message: "x".repeat(8001) })).status).toBe(400)
+    expect((await post({ persona: 42 })).status).toBe(400)
     expect(calls).toHaveLength(0)
+  })
+
+  test("binds a persona and injects its system line into the first message", async () => {
+    installFetch()
+    const bound: string[][] = []
+    const res = await post(
+      {
+        title: "Add export",
+        message: "Implement CSV export",
+        persona: "software manager",
+      },
+      personaDb(bound),
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      persona?: { id: string; name: string; matched: string }
+    }
+    expect(body.persona).toEqual({
+      id: "p1",
+      name: "Software manager",
+      matched: "exact",
+    })
+    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
+    expect(JSON.parse(String(prompt?.init?.body))).toEqual({
+      parts: [{ type: "text", text: "Implement CSV export" }],
+      system: expect.stringContaining("answer as Software manager"),
+    })
+    expect(bound).toEqual([["user-1", "ses_1", "p1"]])
+  })
+
+  test("tolerates a typo in the persona name and reports the match", async () => {
+    installFetch()
+    const res = await post(
+      { title: "Add export", persona: "softwre managr" },
+      personaDb([]),
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      persona?: { name: string; matched: string }
+    }
+    expect(body.persona?.name).toBe("Software manager")
+    expect(body.persona?.matched).toBe("fuzzy")
+  })
+
+  test("the assistant persona binds nothing and injects nothing", async () => {
+    installFetch()
+    const bound: string[][] = []
+    const res = await post(
+      { title: "Job", message: "go", persona: "assistant" },
+      personaDb(bound),
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      persona?: { id: string; name: string; matched: string }
+    }
+    expect(body.persona).toEqual({
+      id: "assistant",
+      name: "Assistant",
+      matched: "exact",
+    })
+    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
+    expect(JSON.parse(String(prompt?.init?.body))).toEqual({
+      parts: [{ type: "text", text: "go" }],
+    })
+    expect(bound).toEqual([])
+  })
+
+  test("an unknown persona fails fast with suggestions", async () => {
+    installFetch()
+    const res = await post({ title: "Job", persona: "zzzzzz" }, personaDb([]))
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as {
+      error: string
+      suggestions: string[]
+    }
+    expect(body.error).toMatch(/unknown persona/)
+    expect(body.suggestions.length).toBeGreaterThan(0)
+    expect(calls).toHaveLength(0)
+  })
+
+  test("a blank persona is ignored", async () => {
+    installFetch()
+    const res = await post({ title: "Job", persona: "   " }, personaDb([]))
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { persona?: unknown }
+    expect(body.persona).toBeUndefined()
   })
 
   test("reports a sleeping desktop and never reaches opencode", async () => {

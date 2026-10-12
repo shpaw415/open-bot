@@ -9,7 +9,7 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-persona list
+  ob-persona list [--verbose]
   ob-persona add --name NAME --instruction TEXT
   ob-persona update ID [--name NAME] [--instruction TEXT]
   ob-persona remove ID
@@ -49,10 +49,26 @@ shift
 
 case "$cmd" in
   list)
+    verbose=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --verbose) verbose=1; shift ;;
+        *) echo "unknown option: $1" >&2; usage; exit 2 ;;
+      esac
+    done
     out=$(request GET /api/personas)
     fail_on_error "$out"
-    printf '%s' "$out" | jq -r '.personas[] |
-      "- \(.name) [\(.id)]\(if .builtin then " built-in" else "" end) \(.instruction)"'
+    if [ -n "$verbose" ]; then
+      printf '%s' "$out" | jq -r '.personas[] |
+        "- \(.name) [\(.id)]\(if .builtin then " built-in" else "" end) \(.instruction)"'
+    else
+      printf '%s' "$out" | jq -r '.personas[] |
+        (if .builtin then "- \(.name) [\(.id)] built-in" else "- \(.name) [\(.id)]" end) +
+        (if (.instruction // "") == "" then "" else
+          " — " + ((.instruction | gsub("\\s+"; " ")) as $t |
+            if ($t | length) > 80 then ($t[:79] + "…") else $t end)
+        end)'
+    fi
     ;;
   add)
     name=""

@@ -411,6 +411,7 @@ EOF
       [ -n "$version" ] && version_json=$(jq -Rn --arg v "$version" '$v')
       body=$(jq -n --arg id "$id" --argjson v "$version_json" --argjson confirm "$confirm" '{pluginId: $id, version: $v, confirm: $confirm}')
     fi
+    echo "installing (skill indexing on OpenViking can take up to ~2 min)..." >&2
     out=$(request POST /api/plugins/install "$body")
     fail_on_error "$out"
     if printf '%s' "$out" | jq -e '.needsConfirm == true' >/dev/null 2>&1; then
@@ -429,6 +430,7 @@ EOF
           else
             body=$(jq -n --arg id "$id" --argjson v "$version_json" '{pluginId: $id, version: $v, confirm: true}')
           fi
+          echo "installing (skill indexing on OpenViking can take up to ~2 min)..." >&2
           out=$(request POST /api/plugins/install "$body")
           fail_on_error "$out"
           ;;
@@ -466,6 +468,7 @@ EOF
       fi
     fi
     body=$(jq -n --arg id "$plugin_id" --arg v "$target" '{pluginId: $id, version: $v, confirm: true}')
+    echo "installing v$target (skill indexing on OpenViking can take up to ~2 min)..." >&2
     out=$(request POST /api/plugins/install "$body")
     fail_on_error "$out"
     printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version}'

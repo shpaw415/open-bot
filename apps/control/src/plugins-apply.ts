@@ -288,15 +288,34 @@ export async function applyPluginInstall(
       db.createCronJob(row)
       applied.cronJobIds.push(id)
     }
+    // An upgrade that drops a cron entry leaves the previous job behind, and
+    // the fresh applied log no longer records it — delete previous-owned jobs
+    // the new manifest no longer declares. Jobs created outside apply (the
+    // publish guard cron) survive; uninstall sweeps those.
+    for (const id of previous?.cronJobIds ?? []) {
+      if (!applied.cronJobIds.includes(id) && db.cronJobById(id, user.id)) {
+        db.deleteCronJob(id, user.id)
+      }
+    }
 
     if ((manifest.skills?.length ?? 0) > 0) {
       const skills = await vikingSkills(user, db)
       const owned = new Set(previous?.skills ?? [])
-      const existingNames = new Set(
-        (await withVikingRetries(() => skills.list())).map((s) => s.name),
+      const existing = new Map(
+        (await withVikingRetries(() => skills.list())).map((s) => [
+          s.name,
+          s.description,
+        ]),
       )
       for (const skill of manifest.skills ?? []) {
-        if (existingNames.has(skill.name) && !owned.has(skill.name)) {
+        const existingDescription = existing.get(skill.name)
+        // Adopt a skill this plugin left behind (an install aborted before
+        // the row landed writes the skill but records nothing): the manifest
+        // declares the exact description, so a match means the orphan is
+        // ours to replace.
+        const ours =
+          owned.has(skill.name) || existingDescription === skill.description
+        if (existingDescription !== undefined && !ours) {
           throw new Error(
             `a skill named ${skill.name} already exists and was not created by this install — clear it with DELETE /api/v1/skills/${skill.name} on the desktop OpenViking (or uninstall the plugin that owns it), then retry`,
           )

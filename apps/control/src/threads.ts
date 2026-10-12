@@ -2,6 +2,12 @@ import type { Db, User } from "@open-bot/db"
 import { createSession } from "./cron"
 import { desktopPhase, endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
+import {
+  ASSISTANT_ID,
+  findPersona,
+  type PersonaMatch,
+  personaSystem,
+} from "./personas"
 
 // Hidden threads reuse the worker: title prefix. The dashboard thread list and
 // the media vault already skip worker:/cron-run: titled sessions, so a hidden
@@ -106,6 +112,23 @@ async function startThread(req: Request, db: Db, agent: User) {
       { error: `message is limited to ${MESSAGE_LIMIT} characters` },
       400,
     )
+  if (body.persona !== undefined && typeof body.persona !== "string")
+    return json({ error: "persona must be a string" }, 400)
+  const personaQuery =
+    typeof body.persona === "string" ? body.persona.trim() : ""
+  let persona: PersonaMatch | null = null
+  if (personaQuery) {
+    const match = findPersona(db, agent.id, personaQuery)
+    if (!match.persona)
+      return json(
+        {
+          error: `unknown persona "${personaQuery}"`,
+          suggestions: match.suggestions,
+        },
+        400,
+      )
+    persona = match
+  }
 
   const resolved = await opencodeBase(db, agent)
   if ("error" in resolved) return resolved.error
@@ -124,10 +147,14 @@ async function startThread(req: Request, db: Db, agent: User) {
     )
   }
   let warning: string | null = null
+  if (persona && persona.persona.id !== ASSISTANT_ID)
+    db.setThreadPersona(agent.id, sessionId, persona.persona.id)
   if (message) {
     const promptBody: Record<string, unknown> = {
       parts: [{ type: "text", text: message }],
     }
+    const personaLine = personaSystem(persona?.persona ?? null)
+    if (personaLine) promptBody.system = personaLine
     await applyThinkingEffort(db, agent.id, promptBody)
     const posted = await fetch(
       `${base}/session/${encodeURIComponent(sessionId)}/prompt_async`,
@@ -141,12 +168,19 @@ async function startThread(req: Request, db: Db, agent: User) {
     if (!posted || !posted.ok)
       warning = "thread created but the first message failed to post"
   }
-  return json(
-    warning
-      ? { id: sessionId, title: effectiveTitle, display, warning }
-      : { id: sessionId, title: effectiveTitle, display },
-    201,
-  )
+  const result: Record<string, unknown> = {
+    id: sessionId,
+    title: effectiveTitle,
+    display,
+  }
+  if (persona)
+    result.persona = {
+      id: persona.persona.id,
+      name: persona.persona.name,
+      matched: persona.matched,
+    }
+  if (warning) result.warning = warning
+  return json(result, 201)
 }
 
 async function listThreads(db: Db, agent: User) {

@@ -195,7 +195,7 @@ export function Personalities() {
             open
             fullWidth
             scroll="paper"
-            slotProps={{ paper: { sx: { maxWidth: 900 } } }}
+            slotProps={{ paper: { sx: { maxWidth: 900, minWidth: "45%" } } }}
             onClose={() => {
               if (!busy) setDraft(null)
             }}

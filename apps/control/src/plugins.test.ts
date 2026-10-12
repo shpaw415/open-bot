@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test"
+import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { User } from "@open-bot/db"
 import { type Db, emptyAppliedLog, openDatabase } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
+import * as dockerModule from "./docker"
 import { ensureGuardCron, handlePlugins } from "./plugins"
 import {
   applyPluginInstall,
@@ -12,6 +13,47 @@ import {
   reapplyPluginSetup,
   withVikingRetries,
 } from "./plugins-apply"
+import * as vikingSkillsModule from "./viking-skills"
+
+// The install/uninstall skill paths resolve the desktop viking endpoint and
+// client; tests below swap in a fake client and a fixed endpoint.
+const realCreateVikingSkills = vikingSkillsModule.createVikingSkills
+type SkillsClient = ReturnType<typeof realCreateVikingSkills>
+let fakeSkills: SkillsClient | null = null
+
+mock.module("./docker", () => ({
+  ...dockerModule,
+  endpoint: async () => "http://viking.test:1933",
+}))
+mock.module("./viking-skills", () => ({
+  ...vikingSkillsModule,
+  createVikingSkills: (
+    ...args: Parameters<typeof realCreateVikingSkills>
+  ): SkillsClient => fakeSkills ?? realCreateVikingSkills(...args),
+}))
+
+function fakeVikingSkills(existing: { name: string; description: string }[]) {
+  const saves: { name: string; description: string }[] = []
+  const client = {
+    list: async () => existing.map((s) => ({ ...s })),
+    get: async (name: string) => ({
+      name,
+      description: existing.find((s) => s.name === name)?.description ?? "",
+      body: "",
+    }),
+    save: async (input: { name: string; description: string }) => {
+      saves.push({ name: input.name, description: input.description })
+      const found = existing.find((s) => s.name === input.name)
+      if (found) found.description = input.description
+      else existing.push({ name: input.name, description: input.description })
+    },
+    remove: async (name: string) => {
+      const index = existing.findIndex((s) => s.name === name)
+      if (index >= 0) existing.splice(index, 1)
+    },
+  }
+  return { client: client as unknown as SkillsClient, saves }
+}
 
 const manifest = {
   id: "weather-pro",
@@ -742,7 +784,9 @@ describe("plugin remove/reinstall orphans", () => {
       manifest: JSON.stringify({
         ...manifest,
         id: pluginId,
-        ...(cron ? { cron: [{ ...cron, message: "tick", everySeconds: 60 }] } : {}),
+        ...(cron
+          ? { cron: [{ ...cron, message: "tick", everySeconds: 60 }] }
+          : {}),
       }),
       readme: null,
       enabled: true,
@@ -785,9 +829,7 @@ describe("plugin remove/reinstall orphans", () => {
     }
     await applyPluginInstall(db, user(), entry)
     expect(
-      db
-        .cronJobs("a")
-        .filter((job) => job.name === "plugin:weather-pro:tick"),
+      db.cronJobs("a").filter((job) => job.name === "plugin:weather-pro:tick"),
     ).toHaveLength(1)
 
     // Simulate the old leak: the row disappears but the job stays behind.
@@ -806,39 +848,140 @@ describe("plugin remove/reinstall orphans", () => {
 
   test("withVikingRetries backs off transient errors and fails fast otherwise", async () => {
     let calls = 0
-    const ok = await withVikingRetries(
-      async () => {
-        calls++
-        if (calls < 3) throw new Error("lock acquire timed out after 0ms")
-        return "ok"
-      },
-      [1, 1],
-    )
+    const ok = await withVikingRetries(async () => {
+      calls++
+      if (calls < 3) throw new Error("lock acquire timed out after 0ms")
+      return "ok"
+    }, [1, 1])
     expect(ok).toBe("ok")
     expect(calls).toBe(3)
 
     calls = 0
     let caught = ""
-    await withVikingRetries(
-      async () => {
-        calls++
-        throw new Error("a skill named x is a built-in")
-      },
-      [1, 1],
-    ).catch((error: unknown) => {
+    await withVikingRetries(async () => {
+      calls++
+      throw new Error("a skill named x is a built-in")
+    }, [1, 1]).catch((error: unknown) => {
       caught = error instanceof Error ? error.message : ""
     })
     expect(caught).toBe("a skill named x is a built-in")
     expect(calls).toBe(1)
 
     calls = 0
-    await withVikingRetries(
-      async () => {
-        calls++
-        throw new Error("lock acquire timed out after 0ms")
-      },
-      [1, 1],
-    ).catch(() => {})
+    await withVikingRetries(async () => {
+      calls++
+      throw new Error("lock acquire timed out after 0ms")
+    }, [1, 1]).catch(() => {})
     expect(calls).toBe(3)
+  })
+
+  test("upgrade that drops a cron entry deletes the previously-owned job", async () => {
+    const v1 = {
+      ...manifest,
+      cron: [{ name: "tick", message: "tick", everySeconds: 60 }],
+    } as unknown as PluginManifest
+    const v1entry = {
+      id: "weather-pro",
+      version: "1.0.0",
+      status: "approved" as const,
+      manifest: v1,
+      readme: null,
+      downloads: 0,
+    }
+    await applyPluginInstall(db, user(), v1entry)
+    expect(db.cronJobs("a")).toHaveLength(1)
+
+    // v2 drops the cron — the job must not survive the upgrade orphaned.
+    const v2entry = { ...v1entry, version: "2.0.0", manifest }
+    const row = await applyPluginInstall(db, user(), v2entry)
+
+    expect(db.cronJobs("a")).toHaveLength(0)
+    expect(row.applied.cronJobIds).toEqual([])
+  })
+
+  test("install adopts a skill left behind by an aborted install", async () => {
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "tok",
+      opencodePassword: "pw",
+      vikingKey: "vk",
+      selectedProvider: null,
+      selectedModel: null,
+      thinkingEffort: null,
+      lastActiveAt: 1,
+    })
+    const skillManifest = {
+      ...manifest,
+      skills: [
+        {
+          name: "weather-pro",
+          description: "Weather lookups helper.",
+          body: "# weather-pro\nLook up weather.",
+        },
+      ],
+    } as unknown as PluginManifest
+    const entry = {
+      id: "weather-pro",
+      version: "1.0.0",
+      status: "approved" as const,
+      manifest: skillManifest,
+      readme: null,
+      downloads: 0,
+    }
+    // An install that died after the skill save but before the row landed
+    // leaves the skill with exactly the declared description.
+    const { client, saves } = fakeVikingSkills([
+      { name: "weather-pro", description: "Weather lookups helper." },
+    ])
+    fakeSkills = client
+    try {
+      const row = await applyPluginInstall(db, user(), entry)
+      expect(row.applied.skills).toEqual(["weather-pro"])
+      expect(saves.map((s) => s.name)).toEqual(["weather-pro"])
+    } finally {
+      fakeSkills = null
+    }
+  })
+
+  test("install still refuses a foreign skill with the same name", async () => {
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "tok",
+      opencodePassword: "pw",
+      vikingKey: "vk",
+      selectedProvider: null,
+      selectedModel: null,
+      thinkingEffort: null,
+      lastActiveAt: 1,
+    })
+    const skillManifest = {
+      ...manifest,
+      skills: [
+        {
+          name: "weather-pro",
+          description: "Weather lookups helper.",
+          body: "# weather-pro\nLook up weather.",
+        },
+      ],
+    } as unknown as PluginManifest
+    const entry = {
+      id: "weather-pro",
+      version: "1.0.0",
+      status: "approved" as const,
+      manifest: skillManifest,
+      readme: null,
+      downloads: 0,
+    }
+    const { client } = fakeVikingSkills([
+      { name: "weather-pro", description: "A user's own unrelated skill." },
+    ])
+    fakeSkills = client
+    try {
+      await expect(applyPluginInstall(db, user(), entry)).rejects.toThrow(
+        /already exists and was not created by this install/,
+      )
+    } finally {
+      fakeSkills = null
+    }
   })
 })

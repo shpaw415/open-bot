@@ -1,6 +1,6 @@
 ---
 name: thread
-description: Start a new thread with ob-thread. Use it when the user asks for a background job thread, a helper thread, or a new visible thread on the dashboard.
+description: Start a new thread with ob-thread, or hand a task to another personality as a teammate (team delegation). Use it when the user asks for a background job thread, a helper thread, a new visible thread on the dashboard, or to give work to a persona like "the software manager".
 ---
 
 # Threads
@@ -29,6 +29,30 @@ Rules:
   follow-up messages to that thread later.
 - Titles cannot start with `worker:` or `cron-run:`; those prefixes are
   reserved.
+
+## Team delegation
+
+The personalities are a team. When the user asks to give a task to a named
+personality ("have the software manager implement X in my project"), start a
+thread for it instead of doing the work yourself:
+
+```sh
+ob-thread start --persona "Software manager" --title "Add CSV export" --message "Implement CSV export in ~/project/report-app. Report back with the file paths."
+```
+
+- `--persona NAME` makes the new thread answer and work as that personality.
+  The agents are a team; you are the coordinator.
+- Persona threads are visible on the dashboard by default, so the user can
+  follow along. Add `--hidden` for a background teammate nobody needs to watch.
+- If you are not sure of the exact name, run `ob-persona list` first. The API
+  tolerates typos: the output tells you which personality actually got the
+  thread (`persona.matched: fuzzy`) — tell the user which one you picked.
+- If the name does not match anything, the command fails with
+  `did you mean` suggestions. Ask the user which one they meant, or offer to
+  create it with `ob-persona add`. Do not silently pick a different
+  personality or silently skip the delegation.
+- Write `--message` as a complete standalone brief. The teammate does not see
+  this conversation.
 
 List the hidden threads created through this tool:
 
