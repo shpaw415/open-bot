@@ -181,11 +181,7 @@ export default {
       },
     }),
     AssetsToBuild({
-      paths: [
-        { src: "static/favicon.ico", dist: "favicon.ico" },
-        { src: "static/logo.png", dist: "logo.png" },
-        { src: "robots.txt", dist: "robots.txt" },
-      ],
+      paths: [{ src: "robots.txt", dist: "robots.txt" }],
     }),
     SEOPlugin(SiteConfig.SEO),
     AutoSiteMap({
@@ -213,8 +209,6 @@ export default {
               include: ["/*"],
               exclude: [
                 "/static/*",
-                "/favicon.ico",
-                "/logo.png",
                 "/robots.txt",
                 "/@cf-process-env.js",
                 "/@dynamic-ssr-endpoints.js",

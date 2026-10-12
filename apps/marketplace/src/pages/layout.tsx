@@ -7,7 +7,7 @@ export default function Layout({ children }: { children: JSX.Element }) {
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img
-              src="/logo.png"
+              src="/static/logo.png"
               alt=""
               width={32}
               height={32}
