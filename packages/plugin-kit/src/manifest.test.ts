@@ -113,6 +113,146 @@ describe("plugin manifest", () => {
     expect(result.ok).toBe(false)
   })
 
+  test("accepts a page server with app and live page tabs", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server/server.js", exec: true }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [
+          { id: "stock", title: "Stock", kind: "app" },
+          { id: "stock", title: "Dup", kind: "app" },
+          {
+            id: "summary",
+            title: "Summary",
+            kind: "page",
+            dataUrl: "/api/summary",
+            pollSeconds: 15,
+            cards: [
+              { kind: "table", columns: ["Item", "Qty"], rows: "$.rows" },
+            ],
+          },
+        ],
+      },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      const text = manifestIssuesText(result.issues)
+      expect(text).toContain("tab.id must be unique")
+      expect(text).not.toContain("app tab needs")
+    }
+    const good = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server/server.js", exec: true }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [
+          { id: "stock", title: "Stock", kind: "app", path: "/manage" },
+          {
+            id: "summary",
+            title: "Summary",
+            kind: "page",
+            dataUrl: "/api/summary",
+            pollSeconds: 15,
+            cards: [
+              { kind: "table", columns: ["Item", "Qty"], rows: "$.rows" },
+            ],
+          },
+        ],
+      },
+    })
+    expect(good.ok).toBe(true)
+    if (good.ok) {
+      expect(good.manifest.dashboard?.pages?.entry).toBe("server.js")
+      expect(good.manifest.dashboard?.tabs?.[0]?.path).toBe("/manage")
+      expect(pluginPermissionSummary(good.manifest)).toContain(
+        "Serves a live dashboard page (API + UI) from the desktop to the dashboard",
+      )
+    }
+  })
+
+  test("rejects a page server without a matching files[] entry", () => {
+    const missing = validatePluginManifest({
+      ...valid,
+      dashboard: { pages: { entry: "server.js" }, tabs: [] },
+    })
+    expect(missing.ok).toBe(false)
+    if (!missing.ok) {
+      expect(manifestIssuesText(missing.issues)).toContain(
+        "dashboard.pages.entry",
+      )
+    }
+    const badName = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: { pages: { entry: "Server JS" }, tabs: [] },
+    })
+    expect(badName.ok).toBe(false)
+  })
+
+  test("app tabs require the page server and sane paths", () => {
+    const noPages = validatePluginManifest({
+      ...valid,
+      dashboard: { tabs: [{ id: "x", title: "X", kind: "app" }] },
+    })
+    expect(noPages.ok).toBe(false)
+    if (!noPages.ok) {
+      expect(manifestIssuesText(noPages.issues)).toContain(
+        "app tab needs dashboard.pages.entry",
+      )
+    }
+    const badPath = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [{ id: "x", title: "X", kind: "app", path: "/../etc" }],
+      },
+    })
+    expect(badPath.ok).toBe(false)
+  })
+
+  test("page tab dataUrl and pollSeconds validate", () => {
+    const base = {
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [
+          {
+            id: "s",
+            title: "S",
+            kind: "page",
+            dataUrl: "api/relative",
+            cards: [{ kind: "markdown", text: "hi" }],
+          },
+        ],
+      },
+    }
+    expect(validatePluginManifest(base).ok).toBe(false)
+    const badPoll = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [
+          {
+            id: "s",
+            title: "S",
+            kind: "page",
+            pollSeconds: 15,
+            cards: [{ kind: "markdown", text: "hi" }],
+          },
+        ],
+      },
+    })
+    expect(badPoll.ok).toBe(false)
+    if (!badPoll.ok) {
+      const text = manifestIssuesText(badPoll.issues)
+      expect(text).toContain("pollSeconds needs a dataUrl")
+    }
+  })
+
   test("rejects a bad regex validator", () => {
     const result = validatePluginManifest({
       ...valid,

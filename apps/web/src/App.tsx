@@ -149,13 +149,6 @@ export function App() {
               <Tab label="Providers" value="providers" icon={<VpnKeyIcon />} />
               <Tab label="Config" value="config" icon={<SettingsIcon />} />
               <Tab label="Plugins" value="plugins" icon={<ExtensionIcon />} />
-              {tabs.map((tab) => (
-                <Tab
-                  key={tab.key}
-                  label={tab.title}
-                  value={`plugin:${tab.key}`}
-                />
-              ))}
               {me.role === "admin" ? (
                 <Tab
                   label="Admin"
@@ -244,7 +237,7 @@ export function App() {
             }}
           />
         ) : (
-          <Workspace me={me} />
+          <Workspace me={me} pluginTabs={tabs} />
         )}
       </Box>
 
@@ -278,12 +271,6 @@ export function App() {
             value="plugins"
             icon={<ExtensionIcon />}
           />
-          {tabs.length > 0 ? (
-            <BottomNavigationAction
-              label={tabs[0]?.title ?? ""}
-              value={`plugin:${tabs[0]?.key ?? ""}`}
-            />
-          ) : null}
           {me.role === "admin" ? (
             <BottomNavigationAction
               label="Admin"

@@ -1,0 +1,426 @@
+import type { Db, InstalledPlugin, User } from "@open-bot/db"
+import type { PluginManifest } from "@open-bot/plugin-kit"
+import { desktopPhase, endpoint } from "./docker"
+import { names } from "./env"
+import type { EventHub } from "./events"
+import { HttpError } from "./http-error"
+import { randomToken } from "./passwords"
+import {
+  rewritePreviewCss,
+  rewritePreviewHtml,
+  type UpgradeServer,
+} from "./preview"
+import { sh } from "./shell"
+
+// Plugin page servers: one Bun HTTP server per plugin (manifest
+// dashboard.pages.entry) on the desktop, proxied to the dashboard under
+// /api/pages/<pluginId>/… with streaming (SSE) and WebSocket pass-through.
+
+export const PAGE_PORT_MIN = 4740
+export const PAGE_PORT_MAX = 4759
+const PAGE_HEALTH_TTL_MS = 5_000
+const PAGE_START_THROTTLE_MS = 5_000
+const PAGE_START_TIMEOUT_MS = 8_000
+
+export function pluginPagePath(pluginId: string) {
+  return `/home/agent/.open-bot/pages/${pluginId}`
+}
+
+export function pluginPageBin(pluginId: string, entry: string) {
+  return `/usr/local/bin/ob-plugin-${pluginId}-${entry}`
+}
+
+export function parsePluginPagePath(pathname: string) {
+  const match = pathname.match(/^\/api\/pages\/([^/]+)(\/.*)?$/)
+  if (!match?.[1]) return null
+  const pluginId = match[1]
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(pluginId)) return null
+  let rest = match[2] && match[2] !== "/" ? match[2] : "/"
+  if (rest.includes("\0") || rest.includes("\\") || rest.includes(".."))
+    return null
+  try {
+    rest = decodeURIComponent(rest)
+  } catch {
+    return null
+  }
+  if (rest.includes("..") || !rest.startsWith("/")) return null
+  return { pluginId, rest }
+}
+
+// Deterministic port per plugin inside the page range; collisions with an
+// already-started sibling server linear-probe upward (in-memory only — the
+// assignment is stable for one control lifetime, and servers die with the
+// desktop anyway).
+export function basePluginPagePort(pluginId: string) {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < pluginId.length; index++) {
+    hash ^= pluginId.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  const span = PAGE_PORT_MAX - PAGE_PORT_MIN + 1
+  return PAGE_PORT_MIN + ((hash >>> 0) % span)
+}
+
+type PageState = { port: number; token: string; startedAt: number }
+
+const states = new Map<string, PageState>()
+const lastStart = new Map<string, number>()
+const healthCache = new Map<string, { ok: boolean; at: number }>()
+
+function stateKey(userId: string, pluginId: string) {
+  return `${userId}\0${pluginId}`
+}
+
+export function pageStateFor(userId: string, pluginId: string) {
+  return states.get(stateKey(userId, pluginId)) ?? null
+}
+
+async function pickPort(userId: string, pluginId: string) {
+  const taken = new Set<number>()
+  for (const [key, state] of states) {
+    if (key.startsWith(`${userId}\0`) && key !== stateKey(userId, pluginId)) {
+      taken.add(state.port)
+    }
+  }
+  let port = basePluginPagePort(pluginId)
+  const span = PAGE_PORT_MAX - PAGE_PORT_MIN + 1
+  for (let attempt = 0; attempt < span; attempt++) {
+    if (!taken.has(port)) return port
+    port = port >= PAGE_PORT_MAX ? PAGE_PORT_MIN : port + 1
+  }
+  throw new HttpError(
+    502,
+    "no free plugin page port on this desktop",
+    "plugin_page_port",
+  )
+}
+
+async function healthy(userId: string, pluginId: string, port: number) {
+  const key = stateKey(userId, pluginId)
+  const hit = healthCache.get(key)
+  const now = Date.now()
+  if (hit && now - hit.at < PAGE_HEALTH_TTL_MS) return hit.ok
+  let ok = false
+  try {
+    const base = await endpoint(userId, "opencode", port)
+    await fetch(`${base}/healthz`, {
+      signal: AbortSignal.timeout(1_500),
+    })
+    // Any HTTP response proves the server is up — plugins do not have to
+    // implement /healthz (the seed skill recommends it anyway).
+    ok = true
+  } catch {
+    ok = false
+  }
+  healthCache.set(key, { ok, at: now })
+  return ok
+}
+
+function emitChanged(hub: EventHub, userId: string) {
+  try {
+    hub.emit(userId, { type: "pages.changed" })
+  } catch {
+    // hub down — status refreshes on the next poll anyway
+  }
+}
+
+// Starts (or confirms) the plugin's page server. Returns the port.
+export async function ensurePluginPageServer(
+  userId: string,
+  row: InstalledPlugin,
+  hub?: EventHub,
+): Promise<number> {
+  const manifest = row.manifest as PluginManifest
+  const entry = manifest.dashboard?.pages?.entry
+  if (!entry || !row.enabled) {
+    throw new HttpError(404, "this plugin has no page server", "plugin_page")
+  }
+  const pluginId = row.pluginId
+  const key = stateKey(userId, pluginId)
+  const state = states.get(key)
+  if (state && (await healthy(userId, pluginId, state.port))) {
+    return state.port
+  }
+  if ((await desktopPhase(userId)) !== "running") {
+    throw new HttpError(502, "desktop is asleep", "plugin_page_desktop")
+  }
+  const throttleHit = lastStart.get(key)
+  if (throttleHit && Date.now() - throttleHit < PAGE_START_THROTTLE_MS) {
+    throw new HttpError(
+      502,
+      "page server is not responding — retry in a moment",
+      "plugin_page",
+    )
+  }
+  lastStart.set(key, Date.now())
+
+  const port = await pickPort(userId, pluginId)
+  const token = randomToken()
+  const n = names(userId)
+  const bin = pluginPageBin(pluginId, entry)
+  const pidFile = pluginPagePath(pluginId)
+
+  const made = await opencodeExecUser(n.opencode, [
+    "mkdir",
+    "-p",
+    "--",
+    "/home/agent/.open-bot/pages",
+  ])
+  if (made.code !== 0) {
+    throw new HttpError(
+      502,
+      "could not prepare the page directory",
+      "plugin_page",
+    )
+  }
+  // Detached spawn; the wrapper records the bun pid (exec replaces the shell)
+  // so stop is a plain kill. Settings + vault reach the server through the
+  // plugin config file (~/.config/open-bot/plugin-<id>.json), same as tools.
+  const spawned = await sh(
+    [
+      "docker",
+      "exec",
+      "-d",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      "-e",
+      `OPEN_BOT_PAGE_PORT=${port}`,
+      "-e",
+      `OPEN_BOT_PAGE_TOKEN=${token}`,
+      "-e",
+      `OPEN_BOT_PLUGIN_ID=${pluginId}`,
+      n.opencode,
+      "sh",
+      "-c",
+      `echo $$ > '${pidFile}.pid' && exec bun run '${bin}'`,
+    ],
+    undefined,
+    30_000,
+  )
+  if (spawned.code !== 0) {
+    throw new HttpError(
+      502,
+      `could not start the page server: ${spawned.stderr.slice(0, 200)}`,
+      "plugin_page",
+    )
+  }
+
+  const deadline = Date.now() + PAGE_START_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    if (await healthy(userId, pluginId, port)) {
+      states.set(key, { port, token, startedAt: Date.now() })
+      if (hub) emitChanged(hub, userId)
+      return port
+    }
+  }
+  throw new HttpError(
+    502,
+    "page server did not come up — check the plugin logs",
+    "plugin_page",
+  )
+}
+
+function opencodeExecUser(container: string, args: string[]) {
+  return sh([
+    "docker",
+    "exec",
+    "-u",
+    "agent",
+    "-e",
+    "HOME=/home/agent",
+    container,
+    ...args,
+  ])
+}
+
+// Stops the plugin's page server (disable/uninstall). Best effort.
+export async function stopPluginPageServer(
+  userId: string,
+  pluginId: string,
+  hub?: EventHub,
+) {
+  const key = stateKey(userId, pluginId)
+  states.delete(key)
+  healthCache.delete(key)
+  lastStart.delete(key)
+  const n = names(userId)
+  const pidFile = pluginPagePath(pluginId)
+  await opencodeExecUser(n.opencode, [
+    "sh",
+    "-c",
+    `if [ -f '${pidFile}.pid' ]; then kill "$(cat '${pidFile}.pid')" 2>/dev/null || true; rm -f '${pidFile}.pid'; fi`,
+  ]).catch(() => {})
+  if (hub) emitChanged(hub, userId)
+}
+
+// Restart = stop + start. Used when settings change so the server observes
+// the rewritten plugin config file on boot.
+export async function restartPluginPageServer(
+  userId: string,
+  row: InstalledPlugin,
+  hub?: EventHub,
+) {
+  await stopPluginPageServer(userId, row.pluginId)
+  return ensurePluginPageServer(userId, row, hub)
+}
+
+export function clearPluginPageState() {
+  states.clear()
+  healthCache.clear()
+  lastStart.clear()
+}
+
+export type PluginPageInfo = {
+  pluginId: string
+  name: string
+  enabled: boolean
+  running: boolean
+  tabs: {
+    id: string
+    title: string
+    kind: "page" | "iframe" | "app"
+    path?: string
+    dataUrl?: string
+    pollSeconds?: number
+  }[]
+}
+
+export async function pluginPageSummaries(
+  db: Db,
+  user: User,
+): Promise<{ pages: PluginPageInfo[]; desktop: string }> {
+  const desktop = await desktopPhase(user.id)
+  const pages: PluginPageInfo[] = []
+  for (const row of db.installedPlugins(user.id)) {
+    const manifest = row.manifest as PluginManifest
+    const tabs = (manifest.dashboard?.tabs ?? []).filter(
+      (tab) => tab.kind === "app" || tab.dataUrl,
+    )
+    if (tabs.length === 0 && !manifest.dashboard?.pages) continue
+    const state = states.get(stateKey(user.id, row.pluginId))
+    const running =
+      row.enabled && Boolean(state) && state
+        ? await healthy(user.id, row.pluginId, state.port)
+        : false
+    pages.push({
+      pluginId: row.pluginId,
+      name: manifest.name,
+      enabled: row.enabled,
+      running,
+      tabs: tabs.map((tab) => ({
+        id: tab.id,
+        title: tab.title,
+        kind: tab.kind,
+        path: tab.path,
+        dataUrl: tab.dataUrl,
+        pollSeconds: tab.pollSeconds,
+      })),
+    })
+  }
+  return { pages, desktop }
+}
+
+// GET /api/pages handler (session user only). Proxying goes through
+// proxyPluginPage below, wired in server.ts ahead of the /api/ dispatch.
+export async function handlePluginPagesStatus(
+  db: Db,
+  user: User,
+): Promise<Response> {
+  const body = await pluginPageSummaries(db, user)
+  return Response.json(body)
+}
+
+function strippedHeaders(headers: Headers, token: string) {
+  const out = new Headers(headers)
+  out.delete("host")
+  out.delete("accept-encoding")
+  out.delete("cookie")
+  out.delete("authorization")
+  out.set("x-open-bot-page-token", token)
+  out.set("cache-control", "no-cache")
+  out.set("referrer-policy", "no-referrer")
+  return out
+}
+
+async function rewritePageBody(
+  upstream: Response,
+  prefix: string,
+): Promise<Response> {
+  const type = upstream.headers.get("content-type") ?? ""
+  const html = type.includes("text/html")
+  const css = type.includes("text/css")
+  if (!html && !css) return upstream
+  const bytes = await upstream.arrayBuffer()
+  if (bytes.byteLength > 2_000_000) return upstream
+  const text = new TextDecoder().decode(bytes)
+  const body = html
+    ? rewritePreviewHtml(text, prefix)
+    : rewritePreviewCss(text, prefix)
+  const headers = new Headers(upstream.headers)
+  headers.delete("content-length")
+  headers.delete("x-frame-options")
+  if (html && !headers.get("content-type")?.includes("charset")) {
+    headers.set("content-type", "text/html; charset=utf-8")
+  }
+  return new Response(body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  })
+}
+
+// Proxies one request to the plugin's page server on the desktop. Session
+// auth happens in server.ts; here the plugin row decides 404s.
+export async function proxyPluginPage(
+  req: Request,
+  url: URL,
+  db: Db,
+  user: User,
+  hub: EventHub,
+  server: UpgradeServer,
+): Promise<Response | undefined> {
+  const parsed = parsePluginPagePath(url.pathname)
+  if (!parsed) return new Response("not found", { status: 404 })
+  const row = db.installedPlugin(user.id, parsed.pluginId)
+  if (!row || !row.enabled) {
+    return new Response("plugin page not found", { status: 404 })
+  }
+  const manifest = row.manifest as PluginManifest
+  if (!manifest.dashboard?.pages) {
+    return new Response("plugin page not found", { status: 404 })
+  }
+  let state = pageStateFor(user.id, parsed.pluginId)
+  if (!state || !(await healthy(user.id, parsed.pluginId, state.port))) {
+    await ensurePluginPageServer(user.id, row, hub)
+    state = pageStateFor(user.id, parsed.pluginId)
+    if (!state) {
+      return new Response("page server is not running", { status: 502 })
+    }
+  }
+  const base = await endpoint(user.id, "opencode", state.port)
+  if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+    const wsBase = base.replace(/^http/, "ws")
+    const ok = server.upgrade(req, {
+      data: {
+        kind: "proxy",
+        target: `${wsBase}${parsed.rest}${url.search}`,
+        upstream: null,
+        queue: [],
+      },
+    })
+    return ok ? undefined : new Response("upgrade failed", { status: 400 })
+  }
+  const dest = new URL(`${parsed.rest}${url.search}`, base)
+  const upstream = await fetch(dest, {
+    method: req.method,
+    headers: strippedHeaders(req.headers, state.token),
+    body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+    // let SSE/streaming responses flow through untouched
+    redirect: "manual",
+    duplex: "half",
+  } as RequestInit)
+  return rewritePageBody(upstream, `/api/pages/${parsed.pluginId}`)
+}

@@ -13,11 +13,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Db } from "@open-bot/db"
 import { isDevVersion, type PluginFile } from "@open-bot/plugin-kit"
-import { marketplaceToken, marketplaceUrl } from "./env"
+import { dataDir, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 
 const MARKET_KEY_SETTING = "marketplace_api_key"
-const CACHE_DIR = join(tmpdir(), "open-bot-plugin-artifacts")
+// Lives on the DATA_DIR volume so cached tarballs survive control container
+// recreates (every update) and boot re-syncs do not re-download from the
+// marketplace.
+const CACHE_DIR = join(dataDir, "plugin-artifacts")
 const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 const ARTIFACT_TIMEOUT_MS = 60_000
 

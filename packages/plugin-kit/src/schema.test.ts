@@ -53,6 +53,9 @@ describe("plugin schema", () => {
     expect(top.files.items.properties.name.pattern).toBe(
       FILE_NAME_PATTERN.source,
     )
+    expect(top.dashboard.properties.pages.properties.entry.pattern).toBe(
+      FILE_NAME_PATTERN.source,
+    )
     expect(
       source(top.textbox.properties.commands.items.properties.command.pattern),
     ).toBe(source(COMMAND_PATTERN.source))
@@ -92,6 +95,15 @@ describe("plugin schema", () => {
     expect(top.hooks.maxItems).toBe(8)
     expect(top.hooks.items.properties.event.enum).toEqual(PLUGIN_HOOK_EVENTS)
     expect(top.hooks.items.properties.message.maxLength).toBe(2000)
+    expect(
+      top.dashboard.properties.tabs.items.properties.dataUrl.maxLength,
+    ).toBe(200)
+    expect(
+      top.dashboard.properties.tabs.items.properties.pollSeconds.minimum,
+    ).toBe(5)
+    expect(
+      top.dashboard.properties.tabs.items.properties.pollSeconds.maximum,
+    ).toBe(3600)
     expect(top.setup.properties.commands.maxItems).toBe(16)
     expect(top.setup.properties.commands.items.maxLength).toBe(500)
     expect(

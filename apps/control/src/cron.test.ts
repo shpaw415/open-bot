@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  autoRunDecision,
   clipScriptOutput,
   cronModelFields,
   cronPersonaFields,
@@ -11,6 +12,7 @@ import {
   nextRunMs,
   normalizeCronRun,
   parseCron,
+  parseRunKind,
   publishDecision,
   publishedSummary,
   scriptBlocksAgent,
@@ -357,6 +359,15 @@ describe("cron script runs", () => {
       }),
     ).toEqual({ message: "summarize", script: "df -h" })
     expect(
+      normalizeCronRun({ runKind: "auto", message: "handle it", script: "x" }),
+    ).toEqual({ message: "handle it", script: "x" })
+    expect(
+      normalizeCronRun({ runKind: "auto", message: "", script: "x" }),
+    ).toEqual({ error: "message is required" })
+    expect(
+      normalizeCronRun({ runKind: "auto", message: "hi", script: " " }),
+    ).toEqual({ error: "script is required" })
+    expect(
       normalizeCronRun({ runKind: "prompt", message: " ", script: "date" }),
     ).toEqual({ error: "message is required" })
     expect(
@@ -412,5 +423,31 @@ describe("cron script runs", () => {
     expect(daemon.started).toBe(false)
     expect(scriptBlocksAgent(daemon)).toContain("No such container")
     expect(clipScriptOutput("x".repeat(12_001)).endsWith("…")).toBe(true)
+  })
+
+  test("parses the auto run kind", () => {
+    expect(parseRunKind("auto")).toBe("auto")
+    expect(parseRunKind("both")).toBe("both")
+    expect(parseRunKind("nope")).toBeNull()
+  })
+
+  test("auto wakes the agent only on the sentinel line", () => {
+    expect(autoRunDecision("")).toEqual({ agent: false, output: "" })
+    expect(autoRunDecision("all quiet\n")).toEqual({
+      agent: false,
+      output: "",
+    })
+    const flagged = autoRunDecision("[cron-agent]\nOpen issues:\n#1 bug\n")
+    expect(flagged.agent).toBe(true)
+    expect(flagged.output).toBe("Open issues:\n#1 bug")
+    const inline = autoRunDecision("noise\n  [cron-agent] work needed\nmore")
+    expect(inline.agent).toBe(true)
+    expect(inline.output).toBe("noise\nmore")
+    const markerOnly = autoRunDecision("  [cron-agent]  \n")
+    expect(markerOnly.agent).toBe(true)
+    expect(markerOnly.output).toBe("")
+    const nearMiss = autoRunDecision("[cron-agent-x] not a marker")
+    expect(nearMiss.agent).toBe(false)
+    expect(nearMiss.output).toBe("")
   })
 })

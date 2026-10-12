@@ -258,7 +258,7 @@ export type ThreadTitle = {
 }
 
 export type CronScheduleKind = "cron" | "every" | "at"
-export type CronRunKind = "prompt" | "script" | "both"
+export type CronRunKind = "prompt" | "script" | "both" | "auto"
 
 export type CronJob = {
   id: string
@@ -485,7 +485,9 @@ function mapCronJob(
     modelId: row.modelId,
     personaId: row.personaId,
     runKind:
-      row.runKind === "script" || row.runKind === "both"
+      row.runKind === "script" ||
+      row.runKind === "both" ||
+      row.runKind === "auto"
         ? row.runKind
         : "prompt",
     script: row.script,

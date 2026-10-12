@@ -17,7 +17,7 @@ type Grant = {
   expiresAt: number
 }
 
-type UpgradeServer = {
+export type UpgradeServer = {
   upgrade(
     req: Request,
     options: {

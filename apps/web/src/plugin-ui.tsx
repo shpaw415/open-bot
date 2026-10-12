@@ -71,11 +71,17 @@ export type InstalledPluginInfo = {
       secret?: boolean
     }[]
     dashboard?: {
+      pages?: {
+        entry: string
+      }
       tabs?: {
         id: string
         title: string
-        kind: "page" | "iframe"
+        kind: "page" | "iframe" | "app"
         url?: string
+        path?: string
+        dataUrl?: string
+        pollSeconds?: number
         cards?: PluginCardSpec[]
       }[]
     }

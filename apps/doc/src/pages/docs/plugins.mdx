@@ -16,7 +16,7 @@ Key fields:
 | Field | Purpose |
 | --- | --- |
 | `files[]` | `{name, source, exec}` payload files fetched from the reviewed release tarball at install; text files only. |
-| `setup.commands` / `setup.uninstall` | Root commands run at install (and after every desktop recreate via `onDesktopReady` → `reapplyPluginSetup`); uninstall runs best-effort. Logged to `~/.open-bot/plugin-init/<id>.log`; shown in the consent dialog; security-reviewed. |
+| `setup.commands` / `setup.uninstall` | Root commands run at install (and after every desktop recreate via `onDesktopReady` → `reapplyPluginSetup`; the update recycle waits for that re-run to finish); uninstall runs best-effort. Logged to `~/.open-bot/plugin-init/<id>.log`; shown in the consent dialog; security-reviewed. Must be **idempotent** — they re-run on an already-set-up desktop, so every step has to succeed twice (pipe `grep`/`diff` style exits through `\|\| true`, guard installs with `test`). |
 | `opencode.agents` | Registers new agent workers (deep-merged into `opencode.json`; reserved names rejected). Helper sessions must use the `worker:` title prefix so the dashboard hides them. |
 | `opencode.agentTools` | Patches tool globs on existing agents, e.g. `{"build": {"blender_*": false}}`. |
 | `opencode.agentsMd` | Standing instructions injected next to AGENTS.md (file under `~/.config/open-bot/agents-md/`). |
@@ -25,12 +25,33 @@ Key fields:
 | `permissions.notifications` | `true` unlocks `ob-plugin notify` → `POST /api/plugins/notice` (30/hour) → dashboard toast + native notification. |
 | `version` | Semver `X.Y.Z[-prerelease]` or dev tag (`beta-1`). |
 
+## Dashboard pages
+
+A plugin can ship a live dashboard — a view in the workspace drawer's **Dashboards** list where the user picks a plugin page and interacts with live data (stock lists, trackers, admin panels).
+
+| Field | Purpose |
+| --- | --- |
+| `dashboard.pages.entry` | A `files[]` payload (Bun HTTP server) run by the control plane at install, enable, and after every desktop restart. Env: `OPEN_BOT_PAGE_PORT`, `OPEN_BOT_PAGE_TOKEN`, `OPEN_BOT_PLUGIN_ID`; settings/vault arrive via `~/.config/open-bot/plugin-<id>.json`. `GET /healthz` recommended (any response counts as up). |
+| `dashboard.tabs[].kind: "app"` | The server's full UI, proxied same-origin under `/api/pages/<pluginId>/` — relative fetches hit the plugin server; SSE and WebSockets pass through. Optional `path` (default `/`). |
+| `dashboard.tabs[].kind: "page"` + `dataUrl` / `pollSeconds` (5-3600) | The dashboard polls the plugin server for JSON and feeds it to declarative `cards` (`$.path` bindings). No HTML needed for read-only views. |
+
+The proxy strips cookies/auth toward the plugin and injects `x-open-bot-page-token`; ports come from a dedicated range (4740-4719-style, per-plugin deterministic). Upgrades and settings changes restart the server so it observes new config; disable/uninstall stop it.
+
 ## Install surfaces
 
 - Tools land in `/usr/local/bin/ob-plugin-<id>-*`; `apply-plugin-auth.sh` writes the vault config.
 - The install log on the `installed_plugins` row reverses everything on uninstall.
 - Disable is deep: pauses cron, unloads OpenViking skills, drops vault config + opencode surfaces; enable restores from the stored manifest snapshot.
 - Failed root setup shows **“setup failed — retry”** on the Plugins page (`POST /api/plugins/installed/:id/setup`).
+
+## Persistence across desktop recreates
+
+A desktop update (or any sleep/start cycle that recreates the container) wipes the container filesystem **except** the `/home` and `/usr/local` volumes. What survives without any re-run:
+
+- plugin tools and payload files (`/usr/local/bin/ob-plugin-<id>-*`)
+- vault config (`~/.config/open-bot/plugin-<id>.json`), agentsMd files, patched `opencode.json` surfaces, and anything else under `/home/agent`
+
+What does **not** survive: anything a setup command installed into the container layer (apt packages, `/venv`, etc.). The boot re-apply re-runs `setup.commands` right after the container starts — it is what restores them, so keep the commands idempotent and expect a freshly recreated desktop to need a few minutes before root-installed dependencies are back.
 
 ## Updates
 

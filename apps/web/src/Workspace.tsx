@@ -87,6 +87,7 @@ import {
   ComputerIcon,
   DeleteIcon,
   EditIcon,
+  ExtensionIcon,
   FolderIcon,
   MemoryIcon,
   MenuIcon,
@@ -128,6 +129,7 @@ import {
   PreviewOverlay,
   PreviewPane,
 } from "./PreviewView"
+import { PluginDashboardsView, type PluginTab } from "./plugin-tabs"
 import {
   type PluginCardSpec,
   PluginCards,
@@ -199,7 +201,7 @@ type CronJobInfo = {
   providerId: string | null
   modelId: string | null
   personaId: string | null
-  runKind?: "prompt" | "script" | "both"
+  runKind?: "prompt" | "script" | "both" | "auto"
   script?: string | null
 }
 
@@ -664,6 +666,7 @@ function formatWhen(ts: number | null): string {
 function cronRunLabel(kind: CronJobInfo["runKind"]): string {
   if (kind === "script") return "script"
   if (kind === "both") return "script + prompt"
+  if (kind === "auto") return "script + agent if flagged"
   return "prompt"
 }
 
@@ -1889,7 +1892,13 @@ function Composer({
   )
 }
 
-export function Workspace({ me }: { me: Me }) {
+export function Workspace({
+  me,
+  pluginTabs,
+}: {
+  me: Me
+  pluginTabs: PluginTab[]
+}) {
   const [phase, setPhase] = useState<Phase>(me.desktop ?? "sleeping")
   const [stopping, setStopping] = useState(false)
   const [tab, setTab] = useState("chat")
@@ -1978,9 +1987,9 @@ export function Workspace({ me }: { me: Me }) {
   const [cronAt, setCronAt] = useState("")
   const [cronModel, setCronModel] = useState("")
   const [cronPersona, setCronPersona] = useState("assistant")
-  const [cronRunKind, setCronRunKind] = useState<"prompt" | "script" | "both">(
-    "prompt",
-  )
+  const [cronRunKind, setCronRunKind] = useState<
+    "prompt" | "script" | "both" | "auto"
+  >("prompt")
   const [cronScript, setCronScript] = useState("")
   const [cronEditId, setCronEditId] = useState<string | null>(null)
   const [notices, setNotices] = useState<CronNotice[]>([])
@@ -3605,7 +3614,9 @@ export function Workspace({ me }: { me: Me }) {
                       ? "Media"
                       : tab === "reports"
                         ? "Reports"
-                        : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
+                        : tab === "dashboards"
+                          ? "Dashboards"
+                          : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
           </Typography>
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
             {stopping
@@ -4236,7 +4247,9 @@ export function Workspace({ me }: { me: Me }) {
                         WebkitBoxOrient: "vertical",
                       }}
                     >
-                      {job.runKind === "script" ? job.script : job.message}
+                      {job.runKind === "script" || job.runKind === "auto"
+                        ? job.script
+                        : job.message}
                     </Typography>
                     <Stack
                       direction="row"
@@ -4375,6 +4388,17 @@ export function Workspace({ me }: { me: Me }) {
           <Reports subscribe={subscribe} />
         </Box>
 
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: tab === "dashboards" ? "flex" : "none",
+            flexDirection: "column",
+          }}
+        >
+          <PluginDashboardsView tabs={pluginTabs} />
+        </Box>
+
         <Drawer
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
@@ -4440,6 +4464,15 @@ export function Workspace({ me }: { me: Me }) {
                 <BugReportIcon />
                 <ListItemText primary="Reports" />
               </ListItemButton>
+              {pluginTabs.length > 0 ? (
+                <ListItemButton
+                  selected={tab === "dashboards"}
+                  onClick={() => goTab("dashboards")}
+                >
+                  <ExtensionIcon />
+                  <ListItemText primary="Dashboards" />
+                </ListItemButton>
+              ) : null}
             </List>
             <Divider />
             <Stack direction="row" spacing={1} alignItems="center">
@@ -4702,12 +4735,15 @@ export function Workspace({ me }: { me: Me }) {
                   label="Run as"
                   value={cronRunKind}
                   onSelect={(value) =>
-                    setCronRunKind(value as "prompt" | "script" | "both")
+                    setCronRunKind(
+                      value as "prompt" | "script" | "both" | "auto",
+                    )
                   }
                 >
                   <option value="prompt">Prompt</option>
                   <option value="script">Script</option>
                   <option value="both">Script then prompt</option>
+                  <option value="auto">Script, agent only if flagged</option>
                 </Select>
                 {cronRunKind !== "script" ? (
                   <TextField
@@ -4731,6 +4767,13 @@ export function Workspace({ me }: { me: Me }) {
                       setCronScript(event.currentTarget.value)
                     }
                   />
+                ) : null}
+                {cronRunKind === "auto" ? (
+                  <Typography variant="caption" color="textSecondary">
+                    The script runs first; the agent wakes only when a line of
+                    its output starts with [cron-agent]. Silent runs post
+                    nothing.
+                  </Typography>
                 ) : null}
                 {cronEditId ? (
                   <Typography variant="caption" color="textSecondary">

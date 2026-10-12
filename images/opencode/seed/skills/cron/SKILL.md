@@ -5,7 +5,7 @@ description: Schedule recurring or one-time tasks with ob-cron. Use when the use
 
 # Cron jobs
 
-Use the `ob-cron` CLI to manage scheduled jobs. Jobs live in the control plane: they survive desktop restarts and wake the desktop when they fire. A prompt job runs in a temporary session. The full result is copied into the job's thread and kept as a notification in the Cron tab, then that temporary session is deleted. A script job runs a shell command and posts its output to the thread the same way. A job with both runs the script first and adds that output to the prompt. Each run pushes into the same job thread; if that thread was deleted, the next run creates another and pushes there.
+Use the `ob-cron` CLI to manage scheduled jobs. Jobs live in the control plane: they survive desktop restarts and wake the desktop when they fire. A prompt job runs in a temporary session. The full result is copied into the job's thread and kept as a notification in the Cron tab, then that temporary session is deleted. A script job runs a shell command and posts its output to the thread the same way. A job with both runs the script first and adds that output to the prompt. An auto job runs the script and wakes the agent only when the output asks for it. Each run pushes into the same job thread; if that thread was deleted, the next run creates another and pushes there.
 
 List jobs:
 
@@ -20,6 +20,7 @@ ob-cron add --name "daily-report" --message "Write today's report from the works
 ob-cron add --name "hourly-check" --message "Check the log and summarize changes" --every 3600 --model grok/grok-4.5 --persona designer
 ob-cron add --name "disk" --script "df -h" --every 3600
 ob-cron add --name "digest" --script "git -C /home/agent/workspace log -1 --oneline" --message "Summarize this and say if anything needs attention" --cron "0 13 * * *"
+ob-cron add --name "guard" --script "bash /home/agent/workspace/check-plugin.sh" --message "Handle what the output lists" --run auto --cron "0 14 * * *"
 ob-cron add --name "one-shot" --message "Review the PR and leave notes" --at 2026-12-01T15:00:00Z
 ```
 
@@ -28,6 +29,7 @@ How a job runs:
 - `--message` alone is a prompt. The agent runs it in a temporary session.
 - `--script` alone runs that shell command as you in `/home/agent/workspace`. Stdout and stderr are posted to the job thread. No agent runs.
 - Both flags run the script first, add its output and exit code to the prompt, then the agent runs. Only the agent's result is posted.
+- `--run auto` runs the script and wakes the agent only when a line of its output starts with `[cron-agent]`. The marker lines are stripped and the rest is added to the prompt. A silent run (no marker) costs nothing: nothing is posted and no agent runs. A script that fails to start, times out, or exits non-zero posts its output as an error instead. Prefer auto for watchdogs and guard jobs that usually have nothing to do.
 - A script can be a command or a file path, such as `bash /home/agent/workspace/check.sh`.
 
 Optional run choice:
@@ -41,6 +43,7 @@ Change a job later. `--script` does not change the mode by itself; pass `--run`.
 ob-cron set JOB_ID --model grok/grok-4.5 --persona designer
 ob-cron set JOB_ID --run script --script "df -h"
 ob-cron set JOB_ID --run both --script "df -h" --message "Say if the disk is nearly full"
+ob-cron set JOB_ID --run auto --script "bash /home/agent/workspace/check.sh" --message "Handle what the output lists"
 ob-cron set JOB_ID --clear-model --clear-persona
 ob-cron set JOB_ID --clear-script --run prompt
 ```

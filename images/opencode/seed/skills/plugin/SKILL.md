@@ -9,7 +9,7 @@ Plugins extend what you can do: skills, personalities, scheduled jobs, desktop t
 
 ## When you lack a capability
 
-When a task needs something you cannot do with current tools, skills, or plugins, plan a plugin instead of giving up or hand-rolling a one-off:
+When a task needs something you cannot do with current tools, skills, or plugins, search the marketplace before building anything: run `ob-plugin search` with keywords from the task (plus `ob-plugin info <id>` on candidates). If a maintained plugin fits, install it with `ob-plugin install <id>` — the instance's install policy still applies, so `manual` mode shows the user a consent dialog — and skip the rest of this section. Only build a plugin instead of giving up or hand-rolling a one-off when the search finds nothing suitable, a candidate falls short of the task, or the marketplace is unreachable:
 
 1. Scaffold: `ob-plugin new <slug>` creates `~/plugins-create/<slug>/` with `open-bot.plugin.json` and a README.
 2. Implement: fill the manifest following the JSON schema at `~/.config/opencode/skills/plugin/open-bot.plugin.schema.json` — read it before writing any field you are unsure about; every field name, pattern, and limit is defined there, and unknown fields are rejected. Inline sections: `skills`, `personas`, `cron`, `tools`, `configs`, `setup`, `hooks`, `permissions`, `dashboard`, `textbox`, `opencode`. Tool files are plain scripts installed into `/usr/local/bin`. Larger text payloads go in `files[]` (`{name, source, exec}` — repo-relative paths shipped in the release tarball, installed next to tools). `configs[]` are settings shown on the Plugins page — give each a `type` (`string` default, `bool`, `number`, `enum` with `options[]`, `secret`) so the user gets a proper input and values are validated. `hooks[]` run a short prompt in a hidden worker thread when `session.idle` or `thread.created` fires (max 8, capped at 20 runs/day per plugin; worker threads never re-trigger hooks — use them for reactive automation, not loops). `permissions.notifications: true` lets the plugin's tools and skills post dashboard notifications with `ob-plugin notify <id> "title" "body"`. `opencode.agents` registers new agent workers (built-in names are rejected); `opencode.agentTools` patches tool globs on existing agents (e.g. `{"build": {"myplugin_*": false}}`); `opencode.agentsMd` is a short block of standing instructions (max 4000 chars) injected next to AGENTS.md for as long as the plugin is installed — durable behavioral rules the agent must always follow, never secrets and never per-task prompts. `setup.commands` are shell commands run as root in the desktop at install and re-run after every desktop recreate — use them for environment setup the plugin needs (e.g. `"sudo apt-get install -y figlet"`); keep them idempotent and minimal, and pair destructive ones with `setup.uninstall` cleanup. Helper sessions the plugin spawns (worker pipelines, batch jobs) must be titled with the `worker:` prefix so they stay out of the dashboard thread list (same convention as `cron-run:`).
@@ -93,6 +93,48 @@ ob-plugin notify weather-pro "Backup done" "3 files copied"   # dashboard notifi
 ```
 
 Install respects the instance policy: `manual` asks the user to confirm the permission list (a `--yes` flag skips only when the policy allows it), `auto` installs immediately. To report a bug in a plugin you use, prefer `ob-plugin issue` — the creator's guard cron picks it up within a day. While developing or stress-testing a plugin from a local checkout, file findings with `ob-report` instead (see the `report` skill): reports stay on this desktop, other threads can fix them, and the user tracks them in the dashboard Reports view with `@reports/<slug>` mentions.
+
+## Dashboard pages (live plugin dashboards)
+
+A plugin can ship a dashboard: a view in the workspace drawer's Dashboards list where the user sees live data and can act on it (stock lists, trackers, admin panels). Two building blocks in the manifest:
+
+- `dashboard.pages: { "entry": "server.js" }` — declares a page server: `server.js` must be a `files[]` payload (a Bun HTTP server). The control plane installs it next to tools and runs it with Bun at install, at enable, and after every desktop restart, on a port it manages. Env: `OPEN_BOT_PAGE_PORT` (listen port), `OPEN_BOT_PAGE_TOKEN` (shared secret; check `x-open-bot-page-token` on requests if you want), `OPEN_BOT_PLUGIN_ID`. Settings and vault keys arrive through the same `~/.config/open-bot/plugin-<id>.json` config file tools get. Implement `GET /healthz` (any response counts as healthy).
+- `dashboard.tabs[]` — what the user sees in the Dashboards view:
+  - `kind: "app"` — your server's full UI, proxied same-origin by the control plane under `/api/pages/<pluginId>/` (so `fetch("/api/items")` from your page hits your server; relative paths just work). Streaming (SSE) and WebSockets pass through. Optional `path` (default `/`).
+  - `kind: "page"` with `dataUrl` + `pollSeconds` — the dashboard polls your server for JSON and feeds it to declarative `cards` (stat/table/list/markdown with `$.path` bindings). No HTML needed for read-only views.
+
+Minimal stock-list example:
+
+```json
+{
+  "dashboard": {
+    "pages": { "entry": "server.js" },
+    "tabs": [
+      { "id": "stock", "title": "Stock", "kind": "app" },
+      { "id": "summary", "title": "Summary", "kind": "page", "dataUrl": "/api/summary", "pollSeconds": 15,
+        "cards": [{ "kind": "table", "columns": ["Item", "Qty"], "rows": "$.rows" }] }
+    ]
+  }
+}
+```
+
+```js
+// files: [{ "name": "server.js", "source": "server/server.js", "exec": true }]
+const items = [{ name: "Widget", qty: 12 }]
+Bun.serve({
+  port: Number(process.env.OPEN_BOT_PAGE_PORT ?? 4740),
+  fetch(req) {
+    const url = new URL(req.url)
+    if (url.pathname === "/healthz") return new Response("ok")
+    if (url.pathname === "/api/summary")
+      return Response.json({ rows: items.map((i) => [i.name, String(i.qty)]) })
+    if (url.pathname === "/") return new Response(indexHtml(), { headers: { "content-type": "text/html" } })
+    return new Response("not found", { status: 404 })
+  },
+})
+```
+
+Keep page servers stateless across restarts or persist under `/home/agent/.open-bot/pages-data/<pluginId>/` (the home volume survives updates).
 
 ## Rules
 

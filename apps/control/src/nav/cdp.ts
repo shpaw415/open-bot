@@ -370,7 +370,8 @@ export const PROBE = `(() => {
   const bag = window.__obnav || (window.__obnav = { map: new WeakMap(), n: 1 })
   const selector = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'
   const chrome = 'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]'
-  const tiers = [[], [], [], []]
+  const entry = 'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]), [role="textbox"], [role="searchbox"]'
+  const tiers = [[], [], [], [], []]
   for (const el of document.querySelectorAll(selector)) {
     const rect = el.getBoundingClientRect()
     if (rect.width < 2 || rect.height < 2) continue
@@ -396,23 +397,29 @@ export const PROBE = `(() => {
     const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
     item.actionable = !center || el === center || el.contains(center)
     if (el.tagName === "SELECT") item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
-    // 0 search controls, 1 body content, 2 same-document anchors (TOC jumps),
-    // 3 site chrome and settings checkboxes. Anchors get a bounded reserve so
-    // sticky TOCs cannot crowd article links out of the window, while section
-    // jumps stay offered on content-heavy pages.
-    let tier = 3
-    if (el.closest('[role="search"]')) tier = 0
-    else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 2 : 1
-    else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 1
+    // 0 text-entry targets (composers, chat boxes, form fields), 1 search
+    // controls, 2 body content, 3 same-document anchors (TOC jumps), 4 site
+    // chrome and settings checkboxes. Text entry leads because a window that
+    // floods with content buttons must still offer the field the user is
+    // about to type into (messenger.com conversations keep the composer at
+    // the end of the DOM). Anchors get a bounded reserve so sticky TOCs
+    // cannot crowd article links out of the window, while section jumps
+    // stay offered on content-heavy pages.
+    let tier = 4
+    if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 0
+    else if (el.closest('[role="search"]')) tier = 1
+    else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 3 : 2
+    else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 2
     tiers[tier].push(item)
   }
   const out = []
   const remaining = () => max - out.length
-  const reserve = Math.min(tiers[2].length, 6)
+  const reserve = Math.min(tiers[3].length, 6)
   out.push(...tiers[0].slice(0, remaining()))
-  out.push(...tiers[1].slice(0, Math.max(remaining() - reserve, 0)))
-  out.push(...tiers[2].slice(0, Math.min(reserve, remaining())))
-  out.push(...tiers[3].slice(0, remaining()))
+  out.push(...tiers[1].slice(0, remaining()))
+  out.push(...tiers[2].slice(0, Math.max(remaining() - reserve, 0)))
+  out.push(...tiers[3].slice(0, Math.min(reserve, remaining())))
+  out.push(...tiers[4].slice(0, remaining()))
   return {
     url: location.href,
     title: document.title,
@@ -421,6 +428,6 @@ export const PROBE = `(() => {
     can_scroll_up: window.scrollY > 8,
     scroll_y: Math.round(window.scrollY),
     elements: out,
-    elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length > max,
+    elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length + tiers[4].length > max,
   }
 })()`

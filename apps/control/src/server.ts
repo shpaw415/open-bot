@@ -102,6 +102,7 @@ import {
   personaSystem,
   resolvePersona,
 } from "./personas"
+import { handlePluginPagesStatus, proxyPluginPage } from "./plugin-pages"
 import { handlePlugins } from "./plugins"
 import {
   mintPreviewToken,
@@ -677,6 +678,21 @@ export function createServer(
         }
         if (url.pathname.startsWith("/api/preview/frame/"))
           return await proxyPreview(req, url, server)
+        if (url.pathname.startsWith("/api/pages/")) {
+          // Plugin pages proxy long-lived responses (SSE); no idle timeout.
+          server.timeout(req, 0)
+          const pageUser = userFrom(req, db)
+          if (!pageUser) return json({ error: "unauthorized" }, 401)
+          return (
+            (await proxyPluginPage(req, url, db, pageUser, hub, server)) ??
+            new Response("not found", { status: 404 })
+          )
+        }
+        if (url.pathname === "/api/pages") {
+          const pageUser = userFrom(req, db)
+          if (!pageUser) return json({ error: "unauthorized" }, 401)
+          return await handlePluginPagesStatus(db, pageUser)
+        }
         if (url.pathname.startsWith("/api/"))
           return await api(req, url, db, hub, () => server.timeout(req, 0))
         if (url.pathname.startsWith("/desktop/"))
@@ -2462,7 +2478,10 @@ async function handleCron(
     const runKind =
       body.runKind === undefined ? "prompt" : parseRunKind(body.runKind)
     if (!runKind)
-      return json({ error: "runKind must be prompt, script, or both" }, 400)
+      return json(
+        { error: "runKind must be prompt, script, both, or auto" },
+        400,
+      )
     const normalized = normalizeCronRun({
       runKind,
       message: String(body.message ?? ""),
@@ -2538,7 +2557,10 @@ async function handleCron(
       const runKind =
         body.runKind === undefined ? job.runKind : parseRunKind(body.runKind)
       if (!runKind)
-        return json({ error: "runKind must be prompt, script, or both" }, 400)
+        return json(
+          { error: "runKind must be prompt, script, both, or auto" },
+          400,
+        )
       const message =
         body.message === undefined ? job.message : String(body.message ?? "")
       const script =

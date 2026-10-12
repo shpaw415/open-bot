@@ -32,7 +32,7 @@ ob-page --session SESSION click 7
 ob-page --session SESSION type 3 "some text"
 ```
 
-`read` prints one JSON line: url, title, viewport, scroll position, and visible controls with stable ids. Use those ids for `click` and `type`. `read` again after the page moves; ids die with a navigation. Clicks are occlusion-checked; a covered target says `target covered`.
+`read` prints one JSON line: url, title, viewport, scroll position, and visible controls with stable ids. Text-entry targets (composers, search boxes, form fields) are always included even when content controls flood the window. Use those ids for `click` and `type`. `read` again after the page moves; ids die with a navigation. Clicks are occlusion-checked; a covered target says `target covered`.
 
 Use only `ob-vnc --session SESSION` for pixels when the DOM path fails. Do not call `vncdo`. Do not pass `-s`, a host, or a port. Do not use `$OPEN_BOT_VNC`. Do not print secrets. Twenty fallback actions per task is the budget. Only after that, stop input and end with `![screen](open-bot://screen)`.
 

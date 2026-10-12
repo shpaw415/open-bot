@@ -1,0 +1,35 @@
+{
+  "$schema": "../../packages/plugin-kit/schema/open-bot.plugin.schema.json",
+  "id": "stock-dashboard",
+  "name": "Stock Dashboard",
+  "version": "1.0.0",
+  "description": "Example plugin dashboard: a live stock list with its own API for adds, removes, and live updates.",
+  "author": "open-bot",
+  "repo": "shpaw415/open-bot-plugin-stock-dashboard",
+  "category": "utilities",
+  "tags": ["example", "dashboard", "stock"],
+  "files": [
+    { "name": "server.js", "source": "server/server.js", "exec": true }
+  ],
+  "dashboard": {
+    "pages": { "entry": "server.js" },
+    "tabs": [
+      { "id": "stock", "title": "Stock", "kind": "app" },
+      {
+        "id": "summary",
+        "title": "Summary",
+        "kind": "page",
+        "dataUrl": "/api/summary",
+        "pollSeconds": 10,
+        "cards": [
+          { "kind": "stat", "label": "Items in stock", "value": "$.count" },
+          {
+            "kind": "table",
+            "columns": ["Item", "Qty"],
+            "rows": "$.rows"
+          }
+        ]
+      }
+    ]
+  }
+}

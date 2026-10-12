@@ -5,6 +5,7 @@ import {
   endpoint,
   isRunning,
   onDesktopReady,
+  pluginSetupDone,
   startDesktop,
   stopDesktop,
 } from "./docker"
@@ -31,6 +32,7 @@ function busyIds(status: unknown): string[] {
 let restarted = 0
 let failed = 0
 let skipped = 0
+const restartedIds: string[] = []
 for (const userId of db.desktopUserIds()) {
   const desktop = db.desktop(userId)
   if (!desktop) continue
@@ -69,6 +71,7 @@ for (const userId of db.desktopUserIds()) {
       auth.chatKeys,
     )
     db.touchDesktop(userId)
+    restartedIds.push(userId)
     restarted += 1
     console.log(`restarted ${names(userId).opencode}`)
   } catch (error) {
@@ -86,4 +89,15 @@ if (restarted === 0 && failed === 0 && skipped === 0)
   console.log("no running desktops")
 if (skipped > 0)
   console.log("busy desktops keep the old image until their next idle restart")
+
+// The desktop start fires the plugin boot re-apply in this process; it wipes
+// and reinstalls everything a plugin kept outside the /home and /usr/local
+// volumes. Wait for it, or process.exit below kills it mid-run and the
+// plugin installation does not survive the update.
+for (const userId of restartedIds) {
+  const name = names(userId).opencode
+  console.log(`waiting for plugin re-apply on ${name}`)
+  await pluginSetupDone(userId)
+}
+
 process.exit(failed > 0 ? 1 : 0)

@@ -194,7 +194,7 @@ export const cronJobs = sqliteTable(
     providerId: text("provider_id"),
     modelId: text("model_id"),
     personaId: text("persona_id"),
-    runKind: text("run_kind", { enum: ["prompt", "script", "both"] })
+    runKind: text("run_kind", { enum: ["prompt", "script", "both", "auto"] })
       .notNull()
       .default("prompt"),
     script: text("script"),

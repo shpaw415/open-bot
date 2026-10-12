@@ -146,24 +146,30 @@ test("enter script falls back to a submit button when Enter changes nothing", as
   expect(script).toContain("/search|submit|recherch|suchen|buscar|find/i")
 })
 
-test("probe ranks search, content, anchors, chrome — in that order", async () => {
+test("probe ranks text entry, search, content, anchors, chrome — in that order", async () => {
   const { PROBE } = (await import("./cdp")) as { PROBE: string }
   expect(PROBE.startsWith("(() => {")).toBe(true)
   expect(PROBE).toContain(
     'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]',
   )
-  const allAt = PROBE.indexOf("const tiers = [[], [], [], []]")
-  const sortAt = PROBE.indexOf("const reserve = Math.min(tiers[2].length, 6)")
+  const allAt = PROBE.indexOf("const tiers = [[], [], [], [], []]")
+  const sortAt = PROBE.indexOf("const reserve = Math.min(tiers[3].length, 6)")
   const sliceAt = PROBE.indexOf(
-    "out.push(...tiers[2].slice(0, Math.min(reserve, remaining())))",
+    "out.push(...tiers[3].slice(0, Math.min(reserve, remaining())))",
   )
   expect(allAt).toBeGreaterThan(-1)
   expect(sortAt).toBeGreaterThan(allAt)
   expect(sliceAt).toBeGreaterThan(sortAt)
-  expect(PROBE).toContain("if (el.closest('[role=\"search\"]')) tier = 0")
-  expect(PROBE).toContain("tier = el.closest(chrome) ? 2 : 1")
   expect(PROBE).toContain(
-    "elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length > max",
+    'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]), [role="textbox"], [role="searchbox"]',
+  )
+  expect(PROBE).toContain(
+    "if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 0",
+  )
+  expect(PROBE).toContain("if (el.closest('[role=\"search\"]')) tier = 1")
+  expect(PROBE).toContain("tier = el.closest(chrome) ? 3 : 2")
+  expect(PROBE).toContain(
+    "elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length + tiers[4].length > max",
   )
   expect(PROBE).not.toContain("if (out.length >= max) break")
 })

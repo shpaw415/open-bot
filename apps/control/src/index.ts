@@ -30,6 +30,7 @@ import { setFileWatchSink } from "./file-watch"
 import { resolveDesktopProviders } from "./key-vault"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
 import { dispatchPluginHooks } from "./plugin-hooks"
+import { convertGuardCrons } from "./plugins"
 import { reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStatsSampler } from "./stats"
@@ -88,7 +89,11 @@ const hub = new EventHub(
 )
 onDesktopReady((userId) => {
   hub.ensurePump(userId)
-  return reapplyPluginSetup(db, userId)
+  // The boot re-apply rewrites setup state and the applied init log; a finished
+  // run refreshes any Plugins page watching this desktop.
+  return reapplyPluginSetup(db, userId).then(() => {
+    hub.emit(userId, { type: "plugins.changed" })
+  })
 })
 // Background pumps for already-running desktops so plugin hooks, media
 // capture, and other event observers work with no dashboard attached.
@@ -112,6 +117,7 @@ if (servers.length === 0) {
   throw new Error("open-bot failed to bind any address")
 }
 
+convertGuardCrons(db, hub)
 startCronScheduler(db, hub)
 startStuckWatch(db, hub)
 startBackupScheduler(db)

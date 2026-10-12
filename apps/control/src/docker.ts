@@ -546,13 +546,18 @@ async function startDesktopInner(
     }
   }
   if (createdOpencode && desktopReadyHook) {
-    desktopReadyHook(userId).catch((error: unknown) => {
-      console.error(
-        `plugin setup after ${n.opencode} start failed: ${
-          error instanceof Error ? error.message : error
-        }`,
-      )
-    })
+    const job = desktopReadyHook(userId)
+    pluginSetups.set(
+      userId,
+      job.catch((error: unknown) => {
+        console.error(
+          `plugin setup after ${n.opencode} start failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      }),
+    )
+    pluginSetups.get(userId)?.finally(() => pluginSetups.delete(userId))
   }
 
   if (!(await isRunning(n.computer))) {
@@ -1150,8 +1155,18 @@ export async function removePluginTools(
 // /usr/local and /home volumes has to be redone.
 let desktopReadyHook: ((userId: string) => Promise<void>) | null = null
 
+// Tracks the in-flight boot re-apply per user so callers that own the process
+// lifetime (recycle) can wait for it instead of killing it on exit.
+const pluginSetups = new Map<string, Promise<void>>()
+
 export function onDesktopReady(hook: (userId: string) => Promise<void>) {
   desktopReadyHook = hook
+}
+
+// Resolves when the plugin boot re-apply started by the last desktop (re)create
+// has finished — immediately when none is running.
+export function pluginSetupDone(userId: string): Promise<void> {
+  return pluginSetups.get(userId) ?? Promise.resolve()
 }
 
 export type PluginInitResult = {

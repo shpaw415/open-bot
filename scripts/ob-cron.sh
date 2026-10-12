@@ -9,10 +9,10 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-cron add --name NAME (--message TEXT | --script TEXT | both) (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601) [--model PROVIDER/MODEL] [--persona ID]
+  ob-cron add --name NAME (--message TEXT | --script TEXT | both) (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601) [--run prompt|script|both|auto] [--model PROVIDER/MODEL] [--persona ID]
   ob-cron list
   ob-cron models
-  ob-cron set ID [--run prompt|script|both] [--script TEXT | --clear-script] [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
+  ob-cron set ID [--run prompt|script|both|auto] [--script TEXT | --clear-script] [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
   ob-cron remove ID
   ob-cron run ID
 
@@ -25,6 +25,9 @@ Run options:
   --message TEXT           prompt for the agent. Alone, the job is a prompt.
   --script TEXT            shell command run as you in /home/agent/workspace. Alone, its output is posted to the job thread.
                            With --message, the output is added to the prompt and the agent's result is posted.
+  --run KIND               override the mode: prompt, script, both, or auto. auto runs the script and wakes the
+                           agent only when a line of its output starts with [cron-agent]; silent runs cost nothing.
+                           A script that fails or exits non-zero posts its output as an error instead.
   --model PROVIDER/MODEL   model for the temporary run. Omit to use the desktop default. Ignored for script-only jobs.
   --persona ID             personality that runs the job. Omit for Assistant. Does not change the job thread.
 
@@ -32,6 +35,7 @@ Examples:
   ob-cron add --name standup --message "Summarize git log since yesterday" --cron "0 13 * * 1-5" --model grok/grok-4.5 --persona designer
   ob-cron add --name disk --script "df -h" --every 3600
   ob-cron add --name digest --script "git -C /home/agent/workspace log -1 --oneline" --message "Summarize this and say if anything needs attention" --cron "0 13 * * 1-5"
+  ob-cron add --name guard --script ~/check-plugin.sh --message "Fix what the output lists" --run auto --cron "0 14 * * *"
   ob-cron models
   ob-cron set 3f2b... --run script --script "df -h"
   ob-cron set 3f2b... --clear-model --persona assistant
@@ -88,6 +92,7 @@ case "$cmd" in
     at=""
     model=""
     persona=""
+    run=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --name)
@@ -99,6 +104,9 @@ case "$cmd" in
         --script)
           [ $# -ge 2 ] || { usage; exit 2; }
           script="$2"; shift 2 ;;
+        --run)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          run="$2"; shift 2 ;;
         --every)
           [ $# -ge 2 ] || { usage; exit 2; }
           every="$2"; shift 2 ;;
@@ -163,6 +171,15 @@ case "$cmd" in
         run_kind="script"
       fi
     fi
+    if [ -n "$run" ]; then
+      case "$run" in
+        prompt|script|both|auto) run_kind="$run" ;;
+        *)
+          echo "ob-cron: --run must be prompt, script, both, or auto" >&2
+          exit 2
+          ;;
+      esac
+    fi
     body=$(jq -n --arg name "$name" --arg message "$message" --arg kind "$kind" --arg runKind "$run_kind" \
       --argjson every "$every_json" --argjson cron "$cron_json" --argjson at "$at_json" \
       --argjson provider "$provider_json" --argjson model "$model_json" --argjson persona "$persona_json" \
@@ -180,7 +197,7 @@ case "$cmd" in
         if .kind == "cron" then (.cronExpr // "")
         elif .kind == "every" then "every \(.everySeconds)s"
         else "at \((.atMs / 1000 | strftime("%Y-%m-%dT%H:%M:%SZ")) // "")"
-        end)\(if .runKind == "script" or .runKind == "both" then " run=\(.runKind)" else "" end)\(if .providerId and .modelId then " model=\(.providerId)/\(.modelId)" else "" end)\(if .personaId then " persona=\(.personaId)" else "" end)\(if .enabled then "" else " (disabled)" end) runs=\(.runCount)"'
+        end)\(if .runKind == "script" or .runKind == "both" or .runKind == "auto" then " run=\(.runKind)" else "" end)\(if .providerId and .modelId then " model=\(.providerId)/\(.modelId)" else "" end)\(if .personaId then " persona=\(.personaId)" else "" end)\(if .enabled then "" else " (disabled)" end) runs=\(.runCount)"'
     ;;
   models)
     out=$(request GET /api/cron/models)
@@ -242,8 +259,8 @@ case "$cmd" in
       echo "ob-cron: pass only one of --script or --clear-script" >&2
       exit 2
     fi
-    if [ -n "$run" ] && [ "$run" != "prompt" ] && [ "$run" != "script" ] && [ "$run" != "both" ]; then
-      echo "ob-cron: --run must be prompt, script, or both" >&2
+    if [ -n "$run" ] && [ "$run" != "prompt" ] && [ "$run" != "script" ] && [ "$run" != "both" ] && [ "$run" != "auto" ]; then
+      echo "ob-cron: --run must be prompt, script, both, or auto" >&2
       exit 2
     fi
     if [ -z "$model" ] && [ "$clear_model" -eq 0 ] && [ -z "$persona" ] && [ "$clear_persona" -eq 0 ] && [ -z "$name" ] && [ -z "$message" ] && [ -z "$run" ] && [ -z "$script" ] && [ "$clear_script" -eq 0 ]; then

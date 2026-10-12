@@ -174,7 +174,13 @@ export function cronPrompt(
 }
 
 export function parseRunKind(value: unknown): CronRunKind | null {
-  if (value === "prompt" || value === "script" || value === "both") return value
+  if (
+    value === "prompt" ||
+    value === "script" ||
+    value === "both" ||
+    value === "auto"
+  )
+    return value
   return null
 }
 
@@ -206,6 +212,25 @@ export function clipScriptOutput(text: string): string {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
   if (normalized.length <= SCRIPT_OUTPUT_LIMIT) return normalized
   return `${normalized.slice(0, SCRIPT_OUTPUT_LIMIT - 1)}…`
+}
+
+/** Lines starting with this marker summon the agent for auto jobs. */
+export const CRON_AGENT_MARKER = "[cron-agent]"
+
+/**
+ * Whether an auto job's script output summons the agent (a line starting
+ * with the marker), and the output left once the marker lines are stripped.
+ */
+export function autoRunDecision(output: string): {
+  agent: boolean
+  output: string
+} {
+  const lines = output.split("\n")
+  const kept = lines.filter(
+    (line) => !line.trimStart().startsWith(CRON_AGENT_MARKER),
+  )
+  if (kept.length === lines.length) return { agent: false, output: "" }
+  return { agent: true, output: kept.join("\n").trim() }
 }
 
 const EXEC_FAILURE =
@@ -786,23 +811,21 @@ export async function fireCronJob(
     }
     const base = await endpoint(job.userId, "opencode", 4096)
 
-    const sessionId = await ensureDeliveryThread(
-      base,
-      headers,
-      job.sessionId,
-      job.name,
-    )
-    if (sessionId !== job.sessionId) db.setCronSession(job.id, sessionId)
-    const runKind =
-      job.runKind === "script" || job.runKind === "both"
-        ? job.runKind
-        : "prompt"
-    let personaLine: string | null = null
-    if (runKind !== "script" && job.personaId) {
-      const persona = resolvePersona(db, job.userId, job.personaId)
-      if (!persona) throw new Error("personality not found")
-      personaLine = personaSystem(persona)
+    // Created lazily: a quiet auto run (no sentinel, no error) must not
+    // resurrect a thread the user deleted.
+    const ensureThread = async () => {
+      const sid = await ensureDeliveryThread(
+        base,
+        headers,
+        job.sessionId,
+        job.name,
+      )
+      if (sid !== job.sessionId) db.setCronSession(job.id, sid)
+      return sid
     }
+
+    const runKind = job.runKind
+    let runAgent = runKind === "prompt" || runKind === "both"
     let scriptOutput: string | undefined
     let scriptExit: number | null | undefined
     if (runKind !== "prompt") {
@@ -810,9 +833,19 @@ export async function fireCronJob(
       const ran = interpretScriptRun(
         await opencodeScript(job.userId, job.script, SCRIPT_TIMEOUT_MS),
       )
-      if (runKind === "script" || scriptBlocksAgent(ran)) {
+      if (
+        runKind === "script" ||
+        scriptBlocksAgent(ran) ||
+        (runKind === "auto" && ran.code !== 0)
+      ) {
         const text = scriptThreadText(ran)
-        await postCronResult(base, headers, sessionId, job.name, text)
+        await postCronResult(
+          base,
+          headers,
+          await ensureThread(),
+          job.name,
+          text,
+        )
         db.createCronNotice({
           id: crypto.randomUUID(),
           userId: job.userId,
@@ -825,17 +858,32 @@ export async function fireCronJob(
         })
         hub?.emit(job.userId, { type: "cron.notices" })
         error = scriptJobError(ran)
+      } else if (runKind === "auto") {
+        const decision = autoRunDecision(ran.output)
+        if (decision.agent) {
+          runAgent = true
+          if (decision.output) {
+            scriptOutput = clipScriptOutput(decision.output)
+            scriptExit = ran.code
+          }
+        }
       } else {
         scriptOutput = clipScriptOutput(ran.output)
         scriptExit = ran.code
       }
     }
-    if (!error && runKind !== "script") {
+    if (!error && runAgent) {
+      let personaLine: string | null = null
+      if (job.personaId) {
+        const persona = resolvePersona(db, job.userId, job.personaId)
+        if (!persona) throw new Error("personality not found")
+        personaLine = personaSystem(persona)
+      }
       const runSessionId = await createSession(
         base,
         headers,
         `${CRON_RUN_TITLE} ${job.name}`,
-        sessionId,
+        await ensureThread(),
       )
       const screen = await ensureThreadScreen(db, job.userId, runSessionId)
       const runBody = cronRunBody({

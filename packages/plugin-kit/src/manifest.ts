@@ -211,11 +211,24 @@ export function validateConfigValue(
   }
 }
 
+// The plugin's page server: one payload file (a files[] entry) run as a Bun
+// HTTP server on the desktop. The control plane proxies it to the dashboard
+// under /api/pages/<pluginId>/… with SSE + WebSocket pass-through.
+export type PluginDashboardPages = {
+  entry: string
+}
+
 export type PluginTab = {
   id: string
   title: string
-  kind: "page" | "iframe"
+  kind: "page" | "iframe" | "app"
   url?: string
+  // "app" tabs: plugin-server-relative path to load (default "/").
+  path?: string
+  // "page" tabs: plugin-server-relative JSON path polled for live card data.
+  dataUrl?: string
+  // "page" tabs: poll interval for dataUrl (seconds).
+  pollSeconds?: number
   cards?: PluginCard[]
 }
 
@@ -274,6 +287,7 @@ export type PluginManifest = {
   setup?: PluginSetup
   hooks?: PluginHook[]
   dashboard?: {
+    pages?: PluginDashboardPages
     tabs?: PluginTab[]
   }
   textbox?: PluginTextbox
@@ -357,6 +371,10 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
       `Runs agent sessions on thread events (${manifest.hooks.map((hook) => hook.event).join(", ")}) in hidden worker threads`,
     )
   if (manifest.dashboard?.tabs?.length) summary.push("Adds dashboard tabs")
+  if (manifest.dashboard?.pages)
+    summary.push(
+      "Serves a live dashboard page (API + UI) from the desktop to the dashboard",
+    )
   if (manifest.textbox) summary.push("Extends the chat composer")
   const agents = Object.keys(manifest.opencode?.agents ?? {})
   if (agents.length > 0)
@@ -918,6 +936,47 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     if (!isRecord(dashboard)) {
       issues.push({ path: "dashboard", message: "dashboard must be an object" })
     } else {
+      const pages = dashboard.pages
+      if (pages !== undefined) {
+        if (!isRecord(pages)) {
+          issues.push({
+            path: "dashboard.pages",
+            message: "dashboard.pages must be an object",
+          })
+        } else {
+          const entry = str(pages.entry)
+          if (!entry || !FILE_NAME_PATTERN.test(entry)) {
+            issues.push({
+              path: "dashboard.pages.entry",
+              message:
+                "dashboard.pages.entry must be a files[] file name (lowercase letters, digits, dot, hyphen, underscore)",
+            })
+          } else {
+            const fileNames = new Set(
+              (Array.isArray(files) ? files : [])
+                .map((file) => str(file?.name))
+                .filter((name): name is string => Boolean(name)),
+            )
+            if (!fileNames.has(entry)) {
+              issues.push({
+                path: "dashboard.pages.entry",
+                message:
+                  "dashboard.pages.entry must be a declared files[] name",
+              })
+            }
+          }
+        }
+      }
+
+      // A helper for plugin-server-relative paths (app tab path, page tab
+      // dataUrl): root-relative, no traversal, capped length.
+      const pluginPathOk = (value: string) =>
+        value.startsWith("/") &&
+        value.length <= 200 &&
+        !value.includes("\0") &&
+        !value.includes("\\") &&
+        !(value.split("?")[0]?.includes("..") ?? false)
+
       const tabs = dashboard.tabs ?? []
       if (!Array.isArray(tabs) || tabs.length > 8) {
         issues.push({
@@ -926,6 +985,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
         })
       } else {
         const seen = new Set<string>()
+        const pagesDeclared = isRecord(pages) && typeof pages.entry === "string"
         for (const [index, tab] of tabs.entries()) {
           const path = `dashboard.tabs[${index}]`
           const tabId = str(tab?.id)
@@ -941,14 +1001,34 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
             issues.push({ path, message: "tab.title is required (max 48)" })
           }
           const kind = str(tab?.kind)
-          if (kind !== "page" && kind !== "iframe") {
-            issues.push({ path, message: "tab.kind must be page or iframe" })
-          } else if (
-            kind === "iframe" &&
-            !/^https?:\/\//.test(str(tab?.url) ?? "")
-          ) {
-            issues.push({ path, message: "iframe tab needs an http(s) url" })
-          } else if (kind === "page") {
+          if (kind !== "page" && kind !== "iframe" && kind !== "app") {
+            issues.push({
+              path,
+              message: "tab.kind must be page, iframe, or app",
+            })
+          } else if (kind === "iframe") {
+            if (!/^https?:\/\//.test(str(tab?.url) ?? "")) {
+              issues.push({ path, message: "iframe tab needs an http(s) url" })
+            }
+          } else if (kind === "app") {
+            if (!pagesDeclared) {
+              issues.push({
+                path,
+                message: "app tab needs dashboard.pages.entry declared",
+              })
+            }
+            const appPath = tab?.path
+            if (
+              appPath !== undefined &&
+              (typeof appPath !== "string" || !pluginPathOk(appPath))
+            ) {
+              issues.push({
+                path: `${path}.path`,
+                message:
+                  "app tab path must be a plugin-server-relative path starting with /",
+              })
+            }
+          } else {
             const cards = tab.cards ?? []
             if (
               !Array.isArray(cards) ||
@@ -960,6 +1040,42 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
               for (const [cardIndex, card] of cards.entries()) {
                 validateCard(card, `${path}.cards[${cardIndex}]`, issues)
               }
+            }
+            const dataUrl = tab?.dataUrl
+            if (
+              dataUrl !== undefined &&
+              (typeof dataUrl !== "string" || !pluginPathOk(dataUrl))
+            ) {
+              issues.push({
+                path: `${path}.dataUrl`,
+                message:
+                  "page tab dataUrl must be a plugin-server-relative path starting with /",
+              })
+            }
+            const poll = tab?.pollSeconds
+            if (poll !== undefined) {
+              if (
+                typeof poll !== "number" ||
+                !Number.isInteger(poll) ||
+                poll < 5 ||
+                poll > 3600
+              ) {
+                issues.push({
+                  path: `${path}.pollSeconds`,
+                  message: "page tab pollSeconds must be an integer (5-3600)",
+                })
+              } else if (typeof dataUrl !== "string") {
+                issues.push({
+                  path: `${path}.pollSeconds`,
+                  message: "pollSeconds needs a dataUrl",
+                })
+              }
+            }
+            if (tab?.url !== undefined || tab?.path !== undefined) {
+              issues.push({
+                path,
+                message: "page tab takes cards, not url/path",
+              })
             }
           }
         }
@@ -1141,7 +1257,12 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       : undefined,
     hooks: hooks as PluginHook[],
     dashboard: isRecord(input.dashboard)
-      ? { tabs: (input.dashboard.tabs ?? []) as PluginTab[] }
+      ? {
+          pages: isRecord(input.dashboard.pages)
+            ? (input.dashboard.pages as PluginDashboardPages)
+            : undefined,
+          tabs: (input.dashboard.tabs ?? []) as PluginTab[],
+        }
       : undefined,
     textbox: (input.textbox ?? undefined) as PluginTextbox | undefined,
     opencode: (input.opencode ?? undefined) as

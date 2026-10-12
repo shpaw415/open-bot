@@ -584,6 +584,12 @@ describe("cron store", () => {
     expect(scripted?.runKind).toBe("both")
     expect(scripted?.script).toBe("date")
     expect(scripted?.message).toBe("do it")
+    const auto = db.updateCronJob("j1", "a", {
+      runKind: "auto",
+      script: "check.sh",
+    })
+    expect(auto?.runKind).toBe("auto")
+    expect(auto?.script).toBe("check.sh")
 
     expect(db.deleteCronJob("j1", "b")).toBe(false)
     expect(db.deleteCronJob("j1", "a")).toBe(true)
