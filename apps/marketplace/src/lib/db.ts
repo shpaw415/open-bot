@@ -190,7 +190,9 @@ export async function searchPlugins(
   // Dev-only listings (the current listing version is a dev tag or a semver
   // prerelease) stay out of search until a stable version publishes.
   if (!opts.includeAll) {
-    clauses.push("version GLOB '[0-9]*' AND version NOT LIKE '%-%'")
+    clauses.push(
+      "latest_version GLOB '[0-9]*' AND latest_version NOT LIKE '%-%'",
+    )
   }
   if (opts.q) {
     clauses.push(
