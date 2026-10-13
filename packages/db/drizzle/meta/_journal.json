@@ -57,6 +57,13 @@
       "when": 1791772139171,
       "tag": "0007_chief_the_anarchist",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791869700986,
+      "tag": "0008_lame_tana_nile",
+      "breakpoints": true
     }
   ]
 }

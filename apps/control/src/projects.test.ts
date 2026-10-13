@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
   isProjectManageRequest,
+  opencodeFileUrl,
+  PLUGINS_ROOT,
   PROJECTS_ROOT,
+  projectCategory,
   projectDir,
   projectName,
   projectSubpath,
@@ -92,6 +95,25 @@ describe("project manage requests", () => {
   })
 })
 
+describe("project category", () => {
+  test("plugin projects point into plugins-create", () => {
+    expect(projectCategory("/home/agent/plugins-create/price-scout")).toBe(
+      "plugins",
+    )
+    expect(projectCategory(`${PLUGINS_ROOT}/a/b`)).toBe("plugins")
+    expect(projectCategory(PLUGINS_ROOT)).toBe("plugins")
+  })
+
+  test("everything else is general", () => {
+    expect(projectCategory("/home/agent/workspace/my-app")).toBe("general")
+    expect(projectCategory("/home/agent/plugins-create-other/x")).toBe(
+      "general",
+    )
+    expect(projectCategory("/home/agent/x")).toBe("general")
+    expect(projectCategory("/etc")).toBe("general")
+  })
+})
+
 describe("resolve custom project path", () => {
   test("accepts absolute folders under /home/agent", () => {
     expect(resolveCustomProjectPath("/home/agent/plugins-create/blender")).toBe(
@@ -113,5 +135,48 @@ describe("resolve custom project path", () => {
     expect(resolveCustomProjectPath(null)).toBeNull()
     expect(resolveCustomProjectPath(42)).toBeNull()
     expect(resolveCustomProjectPath(undefined)).toBeNull()
+  })
+})
+
+describe("opencode file url", () => {
+  const base = "http://ob-oc-x:4096"
+
+  test("re-roots the listing at the project folder", () => {
+    expect(
+      opencodeFileUrl(
+        base,
+        "list",
+        "/home/agent/plugins-create/x",
+        "/home/agent/plugins-create/x",
+      ),
+    ).toBe(
+      `${base}/file?path=%2Fhome%2Fagent%2Fplugins-create%2Fx&directory=%2Fhome%2Fagent%2Fplugins-create%2Fx`,
+    )
+  })
+
+  test("content route keeps subpaths inside the project", () => {
+    expect(
+      opencodeFileUrl(
+        base,
+        "content",
+        "/home/agent/workspace/app",
+        "/home/agent/workspace/app/src/a.ts",
+      ),
+    ).toBe(
+      `${base}/file/content?path=%2Fhome%2Fagent%2Fworkspace%2Fapp%2Fsrc%2Fa.ts&directory=%2Fhome%2Fagent%2Fworkspace%2Fapp`,
+    )
+  })
+
+  test("encodes spaces and odd names", () => {
+    expect(
+      opencodeFileUrl(
+        base,
+        "content",
+        "/home/agent/workspace/app",
+        "/home/agent/workspace/app/50% off.txt",
+      ),
+    ).toBe(
+      `${base}/file/content?path=%2Fhome%2Fagent%2Fworkspace%2Fapp%2F50%25%20off.txt&directory=%2Fhome%2Fagent%2Fworkspace%2Fapp`,
+    )
   })
 })

@@ -2,7 +2,6 @@ import type { Db, InstalledPlugin, User } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import { desktopPhase, endpoint } from "./docker"
 import { names } from "./env"
-import type { EventHub } from "./events"
 import { HttpError } from "./http-error"
 import { randomToken } from "./passwords"
 import {
@@ -11,6 +10,12 @@ import {
   type UpgradeServer,
 } from "./preview"
 import { sh } from "./shell"
+
+// Minimal hub shape so routes holding a plain {emit} can defer restarts too
+// (EventHub satisfies it structurally).
+type PageHub = {
+  emit: (userId: string, event: { type: string; properties?: unknown }) => void
+}
 
 // Plugin page servers: one Bun HTTP server per plugin (manifest
 // dashboard.pages.entry) on the desktop, proxied to the dashboard under
@@ -116,7 +121,7 @@ async function healthy(userId: string, pluginId: string, port: number) {
   return ok
 }
 
-function emitChanged(hub: EventHub, userId: string) {
+function emitChanged(hub: PageHub, userId: string) {
   try {
     hub.emit(userId, { type: "pages.changed" })
   } catch {
@@ -128,7 +133,7 @@ function emitChanged(hub: EventHub, userId: string) {
 export async function ensurePluginPageServer(
   userId: string,
   row: InstalledPlugin,
-  hub?: EventHub,
+  hub?: PageHub,
 ): Promise<number> {
   const manifest = row.manifest as PluginManifest
   const entry = manifest.dashboard?.pages?.entry
@@ -155,10 +160,18 @@ export async function ensurePluginPageServer(
   lastStart.set(key, Date.now())
 
   const port = await pickPort(userId, pluginId)
-  const token = randomToken()
   const n = names(userId)
-  const bin = pluginPageBin(pluginId, entry)
+  // Reuse the previous run's token so direct clients (the plugin's own page
+  // code) survive a restart; only an explicit stop rotates it.
   const pidFile = pluginPagePath(pluginId)
+  const prior = await opencodeExecUser(n.opencode, [
+    "sh",
+    "-c",
+    `cat '${pidFile}.token' 2>/dev/null || true`,
+  ])
+  const priorToken = prior.stdout.trim()
+  const token = /^[0-9a-f]{64}$/.test(priorToken) ? priorToken : randomToken()
+  const bin = pluginPageBin(pluginId, entry)
 
   const made = await opencodeExecUser(n.opencode, [
     "mkdir",
@@ -194,7 +207,7 @@ export async function ensurePluginPageServer(
       n.opencode,
       "sh",
       "-c",
-      `echo $$ > '${pidFile}.pid' && exec bun run '${bin}'`,
+      `echo $$ > '${pidFile}.pid' && printf '%s' '${token}' > '${pidFile}.token' && exec bun run '${bin}'`,
     ],
     undefined,
     30_000,
@@ -236,11 +249,13 @@ function opencodeExecUser(container: string, args: string[]) {
   ])
 }
 
-// Stops the plugin's page server (disable/uninstall). Best effort.
+// Stops the plugin's page server (disable/uninstall). Best effort. Restarts
+// keep the token file so clients keep working; explicit stops rotate it.
 export async function stopPluginPageServer(
   userId: string,
   pluginId: string,
-  hub?: EventHub,
+  hub?: PageHub,
+  keepToken = false,
 ) {
   const key = stateKey(userId, pluginId)
   states.delete(key)
@@ -248,10 +263,13 @@ export async function stopPluginPageServer(
   lastStart.delete(key)
   const n = names(userId)
   const pidFile = pluginPagePath(pluginId)
+  const files = keepToken
+    ? `'${pidFile}.pid'`
+    : `'${pidFile}.pid' '${pidFile}.token'`
   await opencodeExecUser(n.opencode, [
     "sh",
     "-c",
-    `if [ -f '${pidFile}.pid' ]; then kill "$(cat '${pidFile}.pid')" 2>/dev/null || true; rm -f '${pidFile}.pid'; fi`,
+    `if [ -f '${pidFile}.pid' ]; then kill "$(cat '${pidFile}.pid')" 2>/dev/null || true; fi; rm -f ${files}`,
   ]).catch(() => {})
   if (hub) emitChanged(hub, userId)
 }
@@ -261,13 +279,47 @@ export async function stopPluginPageServer(
 export async function restartPluginPageServer(
   userId: string,
   row: InstalledPlugin,
-  hub?: EventHub,
+  hub?: PageHub,
 ) {
-  await stopPluginPageServer(userId, row.pluginId)
+  await stopPluginPageServer(userId, row.pluginId, undefined, true)
   return ensurePluginPageServer(userId, row, hub)
 }
 
+const PAGE_RESTART_DELAY_MS = 2_000
+const pendingRestarts = new Map<string, ReturnType<typeof setTimeout>>()
+
+// Settings and vault saves ride on the page server itself (the page POSTs,
+// the server forwards to the control plane, the control plane restarts the
+// server). Restarting inline kills the request that triggered the save, so
+// defer past the response and coalesce bursts into one restart.
+export function schedulePluginPageRestart(
+  db: Db,
+  userId: string,
+  row: InstalledPlugin,
+  hub?: PageHub,
+) {
+  const key = stateKey(userId, row.pluginId)
+  const existing = pendingRestarts.get(key)
+  if (existing) clearTimeout(existing)
+  const timer = setTimeout(() => {
+    pendingRestarts.delete(key)
+    // The plugin may have been uninstalled or disabled while the restart
+    // waited — never resurrect a removed server.
+    const current = db.installedPlugin(userId, row.pluginId)
+    if (!current || !current.enabled) return
+    void restartPluginPageServer(userId, current, hub).catch(() => {})
+  }, PAGE_RESTART_DELAY_MS)
+  timer.unref?.()
+  pendingRestarts.set(key, timer)
+}
+
+export function pendingPluginPageRestartsCount() {
+  return pendingRestarts.size
+}
+
 export function clearPluginPageState() {
+  for (const timer of pendingRestarts.values()) clearTimeout(timer)
+  pendingRestarts.clear()
   states.clear()
   healthCache.clear()
   lastStart.clear()
@@ -379,7 +431,7 @@ export async function proxyPluginPage(
   url: URL,
   db: Db,
   user: User,
-  hub: EventHub,
+  hub: PageHub,
   server: UpgradeServer,
 ): Promise<Response | undefined> {
   const parsed = parsePluginPagePath(url.pathname)

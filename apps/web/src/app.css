@@ -450,14 +450,6 @@ body.ob-preview-dragging iframe {
   }
 }
 
-.ob-providers {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
 .ob-tty {
   flex: 1;
   min-height: 0;
@@ -610,6 +602,37 @@ body.ob-preview-dragging iframe {
 
 @media (prefers-reduced-motion: reduce) {
   .ob-unread-dot {
+    animation: none;
+  }
+}
+
+/* Dashboard home screen (mobile): app-tile edit mode + drag. */
+@keyframes ob-jiggle {
+  0%,
+  100% {
+    transform: rotate(-1.8deg);
+  }
+  50% {
+    transform: rotate(1.8deg);
+  }
+}
+
+.ob-tile-jiggle {
+  animation: ob-jiggle 0.3s ease-in-out infinite;
+  transform-origin: 50% 85%;
+}
+
+body.ob-home-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+body.ob-home-dragging iframe {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-tile-jiggle {
     animation: none;
   }
 }

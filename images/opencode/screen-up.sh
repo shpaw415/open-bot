@@ -27,19 +27,10 @@ chmod 1777 /tmp/.X11-unix
 profile=/home/agent/.config/chromium-threads/$session
 port=$((5900 + display))
 cdp=$((9222 + display))
-mkdir -p /home/agent/.open-bot/vnc /home/agent/.open-bot/cdp /home/agent/.open-bot/screens
+mkdir -p /home/agent/.open-bot/vnc /home/agent/.open-bot/cdp
 echo "computer::$port" >/home/agent/.open-bot/vnc/$session
 echo "$cdp" >/home/agent/.open-bot/cdp/$session
 chown -R agent:agent /home/agent/.open-bot
-state=/home/agent/.open-bot/screens/$session.url
-
-url=""
-if [ -f "$state" ]; then
-  candidate=$(head -c 2048 "$state" | tr -d "\r\n")
-  case $candidate in
-    http://* | https://*) url=$candidate ;;
-  esac
-fi
 
 pid_alive() {
   [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null
@@ -86,7 +77,7 @@ start_chromium() {
       --window-size=1920,1200 \
       --force-device-scale-factor=1 \
       --user-data-dir="$profile" \
-      "${url:-about:blank}"
+      about:blank
   else
     start_group chromium chromium \
       --no-sandbox \
@@ -103,13 +94,7 @@ start_chromium() {
       --window-size=1920,1200 \
       --force-device-scale-factor=1 \
       --user-data-dir="$profile" \
-      "${url:-about:blank}"
-  fi
-}
-
-start_urlwatch() {
-  if ! pid_alive "$run_dir/urlwatch.pid"; then
-    start_group urlwatch bun /opt/open-bot/url-watch.ts "$session" "$cdp" "$state"
+      about:blank
   fi
 }
 
@@ -124,13 +109,12 @@ if [ -f "$run_dir/display" ] && [ "$(cat "$run_dir/display")" = "$display" ]; th
       fix_prefs
       start_chromium
     fi
-    start_urlwatch
     echo "ok $display"
     exit 0
   fi
 fi
 
-for name in xvfb openbox chromium urlwatch; do
+for name in xvfb openbox chromium; do
   if [ -f "$run_dir/$name.pid" ]; then
     pid=$(cat "$run_dir/$name.pid")
     kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
@@ -158,6 +142,5 @@ done
 chmod 777 "/tmp/.X11-unix/X$display" || true
 start_group openbox openbox
 start_chromium
-start_urlwatch
 echo "$display" >"$run_dir/display"
 echo "ok $display"

@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  type Db,
   type Desktop,
   type ImageProvider,
   type Model3dProvider,
@@ -21,6 +22,7 @@ import {
   opencodeImage,
   vikingImage,
 } from "./env"
+import type { EventHub } from "./events"
 import { startFileWatch, stopFileWatch } from "./file-watch"
 import { HttpError } from "./http-error"
 import { imageAuthReady } from "./image-providers"
@@ -282,6 +284,21 @@ async function runDetached(args: string[]) {
   )
 }
 
+// Removes any leftover container with this name before running, and retries
+// once on a name conflict: two starters (recycle process, control boot sweep)
+// can race the rm and the run.
+async function removeAndRunDetached(name: string, args: string[]) {
+  await sh(["docker", "rm", "-f", name], undefined, 60_000)
+  try {
+    await runDetached(args)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/already in use/i.test(message)) throw error
+    await sh(["docker", "rm", "-f", name], undefined, 60_000)
+    await runDetached(args)
+  }
+}
+
 export async function startDesktop(
   userId: string,
   desktop: Desktop,
@@ -374,8 +391,7 @@ async function startDesktopInner(
         "viking_models_missing",
       )
     }
-    await sh(["docker", "rm", "-f", n.viking], undefined, 60_000)
-    await runDetached([
+    await removeAndRunDetached(n.viking, [
       "--name",
       n.viking,
       "--network",
@@ -411,8 +427,7 @@ async function startDesktopInner(
   if (!(await isRunning(n.opencode))) {
     createdOpencode = true
     await captureAptSnapshot(n.opencode, n.home)
-    await sh(["docker", "rm", "-f", n.opencode], undefined, 60_000)
-    await runDetached([
+    await removeAndRunDetached(n.opencode, [
       "--name",
       n.opencode,
       "--network",
@@ -538,7 +553,7 @@ async function startDesktopInner(
     if (chatKeys.length > 0) {
       try {
         const chat = await syncChatAuth(userId, auth, chatKeys)
-        if (chat.applied) await restartOpencode(userId)
+        if (chat.applied) await restartOpencode(userId, { desktop })
       } catch (error) {
         const message = error instanceof Error ? error.message : ""
         if (!message.includes("missing chat setup")) throw error
@@ -561,8 +576,7 @@ async function startDesktopInner(
   }
 
   if (!(await isRunning(n.computer))) {
-    await sh(["docker", "rm", "-f", n.computer], undefined, 60_000)
-    await runDetached([
+    await removeAndRunDetached(n.computer, [
       "--name",
       n.computer,
       "--network",
@@ -804,13 +818,128 @@ export function spawnProjectShell(
   }
 }
 
-export async function restartOpencode(userId: string) {
+export const RESTART_DRAIN_MAX_MS = 600_000
+const RESTART_DRAIN_POLL_MS = 5_000
+
+async function killOpencode(userId: string) {
   const n = names(userId)
   await sh(
     ["docker", "exec", n.opencode, "pkill", "-TERM", "-f", "opencode serve"],
     undefined,
     30_000,
   )
+}
+
+// True when the desktop's opencode server answers /session/status. A server
+// that does not answer is either stopped or mid-restart; its next boot loads
+// the pending config on its own, so no kill is needed.
+async function opencodeServing(userId: string, desktop: Desktop | null) {
+  if (!desktop) return false
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  try {
+    const base = await endpoint(userId, "opencode", 4096)
+    const response = await fetch(`${base}/session/status`, {
+      headers: {
+        authorization: `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`,
+      },
+      signal: AbortSignal.timeout(5_000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+// In-flight deferred restarts per user, so concurrent requests coalesce into
+// one poll-and-kill cycle. Production never awaits these; tests do.
+const deferredRestarts = new Map<string, Promise<void>>()
+
+/** The pending deferred restart for a user, if one is scheduled. */
+export function pendingRestart(userId: string) {
+  return deferredRestarts.get(userId)
+}
+
+function runDeferredRestart(
+  userId: string,
+  busy: (id: string) => Promise<boolean>,
+  serving: (id: string) => Promise<boolean>,
+  hub: EventHub | undefined,
+  deadline: number,
+  pollMs: number,
+) {
+  return (async () => {
+    let announced = false
+    while (await busy(userId)) {
+      if (!announced) {
+        announced = true
+        hub?.emit(userId, {
+          type: "opencode.restart.pending",
+          properties: {
+            message: "waiting for running threads before restarting OpenCode",
+          },
+        })
+      }
+      if (Date.now() >= deadline) {
+        hub?.emit(userId, {
+          type: "opencode.restart.forced",
+          properties: {
+            message: "threads still running; restarting OpenCode anyway",
+          },
+        })
+        break
+      }
+      await Bun.sleep(pollMs)
+    }
+    if (await serving(userId)) await killOpencode(userId)
+  })()
+}
+
+// Restarts the desktop's opencode server. A bare kill aborts every in-flight
+// turn and leaves tool parts frozen as "running", which then trips the
+// stuck-command watchdog on the session's next turn. So when threads are
+// busy, the restart is deferred: the caller returns at once, a poller waits
+// for the desktop to go idle (cap maxWaitMs, then kills anyway), and the new
+// config applies on the restart or — if the server dies first — on its next
+// boot. `force` still kills immediately for genuine emergencies.
+export async function restartOpencode(
+  userId: string,
+  opts: {
+    db?: Db
+    desktop?: Desktop | null
+    hub?: EventHub
+    force?: boolean
+    maxWaitMs?: number
+    pollMs?: number
+    busy?: (id: string) => Promise<boolean>
+    serving?: (id: string) => Promise<boolean>
+  } = {},
+) {
+  const maxWaitMs = opts.force ? 0 : (opts.maxWaitMs ?? RESTART_DRAIN_MAX_MS)
+  const desktop = opts.desktop ?? opts.db?.desktop(userId) ?? null
+  const busy = opts.busy ?? ((id: string) => desktopBusy(id, desktop))
+  const serving = opts.serving ?? ((id: string) => opencodeServing(id, desktop))
+  if (maxWaitMs > 0 && desktop && (await busy(userId))) {
+    const existing = deferredRestarts.get(userId)
+    if (existing) return
+    const run = runDeferredRestart(
+      userId,
+      busy,
+      serving,
+      opts.hub,
+      Date.now() + maxWaitMs,
+      opts.pollMs ?? RESTART_DRAIN_POLL_MS,
+    )
+    deferredRestarts.set(userId, run)
+    run
+      .finally(() => {
+        if (deferredRestarts.get(userId) === run)
+          deferredRestarts.delete(userId)
+      })
+      .catch(() => {})
+    return
+  }
+  await killOpencode(userId)
 }
 
 export async function syncImageAuth(
@@ -1149,6 +1278,64 @@ export async function removePluginTools(
   return true
 }
 
+export function pluginToolPrefix(pluginId: string) {
+  return `/usr/local/bin/ob-plugin-${pluginId}-`
+}
+
+// From an `ls -1` listing, the installed tool names this plugin owns that the
+// given manifest no longer declares (renames/drops leak binaries otherwise).
+export function stalePluginTools(
+  pluginId: string,
+  listing: string,
+  keepNames: string[],
+) {
+  const prefix = pluginToolPrefix(pluginId)
+  const keep = new Set(keepNames)
+  const stale: string[] = []
+  for (const line of listing.split("\n")) {
+    const full = line.trim()
+    if (!full.startsWith(prefix)) continue
+    const name = full.slice(prefix.length)
+    if (!name || keep.has(name) || !/^[\w.-]{1,64}$/.test(name)) continue
+    stale.push(name)
+  }
+  return stale
+}
+
+// Removes installed payload files the current manifest no longer declares.
+// Call on every install/reinstall so renamed files[] do not leave orphans.
+export async function prunePluginTools(
+  userId: string,
+  pluginId: string,
+  keepNames: string[],
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const prefix = pluginToolPrefix(pluginId)
+  const listed = await sh([
+    "docker",
+    "exec",
+    n.opencode,
+    "sh",
+    "-c",
+    `ls -1 '${prefix}'* 2>/dev/null || true`,
+  ])
+  const stale = stalePluginTools(pluginId, listed.stdout, keepNames)
+  if (stale.length === 0) return false
+  await removePluginTools(userId, pluginId, stale)
+  return true
+}
+
+// Uninstall sweep: removes every payload file the plugin ever installed,
+// independent of the names recorded in the stored manifest snapshot.
+export async function removeAllPluginTools(userId: string, pluginId: string) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const prefix = pluginToolPrefix(pluginId)
+  await sh(["docker", "exec", n.opencode, "sh", "-c", `rm -f '${prefix}'*`])
+  return true
+}
+
 // Fires after a desktop's opencode container is (re)created. Registered by the
 // control server so plugins can re-apply their init commands; the container
 // filesystem is wiped on recreate, so anything a plugin installed outside the
@@ -1479,6 +1666,67 @@ export async function ensurePluginAgentsMd(
   return true
 }
 
+// Desktop path of a plugin's CONFIG.md configuration guide (the repo-root
+// CONFIG.md shipped in the plugin project, aimed at the installing agent).
+export function pluginConfigGuidePath(pluginId: string) {
+  return `/home/agent/.config/open-bot/plugin-${pluginId}.CONFIG.md`
+}
+
+// Write (or remove) a plugin's CONFIG.md configuration guide in the desktop.
+// data: null removes the file. No-ops (false) when the desktop is not
+// running; the boot re-sync covers installs that happened offline.
+export async function syncPluginConfigGuide(
+  userId: string,
+  pluginId: string,
+  data: string | null,
+) {
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(pluginId)) {
+    throw new HttpError(400, "invalid plugin id", "plugin_id")
+  }
+  const n = names(userId)
+  const file = pluginConfigGuidePath(pluginId)
+  if (!(await isRunning(n.opencode))) return false
+  if (data === null) {
+    await sh(["docker", "exec", n.opencode, "rm", "-f", file])
+    return true
+  }
+  if (!data.trim() || data.length > 512 * 1024) {
+    throw new HttpError(400, "invalid plugin CONFIG.md", "plugin_config_guide")
+  }
+  const local = mkdtempSync(join(tmpdir(), "ob-configguide-"))
+  const tmp = join(local, `plugin-${pluginId}.CONFIG.md`)
+  try {
+    writeFileSync(tmp, data, { mode: 0o644 })
+    const copied = await sh(
+      ["docker", "cp", tmp, `${n.opencode}:${file}`],
+      undefined,
+      60_000,
+    )
+    if (copied.code !== 0) {
+      throw new HttpError(
+        502,
+        "could not write the plugin config guide",
+        "plugin_config_guide",
+      )
+    }
+    const chown = await sh(
+      ["docker", "exec", n.opencode, "chown", "agent:agent", file],
+      undefined,
+      60_000,
+    )
+    if (chown.code !== 0) {
+      throw new HttpError(
+        502,
+        "could not set the config guide owner",
+        "plugin_config_guide",
+      )
+    }
+  } finally {
+    rmSync(local, { recursive: true, force: true })
+  }
+  return true
+}
+
 // Merge (patch non-null) or remove (patch null) a plugin's OpenCode plugin
 // packages, MCP servers, agent definitions, agent tool overrides, and
 // instructions entries in the desktop's opencode.json. agents/agentTools use
@@ -1624,7 +1872,9 @@ export async function writeProjectFile(
   path: string,
   bytes: Uint8Array,
 ) {
-  if (!path.startsWith("/home/agent/workspace/"))
+  // Callers validate the path against a registered project, which may live
+  // anywhere under /home/agent (e.g. ~/plugins-create), not just ~/workspace.
+  if (!path.startsWith("/home/agent/"))
     throw new HttpError(400, "invalid project path", "invalid_path")
   const n = names(userId)
   const dir = mkdtempSync(join(tmpdir(), "ob-project-"))

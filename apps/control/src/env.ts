@@ -26,7 +26,6 @@ export const computerImage =
 export const vikingImage =
   process.env.VIKING_IMAGE ?? "ghcr.io/volcengine/openviking:latest"
 export const cookieSecure = process.env.COOKIE_SECURE === "1"
-export const devMode = process.env.OPEN_BOT_DEV === "1"
 export const marketplaceUrl = (
   process.env.OPEN_BOT_MARKETPLACE_URL ?? ""
 ).replace(/\/$/, "")

@@ -1,12 +1,14 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
+import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "@shpaw415/mui-lite/Dialog"
+import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Stack from "@shpaw415/mui-lite/Stack"
@@ -49,6 +51,7 @@ type Item = {
   title: string
   mime: string
   bytes: number
+  sourcePath: string
   createdAt: number
   url: string
 }
@@ -87,6 +90,17 @@ export function MediaVault({
   const [busy, setBusy] = useState(false)
   const [dropAlbum, setDropAlbum] = useState<Album | null>(null)
   const [dropItem, setDropItem] = useState<Item | null>(null)
+  const [dropSource, setDropSource] = useState(true)
+
+  function askDeleteAlbum(row: Album) {
+    setDropSource(true)
+    setDropAlbum(row)
+  }
+
+  function askDeleteItem(row: Item) {
+    setDropSource(true)
+    setDropItem(row)
+  }
 
   const loadAlbums = useCallback(() => {
     api<{ albums: Album[] }>("/api/media/albums")
@@ -166,9 +180,15 @@ export function MediaVault({
     setBusy(true)
     setError("")
     try {
-      await api(`/api/media/albums/${encodeURIComponent(dropAlbum.id)}`, {
+      const flag = dropSource ? "?source=1" : ""
+      const body = await api<{
+        ok: boolean
+        sourceDeleted: number
+        warnings: string[]
+      }>(`/api/media/albums/${encodeURIComponent(dropAlbum.id)}${flag}`, {
         method: "DELETE",
       })
+      if (body.warnings?.length) setError(body.warnings.join(" "))
       if (albumId === dropAlbum.id) {
         setAlbumId("")
         setItems([])
@@ -188,9 +208,15 @@ export function MediaVault({
     setBusy(true)
     setError("")
     try {
-      await api(`/api/media/items/${encodeURIComponent(dropItem.id)}`, {
+      const flag = dropSource ? "?source=1" : ""
+      const body = await api<{
+        ok: boolean
+        sourceDeleted: number
+        warnings: string[]
+      }>(`/api/media/items/${encodeURIComponent(dropItem.id)}${flag}`, {
         method: "DELETE",
       })
+      if (body.warnings?.length) setError(body.warnings.join(" "))
       if (viewerId === dropItem.id) {
         const next = shown[viewerIndex + 1] ?? shown[viewerIndex - 1]
         setViewerId(next && next.id !== dropItem.id ? next.id : "")
@@ -280,7 +306,7 @@ export function MediaVault({
                     aria-label={`Delete ${row.name}`}
                     onClick={(event) => {
                       event.stopPropagation()
-                      setDropAlbum(row)
+                      askDeleteAlbum(row)
                     }}
                   >
                     <DeleteIcon width={18} height={18} />
@@ -310,7 +336,7 @@ export function MediaVault({
                 variant="text"
                 startIcon={<DeleteIcon />}
                 disabled={!album}
-                onClick={() => album && setDropAlbum(album)}
+                onClick={() => album && askDeleteAlbum(album)}
               >
                 Delete album
               </Button>
@@ -460,7 +486,7 @@ export function MediaVault({
             <IconButton
               size="small"
               aria-label={`Delete ${current.name}`}
-              onClick={() => setDropItem(current)}
+              onClick={() => askDeleteItem(current)}
             >
               <DeleteIcon width={18} height={18} />
             </IconButton>
@@ -557,7 +583,22 @@ export function MediaVault({
         <DialogTitle>Delete album</DialogTitle>
         <DialogContent>
           <Typography>
-            Delete {dropAlbum?.name} and its copies? Files on the desktop stay.
+            Delete {dropAlbum?.name} and its vault copies?
+          </Typography>
+          <FormControlLabel
+            sx={{ mt: 1 }}
+            control={
+              <CheckBox
+                checked={dropSource}
+                onChange={(event) => setDropSource(event.currentTarget.checked)}
+              />
+            }
+            label="Also delete the files on the desktop"
+          />
+          <Typography variant="caption" color="textSecondary" sx={{ mt: 0.5 }}>
+            {dropSource
+              ? "Frees desktop disk space. Copies are always removed from the vault."
+              : "Copies leave the vault; files stay on the desktop."}
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -575,9 +616,30 @@ export function MediaVault({
       >
         <DialogTitle>Delete item</DialogTitle>
         <DialogContent>
-          <Typography>
-            Remove this copy from the vault? The desktop file stays.
-          </Typography>
+          <Typography>Remove this copy from the vault?</Typography>
+          <FormControlLabel
+            sx={{ mt: 1 }}
+            control={
+              <CheckBox
+                checked={dropSource}
+                onChange={(event) => setDropSource(event.currentTarget.checked)}
+              />
+            }
+            label="Also delete the file on the desktop"
+          />
+          {dropItem?.sourcePath ? (
+            <Typography
+              variant="caption"
+              color="textSecondary"
+              sx={{
+                mt: 0.5,
+                display: "block",
+                wordBreak: "break-all",
+              }}
+            >
+              {dropItem.sourcePath}
+            </Typography>
+          ) : null}
         </DialogContent>
         <DialogActions>
           <Button disabled={busy} onClick={() => setDropItem(null)}>

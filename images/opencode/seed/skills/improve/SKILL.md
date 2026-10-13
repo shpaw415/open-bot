@@ -5,7 +5,7 @@ description: File a product bug, repeated friction, or missing capability in ope
 
 # Product reports
 
-This skill exists only on development desktop images. If `ob-improve` is missing, stop. Do not invent a curl call.
+If `ob-improve` is missing, stop. Do not invent a curl call.
 
 File the whole improvement report — not only defects. Features and frictions are first-class kinds, not chat leftovers: anything you would write down as "this product should ..." at the end of a task belongs here.
 

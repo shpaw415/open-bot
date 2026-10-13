@@ -9,11 +9,12 @@ if [[ -f /.dockerenv || "${OPEN_BOT_IN_DOCKER:-}" == "1" ]]; then
 fi
 
 pull_viking=0
-dev=0
 for arg in "$@"; do
   case "$arg" in
     --pull-viking) pull_viking=1 ;;
-    --dev) dev=1 ;;
+    --dev)
+      echo "note: --dev is no longer needed; product reports are always on" >&2
+      ;;
     -h | --help)
       echo "usage: bun run update [-- --pull-viking] [-- --dev]"
       exit 0
@@ -31,11 +32,7 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 echo "building desktop images"
-if [[ "$dev" == "1" ]]; then
-  bash "$root/scripts/build-images.sh" --dev
-else
-  bash "$root/scripts/build-images.sh"
-fi
+bash "$root/scripts/build-images.sh"
 
 if [[ "$pull_viking" == "1" ]]; then
   echo "pulling ghcr.io/volcengine/openviking:latest"
@@ -48,7 +45,7 @@ if [[ -f deploy/.env ]]; then
 fi
 
 echo "recreating control plane"
-OPEN_BOT_DEV="$dev" "${compose[@]}" up --build -d
+"${compose[@]}" up --build -d
 
 host=100.96.0.3
 port=8787

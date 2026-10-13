@@ -2,8 +2,9 @@ import { createHash } from "node:crypto"
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Db, MediaAlbum, MediaItem, MediaKind, User } from "@open-bot/db"
-import { desktopPhase, endpoint } from "./docker"
+import { desktopPhase, endpoint, opencodeExec } from "./docker"
 import { dataDir } from "./env"
+import { opencodeFileUrl } from "./projects"
 import { isStockTitle } from "./thread-title"
 import { decodeWorkspaceImage } from "./workspace-image"
 import { decodeWorkspaceModel3d } from "./workspace-model3d"
@@ -195,6 +196,81 @@ export function classifyVaultPayload(
 
 function vaultFilePath(id: string) {
   return join(VAULT_DIR, id)
+}
+
+function deletableSourcePath(path: string): string | null {
+  if (path.includes("\0") || path.includes("\\")) return null
+  if (!path.startsWith(`${HOME}/`)) return null
+  const rest = path.slice(HOME.length + 1)
+  if (!rest) return null
+  const segments = rest.split("/")
+  if (segments.some((seg) => seg === "" || seg === "." || seg === ".."))
+    return null
+  if (segments.includes(".ssh")) return null
+  if (segments[0] === ".config" && segments[1] === "open-bot") return null
+  const base = segments[segments.length - 1] ?? ""
+  if (!base || base === "auth.json" || base.endsWith("-auth.json")) return null
+  return path
+}
+
+export async function deleteDesktopSource(
+  userId: string,
+  sourcePath: string,
+): Promise<string | null> {
+  const safe = deletableSourcePath(sourcePath)
+  if (!safe) return "the desktop path is protected"
+  try {
+    const resolved = await opencodeExec(userId, ["realpath", "-e", "--", safe])
+    if (resolved.code !== 0) return null
+    const target = resolved.stdout.trim()
+    if (!deletableSourcePath(target)) return "the desktop path is protected"
+    const removed = await opencodeExec(userId, ["rm", "-f", "--", target])
+    if (removed.code !== 0)
+      return removed.stderr.trim() || "could not delete the desktop file"
+    return null
+  } catch {
+    return "could not reach the desktop"
+  }
+}
+
+async function deleteDesktopSources(
+  userId: string,
+  rows: Pick<MediaItem, "sourcePath">[],
+): Promise<{ deleted: number; warnings: string[] }> {
+  const seen = new Set<string>()
+  const targets: string[] = []
+  for (const row of rows) {
+    if (!row.sourcePath || seen.has(row.sourcePath)) continue
+    seen.add(row.sourcePath)
+    targets.push(row.sourcePath)
+  }
+  const warnings: string[] = []
+  let deleted = 0
+  for (let i = 0; i < targets.length; i += 8) {
+    const results = await Promise.all(
+      targets.slice(i, i + 8).map((path) => deleteDesktopSource(userId, path)),
+    )
+    for (const result of results) {
+      if (result) warnings.push(result)
+      else deleted += 1
+    }
+  }
+  return { deleted, warnings }
+}
+
+async function deleteSourcesIfRequested(
+  url: URL,
+  userId: string,
+  rows: Pick<MediaItem, "sourcePath">[],
+): Promise<{ deleted: number; warnings: string[] }> {
+  if (url.searchParams.get("source") !== "1")
+    return { deleted: 0, warnings: [] }
+  if ((await desktopPhase(userId)) !== "running")
+    return {
+      deleted: 0,
+      warnings: ["the desktop is not running — desktop files were kept"],
+    }
+  return deleteDesktopSources(userId, rows)
 }
 
 function removeVaultFile(id: string) {
@@ -454,8 +530,13 @@ export async function handleMedia(
     db.deleteMediaItems(items.map((item) => item.id))
     for (const item of items) removeVaultFile(item.id)
     db.deleteMediaAlbum(album.id, user.id)
+    const sources = await deleteSourcesIfRequested(url, user.id, items)
     hub.emit(user.id, { type: "media.changed" })
-    return json({ ok: true })
+    return json({
+      ok: true,
+      sourceDeleted: sources.deleted,
+      warnings: sources.warnings,
+    })
   }
   const itemsMatch = url.pathname.match(
     /^\/api\/media\/albums\/([^/]+)\/items$/,
@@ -483,7 +564,12 @@ export async function handleMedia(
     try {
       const base = await endpoint(user.id, "opencode", 4096)
       const upstream = await fetch(
-        `${base}/file/content?path=${encodeURIComponent(path)}`,
+        opencodeFileUrl(
+          base,
+          "content",
+          path.slice(0, path.lastIndexOf("/")) || "/",
+          path,
+        ),
         {
           headers: {
             authorization: `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`,
@@ -521,8 +607,13 @@ export async function handleMedia(
     const row = db.deleteMediaItem(id, user.id)
     if (!row) return json({ error: "not found" }, 404)
     removeVaultFile(row.id)
+    const sources = await deleteSourcesIfRequested(url, user.id, [row])
     hub.emit(user.id, { type: "media.changed" })
-    return json({ ok: true })
+    return json({
+      ok: true,
+      sourceDeleted: sources.deleted,
+      warnings: sources.warnings,
+    })
   }
   const fileMatch = url.pathname.match(/^\/api\/media\/items\/([^/]+)\/[^/]+$/)
   if (fileMatch && req.method === "GET") {

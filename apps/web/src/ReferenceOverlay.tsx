@@ -10,13 +10,13 @@ import {
 import { ProjectRefTip } from "./project-refs"
 import {
   findReferenceTokens,
-  type ProjectRefItem,
   type ReferenceToken,
+  type RefSectionView,
 } from "./references"
 
 type TokenSpan = { token: ReferenceToken; rect: DOMRect }
 
-type HoverState = { name: string; path?: string; rect: DOMRect }
+type HoverState = { name: string; path?: string; label: string; rect: DOMRect }
 
 const KNOWN_TINT = "rgba(20, 184, 166, 0.26)"
 const UNKNOWN_TINT = "rgba(245, 158, 11, 0.3)"
@@ -47,21 +47,22 @@ const COPY_PROPS = [
 /**
  * Highlight layer behind the composer textarea. Because a textarea cannot
  * style text ranges, the overlay mirrors the draft with identical metrics
- * and paints tinted spans over `@projects/…` tokens; hovering a token shows
- * the project path. The input stays fully interactive (pointer-events none).
+ * and paints tinted spans over `@<section>/<name>` tokens (teal when the
+ * item matches, amber when nothing does); hovering shows the project path
+ * or a no-match hint. The input stays fully interactive (pointer-events none).
  */
 export default function ReferenceOverlay({
   text,
-  projects,
+  sections,
   inputRef,
 }: {
   text: string
-  projects: ProjectRefItem[]
+  sections: RefSectionView[]
   inputRef: RefObject<HTMLInputElement | null>
 }) {
   const tokens = useMemo(
-    () => findReferenceTokens(text, projects),
-    [text, projects],
+    () => findReferenceTokens(text, sections),
+    [text, sections],
   )
   const overlayRef = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<HoverState | null>(null)
@@ -126,7 +127,10 @@ export default function ReferenceOverlay({
     }
     const onMove = (event: MouseEvent) => {
       const hit = findHover(event.clientX, event.clientY)
-      if (hit) {
+      if (hit && (hit.token.path || !hit.token.name)) {
+        const label =
+          sections.find((section) => section.key === hit.token.section)
+            ?.label ?? "items"
         setHover((prev) =>
           prev?.rect.left === hit.rect.left &&
           prev?.rect.top === hit.rect.top &&
@@ -135,6 +139,7 @@ export default function ReferenceOverlay({
             : {
                 name: hit.token.name,
                 path: hit.token.path,
+                label,
                 rect: hit.rect,
               },
         )
@@ -159,7 +164,7 @@ export default function ReferenceOverlay({
       el.removeEventListener("mouseleave", onLeave)
       el.removeEventListener("scroll", onScroll)
     }
-  }, [tokens, inputRef])
+  }, [tokens, sections, inputRef])
 
   if (!text) return null
 
@@ -242,7 +247,7 @@ export default function ReferenceOverlay({
               pointerEvents: "none",
             }}
           >
-            No project matches this mention
+            No {hover.label.toLowerCase()} match this mention
           </div>
         )
       ) : null}

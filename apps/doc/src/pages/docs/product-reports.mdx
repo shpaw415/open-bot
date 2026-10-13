@@ -5,11 +5,11 @@ import { DocsShell } from "../../components/DocsShell";
 
 # Product reports
 
-A queue of findings about open-bot itself, filed by the desktop agent while it works. The in-container agent is not a coding agent — but on a `--dev` desktop it stress-tests the product and reports what breaks.
+A queue of findings about open-bot itself, filed by the desktop agent while it works. The in-container agent is not a coding agent — but it stress-tests the product and reports what breaks.
 
 ## Filing
 
-Dev-built desktops only (`bun run update -- --dev`):
+Every desktop can file:
 
 ```sh
 ob-improve add --kind bug|friction|feature \
@@ -18,7 +18,7 @@ ob-improve add --kind bug|friction|feature \
   --detail "Steps to reproduce..." [--session ID]
 ```
 
-Rows land in the control-plane sqlite. A later `bun run update` **without** `--dev` stops filing (review keeps working).
+Rows land in the control-plane sqlite. Review keeps working the same way.
 
 ## Reviewing
 

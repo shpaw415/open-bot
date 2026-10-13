@@ -3,7 +3,8 @@
 Reference implementation of a **plugin dashboard page**: the workspace drawer's
 Dashboards view lists this plugin's tabs and the user interacts with live data.
 
-- `dashboard.pages.entry` → `server/server.js`, a Bun HTTP server the control
+- `dashboard.pages.entry` → `server/server.ts`, a Bun HTTP server written in
+  TypeScript (Bun runs `.ts` natively — no build step) that the control
   plane starts on the desktop (env `OPEN_BOT_PAGE_PORT`, `OPEN_BOT_PAGE_TOKEN`,
   `OPEN_BOT_PLUGIN_ID`; config via `~/.config/open-bot/plugin-<id>.json`).
 - `stock` tab (`kind: "app"`) — the server's own UI, proxied same-origin under

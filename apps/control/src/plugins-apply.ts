@@ -12,16 +12,23 @@ import {
   ensurePluginAgentsMd,
   type PluginToolFile,
   pluginAgentsMdPath,
+  prunePluginTools,
+  removeAllPluginTools,
   removePluginTools,
   restartOpencode,
   runPluginInitCommands,
   syncOpencodePlugin,
   syncPluginAgentsMd,
   syncPluginAuth,
+  syncPluginConfigGuide,
   syncPluginTools,
 } from "./docker"
+import { HttpError } from "./http-error"
 import { extractPluginFiles, fetchPluginArtifact } from "./plugin-artifact"
-import { readLocalPluginFiles } from "./plugin-local"
+import {
+  readLocalPluginConfigGuide,
+  readLocalPluginFiles,
+} from "./plugin-local"
 import { ensurePluginPageServer, stopPluginPageServer } from "./plugin-pages"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
@@ -150,6 +157,42 @@ async function resolvePluginFiles(
   return extractPluginFiles(artifact.tarballPath, declared)
 }
 
+// Resolves the plugin's optional repo-root CONFIG.md (the agent-facing
+// configuration guide): local installs read it from the checkout,
+// marketplace installs extract it from the reviewed release tarball.
+// Returns null when the plugin ships none.
+async function resolveConfigGuide(
+  db: Db,
+  userId: string,
+  source: "marketplace" | "local",
+  localPath: string | null,
+  pluginId: string,
+  version: string,
+): Promise<string | null> {
+  if (source === "local") {
+    return localPath ? readLocalPluginConfigGuide(userId, localPath) : null
+  }
+  try {
+    const artifact = await fetchPluginArtifact(db, pluginId, version)
+    const [extracted] = extractPluginFiles(artifact.tarballPath, [
+      { name: "CONFIG.md", source: "CONFIG.md", exec: false },
+    ])
+    return extracted?.content ?? null
+  } catch (error) {
+    // A tarball without CONFIG.md is the normal no-guide case, and an
+    // unconfigured marketplace just means no guides on this instance —
+    // neither should fail (or even log) the install.
+    if (
+      error instanceof HttpError &&
+      (error.code === "artifact_file" ||
+        error.code === "marketplace_unconfigured")
+    ) {
+      return null
+    }
+    throw error
+  }
+}
+
 function inlineToolFiles(manifest: PluginManifest): PluginToolFile[] {
   return (manifest.tools ?? []).map((tool) => ({
     name: tool.name,
@@ -261,11 +304,17 @@ export async function applyPluginInstall(
         if (clash) db.deleteCronJob(clash.id, user.id)
       }
       const id = crypto.randomUUID()
+      // Manifest validation already enforces the message/script pairing; a
+      // missing run means the classic prompt job.
+      const runKind =
+        job.run === "script" || job.run === "both" || job.run === "auto"
+          ? job.run
+          : ("prompt" as const)
       const row: CronJob = {
         id,
         userId: user.id,
         name,
-        message: job.message,
+        message: job.message ?? "",
         kind: job.cronExpr ? ("cron" as const) : ("every" as const),
         cronExpr: job.cronExpr ?? null,
         everySeconds: job.everySeconds ?? null,
@@ -281,8 +330,8 @@ export async function applyPluginInstall(
         providerId: null,
         modelId: null,
         personaId: null,
-        runKind: "prompt" as const,
-        script: null,
+        runKind,
+        script: job.script ?? null,
       }
       row.nextRunAt = nextRunMs(row)
       db.createCronJob(row)
@@ -340,6 +389,13 @@ export async function applyPluginInstall(
       ...inlineToolFiles(manifest),
       ...payloadFiles,
     ]
+    // Prune runs even when the new manifest declares no files: a renamed or
+    // dropped files[] entry must not leave the old binary behind.
+    await prunePluginTools(
+      user.id,
+      manifest.id,
+      toolFiles.map((file) => file.name),
+    )
     if (toolFiles.length > 0) {
       await syncPluginTools(user.id, manifest.id, toolFiles)
       for (const file of toolFiles) applied.tools.push(file.name)
@@ -347,6 +403,38 @@ export async function applyPluginInstall(
 
     const payload = pluginConfigPayload(db, user.id, manifest, wantedSettings)
     await syncPluginAuth(user.id, manifest.id, payload)
+
+    // The CONFIG.md guide is a best-effort surface: a missing guide is normal,
+    // and extraction/sync failures never fail the install (the boot re-sync
+    // retries when the marker is set).
+    try {
+      const guide = await resolveConfigGuide(
+        db,
+        user.id,
+        source,
+        localPath,
+        manifest.id,
+        entry.version,
+      )
+      if (guide) {
+        await syncPluginConfigGuide(user.id, manifest.id, guide).catch(
+          (error) => {
+            console.error(
+              `plugin ${manifest.id} config guide write failed: ${
+                error instanceof Error ? error.message : error
+              }`,
+            )
+          },
+        )
+        applied.configGuide = true
+      }
+    } catch (error) {
+      console.error(
+        `plugin ${manifest.id} config guide extraction failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
 
     const setupCommands = manifest.setup?.commands ?? []
     if (setupCommands.length > 0) {
@@ -400,7 +488,7 @@ export async function applyPluginInstall(
           removeInstructions: [],
         })
       }
-      await restartOpencode(user.id).catch(() => {})
+      await restartOpencode(user.id, { db }).catch(() => {})
     }
   } catch (error) {
     // A failed fresh install must leave nothing behind. A failed upgrade can
@@ -500,6 +588,9 @@ async function revertApplied(
   if (applied.tools.length > 0) {
     await removePluginTools(user.id, pluginId, applied.tools).catch(() => {})
   }
+  // Sweep the whole prefix too: renamed files[] entries from earlier versions
+  // are not in applied.tools and would otherwise leak.
+  await removeAllPluginTools(user.id, pluginId).catch(() => {})
   if (applied.opencode) {
     const manifest = db.installedPlugin(user.id, pluginId)?.manifest as
       | PluginManifest
@@ -525,6 +616,9 @@ async function revertApplied(
       removeInstructions: [pluginAgentsMdPath(pluginId)],
     }).catch(() => {})
     await syncPluginAgentsMd(user.id, pluginId, null).catch(() => {})
+  }
+  if (applied.configGuide) {
+    await syncPluginConfigGuide(user.id, pluginId, null).catch(() => {})
   }
   return { leftoverSkills }
 }
@@ -560,6 +654,9 @@ export async function applyPluginUninstall(
     }
   }
   await syncPluginAuth(user.id, row.pluginId, null).catch(() => {})
+  // Sweep the guide even when the applied log lost its marker (upgrades from
+  // versions before CONFIG.md, partially failed installs).
+  await syncPluginConfigGuide(user.id, row.pluginId, null).catch(() => {})
   db.deleteInstalledPlugin(user.id, row.pluginId)
   return { leftoverSkills }
 }
@@ -669,6 +766,25 @@ export async function setPluginEnabled(
         }`,
       )
     })
+    if (row.applied.configGuide) {
+      try {
+        const guide = await resolveConfigGuide(
+          db,
+          user.id,
+          row.source,
+          row.localPath,
+          pluginId,
+          row.version,
+        )
+        if (guide) await syncPluginConfigGuide(user.id, pluginId, guide)
+      } catch (error) {
+        console.error(
+          `plugin ${pluginId} config guide restore failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      }
+    }
     if (manifest.dashboard?.pages) {
       await ensurePluginPageServer(user.id, updated ?? row).catch(() => {
         // The proxy lazily restarts on the first request.
@@ -679,6 +795,13 @@ export async function setPluginEnabled(
     await syncPluginAuth(user.id, pluginId, null).catch((error) => {
       console.error(
         `plugin ${pluginId} config removal failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    })
+    await syncPluginConfigGuide(user.id, pluginId, null).catch((error) => {
+      console.error(
+        `plugin ${pluginId} config guide removal failed: ${
           error instanceof Error ? error.message : error
         }`,
       )
@@ -740,7 +863,7 @@ export async function setPluginEnabled(
           }
       await syncOpencodePlugin(user.id, patch)
     }
-    await restartOpencode(user.id).catch(() => {})
+    await restartOpencode(user.id, { db }).catch(() => {})
   }
 
   return updated ?? db.installedPlugin(user.id, pluginId) ?? row
@@ -823,6 +946,39 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
         )
       }
     }
+    try {
+      await prunePluginTools(userId, row.pluginId, [
+        ...inlineToolFiles(manifest).map((file) => file.name),
+        ...(manifest.files ?? []).map((file) => file.name),
+      ])
+    } catch (error) {
+      console.error(
+        `plugin ${row.pluginId} boot tool prune failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
+    if (row.applied.configGuide) {
+      // Covers installs that ran while the desktop was asleep; the guide file
+      // itself lives on the persistent /home volume.
+      try {
+        const guide = await resolveConfigGuide(
+          db,
+          userId,
+          row.source,
+          row.localPath,
+          row.pluginId,
+          row.version,
+        )
+        if (guide) await syncPluginConfigGuide(userId, row.pluginId, guide)
+      } catch (error) {
+        console.error(
+          `plugin ${row.pluginId} boot config guide sync failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      }
+    }
     if (manifest.dashboard?.pages) {
       // The desktop just (re)started; bring the page server back. Lazy proxy
       // restarts cover anything missed here.
@@ -846,7 +1002,7 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
           addInstructions: [pluginAgentsMdPath(row.pluginId)],
           removeInstructions: [],
         })
-        if (wrote) await restartOpencode(userId).catch(() => {})
+        if (wrote) await restartOpencode(userId, { db }).catch(() => {})
       } catch (error) {
         console.error(
           `plugin ${row.pluginId} boot agentsMd sync failed: ${

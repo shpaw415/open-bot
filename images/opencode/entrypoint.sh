@@ -5,10 +5,7 @@ mkdir -p /home/agent/workspace /home/agent/plugins-create /home/agent/.config/op
 if [ -d /opt/image-usr-local ]; then
   mkdir -p /usr/local
   cp -a /opt/image-usr-local/. /usr/local/
-  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-media /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview 2>/dev/null || true
-fi
-if [ ! -f /opt/open-bot/dev-mode ]; then
-  rm -f /usr/local/bin/ob-improve
+  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-media /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview /usr/local/bin/ob-chrome /usr/local/bin/ob-page 2>/dev/null || true
 fi
 if [ -e /opt/google/chrome/chrome-sandbox ]; then
   chown root:root /opt/google/chrome/chrome-sandbox
@@ -68,20 +65,16 @@ cp /opt/open-bot/seed/skills/gpio-3d/validate-manifest.ts /home/agent/.config/op
 # Strip its leftovers from persistent volumes; the plugin re-adds its own.
 rm -rf /home/agent/.config/opencode/skills/blender
 rm -f /usr/local/bin/blender-team
-if [ -f /opt/open-bot/dev-mode ]; then
-  mkdir -p /home/agent/.config/opencode/skills/improve
-  cp /opt/open-bot/seed/skills/improve/SKILL.md /home/agent/.config/opencode/skills/improve/SKILL.md
-  cat >> /home/agent/.config/opencode/AGENTS.md <<'EOF'
+mkdir -p /home/agent/.config/opencode/skills/improve
+cp /opt/open-bot/seed/skills/improve/SKILL.md /home/agent/.config/opencode/skills/improve/SKILL.md
+cat >> /home/agent/.config/opencode/AGENTS.md <<'EOF'
 
-Product defects, frictions, and missing capabilities, on a development desktop only: load the `improve` skill and run `ob-improve` when you hit a product bug, repeated friction, or a missing capability during real work. Features and frictions are first-class: file the whole improvement report, not only defects. Recovering yourself does not make it not a bug: file especially when ob-nav errors, repeats one decision, gives up, or falls back to ob-vnc more than once in the same job, and name what you attempted. Do not file user mistakes, secrets, one-offs, or a path a shortcut or the refine skill can cover. One sentence in the reply that it was filed is enough. Do not ask first. If `ob-improve` is missing, do not file.
+Product defects, frictions, and missing capabilities: load the `improve` skill and run `ob-improve` when you hit a product bug, repeated friction, or a missing capability during real work. Features and frictions are first-class: file the whole improvement report, not only defects. Recovering yourself does not make it not a bug: file especially when ob-nav errors, repeats one decision, gives up, or falls back to ob-vnc more than once in the same job, and name what you attempted. Do not file user mistakes, secrets, one-offs, or a path a shortcut or the refine skill can cover. One sentence in the reply that it was filed is enough. Do not ask first. If `ob-improve` is missing, do not file.
 EOF
-else
-  rm -rf /home/agent/.config/opencode/skills/improve
-fi
 if [ ! -f /home/agent/.config/opencode/opencode.json ]; then
   cp /opt/open-bot/seed/opencode.json /home/agent/.config/opencode/opencode.json
 fi
-prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. While you work, send no text messages: no plan, no status, no progress notes, no step summaries. Tool calls are silent. Send exactly one message, when the whole job is finished, containing only the final result and any deliverable images. Before that final message on a multi-step job, run the closing checklist: file a product defect or friction with ob-improve when this desktop has it, save a user correction or an obvious missing finish with the refine skill, save a found shortcut with the shortcut skill, remember durable facts with openviking_remember, and record promised follow-ups. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command hangs, kill it and move on. Never end the turn while ob-vnc can still advance the task; finish it yourself. Only stop for the user when the screen needs them.'
+prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. While you work, send no text messages: no plan, no status, no progress notes, no step summaries. Tool calls are silent. Send exactly one message, when the whole job is finished, containing only the final result and any deliverable images. Before that final message on a multi-step job, run the closing checklist: file a product defect or friction with ob-improve, save a user correction or an obvious missing finish with the refine skill, save a found shortcut with the shortcut skill, remember durable facts with openviking_remember, and record promised follow-ups. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command hangs, kill it and move on. Never end the turn while ob-vnc can still advance the task; finish it yourself. Only stop for the user when the screen needs them.'
 jq --arg prompt "$prompt" --slurpfile seed /opt/open-bot/seed/opencode.json \
   '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 96 | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
   /home/agent/.config/opencode/opencode.json > /tmp/oc-perm.json
@@ -115,9 +108,22 @@ rm -f /home/agent/.open-bot/apt-restore.done
     echo "apt restore failed" >&2
   fi
 ) &
+# Daily disk housekeeping: stale thread browser profiles and package caches.
+# First pass 30 minutes after boot, then once a day. The script writes its
+# own JSON summary to ~/.open-bot/cleanup.log.
+(
+  sleep 1800
+  while :; do
+    /opt/open-bot/disk-cleanup.sh >/dev/null 2>&1 || true
+    sleep 86400
+  done
+) &
 run() {
   su -s /bin/sh agent -c "export HOME=/home/agent; $1"
 }
+# Heal tool parts frozen in "running" by a previous kill before the server
+# starts; at boot every running tool part is a corpse. Best effort.
+run "bun /opt/open-bot/heal-stale-tools.ts" || true
 (while true; do chmod 777 /tmp/.X11-unix/X* 2>/dev/null || true; sleep 2; done) &
 run "ttyd -p 7681 -W -b /desktop/term bash" &
 /opt/open-bot/apply-model.sh

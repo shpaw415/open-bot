@@ -11,6 +11,7 @@ import {
   PLUGIN_ID_PATTERN,
   PLUGIN_VERSION_PATTERN,
   SLUG_PATTERN,
+  TAB_ICON_MAX_LENGTH,
   TOOL_GLOB_PATTERN,
 } from "./manifest"
 
@@ -84,6 +85,18 @@ describe("plugin schema", () => {
     expect(top.skills.items.properties.body.maxLength).toBe(65536)
     expect(top.personas.items.properties.instruction.maxLength).toBe(2000)
     expect(top.cron.items.properties.message.maxLength).toBe(8000)
+    expect(top.cron.items.properties.run.enum).toEqual([
+      "prompt",
+      "script",
+      "both",
+      "auto",
+    ])
+    expect(top.cron.items.properties.script.maxLength).toBe(16000)
+    expect(top.cron.items.required).toEqual(["name"])
+    expect(top.cron.items.oneOf).toEqual([
+      { required: ["everySeconds"] },
+      { required: ["cronExpr"] },
+    ])
     expect(top.cron.items.properties.everySeconds.minimum).toBe(60)
     expect(top.cron.items.properties.everySeconds.maximum).toBe(31536000)
     expect(top.tools.items.properties.content.maxLength).toBe(65536)
@@ -98,6 +111,9 @@ describe("plugin schema", () => {
     expect(
       top.dashboard.properties.tabs.items.properties.dataUrl.maxLength,
     ).toBe(200)
+    expect(top.dashboard.properties.tabs.items.properties.icon.maxLength).toBe(
+      TAB_ICON_MAX_LENGTH,
+    )
     expect(
       top.dashboard.properties.tabs.items.properties.pollSeconds.minimum,
     ).toBe(5)

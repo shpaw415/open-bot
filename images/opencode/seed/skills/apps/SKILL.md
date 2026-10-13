@@ -19,6 +19,6 @@ Apps open maximized on this screen. Verify with `ob-vnc --session SESSION captur
 
 - Not installed? `sudo apt-get install -y PACKAGE` (extra packages come back after a desktop update), then launch again. Apps missing from Debian repos: download the vendor .deb and install it (`Discord`: https://discord.com/api/download?platform=linux&format=deb, then `sudo apt install ./discord.deb`).
 - If the app exits immediately, `ob-app` prints the log tail. Install the missing dependency and launch again. Do not retry blindly.
-- A standalone Chrome window is an app: `ob-app --session SESSION launch chrome [URL]` (add `--profile NAME` for a second identity). Thread pages still go through `ob-nav`. Never launch `chromium` or `google-chrome` directly; it is denied.
+- A standalone Chrome window is an app: `ob-app --session SESSION launch chrome [URL]` (add `--profile NAME` for a second identity). Thread pages still go through `ob-chrome navigate`. Never launch `chromium` or `google-chrome` directly; it is denied.
 - The screen has no audio: apps are silent. Say so when it matters (video, calls, music).
 - When the person must act in the app (a login, a code, a choice only they can make), stop input and end with `![screen](open-bot://screen)`.

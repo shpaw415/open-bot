@@ -10,12 +10,13 @@ import {
 import { nextRunMs } from "./cron"
 import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
+import { keyVaultSpecById } from "./key-vault"
 import {
   checkLocalPluginPath,
   readLocalPluginFiles,
   readLocalPluginManifest,
 } from "./plugin-local"
-import { restartPluginPageServer } from "./plugin-pages"
+import { schedulePluginPageRestart } from "./plugin-pages"
 import {
   applyPluginInstall,
   applyPluginUninstall,
@@ -51,6 +52,106 @@ function autoUpdate(db: Db): AutoUpdate {
   return AUTO_UPDATES.includes(saved as AutoUpdate)
     ? (saved as AutoUpdate)
     : "off"
+}
+
+// The plugin dashboard home-screen layout: pages of app tiles and folders.
+// Keys are tab keys "pluginId:tabId"; stale keys are ignored client-side, so
+// validation only guards shape and size.
+const LAYOUT_TAB_KEY_RE = /^[a-z0-9][a-z0-9-]{1,62}:[a-z0-9][a-z0-9_-]{0,63}$/
+const LAYOUT_MAX_PAGES = 9
+const LAYOUT_MAX_ITEMS = 64
+const LAYOUT_MAX_FOLDER_ITEMS = 16
+const LAYOUT_MAX_BYTES = 16384
+
+const hasControlChar = (value: string) => {
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0
+    if (code < 32 || code === 127) return true
+  }
+  return false
+}
+
+const layoutNameOk = (name: unknown): name is string =>
+  typeof name === "string" &&
+  name.trim().length > 0 &&
+  name.length <= 48 &&
+  !hasControlChar(name) &&
+  !name.includes("<") &&
+  !name.includes(">")
+
+function validateDashboardLayout(value: unknown): string | null {
+  if (typeof value !== "string") return "layout must be stored as JSON text"
+  if (value.length > LAYOUT_MAX_BYTES) return "layout is too large"
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return "layout must be valid JSON"
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !Array.isArray((parsed as { pages?: unknown }).pages)
+  ) {
+    return "layout.pages must be a list"
+  }
+  const pages = (parsed as { pages: unknown[] }).pages
+  if (pages.length < 1 || pages.length > LAYOUT_MAX_PAGES)
+    return `layout must have 1-${LAYOUT_MAX_PAGES} pages`
+  const seen = new Set<string>()
+  const folderIds = new Set<string>()
+  let total = 0
+  for (const [pageIndex, page] of pages.entries()) {
+    if (
+      typeof page !== "object" ||
+      page === null ||
+      !Array.isArray((page as { items?: unknown }).items)
+    )
+      return `page ${pageIndex} must have items`
+    for (const [itemIndex, item] of (
+      page as { items: unknown[] }
+    ).items.entries()) {
+      total += 1
+      if (total > LAYOUT_MAX_ITEMS)
+        return `layout must hold at most ${LAYOUT_MAX_ITEMS} items`
+      const where = `page ${pageIndex} item ${itemIndex}`
+      if (typeof item !== "object" || item === null)
+        return `${where} must be an object`
+      const kind = (item as { type?: unknown }).type
+      if (kind === "app") {
+        const key = (item as { key?: unknown }).key
+        if (typeof key !== "string" || !LAYOUT_TAB_KEY_RE.test(key))
+          return `${where} has an invalid tab key`
+        if (seen.has(key)) return `${where} duplicates tab ${key}`
+        seen.add(key)
+      } else if (kind === "folder") {
+        const id = (item as { id?: unknown }).id
+        const name = (item as { name?: unknown }).name
+        const items = (item as { items?: unknown }).items
+        if (typeof id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id))
+          return `${where} has an invalid folder id`
+        if (folderIds.has(id)) return `${where} duplicates folder ${id}`
+        folderIds.add(id)
+        if (!layoutNameOk(name)) return `${where} has an invalid folder name`
+        if (!Array.isArray(items)) return `${where} folder must list items`
+        if (items.length > LAYOUT_MAX_FOLDER_ITEMS)
+          return `${where} folder holds at most ${LAYOUT_MAX_FOLDER_ITEMS} items`
+        for (const [folderIndex, entry] of items.entries()) {
+          total += 1
+          if (total > LAYOUT_MAX_ITEMS)
+            return `layout must hold at most ${LAYOUT_MAX_ITEMS} items`
+          const key = (entry as { key?: unknown } | null)?.key
+          if (typeof key !== "string" || !LAYOUT_TAB_KEY_RE.test(key))
+            return `${where} folder item ${folderIndex} has an invalid tab key`
+          if (seen.has(key)) return `${where} duplicates tab ${key}`
+          seen.add(key)
+        }
+      } else {
+        return `${where} must be an app or a folder`
+      }
+    }
+  }
+  return null
 }
 
 const updateChecksInFlight = new Set<string>()
@@ -561,6 +662,7 @@ export function handlePlugins(
     ) => void
   },
   _holdOpen?: () => void,
+  agent = false,
 ): Response | Promise<Response> | null {
   const path = url.pathname
   // Plugin mutations fan out to docker + OpenViking and can legitimately
@@ -605,6 +707,27 @@ export function handlePlugins(
       autoUpdate: autoUpdate(db),
       configured: marketplaceConfigured(db),
     })
+  }
+
+  // Dashboard home-screen layout (mobile grid: page order + folders).
+  // The layout is stored verbatim after shape validation; unknown tab keys
+  // are tolerated so disabling a plugin keeps its spot.
+  if (path === "/api/plugins/dashboard-layout" && req.method === "GET")
+    return json({ layout: db.dashboardLayout(user.id) })
+
+  if (path === "/api/plugins/dashboard-layout" && req.method === "PUT") {
+    return req
+      .json()
+      .then((body: Record<string, unknown>) => {
+        const layout = typeof body.layout === "string" ? body.layout : null
+        if (layout === null)
+          return json({ error: "layout must be JSON text" }, 400)
+        const error = validateDashboardLayout(layout)
+        if (error) return json({ error }, 400)
+        db.setDashboardLayout(user.id, layout)
+        return json({ ok: true })
+      })
+      .catch(() => json({ error: "invalid json" }, 400))
   }
 
   if (path === "/api/plugins/marketplace/key" && req.method === "GET")
@@ -924,15 +1047,124 @@ export function handlePlugins(
           db.setPluginSetting(user.id, pluginId, key, result.value)
         }
         await reapplyPluginConfig(db, user, row)
-        // A page server caches nothing itself, but a restart guarantees it
-        // observes the new settings; cheap and safe.
+        // A restart guarantees the page server observes the new settings —
+        // but the save request itself rides on that server, so defer it past
+        // the response instead of killing the caller mid-flight.
         if ((row.manifest as PluginManifest).dashboard?.pages) {
-          await restartPluginPageServer(user.id, row).catch(() => {})
+          schedulePluginPageRestart(db, user.id, row, hub)
         }
         return json({
           ok: true,
           settings: db.pluginSettings(user.id, pluginId),
         })
+      })
+      .catch(() => json({ error: "invalid json" }, 400))
+  }
+
+  // Plugin vault: the agent token fills or clears the key vault slugs its own
+  // manifest declares via permissions.vaultCreate; the dashboard may also fill
+  // custom permissions.vaultRead slugs — shared provider slugs always stay on
+  // the Keys tab so its chat re-push keeps running. Values are write-only —
+  // no route ever returns them.
+  const vault = path.match(/^\/api\/plugins\/installed\/([^/]+)\/vault$/)
+  if (vault) {
+    keepAlive()
+    const pluginId = decodeURIComponent(vault[1] ?? "")
+    const row = db.installedPlugin(user.id, pluginId)
+    if (!row) return json({ error: "not found" }, 404)
+    const manifest = row.manifest as PluginManifest
+    const creatable = manifest.permissions?.vaultCreate ?? []
+    const readable = agent
+      ? []
+      : (manifest.permissions?.vaultRead ?? []).filter(
+          (slug) => !creatable.includes(slug),
+        )
+    if (req.method === "GET") {
+      if (agent) {
+        return json({
+          slugs: creatable.map((slug) => ({
+            slug,
+            hasKey: (db.getUserKey(user.id, slug)?.apiKey ?? "") !== "",
+          })),
+        })
+      }
+      return json({
+        slugs: [...creatable, ...readable].map((slug) => {
+          const key = db.getUserKey(user.id, slug)
+          return {
+            slug,
+            hasKey: (key?.apiKey ?? "") !== "",
+            access: creatable.includes(slug)
+              ? ("create" as const)
+              : ("read" as const),
+            shared: Boolean(keyVaultSpecById(slug)),
+            accountId: key?.accountId ?? "",
+            baseUrl: key?.baseUrl ?? "",
+          }
+        }),
+      })
+    }
+    if (req.method !== "POST") return json({ error: "not found" }, 404)
+    return req
+      .json()
+      .then(async (body: Record<string, unknown>) => {
+        const slug = typeof body.slug === "string" ? body.slug.trim() : ""
+        if (!agent && keyVaultSpecById(slug)) {
+          return json(
+            {
+              error: `${slug} is a shared provider key — manage it on the Config page Keys tab`,
+            },
+            400,
+          )
+        }
+        if (!creatable.includes(slug) && !readable.includes(slug)) {
+          const declared = [...creatable, ...readable]
+          return json(
+            {
+              error: `slug must be one of the plugin's declared vault keys${
+                declared.length > 0 ? ` (${declared.join(", ")})` : ""
+              }`,
+            },
+            400,
+          )
+        }
+        const value =
+          body.value && typeof body.value === "object"
+            ? (body.value as Record<string, unknown>)
+            : {}
+        // A field present in the payload is set verbatim (empty clears it, so
+        // `ob-plugin vault ID SLUG=` still clears); a field left out keeps the
+        // stored value — the dashboard saves metadata without re-typing the
+        // secret it never saw.
+        const current = db.getUserKey(user.id, slug)
+        const apiKey =
+          typeof value.apiKey === "string"
+            ? value.apiKey.trim()
+            : (current?.apiKey ?? "")
+        if (apiKey.length > 4096) {
+          return json({ error: "apiKey is too long" }, 400)
+        }
+        const accountId =
+          typeof value.accountId === "string"
+            ? value.accountId.trim()
+            : (current?.accountId ?? "")
+        const baseUrl =
+          typeof value.baseUrl === "string"
+            ? value.baseUrl.trim()
+            : (current?.baseUrl ?? "")
+        db.setUserKey(user.id, slug, {
+          apiKey,
+          accountId,
+          gatewayId: "",
+          gatewayToken: "",
+          gatewaySlug: "",
+          baseUrl,
+        })
+        await reapplyPluginConfig(db, user, row)
+        if (manifest.dashboard?.pages) {
+          schedulePluginPageRestart(db, user.id, row, hub)
+        }
+        return json({ ok: true, slug })
       })
       .catch(() => json({ error: "invalid json" }, 400))
   }

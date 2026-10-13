@@ -27,13 +27,15 @@ import {
   LightModeIcon,
   LogoutIcon,
   SettingsIcon,
-  VpnKeyIcon,
 } from "./icons"
 import { Login, SetCredentials } from "./Login"
 import { openNotifiedThread, setNoticeFocus } from "./notify"
-import { Plugins } from "./Plugins"
-import { Providers } from "./Providers"
-import { PluginTabView, pluginTabs, useInstalledPlugins } from "./plugin-tabs"
+import {
+  PluginAppsView,
+  PluginTabView,
+  pluginTabs,
+  useInstalledPlugins,
+} from "./plugin-tabs"
 import { ResetApprovals } from "./ResetApprovals"
 import { useThemeMode } from "./theme"
 import { Workspace } from "./Workspace"
@@ -96,28 +98,26 @@ export function App() {
   const pluginTab = tabs.find((tab) => tab.key === path.slice(1))
   const section = path.startsWith("/admin")
     ? "admin"
-    : path.startsWith("/providers")
-      ? "providers"
-      : path.startsWith("/config")
-        ? "config"
-        : path.startsWith("/plugins")
-          ? "plugins"
-          : pluginTab
-            ? `plugin:${pluginTab.key}`
-            : "workspace"
+    : path.startsWith("/providers") ||
+        path.startsWith("/config") ||
+        path.startsWith("/plugins")
+      ? "config"
+      : path.startsWith("/apps") || path.startsWith("/dashboards")
+        ? "apps"
+        : pluginTab
+          ? `plugin:${pluginTab.key}`
+          : "workspace"
   const goSection = (value: string) =>
     go(
       value === "admin"
         ? "/admin"
-        : value === "providers"
-          ? "/providers"
-          : value === "config"
-            ? "/config"
-            : value === "plugins"
-              ? "/plugins"
-              : value.startsWith("plugin:")
-                ? `/${value.slice("plugin:".length)}`
-                : "/",
+        : value === "config"
+          ? "/config"
+          : value === "apps"
+            ? "/apps"
+            : value.startsWith("plugin:")
+              ? `/${value.slice("plugin:".length)}`
+              : "/",
     )
 
   return (
@@ -146,9 +146,8 @@ export function App() {
                 value="workspace"
                 icon={<DashboardIcon />}
               />
-              <Tab label="Providers" value="providers" icon={<VpnKeyIcon />} />
+              <Tab label="Apps" value="apps" icon={<ExtensionIcon />} />
               <Tab label="Config" value="config" icon={<SettingsIcon />} />
-              <Tab label="Plugins" value="plugins" icon={<ExtensionIcon />} />
               {me.role === "admin" ? (
                 <Tab
                   label="Admin"
@@ -221,10 +220,8 @@ export function App() {
               <Alert severity="error">Admin only</Alert>
             </Box>
           )
-        ) : section === "providers" ? (
-          <Providers />
-        ) : section === "plugins" ? (
-          <Plugins isAdmin={me.role === "admin"} />
+        ) : section === "apps" ? (
+          <PluginAppsView tabs={tabs} />
         ) : pluginTab ? (
           <PluginTabView tab={pluginTab} />
         ) : section === "config" ? (
@@ -237,7 +234,7 @@ export function App() {
             }}
           />
         ) : (
-          <Workspace me={me} pluginTabs={tabs} />
+          <Workspace me={me} />
         )}
       </Box>
 
@@ -257,19 +254,14 @@ export function App() {
             icon={<DashboardIcon />}
           />
           <BottomNavigationAction
-            label="Providers"
-            value="providers"
-            icon={<VpnKeyIcon />}
+            label="Apps"
+            value="apps"
+            icon={<ExtensionIcon />}
           />
           <BottomNavigationAction
             label="Config"
             value="config"
             icon={<SettingsIcon />}
-          />
-          <BottomNavigationAction
-            label="Plugins"
-            value="plugins"
-            icon={<ExtensionIcon />}
           />
           {me.role === "admin" ? (
             <BottomNavigationAction

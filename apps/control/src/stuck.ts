@@ -62,6 +62,34 @@ export function toolStuck(
   return Boolean(tool && tool.status === "running" && now - tool.start >= limit)
 }
 
+const STALE_TOLERANCE_MS = 1_000
+
+export function newestMessageTime(messages: unknown): number {
+  if (!Array.isArray(messages)) return 0
+  let best = 0
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue
+    const info = (message as { info?: unknown }).info
+    const created =
+      info && typeof info === "object"
+        ? (info as { time?: { created?: unknown } }).time?.created
+        : undefined
+    if (typeof created === "number" && created > best) best = created
+  }
+  return best
+}
+
+// A tool frozen "running" by a killed turn (opencode restart, desktop
+// recycle) stays in history forever. It is a corpse, not a live hang: when
+// it predates the newest message, the session has been re-prompted since the
+// kill, and aborting would murder every fresh turn seconds in.
+export function toolStale(messages: unknown): boolean {
+  const tool = newestTool(messages)
+  if (!tool) return false
+  const newest = newestMessageTime(messages)
+  return newest > 0 && tool.start < newest - STALE_TOLERANCE_MS
+}
+
 /**
  * Long-running commands are normal on this bot (renders, installs, polls,
  * pipelines), so the default budget is generous; true hangs (daemonized
@@ -119,6 +147,7 @@ async function sweepUser(
     if (!messageRes.ok) continue
     const messages: unknown = await messageRes.json()
     if (!toolStuck(messages, now, toolLimit(messages))) continue
+    if (toolStale(messages)) continue
     cooled.set(key, now)
     const aborted = await fetch(`${base}/session/${sessionId}/abort`, {
       method: "POST",

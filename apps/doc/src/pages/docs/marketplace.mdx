@@ -29,7 +29,7 @@ A newer `enqueuedAt` wins; every publish re-reviews; loopback publishes review i
 
 - Users sign in via openauthster (public PKCE client; `OPENAUTH_ISSUER_URL`/`OPENAUTH_CLIENT_ID` in `wrangler.jsonc`).
 - The account page creates keys (`obm_…`, sha256-hashed in D1, shown once).
-- Paste the key on the dashboard Plugins page (admin) → `app_settings.marketplace_api_key`; `marketplace()` prefers it over the `OPEN_BOT_MARKETPLACE_TOKEN` env fallback. `POST /api/publish` accepts either.
+- Paste the key on the dashboard Config page's Plugins tab (admin) → `app_settings.marketplace_api_key`; `marketplace()` prefers it over the `OPEN_BOT_MARKETPLACE_TOKEN` env fallback. `POST /api/publish` accepts either.
 
 ## Storage and bindings
 
@@ -50,7 +50,7 @@ A newer `enqueuedAt` wins; every publish re-reviews; loopback publishes review i
 - Dev tags: same review, never move `latest_version`, hidden from search; install with `ob-plugin install <id> --version beta-1`.
 
 <Callout type="note">
-The dashboard Plugins tab includes a marketplace account panel, version picker (dev badges), Re-install action, and uninstall.
+The dashboard Config page's Plugins tab includes a marketplace account panel, version picker (dev badges), Re-install action, and uninstall.
 </Callout>
 
 </DocsShell>

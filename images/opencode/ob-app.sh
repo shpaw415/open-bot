@@ -166,7 +166,7 @@ if [ "$cmd" = "launch" ]; then
       shift
     done
     case "$profile_name" in
-      "" | *[!A-Za-z0-9_-]*) echo "bad profile name" >&2 ; exit 1 ;;
+      *[!A-Za-z0-9_-]*) echo "bad profile name" >&2 ; exit 1 ;;
     esac
     if [ "${#profile_name}" -gt 64 ]; then
       echo "bad profile name" >&2

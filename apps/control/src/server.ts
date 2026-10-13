@@ -56,7 +56,7 @@ import {
   fetchModelVariants,
   supportsEffort,
 } from "./effort"
-import { cookieSecure, devMode, names, webDist } from "./env"
+import { cookieSecure, names, webDist } from "./env"
 import type { EventHub, EventsSocketData, Upstream } from "./events"
 import { HttpError, httpErrorResponse } from "./http-error"
 import {
@@ -102,6 +102,7 @@ import {
   personaSystem,
   resolvePersona,
 } from "./personas"
+import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
 import { handlePluginPagesStatus, proxyPluginPage } from "./plugin-pages"
 import { handlePlugins } from "./plugins"
 import {
@@ -112,6 +113,8 @@ import {
 } from "./preview"
 import {
   isProjectManageRequest,
+  opencodeFileUrl,
+  projectCategory,
   projectDir,
   projectName,
   projectSubpath,
@@ -233,6 +236,8 @@ type LoginSession = {
   proc: ReturnType<typeof spawnLogin> | null
   sockets: Set<Bun.ServerWebSocket<SocketData>>
   expire: ReturnType<typeof setTimeout> | null
+  db?: Db
+  hub?: EventHub
 }
 
 const logins = new Map<string, LoginSession>()
@@ -473,6 +478,7 @@ async function applyVaultChange(
   db: Db,
   changed: { slug: string; key: string },
   revoke: ChatKeyEntry[] = [],
+  hub?: EventHub,
 ) {
   const applied: Record<string, unknown> = {}
   const image = resolveImageProvider(db, user.id)
@@ -561,7 +567,7 @@ async function applyVaultChange(
           revoke,
         )
         applied.chat = chat
-        if (chat.applied) await restartOpencode(user.id)
+        if (chat.applied) await restartOpencode(user.id, { db, desktop, hub })
       } catch (error) {
         const message = error instanceof Error ? error.message : ""
         if (!message.includes("missing chat setup")) {
@@ -795,6 +801,7 @@ async function handleProjectManage(
         id,
         name,
         path,
+        category: projectCategory(path),
         createdAt,
       })),
     })
@@ -846,6 +853,7 @@ async function handleProjectManage(
         id: project.id,
         name: project.name,
         path: project.path,
+        category: projectCategory(project.path),
         createdAt: project.createdAt,
       },
     })
@@ -907,7 +915,6 @@ async function api(
     return sessionResponse(db, user)
   }
   if (url.pathname === "/api/improvements") {
-    if (!devMode) return json({ error: "not found" }, 404)
     const agent = userFromLlmToken(req, db)
     if (!agent) return json({ error: "unauthorized" }, 401)
     return handleImprovementPost(req, db, agent)
@@ -1024,7 +1031,7 @@ async function api(
         return json({ error: "not found" }, 404)
       }
       if (isPluginPath) {
-        const handled = handlePlugins(req, url, db, agent, hub, holdOpen)
+        const handled = handlePlugins(req, url, db, agent, hub, holdOpen, true)
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -1045,7 +1052,7 @@ async function api(
     return json({ error: "not found" }, 404)
   }
   if (isPluginPath) {
-    const handled = handlePlugins(req, url, db, user, hub, holdOpen)
+    const handled = handlePlugins(req, url, db, user, hub, holdOpen, false)
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
@@ -1342,10 +1349,16 @@ async function api(
       return json({ error: "at least one field is required" }, 400)
     }
     db.setUserKey(user.id, slug, fields)
-    const applied = await applyVaultChange(user, db, {
-      slug,
-      key: fields.apiKey,
-    })
+    const applied = await applyVaultChange(
+      user,
+      db,
+      {
+        slug,
+        key: fields.apiKey,
+      },
+      [],
+      hub,
+    )
     return json({ ok: true, applied })
   }
   if (url.pathname === "/api/keys" && req.method === "DELETE") {
@@ -1358,7 +1371,13 @@ async function api(
       spec.chatProvider && current?.apiKey
         ? [{ slug, key: current.apiKey }]
         : []
-    const applied = await applyVaultChange(user, db, { slug, key: "" }, revoke)
+    const applied = await applyVaultChange(
+      user,
+      db,
+      { slug, key: "" },
+      revoke,
+      hub,
+    )
     return json({ ok: true, applied })
   }
   if (url.pathname === "/api/viking" && req.method === "GET") {
@@ -1866,7 +1885,7 @@ async function api(
       const desktop = await ensure(user, db)
       const base = await endpoint(user.id, "opencode", 4096)
       const upstream = await fetch(
-        `${base}/file?path=${encodeURIComponent(path)}`,
+        opencodeFileUrl(base, "list", project.path, path),
         { headers: basic(desktop.opencodePassword) },
       )
       if (!upstream.ok) return json({ error: "listing failed" }, 502)
@@ -1886,7 +1905,7 @@ async function api(
       const desktop = await ensure(user, db)
       const base = await endpoint(user.id, "opencode", 4096)
       const upstream = await fetch(
-        `${base}/file/content?path=${encodeURIComponent(path)}`,
+        opencodeFileUrl(base, "content", project.path, path),
         { headers: basic(desktop.opencodePassword) },
       )
       if (!upstream.ok) return json({ error: "not found" }, 404)
@@ -1948,7 +1967,13 @@ async function api(
     }
     const skills = await skillsClient(user, db)
     if (name) return json(await skills.get(name))
-    return json({ skills: await skills.list() })
+    const ownership = pluginOwnership(db, user.id)
+    return json({
+      skills: (await skills.list()).map((skill) => {
+        const plugin = ownership.skillByName.get(skill.name)
+        return plugin ? { ...skill, plugin } : skill
+      }),
+    })
   }
   if (url.pathname === "/api/skills" && req.method === "PUT") {
     const body = await readJson(req)
@@ -2019,6 +2044,8 @@ async function api(
       proc: null,
       sockets: new Set(),
       expire: null,
+      db,
+      hub,
     }
     session.expire = setTimeout(() => {
       if (!session.started) logins.delete(id)
@@ -2084,7 +2111,7 @@ async function api(
         "-c",
         `jq --arg p ${shellQuote(providerID)} --arg m ${shellQuote(modelID)} '.model = ($p + "/" + $m) | .small_model = ($p + "/" + $m)' $HOME/.config/opencode/opencode.json > /tmp/oc.json && mv /tmp/oc.json $HOME/.config/opencode/opencode.json`,
       ])
-      await restartOpencode(user.id)
+      await restartOpencode(user.id, { db, hub })
     }
     return json({ ok: true })
   }
@@ -2425,8 +2452,15 @@ async function handleCron(
   if (url.pathname === "/api/cron/models" && req.method === "GET")
     return json(await connectedModels(user, db))
 
-  if (url.pathname === "/api/cron" && req.method === "GET")
-    return json(db.cronJobs(user.id))
+  if (url.pathname === "/api/cron" && req.method === "GET") {
+    const ownership = pluginOwnership(db, user.id)
+    return json(
+      db.cronJobs(user.id).map((job) => {
+        const plugin = pluginOriginForCronJob(ownership, job.name)
+        return plugin ? { ...job, plugin } : job
+      }),
+    )
+  }
 
   if (url.pathname === "/api/cron" && req.method === "POST") {
     const body = await readJson(req)
@@ -2873,7 +2907,10 @@ async function finishLogin(session: LoginSession) {
   let note: string | undefined
   if (code === 0) {
     try {
-      await restartOpencode(session.userId)
+      await restartOpencode(session.userId, {
+        db: session.db,
+        hub: session.hub,
+      })
     } catch {
       note = "provider saved, but OpenCode did not restart"
     }

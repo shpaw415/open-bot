@@ -5,7 +5,7 @@ import {
   useContext,
   useState,
 } from "react"
-import { findReferenceTokens, type ProjectRefItem } from "./references"
+import { findProjectReferenceTokens, type ProjectRefItem } from "./references"
 
 export const ProjectRefsContext = createContext<ProjectRefItem[]>([])
 
@@ -55,7 +55,7 @@ export function remarkProjectRefs(projects: ProjectRefItem[]) {
       for (const child of node.children) {
         const tokens =
           child.type === "text" && child.value
-            ? findReferenceTokens(child.value, projects).filter(
+            ? findProjectReferenceTokens(child.value, projects).filter(
                 (token) => token.name,
               )
             : []

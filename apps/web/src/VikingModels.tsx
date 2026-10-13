@@ -70,7 +70,7 @@ export function VikingModels({ endpoint }: { endpoint: string }) {
     <ConfigSection
       icon={<MemoryIcon />}
       title="OpenViking models"
-      description="Embedding and VLM used by your desktop's OpenViking. Chat models are connected on the Providers page."
+      description="Embedding and VLM used by your desktop's OpenViking. Chat models are connected on the Config page's Providers tab."
       status={
         hasKey || baseURL || embedModel || vlmModel
           ? hasKey

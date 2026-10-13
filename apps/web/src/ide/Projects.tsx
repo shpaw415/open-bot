@@ -18,6 +18,7 @@ import type { EventStream } from "../hooks"
 import { useMobile } from "../hooks"
 import { AddIcon, DeleteIcon, FolderIcon } from "../icons"
 import { Ide } from "./Ide"
+import { groupProjects } from "./project-groups"
 import type { ProjectInfo } from "./types"
 
 function slugify(name: string): string {
@@ -36,6 +37,83 @@ function createdLabel(ms: number): string {
     year:
       date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
   })
+}
+
+function ProjectCard({
+  project,
+  onOpen,
+  onRemove,
+}: {
+  project: ProjectInfo
+  onOpen: (project: ProjectInfo) => void
+  onRemove: (project: ProjectInfo) => void
+}) {
+  return (
+    <Stack
+      direction="row"
+      spacing={1.5}
+      alignItems="center"
+      sx={{
+        p: 1.25,
+        borderRadius: 2,
+        border: 1,
+        borderColor: "divider",
+        backgroundColor: "background.paper",
+        cursor: "pointer",
+        "&:hover": { borderColor: "primary.main" },
+      }}
+      onClick={() => onOpen(project)}
+    >
+      <Box
+        sx={{
+          width: 38,
+          height: 38,
+          borderRadius: 1.5,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          backgroundColor: "action.hover",
+          color: "#c09553",
+        }}
+      >
+        <FolderIcon />
+      </Box>
+      <Stack sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 600 }}>{project.name}</Typography>
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.secondary",
+            fontFamily: "monospace",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {project.path}
+        </Typography>
+      </Stack>
+      <Typography
+        variant="caption"
+        sx={{ color: "text.secondary", flexShrink: 0 }}
+      >
+        {createdLabel(project.createdAt)}
+      </Typography>
+      <ToolTip title="Remove project link">
+        <IconButton
+          size="small"
+          aria-label={`Remove ${project.name}`}
+          onClick={(event) => {
+            event.stopPropagation()
+            onRemove(project)
+          }}
+        >
+          <DeleteIcon />
+        </IconButton>
+      </ToolTip>
+    </Stack>
+  )
 }
 
 export function Projects({
@@ -144,6 +222,7 @@ export function Projects({
   }
 
   const slug = slugify(name)
+  const grouped = projects ? groupProjects(projects) : null
 
   return (
     <Stack
@@ -193,72 +272,38 @@ export function Projects({
         </Stack>
       ) : (
         <Stack spacing={1} sx={{ overflowY: "auto", minHeight: 0, pb: 1 }}>
-          {projects.map((project) => (
-            <Stack
-              key={project.id}
-              direction="row"
-              spacing={1.5}
-              alignItems="center"
-              sx={{
-                p: 1.25,
-                borderRadius: 2,
-                border: 1,
-                borderColor: "divider",
-                backgroundColor: "background.paper",
-                cursor: "pointer",
-                "&:hover": { borderColor: "primary.main" },
-              }}
-              onClick={() => setSelected(project)}
-            >
-              <Box
-                sx={{
-                  width: 38,
-                  height: 38,
-                  borderRadius: 1.5,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                  backgroundColor: "action.hover",
-                  color: "#c09553",
-                }}
-              >
-                <FolderIcon />
-              </Box>
-              <Stack sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 600 }}>{project.name}</Typography>
-                <Typography
-                  variant="caption"
-                  sx={{
-                    color: "text.secondary",
-                    fontFamily: "monospace",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {project.path}
-                </Typography>
-              </Stack>
+          {grouped && grouped.plugins.length > 0 ? (
+            <>
               <Typography
                 variant="caption"
-                sx={{ color: "text.secondary", flexShrink: 0 }}
+                sx={{
+                  color: "text.secondary",
+                  fontWeight: 600,
+                  px: 1.25,
+                  pt: 0.5,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.8,
+                }}
               >
-                {createdLabel(project.createdAt)}
+                Plugins
               </Typography>
-              <ToolTip title="Remove project link">
-                <IconButton
-                  size="small"
-                  aria-label={`Remove ${project.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    setRemoving(project)
-                  }}
-                >
-                  <DeleteIcon />
-                </IconButton>
-              </ToolTip>
-            </Stack>
+              {grouped.plugins.map((project) => (
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  onOpen={setSelected}
+                  onRemove={setRemoving}
+                />
+              ))}
+            </>
+          ) : null}
+          {grouped?.general.map((project) => (
+            <ProjectCard
+              key={project.id}
+              project={project}
+              onOpen={setSelected}
+              onRemove={setRemoving}
+            />
           ))}
         </Stack>
       )}

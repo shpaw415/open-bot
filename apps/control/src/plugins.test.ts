@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { User } from "@open-bot/db"
 import { type Db, emptyAppliedLog, openDatabase } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import * as dockerModule from "./docker"
+import * as pluginArtifactModule from "./plugin-artifact"
 import { ensureGuardCron, handlePlugins } from "./plugins"
 import {
   applyPluginInstall,
   applyPluginUninstall,
   reapplyPluginSetup,
+  setPluginEnabled,
   withVikingRetries,
 } from "./plugins-apply"
 import * as vikingSkillsModule from "./viking-skills"
@@ -572,6 +574,275 @@ describe("plugins router", () => {
     expect(body.plugins[0]?.settings).toMatchObject({ units: "imperial" })
   })
 
+  test("stores, serves, and validates the dashboard layout", async () => {
+    const missing = route("/api/plugins/dashboard-layout")
+    const missingRes = await handlePlugins(
+      missing.req,
+      missing.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(await missingRes?.json()).toEqual({ layout: null })
+
+    const layout = JSON.stringify({
+      pages: [
+        { items: [{ type: "app", key: "weather-pro:today" }] },
+        {
+          items: [
+            {
+              type: "folder",
+              id: "misc",
+              name: "Misc",
+              items: [{ type: "app", key: "weather-pro:hourly" }],
+            },
+          ],
+        },
+      ],
+    })
+    const put = route("/api/plugins/dashboard-layout", "PUT", { layout })
+    const putRes = await handlePlugins(put.req, put.url, db, user(), hub)
+    expect(await putRes?.json()).toMatchObject({ ok: true })
+    const get = route("/api/plugins/dashboard-layout")
+    const getRes = await handlePlugins(get.req, get.url, db, user(), hub)
+    expect(await getRes?.json()).toEqual({ layout })
+
+    const badKey = route("/api/plugins/dashboard-layout", "PUT", {
+      layout: JSON.stringify({
+        pages: [{ items: [{ type: "app", key: "WEATHER PRO/today" }] }],
+      }),
+    })
+    expect(
+      (await handlePlugins(badKey.req, badKey.url, db, user(), hub))?.status,
+    ).toBe(400)
+
+    const duplicate = route("/api/plugins/dashboard-layout", "PUT", {
+      layout: JSON.stringify({
+        pages: [
+          {
+            items: [
+              { type: "app", key: "weather-pro:today" },
+              { type: "app", key: "weather-pro:today" },
+            ],
+          },
+        ],
+      }),
+    })
+    expect(
+      (await handlePlugins(duplicate.req, duplicate.url, db, user(), hub))
+        ?.status,
+    ).toBe(400)
+
+    const oversized = route("/api/plugins/dashboard-layout", "PUT", {
+      layout: "x".repeat(20000),
+    })
+    expect(
+      (await handlePlugins(oversized.req, oversized.url, db, user(), hub))
+        ?.status,
+    ).toBe(400)
+  })
+
+  test("vault write path fills vaultCreate slugs and never echoes values", async () => {
+    db.createInstalledPlugin({
+      id: "row-vault",
+      userId: "a",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        ...manifest,
+        permissions: { vaultCreate: ["weatherapi"], vaultRead: ["openai"] },
+      }),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    const notFound = route("/api/plugins/installed/other/vault", "POST", {
+      slug: "weatherapi",
+      value: { apiKey: "k" },
+    })
+    const notFoundRes = await handlePlugins(
+      notFound.req,
+      notFound.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect(notFoundRes?.status).toBe(404)
+
+    const notDeclared = route(
+      "/api/plugins/installed/weather-pro/vault",
+      "POST",
+      { slug: "openai", value: { apiKey: "k" } },
+    )
+    const notDeclaredRes = await handlePlugins(
+      notDeclared.req,
+      notDeclared.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect(notDeclaredRes?.status).toBe(400)
+
+    const good = route("/api/plugins/installed/weather-pro/vault", "POST", {
+      slug: "weatherapi",
+      value: { apiKey: "wx-key-123", accountId: "acct-1" },
+    })
+    const goodRes = await handlePlugins(
+      good.req,
+      good.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect(await goodRes?.json()).toEqual({ ok: true, slug: "weatherapi" })
+    const saved = db.getUserKey("a", "weatherapi")
+    expect(saved?.apiKey).toBe("wx-key-123")
+    expect(saved?.accountId).toBe("acct-1")
+
+    const listed = route("/api/plugins/installed/weather-pro/vault")
+    const listedRes = await handlePlugins(
+      listed.req,
+      listed.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect(await listedRes?.json()).toEqual({
+      slugs: [{ slug: "weatherapi", hasKey: true }],
+    })
+
+    // An empty apiKey clears the key.
+    const clear = route("/api/plugins/installed/weather-pro/vault", "POST", {
+      slug: "weatherapi",
+      value: { apiKey: "" },
+    })
+    const clearRes = await handlePlugins(
+      clear.req,
+      clear.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect(await clearRes?.json()).toEqual({ ok: true, slug: "weatherapi" })
+    expect(db.getUserKey("a", "weatherapi")?.apiKey).toBe("")
+  })
+
+  test("dashboard vault lists declared keys and fills custom read slugs", async () => {
+    db.createInstalledPlugin({
+      id: "row-vault-ui",
+      userId: "a",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        ...manifest,
+        permissions: {
+          vaultCreate: ["weatherapi"],
+          vaultRead: ["openai", "hookdeck"],
+        },
+      }),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    // The dashboard GET lists the union with status metadata (never secrets).
+    const listed = route("/api/plugins/installed/weather-pro/vault")
+    const listedRes = await handlePlugins(
+      listed.req,
+      listed.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(await listedRes?.json()).toEqual({
+      slugs: [
+        {
+          slug: "weatherapi",
+          hasKey: false,
+          access: "create",
+          shared: false,
+          accountId: "",
+          baseUrl: "",
+        },
+        {
+          slug: "openai",
+          hasKey: false,
+          access: "read",
+          shared: true,
+          accountId: "",
+          baseUrl: "",
+        },
+        {
+          slug: "hookdeck",
+          hasKey: false,
+          access: "read",
+          shared: false,
+          accountId: "",
+          baseUrl: "",
+        },
+      ],
+    })
+
+    // Shared provider slugs stay on the Keys tab (its chat re-push runs there).
+    const shared = route("/api/plugins/installed/weather-pro/vault", "POST", {
+      slug: "openai",
+      value: { apiKey: "k" },
+    })
+    const sharedRes = await handlePlugins(
+      shared.req,
+      shared.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(sharedRes?.status).toBe(400)
+    expect(((await sharedRes?.json()) as { error: string }).error).toContain(
+      "Keys tab",
+    )
+
+    // Custom read slugs are settable from the dashboard.
+    const custom = route("/api/plugins/installed/weather-pro/vault", "POST", {
+      slug: "hookdeck",
+      value: { apiKey: "hd-key-1", baseUrl: "https://hookdeck.example" },
+    })
+    const customRes = await handlePlugins(
+      custom.req,
+      custom.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(await customRes?.json()).toEqual({ ok: true, slug: "hookdeck" })
+    expect(db.getUserKey("a", "hookdeck")?.apiKey).toBe("hd-key-1")
+    expect(db.getUserKey("a", "hookdeck")?.baseUrl).toBe(
+      "https://hookdeck.example",
+    )
+
+    // Unknown slugs stay rejected.
+    const unknown = route("/api/plugins/installed/weather-pro/vault", "POST", {
+      slug: "other",
+      value: { apiKey: "k" },
+    })
+    expect(
+      (await handlePlugins(unknown.req, unknown.url, db, user(), hub))?.status,
+    ).toBe(400)
+  })
+
   test("install prunes settings the new manifest no longer declares", async () => {
     db.setPluginSetting("a", "weather-pro", "units", "imperial")
     db.setPluginSetting("a", "weather-pro", "legacy", "junk")
@@ -846,6 +1117,51 @@ describe("plugin remove/reinstall orphans", () => {
     expect(row.applied.cronJobIds).toEqual([jobs[0]?.id])
   })
 
+  test("install creates script/auto cron jobs from the manifest", async () => {
+    const scriptManifest = {
+      ...manifest,
+      cron: [
+        {
+          name: "watcher",
+          message: "Handle what changed",
+          script: "echo '[cron-agent] inbox changed'",
+          run: "auto",
+          everySeconds: 900,
+        },
+        {
+          name: "snapshot",
+          script: "df -h",
+          run: "script",
+          cronExpr: "0 6 * * *",
+        },
+      ],
+    } as unknown as PluginManifest
+    const entry = {
+      id: "weather-pro",
+      version: "1.0.0",
+      status: "approved" as const,
+      manifest: scriptManifest,
+      readme: null,
+      downloads: 0,
+    }
+    await applyPluginInstall(db, user(), entry)
+    const jobs = Object.fromEntries(
+      db
+        .cronJobs("a")
+        .filter((job) => job.name.startsWith("plugin:weather-pro:"))
+        .map((job) => [job.name, job]),
+    )
+    expect(jobs["plugin:weather-pro:watcher"]?.runKind).toBe("auto")
+    expect(jobs["plugin:weather-pro:watcher"]?.script).toContain("cron-agent")
+    expect(jobs["plugin:weather-pro:watcher"]?.message).toBe(
+      "Handle what changed",
+    )
+    expect(jobs["plugin:weather-pro:snapshot"]?.runKind).toBe("script")
+    expect(jobs["plugin:weather-pro:snapshot"]?.message).toBe("")
+    expect(jobs["plugin:weather-pro:snapshot"]?.script).toBe("df -h")
+    expect(jobs["plugin:weather-pro:snapshot"]?.cronExpr).toBe("0 6 * * *")
+  })
+
   test("withVikingRetries backs off transient errors and fails fast otherwise", async () => {
     let calls = 0
     const ok = await withVikingRetries(async () => {
@@ -982,6 +1298,297 @@ describe("plugin remove/reinstall orphans", () => {
       )
     } finally {
       fakeSkills = null
+    }
+  })
+})
+
+describe("plugin config guide", () => {
+  let db: Db
+  beforeEach(() => {
+    db = openDatabase(join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"))
+    db.createUser(user())
+  })
+
+  const GUIDE = "# weather-pro\n\nAsk the user for the API key, then verify.\n"
+
+  // Builds a real release tarball (single root dir) like a GitHub release.
+  function tarballWith(files: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), "ob-guide-tar-"))
+    const root = join(dir, "weather-pro-1.0.0")
+    mkdirSync(root, { recursive: true })
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(root, name), content)
+    }
+    const out = join(dir, "release.tgz")
+    Bun.spawnSync(["tar", "-czf", out, "-C", dir, "weather-pro-1.0.0"])
+    return out
+  }
+
+  function entry(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "weather-pro",
+      version: "1.0.0",
+      status: "approved" as const,
+      manifest: { ...manifest } as unknown as PluginManifest,
+      readme: null,
+      downloads: 0,
+      ...overrides,
+    }
+  }
+
+  function createRow(applied: Record<string, unknown> = {}) {
+    db.createInstalledPlugin({
+      id: "row-guide",
+      userId: "a",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify(manifest),
+      readme: null,
+      enabled: true,
+      applied: JSON.stringify(applied),
+      createdAt: 1,
+      updatedAt: 1,
+    })
+  }
+
+  test("marketplace install extracts CONFIG.md and syncs it to the desktop", async () => {
+    const artifactSpy = spyOn(
+      pluginArtifactModule,
+      "fetchPluginArtifact",
+    ).mockResolvedValue({
+      tarballPath: tarballWith({ "CONFIG.md": GUIDE }),
+      sha256: "x",
+    })
+    const guideCalls: (string | null)[] = []
+    const guideSpy = spyOn(
+      dockerModule,
+      "syncPluginConfigGuide",
+    ).mockImplementation(async (_userId, _pluginId, data) => {
+      guideCalls.push(data)
+      return true
+    })
+    try {
+      const row = await applyPluginInstall(db, user(), entry())
+      expect(artifactSpy).toHaveBeenCalled()
+      expect(guideCalls).toEqual([GUIDE])
+      expect(row.applied.configGuide).toBe(true)
+    } finally {
+      artifactSpy.mockRestore()
+      guideSpy.mockRestore()
+    }
+  })
+
+  test("a release without CONFIG.md installs normally", async () => {
+    spyOn(pluginArtifactModule, "fetchPluginArtifact").mockResolvedValue({
+      tarballPath: tarballWith({ "README.md": "docs" }),
+      sha256: "x",
+    })
+    const guideCalls: (string | null)[] = []
+    const guideSpy = spyOn(
+      dockerModule,
+      "syncPluginConfigGuide",
+    ).mockImplementation(async (_userId, _pluginId, data) => {
+      guideCalls.push(data)
+      return true
+    })
+    try {
+      const row = await applyPluginInstall(db, user(), entry())
+      expect(guideCalls).toEqual([])
+      expect(row.applied.configGuide).toBeUndefined()
+    } finally {
+      guideSpy.mockRestore()
+    }
+  })
+
+  test("local install keeps going when the checkout has no readable guide", async () => {
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      const row = await applyPluginInstall(db, user(), entry(), {
+        source: "local",
+        localPath: "/home/agent/plugins-create/weather-pro",
+        files: [],
+      })
+      expect(row.pluginId).toBe("weather-pro")
+      expect(row.applied.configGuide).toBeUndefined()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  test("uninstall removes the guide", async () => {
+    createRow({ configGuide: true })
+    const guideCalls: (string | null)[] = []
+    const guideSpy = spyOn(
+      dockerModule,
+      "syncPluginConfigGuide",
+    ).mockImplementation(async (_userId, _pluginId, data) => {
+      guideCalls.push(data)
+      return true
+    })
+    try {
+      await applyPluginUninstall(db, user(), {
+        ...(db.installedPlugin("a", "weather-pro") as NonNullable<
+          ReturnType<typeof db.installedPlugin>
+        >),
+      })
+      // revertApplied removes the recorded guide and the uninstall sweep
+      // removes it unconditionally (covers rows without the marker).
+      expect(guideCalls).toEqual([null, null])
+    } finally {
+      guideSpy.mockRestore()
+    }
+  })
+
+  test("local guide reader reads the checkout CONFIG.md", async () => {
+    const execSpy = spyOn(dockerModule, "opencodeExec").mockImplementation(
+      async (_userId, args) => {
+        const [cmd, ...rest] = args
+        const target = rest[rest.length - 1]
+        if (cmd === "realpath") {
+          if (target === "/plugin" || target === "/plugin/CONFIG.md") {
+            return { code: 0, stdout: `${target}\n`, stderr: "" }
+          }
+          return { code: 1, stdout: "", stderr: "No such file or directory" }
+        }
+        const content = target === "/plugin/CONFIG.md" ? GUIDE : undefined
+        if (content === undefined) {
+          return { code: 1, stdout: "", stderr: "No such file or directory" }
+        }
+        if (cmd === "stat") {
+          return {
+            code: 0,
+            stdout: `${Buffer.byteLength(content)}\n`,
+            stderr: "",
+          }
+        }
+        if (cmd === "cat") return { code: 0, stdout: content, stderr: "" }
+        return { code: 0, stdout: "", stderr: "" }
+      },
+    )
+    const { readLocalPluginConfigGuide } = await import("./plugin-local")
+    try {
+      expect(await readLocalPluginConfigGuide("a", "/plugin")).toBe(GUIDE)
+    } finally {
+      execSpy.mockRestore()
+    }
+  })
+
+  test("local guide reader returns null when the checkout has no CONFIG.md", async () => {
+    const execSpy = spyOn(dockerModule, "opencodeExec").mockImplementation(
+      async (_userId, args) => {
+        const [cmd, ...rest] = args
+        const target = rest[rest.length - 1]
+        if (cmd === "realpath" && target === "/plugin") {
+          return { code: 0, stdout: `${target}\n`, stderr: "" }
+        }
+        return { code: 1, stdout: "", stderr: "No such file or directory" }
+      },
+    )
+    const { readLocalPluginConfigGuide } = await import("./plugin-local")
+    try {
+      expect(await readLocalPluginConfigGuide("a", "/plugin")).toBeNull()
+    } finally {
+      execSpy.mockRestore()
+    }
+  })
+
+  test("disable removes the guide and enable restores it", async () => {
+    createRow({ configGuide: true })
+    const artifactSpy = spyOn(
+      pluginArtifactModule,
+      "fetchPluginArtifact",
+    ).mockResolvedValue({
+      tarballPath: tarballWith({ "CONFIG.md": GUIDE }),
+      sha256: "x",
+    })
+    const guideCalls: (string | null)[] = []
+    const guideSpy = spyOn(
+      dockerModule,
+      "syncPluginConfigGuide",
+    ).mockImplementation(async (_userId, _pluginId, data) => {
+      guideCalls.push(data)
+      return true
+    })
+    try {
+      const row = db.installedPlugin("a", "weather-pro") as NonNullable<
+        ReturnType<typeof db.installedPlugin>
+      >
+      await setPluginEnabled(db, user(), row, false)
+      expect(guideCalls).toEqual([null])
+
+      guideCalls.length = 0
+      await setPluginEnabled(
+        db,
+        user(),
+        db.installedPlugin("a", "weather-pro") as NonNullable<
+          ReturnType<typeof db.installedPlugin>
+        >,
+        true,
+      )
+      expect(guideCalls).toEqual([GUIDE])
+    } finally {
+      artifactSpy.mockRestore()
+      guideSpy.mockRestore()
+    }
+  })
+
+  test("enable without a recorded guide does not touch the desktop file", async () => {
+    createRow({})
+    const guideSpy = spyOn(
+      dockerModule,
+      "syncPluginConfigGuide",
+    ).mockImplementation(async () => true)
+    try {
+      await setPluginEnabled(
+        db,
+        user(),
+        db.installedPlugin("a", "weather-pro") as NonNullable<
+          ReturnType<typeof db.installedPlugin>
+        >,
+        true,
+      )
+      expect(guideSpy).not.toHaveBeenCalled()
+    } finally {
+      guideSpy.mockRestore()
+    }
+  })
+
+  test("boot re-sync restores the guide only for installs that recorded one", async () => {
+    createRow({ configGuide: true })
+    // A second enabled plugin with no recorded guide.
+    db.createInstalledPlugin({
+      id: "row-plain",
+      userId: "a",
+      pluginId: "plain-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify({ ...manifest, id: "plain-pro" }),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 2,
+      updatedAt: 2,
+    })
+    const artifactSpy = spyOn(
+      pluginArtifactModule,
+      "fetchPluginArtifact",
+    ).mockResolvedValue({
+      tarballPath: tarballWith({ "CONFIG.md": GUIDE }),
+      sha256: "x",
+    })
+    const guideCalls: [string, string | null][] = []
+    const guideSpy = spyOn(
+      dockerModule,
+      "syncPluginConfigGuide",
+    ).mockImplementation(async (_userId, pluginId, data) => {
+      guideCalls.push([pluginId, data])
+      return true
+    })
+    try {
+      await reapplyPluginSetup(db, "a")
+      expect(guideCalls).toEqual([["weather-pro", GUIDE]])
+    } finally {
+      artifactSpy.mockRestore()
+      guideSpy.mockRestore()
     }
   })
 })

@@ -22,7 +22,7 @@ if [ -f "$run_dir/display" ]; then
   display=$(cat "$run_dir/display")
 fi
 if [ -d "$run_dir" ]; then
-    for name in xvfb openbox chromium urlwatch; do
+    for name in xvfb openbox chromium; do
     if [ -f "$run_dir/$name.pid" ]; then
       pid=$(cat "$run_dir/$name.pid")
       kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
@@ -52,6 +52,5 @@ rm -f "/home/agent/.open-bot/vnc/$session" "/home/agent/.open-bot/vnc/$session.h
 if [ "$purge" -eq 1 ]; then
   rm -rf "$profile"
   rm -rf "/home/agent/.config/apps/chrome/$session" "/home/agent/.config/apps/chrome/$session"-* 2>/dev/null || true
-  rm -f "/home/agent/.open-bot/screens/$session.url"
 fi
 echo ok

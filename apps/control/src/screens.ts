@@ -42,26 +42,26 @@ export function capturePath(port: number) {
 }
 
 export function holdSystemLine() {
-  return "The user holds this screen. Do not click, type, or run ob-nav or ob-vnc until they say they are done on the screen."
+  return "The user holds this screen. Do not click, type, or run ob-chrome, ob-nav, ob-page, or ob-vnc until they say they are done on the screen."
 }
 
 export function vncSystemLine(sessionId: string, port: number) {
   return [
     `This thread's screen id is ${sessionId}.`,
-    `Drive it only with ob-vnc --session ${sessionId}.`,
+    `Drive it only with ob-chrome, ob-page, ob-nav, or ob-vnc --session ${sessionId}.`,
     "Do not call vncdo. Do not run xclip or xsel. Paste with ob-vnc paste. Do not pass a host or port.",
     "Do not use 5900, computer:5900, computer::5900, or $OPEN_BOT_VNC.",
     `A single colon is a display number. The vncdo address is ${vncHost(port)}, and ob-vnc already uses it.`,
+    `Go to a page with ob-chrome --session ${sessionId} navigate URL — one cheap command that prints the page url and title, opens a fresh tab on a crashed page, and brings the screen back if it died. Check where you are with ob-chrome --session ${sessionId} url.`,
+    `Read and act on the page with ob-page --session ${sessionId} (read, scroll, click, type). Reserve ob-nav --session ${sessionId} --goal for a real multi-step page goal; it costs a decision-model run.`,
     `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}. Add 2 when text is hard to read. That restores the screen. Clicks stay in live-screen pixels.`,
-    `For a page goal, run ob-nav --session ${sessionId} --goal "..." before clicking.`,
-    "The screen relaunches Chromium on this thread's last page on its own. A blank or black page only means Chromium was closed or is loading: run ob-nav to the page. Do not call the screen dark.",
-    `Native apps: install with sudo apt-get and launch with ob-app --session ${sessionId}; a standalone Chrome window is ob-app launch chrome. Pages stay on ob-nav.`,
-    "If ob-nav is unconfigured, blocked, low_confidence, or errors, use ob-page for DOM control (read, scroll, click, type); ob-vnc pixels are the last resort.",
+    "A relaunch opens a blank page: Chromium was restarted — navigate back with ob-chrome. Do not call the screen dark.",
+    `Native apps: install with sudo apt-get and launch with ob-app --session ${sessionId}; a standalone Chrome window is ob-app launch chrome.`,
+    "ob-vnc pixels are the last resort.",
     "Twenty fallback actions per task is the budget. Finish the task yourself; only after the budget, stop input and end with ![screen](open-bot://screen).",
-    "If ob-nav needs the user, stop and end with ![screen](open-bot://screen).",
-    "If the user must act on this screen, stop all input and end the reply with ![screen](open-bot://screen).",
-    "The chat embeds this live screen. Do not click or type again until they say they are done on the screen.",
+    "If the page needs the user (login, captcha, a choice only they can make), stop and end with ![screen](open-bot://screen).",
     "If the user takes control, stop all input until they say they are done on the screen.",
+    "The chat embeds this live screen. Do not click or type again until they say they are done on the screen.",
   ].join(" ")
 }
 

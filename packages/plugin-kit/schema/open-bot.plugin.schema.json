@@ -133,10 +133,35 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "message"],
+        "required": ["name"],
         "oneOf": [
           { "required": ["everySeconds"] },
           { "required": ["cronExpr"] }
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": { "run": { "enum": ["both", "auto"] } },
+              "required": ["run"]
+            },
+            "then": { "required": ["message", "script"] }
+          },
+          {
+            "if": {
+              "properties": { "run": { "enum": ["script", "both", "auto"] } },
+              "required": ["run"]
+            },
+            "then": { "required": ["script"] }
+          },
+          {
+            "if": {
+              "not": {
+                "properties": { "run": { "const": "script" } },
+                "required": ["run"]
+              }
+            },
+            "then": { "required": ["message"] }
+          }
         ],
         "properties": {
           "name": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -144,7 +169,18 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 8000,
-            "description": "Prompt the job runs. Installed jobs are named plugin:<id>:<name>."
+            "description": "Prompt the job runs (required unless run is script). Installed jobs are named plugin:<id>:<name>."
+          },
+          "run": {
+            "type": "string",
+            "enum": ["prompt", "script", "both", "auto"],
+            "description": "How the job runs: prompt (default) wakes the agent with message every time; script runs script and posts its output to the job thread without waking the agent; both runs script then wakes the agent with the output plus message; auto runs script and wakes the agent only when an output line starts with [cron-agent]. Prefer auto for guards that usually have nothing to do."
+          },
+          "script": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000,
+            "description": "Shell script the job runs (required for run script/both/auto), executed in the desktop shell."
           },
           "everySeconds": {
             "type": "number",
@@ -310,6 +346,11 @@
                 "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
               },
               "title": { "type": "string", "minLength": 1, "maxLength": 48 },
+              "icon": {
+                "type": "string",
+                "maxLength": 32,
+                "description": "App-tile icon for the dashboard home screen: a single emoji or a material icon name (e.g. \"chart\", \"wallet\"). Falls back to a letter avatar."
+              },
               "kind": { "enum": ["page", "iframe", "app"] },
               "url": {
                 "type": "string",

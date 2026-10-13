@@ -1,5 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
+import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
   DialogContent,
@@ -17,6 +18,7 @@ import { ExtensionIcon } from "./icons"
 type SkillSummary = {
   name: string
   description: string
+  plugin?: { id: string; name: string }
 }
 
 type SkillDetail = SkillSummary & {
@@ -168,7 +170,21 @@ export function CustomSkills() {
               {index > 0 ? <Divider /> : null}
               <Stack direction="row" spacing={1} alignItems="center">
                 <Stack sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="subtitle2">{skill.name}</Typography>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+                  >
+                    <Typography variant="subtitle2">{skill.name}</Typography>
+                    {skill.plugin ? (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={`plugin: ${skill.plugin.name}`}
+                      />
+                    ) : null}
+                  </Stack>
                   <Typography
                     variant="body2"
                     color="textSecondary"

@@ -1,5 +1,5 @@
 #!/bin/sh
-# ob-improve — file a product report from inside a development desktop.
+# ob-improve — file a product report from inside a desktop.
 # Talks to the open-bot control plane; never prints the auth token.
 set -eu
 
@@ -12,7 +12,6 @@ Usage:
   ob-improve add --kind bug|friction|feature --surface chat|desktop|nav|cron|persona|config|other --title TEXT --detail TEXT [--session ID]
 
 Files one product report. A matching open report increments its hit count.
-This command exists only on desktops built with update --dev.
 EOF
 }
 

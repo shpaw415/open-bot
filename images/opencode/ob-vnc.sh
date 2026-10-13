@@ -26,6 +26,7 @@ if [ -f "${file}.hold" ]; then
   echo "The user has this screen. Stop input until they say they are done on the screen." >&2
   exit 1
 fi
+/opt/open-bot/screen-heal.sh "$session"
 host=$(cat "$file")
 case "$host" in
   computer::590[2-9]) ;;

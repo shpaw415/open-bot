@@ -290,280 +290,263 @@ export function Providers() {
   }, [])
 
   return (
-    <Box className="ob-providers">
-      <Stack
-        spacing={1.5}
-        sx={{
-          p: mobile ? 1 : 2,
-          maxWidth: 1100,
-          mx: "auto",
-          width: "100%",
-          flex: 1,
-          minHeight: 0,
-        }}
-      >
-        {error ? (
-          <Alert severity="error" onClose={() => setError("")}>
-            {error}
-          </Alert>
-        ) : null}
+    <Stack spacing={1.5} sx={{ width: "100%" }}>
+      {error ? (
+        <Alert severity="error" onClose={() => setError("")}>
+          {error}
+        </Alert>
+      ) : null}
 
-        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
-          <Button
-            size="small"
-            variant="contained"
-            startIcon={<RefreshIcon />}
-            onClick={() => void load()}
-            disabled={loading}
-          >
-            {loading ? "Connecting…" : "Connect & reload"}
-          </Button>
-          <Box sx={{ flex: 1 }} />
-          <Typography
-            variant="caption"
-            color="textSecondary"
-            sx={{ alignSelf: "center" }}
-          >
-            {connected.length} connected
-          </Typography>
-        </Stack>
-
-        <Stack
-          direction={mobile ? "column" : "row"}
-          spacing={1.5}
-          sx={{ alignItems: "stretch", flex: 1, minHeight: 0 }}
+      <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
+        <Button
+          size="small"
+          variant="contained"
+          startIcon={<RefreshIcon />}
+          onClick={() => void load()}
+          disabled={loading}
         >
-          <Paper
-            variant="outlined"
-            sx={{
-              p: 1.5,
-              flex: mobile ? "0 0 auto" : "0 0 340px",
-              maxHeight: mobile ? 180 : "none",
-              minWidth: 0,
-              overflow: "auto",
-            }}
-          >
-            <Stack
-              direction="row"
-              alignItems="center"
-              spacing={1}
-              sx={{ mb: 1 }}
-            >
-              <Typography variant="subtitle1" sx={{ flex: 1 }}>
-                Connected
-              </Typography>
-              <Chip size="small">{connected.length}</Chip>
+          {loading ? "Connecting…" : "Connect & reload"}
+        </Button>
+        <Box sx={{ flex: 1 }} />
+        <Typography
+          variant="caption"
+          color="textSecondary"
+          sx={{ alignSelf: "center" }}
+        >
+          {connected.length} connected
+        </Typography>
+      </Stack>
+
+      <Stack
+        direction={mobile ? "column" : "row"}
+        spacing={1.5}
+        sx={{ alignItems: "stretch", flex: 1, minHeight: 0 }}
+      >
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 1.5,
+            flex: mobile ? "0 0 auto" : "0 0 340px",
+            maxHeight: mobile ? 180 : "none",
+            minWidth: 0,
+            overflow: "auto",
+          }}
+        >
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+            <Typography variant="subtitle1" sx={{ flex: 1 }}>
+              Connected
+            </Typography>
+            <Chip size="small">{connected.length}</Chip>
+          </Stack>
+          {loading ? (
+            <Stack spacing={1}>
+              <Skeleton height={32} />
+              <Skeleton height={32} />
             </Stack>
+          ) : connected.length === 0 ? (
+            <Typography variant="body2" color="textSecondary">
+              No providers connected yet. Pick one on the right to sign in with
+              `opencode auth login`.
+            </Typography>
+          ) : (
+            <List dense disablePadding>
+              {connected.map((id, index) => (
+                <ListItem
+                  key={id}
+                  sx={{
+                    gap: 1,
+                    pr: 1,
+                    py: 0.75,
+                    alignItems: "center",
+                    borderBottom:
+                      index < connected.length - 1
+                        ? "1px solid var(--mui-palette-divider, rgba(0,0,0,0.12))"
+                        : "none",
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <CheckCircleIcon />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={nameOf(id)}
+                    secondary={id}
+                    sx={{ flex: 1, minWidth: 0 }}
+                    SlotProps={{
+                      primary: {
+                        sx: {
+                          display: "block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        },
+                      },
+                      secondary: {
+                        sx: {
+                          display: "block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        },
+                      },
+                    }}
+                  />
+                  <Button
+                    size="small"
+                    variant="text"
+                    startIcon={<LogoutIcon />}
+                    onClick={() => void logoutProvider(id)}
+                    sx={{ flexShrink: 0 }}
+                  >
+                    Log out
+                  </Button>
+                </ListItem>
+              ))}
+            </List>
+          )}
+        </Paper>
+
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 1.5,
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <Typography variant="subtitle1" sx={{ mb: 1 }}>
+            Add provider
+          </Typography>
+          <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
+            Chat models come from the providers connected here.
+          </Typography>
+          <Stack spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
             {loading ? (
               <Stack spacing={1}>
-                <Skeleton height={32} />
-                <Skeleton height={32} />
+                <Skeleton height={44} />
+                <Skeleton height={44} />
               </Stack>
-            ) : connected.length === 0 ? (
+            ) : providerOptions.length === 0 ? (
               <Typography variant="body2" color="textSecondary">
-                No providers connected yet. Pick one on the right to sign in
-                with `opencode auth login`.
+                Press “Connect & reload” to list provider ids.
               </Typography>
             ) : (
-              <List dense disablePadding>
-                {connected.map((id, index) => (
-                  <ListItem
-                    key={id}
-                    sx={{
-                      gap: 1,
-                      pr: 1,
-                      py: 0.75,
-                      alignItems: "center",
-                      borderBottom:
-                        index < connected.length - 1
-                          ? "1px solid var(--mui-palette-divider, rgba(0,0,0,0.12))"
-                          : "none",
-                    }}
-                  >
-                    <ListItemIcon sx={{ minWidth: 32 }}>
-                      <CheckCircleIcon />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={nameOf(id)}
-                      secondary={id}
-                      sx={{ flex: 1, minWidth: 0 }}
-                      SlotProps={{
-                        primary: {
-                          sx: {
-                            display: "block",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          },
-                        },
-                        secondary: {
-                          sx: {
-                            display: "block",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          },
-                        },
-                      }}
-                    />
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<LogoutIcon />}
-                      onClick={() => void logoutProvider(id)}
-                      sx={{ flexShrink: 0 }}
+              <>
+                <AutoComplete
+                  options={providerOptions}
+                  value={query || (provider ? nameOf(provider) : "")}
+                  onChange={(event) => setQuery(event.currentTarget.value)}
+                  onFilter={(opt, input) => {
+                    const needle = input.trim().toLowerCase()
+                    if (!needle) return true
+                    return (
+                      opt.label.toLowerCase().includes(needle) ||
+                      opt.id.toLowerCase().includes(needle)
+                    )
+                  }}
+                  formatInput={(opt) => opt.label}
+                  onSelect={(opt) => {
+                    setProvider(opt.id)
+                    setMethod("")
+                    setQuery(opt.label)
+                  }}
+                  SlotProps={{
+                    input: {
+                      id: "ob-provider-ac",
+                      label: "Provider",
+                      sx: { width: "100%" },
+                      variant: "outlined",
+                    },
+                    listButton: { className: "ob-provider-ac" },
+                  }}
+                  listItemRender={(opt) => (
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      sx={{ alignItems: "center", minWidth: 0 }}
                     >
-                      Log out
-                    </Button>
-                  </ListItem>
-                ))}
-              </List>
-            )}
-          </Paper>
-
-          <Paper
-            variant="outlined"
-            sx={{
-              p: 1.5,
-              flex: 1,
-              minWidth: 0,
-              minHeight: 0,
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            <Typography variant="subtitle1" sx={{ mb: 1 }}>
-              Add provider
-            </Typography>
-            <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-              Chat models come from the providers connected here.
-            </Typography>
-            <Stack spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
-              {loading ? (
-                <Stack spacing={1}>
-                  <Skeleton height={44} />
-                  <Skeleton height={44} />
-                </Stack>
-              ) : providerOptions.length === 0 ? (
-                <Typography variant="body2" color="textSecondary">
-                  Press “Connect & reload” to list provider ids.
-                </Typography>
-              ) : (
-                <>
-                  <AutoComplete
-                    options={providerOptions}
-                    value={query || (provider ? nameOf(provider) : "")}
-                    onChange={(event) => setQuery(event.currentTarget.value)}
-                    onFilter={(opt, input) => {
-                      const needle = input.trim().toLowerCase()
-                      if (!needle) return true
-                      return (
-                        opt.label.toLowerCase().includes(needle) ||
-                        opt.id.toLowerCase().includes(needle)
-                      )
-                    }}
-                    formatInput={(opt) => opt.label}
-                    onSelect={(opt) => {
-                      setProvider(opt.id)
-                      setMethod("")
-                      setQuery(opt.label)
-                    }}
-                    SlotProps={{
-                      input: {
-                        id: "ob-provider-ac",
-                        label: "Provider",
-                        sx: { width: "100%" },
-                        variant: "outlined",
-                      },
-                      listButton: { className: "ob-provider-ac" },
-                    }}
-                    listItemRender={(opt) => (
-                      <Stack
-                        direction="row"
-                        spacing={1}
-                        sx={{ alignItems: "center", minWidth: 0 }}
-                      >
-                        <Typography variant="body2" sx={{ flexShrink: 0 }}>
-                          {opt.label}
+                      <Typography variant="body2" sx={{ flexShrink: 0 }}>
+                        {opt.label}
+                      </Typography>
+                      {opt.id !== opt.label ? (
+                        <Typography
+                          variant="caption"
+                          color="textSecondary"
+                          sx={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {opt.id}
                         </Typography>
-                        {opt.id !== opt.label ? (
-                          <Typography
-                            variant="caption"
-                            color="textSecondary"
-                            sx={{
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {opt.id}
-                          </Typography>
-                        ) : null}
-                      </Stack>
-                    )}
-                  />
-                  {methods.length > 0 ? (
-                    <Select
-                      name="method"
-                      label="Method (optional)"
-                      value={method}
-                      onSelect={setMethod}
-                    >
-                      {[
-                        <option key="default" value="">
-                          default
-                        </option>,
-                        ...methods.map((item, index) => (
-                          <option
-                            key={`${item.label ?? item.type ?? index}`}
-                            value={item.label ?? item.type ?? ""}
-                          >
-                            {item.label ?? item.type ?? `method ${index + 1}`}
-                          </option>
-                        )),
-                      ]}
-                    </Select>
-                  ) : (
-                    <Typography variant="caption" color="textSecondary">
-                      No OAuth sign-in for this one — the terminal asks for an
-                      API key and stores it.
-                    </Typography>
+                      ) : null}
+                    </Stack>
                   )}
-                </>
-              )}
-              <Button
-                variant="contained"
-                startIcon={<LoginIcon />}
-                onClick={() => void startLogin()}
-                disabled={!provider || loginBusy}
-              >
-                {loginBusy ? "Starting…" : "opencode auth login"}
-              </Button>
-
-              <Box
-                sx={{
-                  flex: 1,
-                  minHeight: mobile ? 220 : 280,
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                {loginId ? (
-                  <LoginTerminal loginId={loginId} onExit={onLoginExit} />
+                />
+                {methods.length > 0 ? (
+                  <Select
+                    name="method"
+                    label="Method (optional)"
+                    value={method}
+                    onSelect={setMethod}
+                  >
+                    {[
+                      <option key="default" value="">
+                        default
+                      </option>,
+                      ...methods.map((item, index) => (
+                        <option
+                          key={`${item.label ?? item.type ?? index}`}
+                          value={item.label ?? item.type ?? ""}
+                        >
+                          {item.label ?? item.type ?? `method ${index + 1}`}
+                        </option>
+                      )),
+                    ]}
+                  </Select>
                 ) : (
-                  <Typography variant="body2" color="textSecondary">
-                    Start login to open the terminal.
+                  <Typography variant="caption" color="textSecondary">
+                    No OAuth sign-in for this one — the terminal asks for an API
+                    key and stores it.
                   </Typography>
                 )}
-              </Box>
-              <Typography variant="caption" color="textSecondary">
-                Keys go straight through to `opencode auth login` in your
-                desktop. A success restarts OpenCode.
-              </Typography>
-            </Stack>
-          </Paper>
-        </Stack>
+              </>
+            )}
+            <Button
+              variant="contained"
+              startIcon={<LoginIcon />}
+              onClick={() => void startLogin()}
+              disabled={!provider || loginBusy}
+            >
+              {loginBusy ? "Starting…" : "opencode auth login"}
+            </Button>
+
+            <Box
+              sx={{
+                flex: 1,
+                minHeight: mobile ? 220 : 280,
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              {loginId ? (
+                <LoginTerminal loginId={loginId} onExit={onLoginExit} />
+              ) : (
+                <Typography variant="body2" color="textSecondary">
+                  Start login to open the terminal.
+                </Typography>
+              )}
+            </Box>
+            <Typography variant="caption" color="textSecondary">
+              Keys go straight through to `opencode auth login` in your desktop.
+              A success restarts OpenCode.
+            </Typography>
+          </Stack>
+        </Paper>
       </Stack>
-    </Box>
+    </Stack>
   )
 }

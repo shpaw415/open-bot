@@ -11,9 +11,9 @@ Full plugin lifecycle from the desktop (`scripts/ob-plugin.sh`, seed skill `plug
 
 ```sh
 # Authoring
-ob-plugin new NAME                    # scaffold in ~/plugins-create/NAME
+ob-plugin new NAME                    # scaffold in ~/plugins-create/NAME (manifest, README, CONFIG.md template)
 ob-plugin validate DIR                # manifest schema check
-ob-plugin doctor DIR                  # pre-publish check: manifest + repo + tag
+ob-plugin doctor DIR                  # pre-publish check: manifest + repo + tag (+ CONFIG.md advisory)
 ob-plugin publish DIR [--dev] [--no-commit]
 
 # Discovery
@@ -32,6 +32,9 @@ ob-plugin remove ID                  # also sweeps leftover plugin:<id>:* cron j
 ob-plugin enable ID | disable ID
 ob-plugin setup ID                    # retry failed root setup
 ob-plugin settings ID [key=value]
+ob-plugin guide ID                    # print the plugin's CONFIG.md configuration guide
+ob-plugin vault ID                    # list the plugin's vaultCreate slugs (hasKey only)
+ob-plugin vault ID SLUG=value [--account A] [--url U]   # fill/clear a vaultCreate slug (write-only)
 
 # Maintenance
 ob-plugin guard status|off ID         # daily guard cron from publishing
@@ -40,6 +43,10 @@ ob-plugin notify ID TITLE [BODY]      # dashboard toast (needs permission)
 ```
 
 When a task needs a capability you lack, `ob-plugin search` first and install a fit — only scaffold with `ob-plugin new` when nothing suitable exists.
+
+## Config guide
+
+Every plugin ships a repo-root `CONFIG.md` (`ob-plugin new` scaffolds the template). It is the instructions the **installing** agent follows when configuring the plugin with the user: settings, vault slugs, ask → fill → verify order, and verification. At install it lands on the desktop as `~/.config/open-bot/plugin-<id>.CONFIG.md`; `ob-plugin guide ID` prints it, and `settings`/`vault` listings point at it when present. Removed on disable/uninstall, restored on enable and boot. See [Plugin system](/docs/plugins#config-guide-configmd) for authoring guidance.
 
 ## Publishing flow
 
@@ -64,7 +71,7 @@ Dev publishes never move `latest_version` and are hidden from marketplace search
 ob-plugin install --path ~/plugins-create/my-plugin
 ```
 
-Installs a desktop directory without a marketplace publish. The Plugins page shows `(local)`; Re-install re-reads the path.
+Installs a desktop directory without a marketplace publish. The Config page's Plugins tab shows `(local)`; Re-install re-reads the path.
 
 `install` is idempotent per plugin id: it replaces cron jobs and skills it owns (anything named `plugin:<id>:*`, or skills recorded on the install), so `remove` → `install --path` of the same plugin works with no manual OpenViking/cron cleanup. If a transient OpenViking lock still blocks an install, it retries with a short backoff; leftover artifacts that survive are named in the error or in the uninstall response's `leftoverSkills`.
 

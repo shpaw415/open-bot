@@ -19,19 +19,26 @@ The dashboard (`apps/web`) is a React SPA served by the control plane. It talks 
 | --- | --- |
 | **Reports** | Product report queue — read, filter, mark done/wontfix/reopen, copy `@reports/<slug>`. |
 | **Media** | [Media vault](/docs/media-vault) albums per thread with immutable copies. |
-| **Dashboards** | One entry per enabled [plugin dashboard page](/docs/plugins): pick a plugin's tab and interact with its live UI or polled cards. |
 | **Hardware** | Desktop disk, RAM, CPU against the container limits; warning at 80%, error at 90%. |
 | **Projects** | Registered projects; create opens a stepper, `@projects` mentions refresh on `projects.changed`. |
-| **Plugins** | Marketplace browser, installed plugins, version picker with dev badges, re-install/update/remove, policy row. |
+
+## Main navigation tabs
+
+- **Apps** — one entry per enabled [plugin dashboard page](/docs/plugins): pick a plugin's tab and interact with its live UI or polled cards (mobile renders a phone-style home screen).
 
 ## Config pages
 
-- **Providers** — chat model auth (`opencode auth login` state), image/video/3D model selection.
+- **Providers** — chat model auth (`opencode auth login` state) with an inline login terminal; merged into Config as the first tab.
 - **Keys** — per-user vault secrets.
+- **Chat** — default chat model and thinking effort.
+- **System1 provider** — decision-model endpoint (Laya / Clef / Jev) for desktop navigation.
+- **Media** — image/video/3D model selection.
 - **Voice** — STT/TTS provider, key, model, voice, language ([Voice](/docs/voice)).
 - **OpenViking** — embedding + VLM config ([OpenViking setup](/docs/openviking)).
-- **System1** — decision-model provider (Laya / Clef / Jev).
 - **Personas** — CRUD for your personas.
+- **Cron** — scheduled jobs moved here from the workspace Views drawer: add/edit/pause/run jobs and read their results ([Agent threads](/docs/agent-threads)).
+- **Backup** — local/cloud backups, restore, factory reset.
+- **Plugins** — marketplace browser, installed plugins, version picker with dev badges, re-install/update/remove, policy row ([Plugins](/docs/plugins)).
 - **Admin** (role admin) — app settings (media caps, disk max), users, usage, invites, backups.
 
 ## Desktop tab

@@ -119,6 +119,9 @@ export const MenuIcon = createIcon(
 export const VpnKeyIcon = createIcon(
   "M12.65 10A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6a5.99 5.99 0 0 0 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z",
 )
+export const KeyIcon = createIcon(
+  "M21 10h-8.35C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H13l2 2 2-2 2 2 4-4.04L21 10zM7 15c-1.65 0-3-1.35-3-3s1.35-3 3-3 3 1.35 3 3-1.35 3-3 3z",
+)
 export const EditIcon = createIcon(
   "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z",
 )
@@ -222,3 +225,178 @@ export const FactoryIcon = createIcon(
 export const BugReportIcon = createIcon(
   "M20 8h-2.81c-.45-.78-1.07-1.45-1.82-1.96L17 4.41 15.59 3l-2.17 2.17C12.96 5.06 12.49 5 12 5c-.49 0-.96.06-1.41.17L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z",
 )
+
+// Extra material icons used as dashboard home-screen app tiles.
+export const HomeIcon = createIcon("M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z")
+export const FavoriteIcon = createIcon(
+  "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z",
+)
+export const ShoppingCartIcon = createIcon(
+  "M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12.9-1.63h7.45c.75 0 1.41-.41 1.75-1.03l3.58-6.49c.08-.14.12-.31.12-.48 0-.55-.45-1-1-1H5.21l-.94-2H1zm16 16c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z",
+)
+export const BarChartIcon = createIcon(
+  "M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z",
+)
+export const ShowChartIcon = createIcon(
+  "M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 7.08l1.5 1.41z",
+)
+export const CloudIcon = createIcon(
+  "M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z",
+)
+export const MusicNoteIcon = createIcon(
+  "M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z",
+)
+export const MailIcon = createIcon(
+  "M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4-8 5-8-5V6l8 5 8-5v2z",
+)
+export const MenuBookIcon = createIcon(
+  "M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z",
+)
+export const BuildIcon = createIcon(
+  "M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z",
+)
+export const FlightIcon = createIcon(
+  "M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z",
+)
+export const WorkIcon = createIcon(
+  "M20 6h-4V4c0-1.11-.89-2-2-2h-4c-1.11 0-2 .89-2 2v2H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6 0h-4V4h4v2z",
+)
+export const PublicIcon = createIcon(
+  "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z",
+)
+export const TimerIcon = createIcon(
+  "M15 1H9v2h6V1zm-2 13h-2V8h2v6zm6.03-6.61 1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42C16.07 4.74 14.12 4 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z",
+)
+export const BoltIcon = createIcon(
+  "M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12 17.5 11 21 11 21z",
+)
+export const WalletIcon = createIcon(
+  "M21 18v1c0 1.1-.9 2-2 2H5c-1.11 0-2-.9-2-2V5c0-1.1.89-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.11 0-2 .9-2 2v8c0 1.1.89 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z",
+)
+export const StoreIcon = createIcon(
+  "M20 4H4v2h16V4zm1 10v-2l-1-5H4l-1 5v2h1v6h10v-6h4v6h2v-6h1zm-9 4H6v-4h6v4z",
+)
+
+// Curated names accepted for dashboard home-screen tiles (plus aliases).
+// Anything ASCII resolves through this map; non-ASCII values render as emoji.
+const TileIcons: Record<string, typeof HomeIcon> = {
+  home: HomeIcon,
+  house: HomeIcon,
+  favorite: FavoriteIcon,
+  heart: FavoriteIcon,
+  health: FavoriteIcon,
+  cart: ShoppingCartIcon,
+  shopping: ShoppingCartIcon,
+  chart: BarChartIcon,
+  barchart: BarChartIcon,
+  analytics: BarChartIcon,
+  stats: BarChartIcon,
+  stocks: ShowChartIcon,
+  trending: ShowChartIcon,
+  showchart: ShowChartIcon,
+  cloud: CloudIcon,
+  weather: CloudIcon,
+  music: MusicNoteIcon,
+  audio: MusicNoteIcon,
+  mail: MailIcon,
+  email: MailIcon,
+  book: MenuBookIcon,
+  docs: MenuBookIcon,
+  tools: BuildIcon,
+  wrench: BuildIcon,
+  build: BuildIcon,
+  flight: FlightIcon,
+  plane: FlightIcon,
+  travel: FlightIcon,
+  work: WorkIcon,
+  briefcase: WorkIcon,
+  globe: PublicIcon,
+  web: PublicIcon,
+  public: PublicIcon,
+  timer: TimerIcon,
+  clock: ScheduleIcon,
+  bolt: BoltIcon,
+  flash: BoltIcon,
+  energy: BoltIcon,
+  wallet: WalletIcon,
+  money: WalletIcon,
+  finance: WalletIcon,
+  store: StoreIcon,
+  shop: StoreIcon,
+  chat: ChatIcon,
+  terminal: TerminalIcon,
+  computer: ComputerIcon,
+  memory: MemoryIcon,
+  folder: FolderIcon,
+  star: StarIcon,
+  search: SearchIcon,
+  dashboard: DashboardIcon,
+  extension: ExtensionIcon,
+  navigation: NavigationIcon,
+  photo: ImageIcon,
+  image: ImageIcon,
+  video: VideoIcon,
+  "3d": Model3dIcon,
+  person: PersonIcon,
+  user: PersonIcon,
+  settings: SettingsIcon,
+  security: VpnKeyIcon,
+  key: VpnKeyIcon,
+  edit: EditIcon,
+  pin: PushPinIcon,
+  save: SaveIcon,
+  description: DescriptionIcon,
+  backup: BackupIcon,
+  restore: RestoreIcon,
+  factory: FactoryIcon,
+  bug: BugReportIcon,
+  play: PlayArrowIcon,
+  schedule: ScheduleIcon,
+  mic: MicIcon,
+  volume: VolumeUpIcon,
+  notifications: NotificationsIcon,
+  brain: PsychologyIcon,
+  ai: PsychologyIcon,
+  download: DownloadIcon,
+  check: CheckCircleIcon,
+}
+
+export function tileHue(seed: string): number {
+  let hash = 0
+  for (let index = 0; index < seed.length; index += 1)
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0
+  return hash % 360
+}
+
+// Glyph for a home-screen app tile: emoji (any non-ASCII icon value), a
+// curated material icon name, or a letter-avatar fallback.
+export function AppTileIcon({
+  icon,
+  name,
+  size = 26,
+}: {
+  icon?: string
+  name: string
+  size?: number
+}) {
+  const value = icon?.trim()
+  if (value && /\P{ASCII}/u.test(value)) {
+    return <span style={{ fontSize: size * 0.82, lineHeight: 1 }}>{value}</span>
+  }
+  if (value) {
+    const Glyph = TileIcons[value.toLowerCase().replace(/[\s_-]+/g, "")]
+    if (Glyph) return <Glyph width={size} height={size} />
+  }
+  return (
+    <span
+      style={{
+        fontSize: size * 0.62,
+        fontWeight: 700,
+        lineHeight: 1,
+        letterSpacing: -0.5,
+      }}
+    >
+      {(name.trim()[0] ?? "?").toUpperCase()}
+    </span>
+  )
+}

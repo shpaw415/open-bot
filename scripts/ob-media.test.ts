@@ -23,7 +23,7 @@ for arg in "$@"; do
   if [ "$prev" = "-d" ]; then printf '%s' "$arg" > "$CURL_BODY"; fi
   prev="$arg"
 done
-printf '%s\\n' '{"item":{"id":"i1","name":"logo.png","kind":"image"},"skipped":false}'
+cat "$CURL_RESPONSE"
 `,
   )
   chmodSync(join(bin, "curl"), 0o755)
@@ -41,6 +41,7 @@ async function run(home: string, args: string[]) {
       PATH: `${join(home, "bin")}:${process.env.PATH ?? ""}`,
       CURL_ARGS: join(home, "curl.args"),
       CURL_BODY: join(home, "curl.body"),
+      CURL_RESPONSE: join(home, "curl.response"),
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -57,6 +58,10 @@ test("a missing file fails before the control plane", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-media-"))
   try {
     fakeCurl(home)
+    writeFileSync(
+      join(home, "curl.response"),
+      '{"item":{"id":"i1","name":"logo.png","kind":"image"},"skipped":false}',
+    )
     const missing = join(home, "nope.png")
     const result = await run(home, [
       "push",
@@ -77,6 +82,10 @@ test("tilde expands and the canonical path is sent", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-media-"))
   try {
     fakeCurl(home)
+    writeFileSync(
+      join(home, "curl.response"),
+      '{"item":{"id":"i1","name":"logo.png","kind":"image"},"skipped":false}',
+    )
     const file = join(home, "logo.png")
     writeFileSync(file, "png")
     const result = await run(home, [
@@ -96,6 +105,78 @@ test("tilde expands and the canonical path is sent", async () => {
       title: "Cabin",
     })
     expect(result.stdout).toContain("logo.png")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("remove keeps the desktop file by default", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-media-"))
+  try {
+    fakeCurl(home)
+    writeFileSync(
+      join(home, "curl.response"),
+      '{"ok":true,"sourceDeleted":0,"warnings":[]}',
+    )
+    const result = await run(home, ["remove", "i1"])
+    expect(result.code).toBe(0)
+    const args = await Bun.file(join(home, "curl.args")).text()
+    expect(args).toContain("DELETE")
+    expect(args).toContain("/api/media/items/i1")
+    expect(args).not.toContain("source=1")
+    expect(result.stdout).toContain("desktop file was kept")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("remove --source deletes the desktop file", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-media-"))
+  try {
+    fakeCurl(home)
+    writeFileSync(
+      join(home, "curl.response"),
+      '{"ok":true,"sourceDeleted":1,"warnings":[]}',
+    )
+    const result = await run(home, ["remove", "--source", "i1"])
+    expect(result.code).toBe(0)
+    const args = await Bun.file(join(home, "curl.args")).text()
+    expect(args).toContain("/api/media/items/i1?source=1")
+    expect(result.stdout).toContain("deleted the desktop file")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("remove --source reports warnings and fails", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-media-"))
+  try {
+    fakeCurl(home)
+    writeFileSync(
+      join(home, "curl.response"),
+      '{"ok":true,"sourceDeleted":0,"warnings":["the desktop is not running — desktop files were kept"]}',
+    )
+    const result = await run(home, ["remove", "--source", "i1"])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("not running")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("remove-album --source reports how many desktop files went", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-media-"))
+  try {
+    fakeCurl(home)
+    writeFileSync(
+      join(home, "curl.response"),
+      '{"ok":true,"sourceDeleted":3,"warnings":[]}',
+    )
+    const result = await run(home, ["remove-album", "--source", "a1"])
+    expect(result.code).toBe(0)
+    const args = await Bun.file(join(home, "curl.args")).text()
+    expect(args).toContain("/api/media/albums/a1?source=1")
+    expect(result.stdout).toContain("deleted 3 desktop file(s)")
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

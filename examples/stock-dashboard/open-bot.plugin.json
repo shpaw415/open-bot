@@ -9,15 +9,16 @@
   "category": "utilities",
   "tags": ["example", "dashboard", "stock"],
   "files": [
-    { "name": "server.js", "source": "server/server.js", "exec": true }
+    { "name": "server.ts", "source": "server/server.ts", "exec": true }
   ],
   "dashboard": {
-    "pages": { "entry": "server.js" },
+    "pages": { "entry": "server.ts" },
     "tabs": [
-      { "id": "stock", "title": "Stock", "kind": "app" },
+      { "id": "stock", "title": "Stock", "icon": "store", "kind": "app" },
       {
         "id": "summary",
         "title": "Summary",
+        "icon": "chart",
         "kind": "page",
         "dataUrl": "/api/summary",
         "pollSeconds": 10,

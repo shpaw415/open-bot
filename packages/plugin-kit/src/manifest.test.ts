@@ -105,6 +105,76 @@ describe("plugin manifest", () => {
     expect(result.ok).toBe(false)
   })
 
+  test("accepts script and auto cron runs", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      cron: [
+        {
+          name: "watcher",
+          message: "Handle what changed",
+          script: "echo '[cron-agent] inbox changed'",
+          run: "auto",
+          everySeconds: 900,
+        },
+        {
+          name: "snapshot",
+          script: "curl -s http://127.0.0.1:4740/api/summary",
+          run: "script",
+          cronExpr: "0 6 * * *",
+        },
+      ],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.cron?.[0]?.run).toBe("auto")
+      expect(result.manifest.cron?.[0]?.script).toContain("cron-agent")
+      expect(result.manifest.cron?.[1]?.message).toBeUndefined()
+    }
+  })
+
+  test("rejects bad cron runs", () => {
+    const noScript = validatePluginManifest({
+      ...valid,
+      cron: [{ name: "x", message: "m", run: "auto", everySeconds: 60 }],
+    })
+    expect(noScript.ok).toBe(false)
+    if (!noScript.ok) {
+      expect(manifestIssuesText(noScript.issues)).toContain("cron.script")
+    }
+    const noMessage = validatePluginManifest({
+      ...valid,
+      cron: [{ name: "x", run: "both", script: "true", everySeconds: 60 }],
+    })
+    expect(noMessage.ok).toBe(false)
+    if (!noMessage.ok) {
+      expect(manifestIssuesText(noMessage.issues)).toContain("cron.message")
+    }
+    const badRun = validatePluginManifest({
+      ...valid,
+      cron: [{ name: "x", message: "m", run: "sometimes", everySeconds: 60 }],
+    })
+    expect(badRun.ok).toBe(false)
+    if (!badRun.ok) {
+      expect(manifestIssuesText(badRun.issues)).toContain("cron.run")
+    }
+    const longScript = validatePluginManifest({
+      ...valid,
+      cron: [
+        {
+          name: "x",
+          message: "m",
+          run: "script",
+          script: "x".repeat(16001),
+          everySeconds: 60,
+        },
+      ],
+    })
+    expect(longScript.ok).toBe(false)
+    if (!longScript.ok) {
+      expect(manifestIssuesText(longScript.issues)).toContain("cron.script")
+    }
+  })
+
   test("rejects an iframe tab without a url", () => {
     const result = validatePluginManifest({
       ...valid,
@@ -210,6 +280,30 @@ describe("plugin manifest", () => {
       },
     })
     expect(badPath.ok).toBe(false)
+  })
+
+  test("tab icons accept emoji or icon names and reject URLs", () => {
+    const withIcon = (icon: unknown) =>
+      validatePluginManifest({
+        ...valid,
+        dashboard: {
+          tabs: [
+            {
+              id: "x",
+              title: "X",
+              kind: "iframe",
+              url: "https://a.b",
+              icon,
+            } as never,
+          ],
+        },
+      })
+    expect(withIcon("📈").ok).toBe(true)
+    expect(withIcon("chart").ok).toBe(true)
+    expect(withIcon("").ok).toBe(false)
+    expect(withIcon("https://evil.example/x.png").ok).toBe(false)
+    expect(withIcon("<script>").ok).toBe(false)
+    expect(withIcon("x".repeat(33)).ok).toBe(false)
   })
 
   test("page tab dataUrl and pollSeconds validate", () => {

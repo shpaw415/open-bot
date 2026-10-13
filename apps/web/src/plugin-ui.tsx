@@ -70,6 +70,10 @@ export type InstalledPluginInfo = {
       options?: string[]
       secret?: boolean
     }[]
+    permissions?: {
+      vaultRead?: string[]
+      vaultCreate?: string[]
+    }
     dashboard?: {
       pages?: {
         entry: string
@@ -77,6 +81,7 @@ export type InstalledPluginInfo = {
       tabs?: {
         id: string
         title: string
+        icon?: string
         kind: "page" | "iframe" | "app"
         url?: string
         path?: string

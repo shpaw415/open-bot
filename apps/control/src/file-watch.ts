@@ -2,9 +2,10 @@ import { names } from "./env"
 
 /**
  * Live file watching for the IDE: a small node watcher runs inside the
- * desktop container (fs.watch over /home/agent/workspace) and streams JSON
- * lines of changed paths over a long-lived docker exec stdout. The control
- * plane batches them and pushes them to dashboard sockets through the hub.
+ * desktop container (fs.watch over ~/workspace and ~/plugins-create) and
+ * streams JSON lines of changed paths over a long-lived docker exec stdout.
+ * The control plane batches them and pushes them to dashboard sockets
+ * through the hub.
  */
 
 type Watcher = {
@@ -19,18 +20,22 @@ const watchers = new Map<string, Watcher>()
 
 let sink: ((userId: string, files: string[]) => void) | null = null
 
-export function setFileWatchSink(
-  fn: ((userId: string, files: string[]) => void) | null,
-) {
-  sink = fn
+export const WATCH_ROOTS = [
+  "/home/agent/workspace",
+  "/home/agent/plugins-create",
+]
+
+/** Events outside the watched roots are dropped before batching. */
+export function isWatchedRootPath(file: string): boolean {
+  return WATCH_ROOTS.some((root) => file.startsWith(`${root}/`))
 }
 
 const WATCH_SCRIPT = `/* ob-file-watch-marker */
 const { watch } = require("node:fs");
-const root = "/home/agent/workspace";
+const roots = ${JSON.stringify(WATCH_ROOTS)};
 let out = [];
 let timer = null;
-watch(root, { recursive: true }, (event, filename) => {
+const onEvent = (root) => (event, filename) => {
   if (!filename) return;
   const file = filename.startsWith("/") ? filename : root + "/" + filename;
   if (file.includes("/.git/") || file.includes("/node_modules/") || file.includes("/.open-bot/") || file.includes("/.openviking/") || file.includes("/.config/") || file.includes("/.cache/")) return;
@@ -41,9 +46,18 @@ watch(root, { recursive: true }, (event, filename) => {
     const files = out.splice(0);
     if (files.length) console.log(JSON.stringify({ files }));
   }, 250);
-});
+};
+for (const root of roots) {
+  try { watch(root, { recursive: true }, onEvent(root)); } catch {}
+}
 console.log("ready");
 `
+
+export function setFileWatchSink(
+  fn: ((userId: string, files: string[]) => void) | null,
+) {
+  sink = fn
+}
 
 function spawnOne(userId: string, watcher: Watcher) {
   if (watcher.stopped) return
@@ -104,10 +118,7 @@ async function pump(
           const parsed = JSON.parse(line) as { files?: unknown }
           if (!Array.isArray(parsed.files)) continue
           for (const file of parsed.files) {
-            if (
-              typeof file === "string" &&
-              file.startsWith("/home/agent/workspace/")
-            )
+            if (typeof file === "string" && isWatchedRootPath(file))
               watcher.batch.add(file)
           }
         } catch {

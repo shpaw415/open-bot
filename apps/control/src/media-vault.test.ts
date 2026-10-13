@@ -1,10 +1,36 @@
-import { expect, test } from "bun:test"
-import { existsSync, mkdtempSync } from "node:fs"
+import { expect, mock, test } from "bun:test"
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type Db, openDatabase, type User } from "@open-bot/db"
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "ob-vault-"))
+
+const agentHome = mkdtempSync(join(tmpdir(), "ob-agent-home-"))
+let desktopUp = true
+
+mock.module("./docker", () => ({
+  endpoint: async () => "http://opencode:4096",
+  desktopPhase: async () => (desktopUp ? "running" : "sleeping"),
+  opencodeExec: async (_userId: string, args: string[]) => {
+    const toLocal = (arg: string) => {
+      if (arg === "/home/agent") return agentHome
+      if (arg.startsWith("/home/agent/"))
+        return join(agentHome, arg.slice("/home/agent/".length))
+      return arg
+    }
+    const proc = Bun.spawn(args.map(toLocal), {
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    return { code, stdout: stdout.split(agentHome).join("/home/agent"), stderr }
+  },
+}))
 
 const db: Db = openDatabase(join(process.env.DATA_DIR, "bot.sqlite"))
 
@@ -205,4 +231,157 @@ test("serve is immutable and other files download", async () => {
   pruneMediaVault(db)
   expect(db.mediaVaultUsedBytes()).toBe(0)
   db.setSetting(VAULT_CAP_KEY, "3072")
+})
+
+async function deleteViaApi(path: string) {
+  const url = new URL(`http://local${path}`)
+  return handleMedia(
+    new Request(`http://local${path}`, { method: "DELETE" }),
+    url,
+    db,
+    user,
+    { emit() {} },
+  )
+}
+
+function storeFixture(
+  albumId: string,
+  opts: {
+    messageId: string
+    sourcePath: string
+    bytes?: Buffer
+  },
+) {
+  const stored = storeVaultBytes(db, {
+    userId: "u1",
+    albumId,
+    kind: "image",
+    name: opts.sourcePath.slice(opts.sourcePath.lastIndexOf("/") + 1),
+    title: "fixture",
+    mime: "image/png",
+    sourcePath: opts.sourcePath,
+    sessionId: null,
+    messageId: opts.messageId,
+    bytes: opts.bytes ?? png,
+  })
+  if (!("item" in stored)) throw new Error("store failed")
+  return stored.item
+}
+
+function desktopFile(rel: string) {
+  const path = join(agentHome, rel)
+  mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true })
+  writeFileSync(path, "desktop bytes")
+  return path
+}
+
+test("item delete with source=1 also deletes the desktop file", async () => {
+  desktopUp = true
+  const file = desktopFile("workspace/shot.png")
+  const album = ensureThreadAlbum(db, "u1", "s-src-item", "SrcItem")
+  const item = storeFixture(album.id, {
+    messageId: "m-src-item",
+    sourcePath: "/home/agent/workspace/shot.png",
+  })
+  const res = await deleteViaApi(`/api/media/items/${item.id}?source=1`)
+  expect(res?.status).toBe(200)
+  const body = (await res?.json()) as {
+    sourceDeleted: number
+    warnings: string[]
+  }
+  expect(body.sourceDeleted).toBe(1)
+  expect(body.warnings).toEqual([])
+  expect(existsSync(file)).toBe(false)
+  expect(existsSync(join(VAULT_DIR, item.id))).toBe(false)
+})
+
+test("item delete without source keeps the desktop file", async () => {
+  desktopUp = true
+  const file = desktopFile("workspace/kept.png")
+  const album = ensureThreadAlbum(db, "u1", "s-src-keep", "SrcKeep")
+  const item = storeFixture(album.id, {
+    messageId: "m-src-keep",
+    sourcePath: "/home/agent/workspace/kept.png",
+  })
+  const res = await deleteViaApi(`/api/media/items/${item.id}`)
+  expect(res?.status).toBe(200)
+  const body = (await res?.json()) as {
+    sourceDeleted: number
+    warnings: string[]
+  }
+  expect(body.sourceDeleted).toBe(0)
+  expect(body.warnings).toEqual([])
+  expect(existsSync(file)).toBe(true)
+  expect(existsSync(join(VAULT_DIR, item.id))).toBe(false)
+})
+
+test("source deletion refuses protected desktop paths", async () => {
+  desktopUp = true
+  const file = desktopFile(".ssh/id_ed25519")
+  const album = ensureThreadAlbum(db, "u1", "s-src-ssh", "SrcSsh")
+  const item = storeFixture(album.id, {
+    messageId: "m-src-ssh",
+    sourcePath: "/home/agent/.ssh/id_ed25519",
+  })
+  const res = await deleteViaApi(`/api/media/items/${item.id}?source=1`)
+  expect(res?.status).toBe(200)
+  const body = (await res?.json()) as {
+    sourceDeleted: number
+    warnings: string[]
+  }
+  expect(body.sourceDeleted).toBe(0)
+  expect(body.warnings.join(" ")).toContain("protected")
+  expect(existsSync(file)).toBe(true)
+  expect(existsSync(join(VAULT_DIR, item.id))).toBe(false)
+})
+
+test("source deletion warns and keeps files when the desktop is stopped", async () => {
+  desktopUp = false
+  try {
+    const file = desktopFile("workspace/stopped.png")
+    const album = ensureThreadAlbum(db, "u1", "s-src-down", "SrcDown")
+    const item = storeFixture(album.id, {
+      messageId: "m-src-down",
+      sourcePath: "/home/agent/workspace/stopped.png",
+    })
+    const res = await deleteViaApi(`/api/media/items/${item.id}?source=1`)
+    expect(res?.status).toBe(200)
+    const body = (await res?.json()) as {
+      sourceDeleted: number
+      warnings: string[]
+    }
+    expect(body.sourceDeleted).toBe(0)
+    expect(body.warnings.join(" ")).toContain("not running")
+    expect(existsSync(file)).toBe(true)
+  } finally {
+    desktopUp = true
+  }
+})
+
+test("album delete with source=1 cascades desktop files once each", async () => {
+  desktopUp = true
+  const first = desktopFile("workspace/album-a.png")
+  const second = desktopFile("workspace/album-b.png")
+  const album = ensureThreadAlbum(db, "u1", "s-src-album", "SrcAlbum")
+  storeFixture(album.id, {
+    messageId: "m-src-album-a",
+    sourcePath: "/home/agent/workspace/album-a.png",
+    bytes: Buffer.from("album-a"),
+  })
+  storeFixture(album.id, {
+    messageId: "m-src-album-b",
+    sourcePath: "/home/agent/workspace/album-b.png",
+    bytes: Buffer.from("album-b"),
+  })
+  const res = await deleteViaApi(`/api/media/albums/${album.id}?source=1`)
+  expect(res?.status).toBe(200)
+  const body = (await res?.json()) as {
+    sourceDeleted: number
+    warnings: string[]
+  }
+  expect(body.sourceDeleted).toBe(2)
+  expect(body.warnings).toEqual([])
+  expect(existsSync(first)).toBe(false)
+  expect(existsSync(second)).toBe(false)
+  expect(db.mediaAlbum(album.id, "u1")).toBeNull()
 })

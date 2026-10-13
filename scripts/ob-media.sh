@@ -13,12 +13,13 @@ Usage:
   ob-media albums
   ob-media album NAME
   ob-media push --album NAME --path PATH [--title TITLE]
-  ob-media remove ITEM_ID
-  ob-media remove-album ALBUM_ID
+  ob-media remove ITEM_ID [--source]
+  ob-media remove-album ALBUM_ID [--source]
 
 PATH is an existing file under /home/agent. ~ and relative paths are expanded
-first. The vault keeps its own copy. Removing an item or album keeps the file
-on disk.
+first. The vault keeps its own copy. Removing an item or album deletes the
+vault copy; add --source to also delete the desktop file, freeing desktop
+disk (the desktop must be running, and secret paths like .ssh are refused).
 EOF
 }
 
@@ -129,16 +130,55 @@ case "$cmd" in
     printf '%s' "$out" | jq '{id: .item.id, name: .item.name, kind: .item.kind, skipped: .skipped}'
     ;;
   remove)
-    [ $# -eq 1 ] || { usage; exit 2; }
-    out=$(request DELETE "/api/media/items/$(urlencode "$1")")
+    id=""
+    source=""
+    for arg in "$@"; do
+      case "$arg" in
+        --source) source=1 ;;
+        *) id="$arg" ;;
+      esac
+    done
+    [ -n "$id" ] || { usage; exit 2; }
+    flag=""
+    [ -n "$source" ] && flag="?source=1"
+    out=$(request DELETE "/api/media/items/$(urlencode "$id")$flag")
     fail_on_error "$out"
-    echo "removed $1 from the vault; the desktop file was kept"
+    warn=$(printf '%s' "$out" | jq -r '.warnings | join("; ")' 2>/dev/null) || warn=""
+    if [ -n "$warn" ]; then
+      echo "ob-media: removed from the vault, but: $warn" >&2
+      exit 1
+    fi
+    if [ -n "$source" ]; then
+      echo "removed $id from the vault and deleted the desktop file"
+    else
+      echo "removed $id from the vault; the desktop file was kept"
+    fi
     ;;
   remove-album)
-    [ $# -eq 1 ] || { usage; exit 2; }
-    out=$(request DELETE "/api/media/albums/$(urlencode "$1")")
+    id=""
+    source=""
+    for arg in "$@"; do
+      case "$arg" in
+        --source) source=1 ;;
+        *) id="$arg" ;;
+      esac
+    done
+    [ -n "$id" ] || { usage; exit 2; }
+    flag=""
+    [ -n "$source" ] && flag="?source=1"
+    out=$(request DELETE "/api/media/albums/$(urlencode "$id")$flag")
     fail_on_error "$out"
-    echo "removed album $1; desktop files were kept"
+    warn=$(printf '%s' "$out" | jq -r '.warnings | join("; ")' 2>/dev/null) || warn=""
+    if [ -n "$warn" ]; then
+      echo "ob-media: removed from the vault, but: $warn" >&2
+      exit 1
+    fi
+    if [ -n "$source" ]; then
+      count=$(printf '%s' "$out" | jq -r '.sourceDeleted // 0' 2>/dev/null) || count=0
+      echo "removed album $id and deleted $count desktop file(s)"
+    else
+      echo "removed album $id; desktop files were kept"
+    fi
     ;;
   -h|--help|help)
     usage

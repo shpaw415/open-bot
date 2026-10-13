@@ -1,10 +1,13 @@
 import Box from "@shpaw415/mui-lite/Box"
+import IconButton from "@shpaw415/mui-lite/IconButton"
 import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useMemo, useState } from "react"
 import { api } from "./api"
+import { HomeScreen } from "./home-screen"
 import { useMobile } from "./hooks"
+import { AppTileIcon, ArrowBackIcon, tileHue } from "./icons"
 import {
   type InstalledPluginInfo,
   type PluginCardSpec,
@@ -20,6 +23,8 @@ export type PluginTab = {
   pluginName: string
   tabId: string
   title: string
+  // App-tile icon for the mobile home screen: emoji or material icon name.
+  icon?: string
   kind: "page" | "iframe" | "app"
   url?: string
   path?: string
@@ -38,6 +43,7 @@ export function pluginTabs(plugins: InstalledPluginInfo[]): PluginTab[] {
         pluginName: plugin.name,
         tabId: tab.id,
         title: tab.title,
+        icon: tab.icon,
         kind: tab.kind,
         url: tab.url,
         path: tab.path,
@@ -130,18 +136,19 @@ export function PluginTabView({ tab }: { tab: PluginTab }) {
   return <PageTab tab={tab} />
 }
 
-// The workspace drawer's "Dashboards" view: every enabled plugin's tabs in
-// one picker; the user selects a dashboard and it fills the pane.
-export function PluginDashboardsView({ tabs }: { tabs: PluginTab[] }) {
+// The main navigation's Apps view. Desktop keeps the side list +
+// pane; mobile renders a phone-style home screen (apps, swipe pages,
+// long-press to move, drop on an entry to create a folder).
+export function PluginAppsView({ tabs }: { tabs: PluginTab[] }) {
   const mobile = useMobile()
-  const [selected, setSelected] = useState(tabs[0]?.key ?? "")
+  const [selected, setSelected] = useState("")
   const active = useMemo(
-    () => tabs.find((tab) => tab.key === selected) ?? tabs[0],
+    () => tabs.find((tab) => tab.key === selected) ?? null,
     [tabs, selected],
   )
   useEffect(() => {
     if (selected && !tabs.some((tab) => tab.key === selected)) {
-      setSelected(tabs[0]?.key ?? "")
+      setSelected("")
     }
   }, [tabs, selected])
   if (tabs.length === 0) {
@@ -151,36 +158,54 @@ export function PluginDashboardsView({ tabs }: { tabs: PluginTab[] }) {
         sx={{ p: 3, maxWidth: 640, mx: "auto", width: "100%" }}
       >
         <Typography variant="body2" color="textSecondary">
-          No plugin dashboards here yet. Plugins that ship a dashboard page
-          (manifest dashboard.pages + tabs) show up in this view once installed
-          and enabled.
+          No plugin apps here yet. Plugins that ship a dashboard page (manifest
+          dashboard.pages + tabs) show up here once installed and enabled.
         </Typography>
       </Box>
     )
   }
   if (mobile) {
-    return (
-      <Stack sx={{ height: "100%", minHeight: 0 }}>
-        <Box sx={{ px: 1, pt: 1 }}>
-          <select
-            aria-label="Dashboard"
-            value={active?.key ?? ""}
-            onChange={(event) => setSelected(event.target.value)}
-            style={{ width: "100%", padding: "6px 8px" }}
+    if (active) {
+      return (
+        <Stack sx={{ height: "100%", minHeight: 0 }}>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            sx={{ px: 1, py: 0.75, flexShrink: 0 }}
           >
-            {tabs.map((tab) => (
-              <option key={tab.key} value={tab.key}>
-                {tab.title} — {tab.pluginName}
-              </option>
-            ))}
-          </select>
-        </Box>
-        <Box sx={{ flex: 1, minHeight: 0 }}>
-          {active ? <PluginTabView tab={active} /> : null}
-        </Box>
-      </Stack>
-    )
+            <IconButton
+              aria-label="Back to apps"
+              onClick={() => setSelected("")}
+              size="small"
+            >
+              <ArrowBackIcon width={20} height={20} />
+            </IconButton>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                variant="subtitle2"
+                sx={{ lineHeight: 1.2, whiteSpace: "nowrap" }}
+              >
+                {active.title}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="textSecondary"
+                sx={{ lineHeight: 1.2 }}
+              >
+                {active.pluginName}
+              </Typography>
+            </Box>
+          </Stack>
+          <Box sx={{ flex: 1, minHeight: 0 }}>
+            <PluginTabView key={active.key} tab={active} />
+          </Box>
+        </Stack>
+      )
+    }
+    return <HomeScreen tabs={tabs} onOpen={setSelected} />
   }
+  const current = active ?? tabs[0]
   return (
     <Stack direction="row" sx={{ height: "100%", minHeight: 0 }}>
       <List
@@ -195,18 +220,39 @@ export function PluginDashboardsView({ tabs }: { tabs: PluginTab[] }) {
           py: 0.5,
         }}
       >
-        {tabs.map((tab) => (
-          <ListItemButton
-            key={tab.key}
-            selected={tab.key === active?.key}
-            onClick={() => setSelected(tab.key)}
-          >
-            <ListItemText primary={tab.title} secondary={tab.pluginName} />
-          </ListItemButton>
-        ))}
+        {tabs.map((tab) => {
+          const hue = tileHue(tab.key)
+          return (
+            <ListItemButton
+              key={tab.key}
+              selected={tab.key === current?.key}
+              onClick={() => setSelected(tab.key)}
+            >
+              <Box
+                sx={{
+                  width: 24,
+                  height: 24,
+                  mr: 1.25,
+                  flexShrink: 0,
+                  borderRadius: "6px",
+                  background: `linear-gradient(145deg, hsl(${hue} 62% 56%), hsl(${
+                    (hue + 28) % 360
+                  } 58% 44%))`,
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <AppTileIcon icon={tab.icon} name={tab.title} size={14} />
+              </Box>
+              <ListItemText primary={tab.title} secondary={tab.pluginName} />
+            </ListItemButton>
+          )
+        })}
       </List>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        {active ? <PluginTabView key={active.key} tab={active} /> : null}
+        {current ? <PluginTabView key={current.key} tab={current} /> : null}
       </Box>
     </Stack>
   )

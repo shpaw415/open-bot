@@ -8,6 +8,7 @@ import {
   markScript,
   normalize,
   PROBE,
+  pickPageTarget,
   probeSnapshot,
 } from "./cdp"
 
@@ -179,4 +180,21 @@ test("normalize carries scroll position through the snapshot", () => {
   expect(normalize({}).scrollY).toBeUndefined()
   expect(normalize({ scroll_y: "junk" }).scrollY).toBeUndefined()
   expect(PROBE).toContain("scroll_y: Math.round(window.scrollY)")
+})
+
+test("target pick skips blank tabs but keeps the first page as a fallback", () => {
+  const blank = {
+    id: "t1",
+    url: "about:blank",
+    webSocketDebuggerUrl: "ws://a",
+  }
+  const page = {
+    id: "t2",
+    url: "https://example.test/",
+    webSocketDebuggerUrl: "ws://b",
+  }
+  expect(pickPageTarget([blank, page])).toBe(page)
+  expect(pickPageTarget([page, blank])).toBe(page)
+  expect(pickPageTarget([blank])).toBe(blank)
+  expect(pickPageTarget([])).toBeNull()
 })

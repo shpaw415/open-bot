@@ -17,7 +17,6 @@ import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Stack from "@shpaw415/mui-lite/Stack"
-import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
@@ -42,6 +41,7 @@ import {
   waitForDesktop,
 } from "./api"
 import { type AppEntry, filterApps } from "./app-launcher"
+import type { CronJobInfo } from "./CronView"
 import {
   ACTIVITY_LABEL,
   type ChatMessage,
@@ -87,7 +87,6 @@ import {
   ComputerIcon,
   DeleteIcon,
   EditIcon,
-  ExtensionIcon,
   FolderIcon,
   MemoryIcon,
   MenuIcon,
@@ -98,7 +97,6 @@ import {
   PhotoLibraryIcon,
   PlayArrowIcon,
   RefreshIcon,
-  ScheduleIcon,
   SendIcon,
   StopIcon,
   VolumeOffIcon,
@@ -129,7 +127,6 @@ import {
   PreviewOverlay,
   PreviewPane,
 } from "./PreviewView"
-import { PluginDashboardsView, type PluginTab } from "./plugin-tabs"
 import {
   type PluginCardSpec,
   PluginCards,
@@ -183,39 +180,7 @@ type SessionInfo = {
 }
 type SessionStatus = { type?: string }
 
-type CronJobInfo = {
-  id: string
-  name: string
-  message: string
-  kind: "cron" | "every" | "at"
-  cronExpr: string | null
-  everySeconds: number | null
-  atMs: number | null
-  enabled: boolean
-  sessionId: string | null
-  createdAt: number
-  lastRunAt: number | null
-  nextRunAt: number | null
-  runCount: number
-  lastError: string | null
-  providerId: string | null
-  modelId: string | null
-  personaId: string | null
-  runKind?: "prompt" | "script" | "both" | "auto"
-  script?: string | null
-}
-
-type CronNotice = {
-  id: string
-  jobId: string
-  jobName: string
-  summary: string | null
-  createdAt: number
-  viewedAt: number | null
-}
-
 type Phase = "starting" | "running" | "sleeping"
-type CronKind = "every" | "cron" | "at"
 type LocalReceipt = SendReceipt & { sessionId: string }
 
 function SendMark({ mark }: { mark: SendStatus }) {
@@ -248,12 +213,6 @@ function messageKey(
   const role = message.info?.role ?? "m"
   if (message.sentAt != null) return `${index}:${role}:${message.sentAt}`
   return `${index}:${role}:${visibleText(message).slice(0, 48)}`
-}
-
-function clipNoticeLine(text: string | null): string {
-  const line = (text ?? "").replace(/\s+/g, " ").trim()
-  if (line.length <= 200) return line
-  return `${line.slice(0, 199)}…`
 }
 
 type VncWindow = Window & {
@@ -661,34 +620,6 @@ function formatWhen(ts: number | null): string {
     hour: "2-digit",
     minute: "2-digit",
   })
-}
-
-function cronRunLabel(kind: CronJobInfo["runKind"]): string {
-  if (kind === "script") return "script"
-  if (kind === "both") return "script + prompt"
-  if (kind === "auto") return "script + agent if flagged"
-  return "prompt"
-}
-
-function cronModelValue(job: {
-  providerId: string | null
-  modelId: string | null
-}): string {
-  return job.providerId && job.modelId ? `${job.providerId}/${job.modelId}` : ""
-}
-
-function cronModelLabel(job: CronJobInfo, models: Model[]): string {
-  if (!job.providerId || !job.modelId) return "default model"
-  const match = models.find(
-    (item) =>
-      item.providerID === job.providerId && item.modelID === job.modelId,
-  )
-  return match?.name ?? `${job.providerId}/${job.modelId}`
-}
-
-function editingSchedule(jobs: CronJobInfo[], id: string): string {
-  const job = jobs.find((item) => item.id === id)
-  return job ? cronSchedule(job) : "as created"
 }
 
 function cronSchedule(job: CronJobInfo): string {
@@ -1337,6 +1268,7 @@ function Composer({
                   id: project.id,
                   name: project.name,
                   description: project.path,
+                  path: project.path,
                 }),
               ),
             },
@@ -1363,13 +1295,9 @@ function Composer({
     ],
     [baseSections, skillList, projects, reports],
   )
-  const mentionKeys = useMemo(
-    () => mentionSections.map((section) => section.key),
-    [mentionSections],
-  )
   const mention = useMemo(
-    () => detectMention(draft, caret, mentionKeys),
-    [draft, caret, mentionKeys],
+    () => detectMention(draft, caret, mentionSections),
+    [draft, caret, mentionSections],
   )
   const suggestions = useMemo(
     () => (mention ? mentionSuggestions(mention, mentionSections) : []),
@@ -1408,7 +1336,7 @@ function Composer({
   function acceptSuggestion(suggestion: Suggestion) {
     const el = messageInputRef.current
     const pos = el?.selectionStart ?? draftRef.current.length
-    const active = detectMention(draftRef.current, pos, mentionKeys)
+    const active = detectMention(draftRef.current, pos, mentionSections)
     if (!active) return
     const next =
       draftRef.current.slice(0, active.start) +
@@ -1646,7 +1574,7 @@ function Composer({
           <Box sx={{ position: "relative", flex: 1, minWidth: 0 }}>
             <ReferenceOverlay
               text={draft}
-              projects={projects}
+              sections={mentionSections}
               inputRef={messageInputRef}
             />
             <TextField
@@ -1892,13 +1820,7 @@ function Composer({
   )
 }
 
-export function Workspace({
-  me,
-  pluginTabs,
-}: {
-  me: Me
-  pluginTabs: PluginTab[]
-}) {
+export function Workspace({ me }: { me: Me }) {
   const [phase, setPhase] = useState<Phase>(me.desktop ?? "sleeping")
   const [stopping, setStopping] = useState(false)
   const [tab, setTab] = useState("chat")
@@ -1973,27 +1895,6 @@ export function Workspace({
   const widthRef = useRef(previewWidth)
   const [controlBusy, setControlBusy] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([])
-  const [cronBusyId, setCronBusyId] = useState("")
-  const [cronAddOpen, setCronAddOpen] = useState(false)
-  const [cronSaving, setCronSaving] = useState(false)
-  const [cronDeleteTarget, setCronDeleteTarget] = useState<CronJobInfo | null>(
-    null,
-  )
-  const [cronName, setCronName] = useState("")
-  const [cronMessage, setCronMessage] = useState("")
-  const [cronKind, setCronKind] = useState<CronKind>("every")
-  const [cronEvery, setCronEvery] = useState("3600")
-  const [cronExpr, setCronExpr] = useState("0 9 * * *")
-  const [cronAt, setCronAt] = useState("")
-  const [cronModel, setCronModel] = useState("")
-  const [cronPersona, setCronPersona] = useState("assistant")
-  const [cronRunKind, setCronRunKind] = useState<
-    "prompt" | "script" | "both" | "auto"
-  >("prompt")
-  const [cronScript, setCronScript] = useState("")
-  const [cronEditId, setCronEditId] = useState<string | null>(null)
-  const [notices, setNotices] = useState<CronNotice[]>([])
-  const [cronResult, setCronResult] = useState<CronNotice | null>(null)
   const mobile = useMobile()
 
   // projects power @project(s)/ mentions in the composer and chat bubbles
@@ -2117,10 +2018,6 @@ export function Workspace({
     [personas, cronJobs],
   )
   const activeThread = sessions.find((item) => item.id === sessionId)
-  const unreadNotices = useMemo(
-    () => notices.filter((notice) => !notice.viewedAt),
-    [notices],
-  )
   const showUnread = (id: string) =>
     unread.has(id) && !(tab === "chat" && id === sessionId && !document.hidden)
   const shown = useMemo(
@@ -2499,7 +2396,7 @@ export function Workspace({
         next.length === 0
           ? body.connected?.length
             ? "no models available — retrying"
-            : "no providers connected — add one on the Providers page"
+            : "no providers connected — add one on the Config page"
           : "",
       )
     } catch (caught) {
@@ -3077,15 +2974,6 @@ export function Workspace({
     return accepted
   }
 
-  function viewJobThreadNotices(id: string) {
-    const job = cronJobs.find((item) => item.sessionId === id)
-    if (!job) return
-    for (const notice of notices) {
-      if (notice.jobId === job.id && !notice.viewedAt)
-        void markNoticesViewed({ id: notice.id })
-    }
-  }
-
   function selectThread(id: string) {
     if (id !== sessionId) {
       setSessionId(id)
@@ -3094,7 +2982,6 @@ export function Workspace({
       localStorage.setItem(THREAD_KEY, id)
     }
     if (mobile) setThreadsOpen(false)
-    viewJobThreadNotices(id)
   }
 
   function goTab(next: string) {
@@ -3176,7 +3063,6 @@ export function Workspace({
     try {
       await api(`/api/opencode/session/${target.id}`, { method: "DELETE" })
       setDeleteTarget(null)
-      viewJobThreadNotices(target.id)
       writeDraft(localStorage, target.id, "")
       joinedStore.current.delete(target.id)
       seenThread(target.id)
@@ -3294,63 +3180,14 @@ export function Workspace({
   // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
   useEffect(() => {
     void loadCron()
-    if (tab !== "cron") return
-    void api<{ personas?: PersonaInfo[] }>("/api/personas")
-      .then((body) => {
-        if (body.personas?.length) setPersonas(body.personas)
-      })
-      .catch(() => {})
-  }, [tab, loadCron, live])
+  }, [loadCron, live])
 
+  // @cron composer references stay fresh without the cron view
   useEffect(() => {
-    if (tab !== "cron") return
     return subscribe((event) => {
       if (event.type === "cron.changed") scheduleCron()
     })
-  }, [tab, subscribe, scheduleCron])
-
-  const loadNotices = useCallback(async () => {
-    try {
-      const body = await api<CronNotice[]>("/api/cron/notices")
-      setNotices(Array.isArray(body) ? body : [])
-    } catch {
-      return
-    }
-  }, [])
-
-  const markNoticesViewed = useCallback(
-    async (body: { id: string }) => {
-      setNotices((current) =>
-        current.map((notice) =>
-          notice.id === body.id && !notice.viewedAt
-            ? { ...notice, viewedAt: Date.now() }
-            : notice,
-        ),
-      )
-      try {
-        await api("/api/cron/notices/view", {
-          method: "POST",
-          body: JSON.stringify(body),
-        })
-      } catch {
-        void loadNotices()
-      }
-    },
-    [loadNotices],
-  )
-
-  const scheduleNotices = useDebounced(() => void loadNotices(), 300)
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
-  useEffect(() => {
-    void loadNotices()
-  }, [loadNotices, live])
-
-  useEffect(() => {
-    return subscribe((event) => {
-      if (event.type === "cron.notices") scheduleNotices()
-    })
-  }, [subscribe, scheduleNotices])
+  }, [subscribe, scheduleCron])
 
   // slow safety net while the event stream is down
   useEffect(() => {
@@ -3358,136 +3195,10 @@ export function Workspace({
     const timer = setInterval(() => {
       void tick()
       void loadThreads()
-      void loadNotices()
-      if (tab === "cron") void loadCron()
+      void loadCron()
     }, 30_000)
     return () => clearInterval(timer)
-  }, [running, live, tick, loadThreads, loadNotices, loadCron, tab])
-
-  function openNotice(notice: CronNotice) {
-    void markNoticesViewed({ id: notice.id })
-    setCronResult(notice)
-  }
-
-  function openJobResult(job: CronJobInfo) {
-    const notice = notices.find((item) => item.jobId === job.id)
-    if (notice) openNotice(notice)
-  }
-
-  function openCronForm(job?: CronJobInfo) {
-    setCronEditId(job?.id ?? null)
-    setCronName(job?.name ?? "")
-    setCronMessage(job?.message ?? "")
-    setCronKind(job?.kind ?? "every")
-    setCronEvery(String(job?.everySeconds ?? 3600))
-    setCronExpr(job?.cronExpr ?? "0 9 * * *")
-    setCronAt("")
-    setCronModel(job ? cronModelValue(job) : "")
-    setCronPersona(job?.personaId || "assistant")
-    setCronRunKind(job?.runKind ?? "prompt")
-    setCronScript(job?.script ?? "")
-    setCronAddOpen(true)
-    void api<{ personas?: PersonaInfo[] }>("/api/personas")
-      .then((body) => setPersonas(body.personas ?? []))
-      .catch(() => {})
-  }
-
-  async function saveCronJob() {
-    if (cronSaving) return
-    setError("")
-    const split = cronModel.indexOf("/")
-    const providerID = split > 0 ? cronModel.slice(0, split) : null
-    const modelID = split > 0 ? cronModel.slice(split + 1) : null
-    const personaId = cronPersona || "assistant"
-    const fields = {
-      name: cronName.trim(),
-      message: cronMessage.trim(),
-      script: cronScript.trim() || null,
-      runKind: cronRunKind,
-      providerID,
-      modelID,
-      personaId,
-    }
-    setCronSaving(true)
-    try {
-      if (cronEditId) {
-        await api(`/api/cron/${cronEditId}`, {
-          method: "PATCH",
-          body: JSON.stringify(fields),
-        })
-      } else {
-        await api("/api/cron", {
-          method: "POST",
-          body: JSON.stringify({
-            ...fields,
-            kind: cronKind,
-            ...(cronKind === "every"
-              ? { everySeconds: Number(cronEvery) }
-              : cronKind === "cron"
-                ? { cronExpr: cronExpr.trim() }
-                : { atMs: new Date(cronAt).getTime() }),
-          }),
-        })
-      }
-      setCronAddOpen(false)
-      await loadCron()
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : cronEditId
-            ? "job update failed"
-            : "job create failed",
-      )
-    } finally {
-      setCronSaving(false)
-    }
-  }
-
-  async function toggleCronJob(job: CronJobInfo) {
-    if (cronBusyId) return
-    setCronBusyId(job.id)
-    try {
-      await api(`/api/cron/${job.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ enabled: !job.enabled }),
-      })
-      await loadCron()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "update failed")
-    } finally {
-      setCronBusyId("")
-    }
-  }
-
-  async function runCronJob(job: CronJobInfo) {
-    if (cronBusyId) return
-    setError("")
-    setCronBusyId(job.id)
-    try {
-      await api(`/api/cron/${job.id}/run`, { method: "POST" })
-      await loadCron()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "run failed")
-    } finally {
-      setCronBusyId("")
-    }
-  }
-
-  async function removeCronJob() {
-    const target = cronDeleteTarget
-    if (!target || cronBusyId) return
-    setCronBusyId(target.id)
-    try {
-      await api(`/api/cron/${target.id}`, { method: "DELETE" })
-      setCronDeleteTarget(null)
-      await loadCron()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "delete failed")
-    } finally {
-      setCronBusyId("")
-    }
-  }
+  }, [running, live, tick, loadThreads, loadCron])
 
   function onPreviewDrag(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault()
@@ -3557,23 +3268,6 @@ export function Workspace({
             {error}
           </Alert>
         ) : null}
-        {unreadNotices[0] ? (
-          <Alert
-            severity="info"
-            onClose={() =>
-              void markNoticesViewed({ id: unreadNotices[0]?.id ?? "" })
-            }
-          >
-            {unreadNotices.length > 1
-              ? `${unreadNotices.length} cron jobs published results. Latest: ${unreadNotices[0].jobName}. `
-              : `${unreadNotices[0].jobName} published results. `}
-            {clipNoticeLine(unreadNotices[0].summary)}{" "}
-            <Button size="small" onClick={() => openNotice(unreadNotices[0])}>
-              View result
-            </Button>
-          </Alert>
-        ) : null}
-
         <Stack
           direction="row"
           spacing={1}
@@ -3612,11 +3306,7 @@ export function Workspace({
                     ? "Projects"
                     : tab === "media"
                       ? "Media"
-                      : tab === "reports"
-                        ? "Reports"
-                        : tab === "dashboards"
-                          ? "Dashboards"
-                          : `Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
+                      : "Reports"}
           </Typography>
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
             {stopping
@@ -4139,206 +3829,6 @@ export function Workspace({
           )}
         </Box>
 
-        {/* Cron — mounted only while visible; jobs live in workspace state */}
-        {tab === "cron" ? (
-          <Box
-            sx={{
-              flex: 1,
-              minHeight: 0,
-              display: "flex",
-              flexDirection: "column",
-              gap: 1,
-            }}
-          >
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography
-                variant="caption"
-                color="textSecondary"
-                sx={{ flex: 1 }}
-              >
-                Prompt runs the agent. Script posts command output. Script then
-                prompt gives that output to the agent.
-              </Typography>
-              <ToolTip title="Reload jobs">
-                <IconButton
-                  size="small"
-                  aria-label="Reload jobs"
-                  onClick={() => void loadCron()}
-                >
-                  <RefreshIcon />
-                </IconButton>
-              </ToolTip>
-            </Stack>
-            <Box className="ob-cron-list" sx={{ flex: 1, minHeight: 0 }}>
-              {cronJobs.length === 0 ? (
-                <Stack
-                  alignItems="center"
-                  justifyContent="center"
-                  sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
-                  spacing={1}
-                >
-                  <Typography variant="subtitle1">No scheduled jobs</Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    Add one here, or ask the agent to schedule work with
-                    ob-cron.
-                  </Typography>
-                </Stack>
-              ) : (
-                cronJobs.map((job) => (
-                  <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      sx={{ flexWrap: "wrap", rowGap: 1 }}
-                    >
-                      <Typography
-                        variant="subtitle2"
-                        sx={{
-                          minWidth: 0,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {job.name}
-                      </Typography>
-                      <Chip size="small" label={cronSchedule(job)} />
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={cronRunLabel(job.runKind)}
-                      />
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={cronModelLabel(job, models)}
-                      />
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={personaName(job.personaId ?? undefined)}
-                      />
-                      {notices.some(
-                        (notice) => notice.jobId === job.id && !notice.viewedAt,
-                      ) ? (
-                        <Chip size="small" color="primary" label="new result" />
-                      ) : null}
-                      <Box sx={{ flex: 1 }} />
-                      {cronBusyId === job.id ? (
-                        <CircularProgress size={1.2} />
-                      ) : (
-                        <Switch
-                          size="small"
-                          checked={job.enabled}
-                          aria-label={`Toggle ${job.name}`}
-                          onChange={() => void toggleCronJob(job)}
-                        />
-                      )}
-                    </Stack>
-                    <Typography
-                      variant="body2"
-                      color="textSecondary"
-                      sx={{
-                        mt: 0.5,
-                        overflow: "hidden",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                      }}
-                    >
-                      {job.runKind === "script" || job.runKind === "auto"
-                        ? job.script
-                        : job.message}
-                    </Typography>
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
-                    >
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={
-                          job.enabled
-                            ? `next ${formatWhen(job.nextRunAt)}`
-                            : "paused"
-                        }
-                      />
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        color={
-                          job.lastError
-                            ? "error"
-                            : job.lastRunAt
-                              ? "success"
-                              : undefined
-                        }
-                        label={
-                          job.lastError
-                            ? "error"
-                            : job.lastRunAt
-                              ? `ran ${formatAgo(job.lastRunAt)}`
-                              : "never ran"
-                        }
-                      />
-                      <Box sx={{ flex: 1 }} />
-                      <Button
-                        size="small"
-                        variant="text"
-                        startIcon={<EditIcon />}
-                        disabled={Boolean(cronBusyId)}
-                        onClick={() => openCronForm(job)}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="text"
-                        startIcon={<PlayArrowIcon />}
-                        disabled={Boolean(cronBusyId)}
-                        onClick={() => void runCronJob(job)}
-                      >
-                        Run now
-                      </Button>
-                      {notices.some((notice) => notice.jobId === job.id) ? (
-                        <Button
-                          size="small"
-                          variant="text"
-                          startIcon={<ChatIcon />}
-                          disabled={Boolean(cronBusyId)}
-                          onClick={() => openJobResult(job)}
-                        >
-                          Result
-                        </Button>
-                      ) : null}
-                      <IconButton
-                        size="small"
-                        aria-label={`Delete ${job.name}`}
-                        disabled={Boolean(cronBusyId)}
-                        onClick={() => setCronDeleteTarget(job)}
-                      >
-                        <DeleteIcon width={18} height={18} />
-                      </IconButton>
-                    </Stack>
-                    {job.lastError ? (
-                      <Typography
-                        variant="caption"
-                        color="error"
-                        sx={{ display: "block", mt: 0.5 }}
-                      >
-                        {job.lastError}
-                      </Typography>
-                    ) : null}
-                  </Paper>
-                ))
-              )}
-            </Box>
-          </Box>
-        ) : null}
-
         {/* Projects */}
         <Box
           sx={{
@@ -4388,17 +3878,6 @@ export function Workspace({
           <Reports subscribe={subscribe} />
         </Box>
 
-        <Box
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            display: tab === "dashboards" ? "flex" : "none",
-            flexDirection: "column",
-          }}
-        >
-          <PluginDashboardsView tabs={pluginTabs} />
-        </Box>
-
         <Drawer
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
@@ -4435,15 +3914,6 @@ export function Workspace({
                 <ListItemText primary="Hardware" />
               </ListItemButton>
               <ListItemButton
-                selected={tab === "cron"}
-                onClick={() => goTab("cron")}
-              >
-                <ScheduleIcon />
-                <ListItemText
-                  primary={`Cron${unreadNotices.length ? ` (${unreadNotices.length})` : ""}`}
-                />
-              </ListItemButton>
-              <ListItemButton
                 selected={tab === "projects"}
                 onClick={() => goTab("projects")}
               >
@@ -4464,15 +3934,6 @@ export function Workspace({
                 <BugReportIcon />
                 <ListItemText primary="Reports" />
               </ListItemButton>
-              {pluginTabs.length > 0 ? (
-                <ListItemButton
-                  selected={tab === "dashboards"}
-                  onClick={() => goTab("dashboards")}
-                >
-                  <ExtensionIcon />
-                  <ListItemText primary="Dashboards" />
-                </ListItemButton>
-              ) : null}
             </List>
             <Divider />
             <Stack direction="row" spacing={1} alignItems="center">
@@ -4559,17 +4020,6 @@ export function Workspace({
                 New thread
               </Button>
             ) : null}
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<AddIcon />}
-              onClick={() => {
-                goTab("cron")
-                openCronForm()
-              }}
-            >
-              Add job
-            </Button>
           </Box>
         </Drawer>
 
@@ -4712,242 +4162,6 @@ export function Workspace({
                 onClick={() => void deleteThread()}
               >
                 Delete
-              </Button>
-            </DialogActions>
-          </Dialog>
-        ) : null}
-
-        {cronAddOpen ? (
-          <Dialog open onClose={() => setCronAddOpen(false)}>
-            <DialogTitle>
-              {cronEditId ? "Edit cron job" : "Add cron job"}
-            </DialogTitle>
-            <DialogContent>
-              <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
-                <TextField
-                  label="Name"
-                  value={cronName}
-                  autoFocus
-                  onChange={(event) => setCronName(event.currentTarget.value)}
-                />
-                <Select
-                  name="run"
-                  label="Run as"
-                  value={cronRunKind}
-                  onSelect={(value) =>
-                    setCronRunKind(
-                      value as "prompt" | "script" | "both" | "auto",
-                    )
-                  }
-                >
-                  <option value="prompt">Prompt</option>
-                  <option value="script">Script</option>
-                  <option value="both">Script then prompt</option>
-                  <option value="auto">Script, agent only if flagged</option>
-                </Select>
-                {cronRunKind !== "script" ? (
-                  <TextField
-                    label="Message sent to the agent"
-                    value={cronMessage}
-                    multiline
-                    rows={3}
-                    onChange={(event) =>
-                      setCronMessage(event.currentTarget.value)
-                    }
-                  />
-                ) : null}
-                {cronRunKind !== "prompt" ? (
-                  <TextField
-                    label="Script"
-                    value={cronScript}
-                    multiline
-                    rows={4}
-                    placeholder="bash /home/agent/workspace/check.sh"
-                    onChange={(event) =>
-                      setCronScript(event.currentTarget.value)
-                    }
-                  />
-                ) : null}
-                {cronRunKind === "auto" ? (
-                  <Typography variant="caption" color="textSecondary">
-                    The script runs first; the agent wakes only when a line of
-                    its output starts with [cron-agent]. Silent runs post
-                    nothing.
-                  </Typography>
-                ) : null}
-                {cronEditId ? (
-                  <Typography variant="caption" color="textSecondary">
-                    Schedule stays {editingSchedule(cronJobs, cronEditId)}.
-                  </Typography>
-                ) : (
-                  <>
-                    <Select
-                      name="schedule"
-                      label="Schedule"
-                      value={cronKind}
-                      onSelect={(value) => setCronKind(value as CronKind)}
-                    >
-                      <option value="every">Interval</option>
-                      <option value="cron">Cron expression (UTC)</option>
-                      <option value="at">One time</option>
-                    </Select>
-                    {cronKind === "every" ? (
-                      <TextField
-                        label="Every (seconds, min 60)"
-                        value={cronEvery}
-                        inputMode="numeric"
-                        onChange={(event) =>
-                          setCronEvery(event.currentTarget.value)
-                        }
-                      />
-                    ) : cronKind === "cron" ? (
-                      <TextField
-                        label="Cron expression"
-                        value={cronExpr}
-                        placeholder="0 9 * * 1-5"
-                        onChange={(event) =>
-                          setCronExpr(event.currentTarget.value)
-                        }
-                      />
-                    ) : (
-                      <TextField
-                        label="Run at"
-                        value={cronAt}
-                        type="datetime-local"
-                        onChange={(event) =>
-                          setCronAt(event.currentTarget.value)
-                        }
-                      />
-                    )}
-                  </>
-                )}
-                {cronRunKind !== "script" ? (
-                  <ModelSelect
-                    name="cron-model"
-                    label="Model"
-                    models={models}
-                    value={cronModel}
-                    disabled={!running && models.length === 0 && !cronModel}
-                    userId={me.id}
-                    leading={{ id: "", title: "Desktop default" }}
-                    onSelect={setCronModel}
-                  />
-                ) : null}
-                {cronRunKind !== "script" ? (
-                  <Select
-                    name="cron-persona"
-                    label="Personality"
-                    value={cronPersona}
-                    onSelect={setCronPersona}
-                  >
-                    {[
-                      ...(personas.length
-                        ? personas
-                        : [
-                            {
-                              id: "assistant",
-                              name: "Assistant",
-                              instruction: "",
-                              builtin: true,
-                            },
-                          ]
-                      ).map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      )),
-                      ...(cronPersona &&
-                      !personas.some((item) => item.id === cronPersona) &&
-                      cronPersona !== "assistant"
-                        ? [
-                            <option key={cronPersona} value={cronPersona}>
-                              {personaName(cronPersona)}
-                            </option>,
-                          ]
-                        : []),
-                    ]}
-                  </Select>
-                ) : null}
-                <Typography variant="caption" color="textSecondary">
-                  {cronRunKind === "script"
-                    ? "Runs on the desktop in /home/agent/workspace. Output is posted to this job's thread."
-                    : cronRunKind === "both"
-                      ? "The script runs first. Its output is added to the prompt. The agent's result is posted to this job's thread."
-                      : "The model and personality run the temporary session. The result is still posted to this job's thread."}
-                  {cronRunKind !== "script" && !running
-                    ? " Start the desktop to choose a model other than the desktop default."
-                    : ""}
-                </Typography>
-              </Stack>
-            </DialogContent>
-            <DialogActions>
-              <Button variant="text" onClick={() => setCronAddOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                variant="contained"
-                disabled={
-                  cronSaving ||
-                  !cronName.trim() ||
-                  (cronRunKind !== "script" && !cronMessage.trim()) ||
-                  (cronRunKind !== "prompt" && !cronScript.trim()) ||
-                  (!cronEditId &&
-                    ((cronKind === "every" && !(Number(cronEvery) >= 60)) ||
-                      (cronKind === "cron" &&
-                        cronExpr.trim().split(/\s+/).length !== 5) ||
-                      (cronKind === "at" && !cronAt)))
-                }
-                onClick={() => void saveCronJob()}
-              >
-                {cronSaving ? "…" : cronEditId ? "Save" : "Add"}
-              </Button>
-            </DialogActions>
-          </Dialog>
-        ) : null}
-
-        {cronDeleteTarget ? (
-          <Dialog open onClose={() => setCronDeleteTarget(null)}>
-            <DialogTitle>Delete cron job?</DialogTitle>
-            <DialogContent>
-              <Typography variant="body2">
-                Deletes “{cronDeleteTarget?.name ?? ""}” and its past results.
-                It will never run again. This cannot be undone.
-              </Typography>
-            </DialogContent>
-            <DialogActions>
-              <Button variant="text" onClick={() => setCronDeleteTarget(null)}>
-                Cancel
-              </Button>
-              <Button
-                color="error"
-                variant="contained"
-                disabled={Boolean(cronBusyId)}
-                startIcon={<DeleteIcon />}
-                onClick={() => void removeCronJob()}
-              >
-                Delete
-              </Button>
-            </DialogActions>
-          </Dialog>
-        ) : null}
-
-        {cronResult ? (
-          <Dialog open onClose={() => setCronResult(null)}>
-            <DialogTitle>{cronResult.jobName ?? ""}</DialogTitle>
-            <DialogContent>
-              {cronResult.summary?.trim() ? (
-                <div className="ob-md">
-                  <ChatMarkdown text={cronResult.summary} />
-                </div>
-              ) : (
-                <Typography variant="body2" color="textSecondary">
-                  No output.
-                </Typography>
-              )}
-            </DialogContent>
-            <DialogActions>
-              <Button variant="text" onClick={() => setCronResult(null)}>
-                Close
               </Button>
             </DialogActions>
           </Dialog>

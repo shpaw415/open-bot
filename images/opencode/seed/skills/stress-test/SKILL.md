@@ -29,7 +29,7 @@ openviking_read viking://user/skills/<skill-name>/SKILL.md
 - Cron: `ob-cron list` shows the jobs. Exercise a real fresh-thread run: `ob-cron add --name stress-<slug> --at "$(date -u -d '+2 minutes' +%Y-%m-%dT%H:%M:%SZ)" --message "<one case>"`, then `ob-cron run <id>`, read the result that lands in the job thread, and `ob-cron remove <id>` afterwards.
 - Personas: this thread cannot switch. Run a one-shot cron job with `--persona <id>` and check the voice holds on a hard case.
 - Tools: run the `ob-plugin-<id>-*` binaries yourself with real and edge-case arguments.
-- Dashboard tabs and composer features: load the `desktop` skill and click through with `ob-nav`/`ob-page` like a user.
+- Dashboard tabs and composer features: load the `desktop` skill and click through with `ob-chrome navigate` + `ob-page` like a user.
 - Configs: set values with `ob-plugin settings <slug> key=value`, then verify behavior again with the value missing.
 
 Anything broken — an error, a wrong result, confusing output, a step you had to fake — is a finding. Never paper over it by editing installed payloads by hand; that is forbidden and it hides the bug.
@@ -38,7 +38,7 @@ Anything broken — an error, a wrong result, confusing output, a step you had t
 
 - Defect in your plugin that needs work after this thread: file it on this desktop so any thread can pick it up. `ob-report add --plugin <slug> --kind bug --title "..." --detail "Expected: ... Actual: ... Repeat: ..."`. Close it with `ob-report done <id> --note "..."` in the release notes round.
 - Defect users of the published plugin should see handled publicly: also file a GitHub issue. `ob-plugin issue <slug> "Title" "Expected: ... Actual: ... Repeat: ..."` — close it in the release notes of the version that fixes it.
-- Friction or bug in open-bot itself that this test surfaced (install flow, `ob-plugin`/`ob-improve`/`ob-cron`, the apply engine): `ob-improve add --kind bug|friction|feature --surface other --title "..." --detail "..."`. This skill exists only on development desktop images; if `ob-improve` is missing, stop — do not invent a curl call.
+- Friction or bug in open-bot itself that this test surfaced (install flow, `ob-plugin`/`ob-improve`/`ob-cron`, the apply engine): `ob-improve add --kind bug|friction|feature --surface other --title "..." --detail "..."`. If `ob-improve` is missing, stop — do not invent a curl call.
 - Never put tokens, passwords, or API keys in an issue or report.
 
 ## 4. Iterate until satisfactory

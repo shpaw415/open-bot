@@ -93,6 +93,8 @@ COPY apps/control/src/nav /opt/open-bot/nav
 COPY images/opencode/screen-up.sh /opt/open-bot/screen-up.sh
 COPY images/opencode/screen-down.sh /opt/open-bot/screen-down.sh
 COPY images/opencode/screen-list.sh /opt/open-bot/screen-list.sh
+COPY images/opencode/disk-cleanup.sh /opt/open-bot/disk-cleanup.sh
+COPY images/opencode/heal-stale-tools.ts /opt/open-bot/heal-stale-tools.ts
 COPY images/opencode/sync-chromium.sh /opt/open-bot/sync-chromium.sh
 COPY images/opencode/record-apt.sh /opt/open-bot/record-apt.sh
 COPY images/opencode/restore-apt.sh /opt/open-bot/restore-apt.sh
@@ -103,32 +105,26 @@ COPY images/opencode/ob-preview.sh /usr/local/bin/ob-preview
 COPY images/opencode/ob-vnc.sh /usr/local/bin/ob-vnc
 COPY images/opencode/ob-app.sh /usr/local/bin/ob-app
 COPY images/opencode/ob-page.sh /usr/local/bin/ob-page
+COPY images/opencode/ob-chrome.sh /usr/local/bin/ob-chrome
+COPY images/opencode/screen-heal.sh /opt/open-bot/screen-heal.sh
 COPY images/opencode/xcap.py /opt/open-bot/xcap.py
 COPY images/opencode/xshot.ts /opt/open-bot/xshot.ts
 COPY images/opencode/hittest.ts /opt/open-bot/hittest.ts
 COPY images/opencode/coord.ts /opt/open-bot/coord.ts
-COPY images/opencode/url-watch.ts /opt/open-bot/url-watch.ts
 COPY images/opencode/ob-nav.sh /usr/local/bin/ob-nav
 COPY images/opencode/ob-system1.sh /usr/local/bin/ob-system1
 COPY images/opencode/chromium-policy.json /etc/chromium/policies/managed/open-bot.json
 COPY images/opencode/chromium-policy.json /etc/opt/chrome/policies/managed/open-bot.json
-COPY scripts/ob-improve.sh /tmp/ob-improve.sh
-ARG OPEN_BOT_DEV=0
-RUN if [ "$OPEN_BOT_DEV" = "1" ]; then \
-      cp /tmp/ob-improve.sh /usr/local/bin/ob-improve \
-      && chmod 755 /usr/local/bin/ob-improve \
-      && touch /opt/open-bot/dev-mode; \
-    else \
-      rm -rf /opt/open-bot/seed/skills/improve; \
-    fi \
-    && rm -f /tmp/ob-improve.sh
+COPY scripts/ob-improve.sh /usr/local/bin/ob-improve
+RUN chmod 755 /usr/local/bin/ob-improve \
+     && chmod 755 /usr/local/bin/ob-chrome /opt/open-bot/screen-heal.sh
 RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
      && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/open-bot/preview-server.ts /opt/open-bot/preview-spawn.ts \
     && cp -a /usr/local /opt/image-usr-local \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-app /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-system1 /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-project /opt/image-usr-local/bin/ob-report /opt/image-usr-local/bin/ob-thread /opt/image-usr-local/bin/ob-media /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview \
+      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/disk-cleanup.sh /opt/open-bot/heal-stale-tools.ts /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-app /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-system1 /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-project /opt/image-usr-local/bin/ob-report /opt/image-usr-local/bin/ob-thread /opt/image-usr-local/bin/ob-media /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview \
     && touch /opt/open-bot/instance
 
 USER root

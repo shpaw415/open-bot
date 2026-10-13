@@ -83,9 +83,11 @@ export type PluginPersona = {
 
 export type PluginCron = {
   name: string
-  message: string
+  message?: string
   everySeconds?: number
   cronExpr?: string
+  run?: "prompt" | "script" | "both" | "auto"
+  script?: string
 }
 
 export type PluginTool = {
@@ -110,6 +112,18 @@ export type PluginSetup = {
 // Hook events: the upstream opencode event each manifest hook fires on.
 // "thread.created" maps to opencode's session.created.
 export const PLUGIN_HOOK_EVENTS = ["session.idle", "thread.created"] as const
+
+// dashboard.tabs[].icon: a single emoji or a material icon name for the
+// dashboard home-screen app tile. No URLs — never fetched remotely.
+export const TAB_ICON_MAX_LENGTH = 32
+
+const hasControlChar = (value: string) => {
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0
+    if (code < 32 || code === 127) return true
+  }
+  return false
+}
 export type PluginHookEvent = (typeof PLUGIN_HOOK_EVENTS)[number]
 
 // A hook runs the message as a prompt in a hidden worker session whenever the
@@ -221,6 +235,9 @@ export type PluginDashboardPages = {
 export type PluginTab = {
   id: string
   title: string
+  // App-tile icon for the dashboard home screen: a single emoji or a
+  // material icon name. Falls back to a letter avatar.
+  icon?: string
   kind: "page" | "iframe" | "app"
   url?: string
   // "app" tabs: plugin-server-relative path to load (default "/").
@@ -702,8 +719,35 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
         issues.push({ path, message: "cron.name is required (max 64)" })
       }
       const message = str(job?.message)
-      if (!message || message.length > 8000) {
+      const script = str(job?.script)
+      const run = job?.run
+      if (
+        run !== undefined &&
+        run !== "prompt" &&
+        run !== "script" &&
+        run !== "both" &&
+        run !== "auto"
+      ) {
+        issues.push({
+          path,
+          message: "cron.run must be one of prompt, script, both, auto",
+        })
+      }
+      // Same rules as the control plane's normalizeCronRun: every kind except
+      // script needs a message, every kind except prompt needs a script.
+      if (run !== "script" && (!message || message.length > 8000)) {
         issues.push({ path, message: "cron.message is required (max 8000)" })
+      } else if (message && message.length > 8000) {
+        issues.push({ path, message: "cron.message must be at most 8000" })
+      }
+      if (run && run !== "prompt" && (!script || script.length > 16000)) {
+        issues.push({
+          path,
+          message:
+            "cron.script is required for run script/both/auto (max 16000)",
+        })
+      } else if (script && script.length > 16000) {
+        issues.push({ path, message: "cron.script must be at most 16000" })
       }
       const hasEvery = typeof job?.everySeconds === "number"
       const hasCron = typeof job?.cronExpr === "string"
@@ -999,6 +1043,30 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
           const tabTitle = str(tab?.title)
           if (!tabTitle || tabTitle.length > 48) {
             issues.push({ path, message: "tab.title is required (max 48)" })
+          }
+          const tabIcon = tab?.icon
+          if (tabIcon !== undefined) {
+            if (
+              typeof tabIcon !== "string" ||
+              !tabIcon.trim() ||
+              tabIcon.length > TAB_ICON_MAX_LENGTH
+            ) {
+              issues.push({
+                path: `${path}.icon`,
+                message: `tab.icon must be a non-empty string (max ${TAB_ICON_MAX_LENGTH})`,
+              })
+            } else if (
+              hasControlChar(tabIcon) ||
+              tabIcon.includes("<") ||
+              tabIcon.includes(">") ||
+              tabIcon.includes("://")
+            ) {
+              issues.push({
+                path: `${path}.icon`,
+                message:
+                  "tab.icon must be an emoji or an icon name (no URLs or markup)",
+              })
+            }
           }
           const kind = str(tab?.kind)
           if (kind !== "page" && kind !== "iframe" && kind !== "app") {

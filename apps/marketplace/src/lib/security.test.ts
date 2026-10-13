@@ -122,6 +122,18 @@ describe("payload extraction", () => {
     expect(extracted.has("README.md")).toBe(false)
   })
 
+  test("pulls the repo-root CONFIG.md configuration guide from the tarball", async () => {
+    const tarball = gzTar([
+      ["weather-pro-1.0.0/README.md", "docs only"],
+      [
+        "weather-pro-1.0.0/CONFIG.md",
+        "# Config guide\n\nAsk the user for the API key.\n",
+      ],
+    ])
+    const extracted = await extractPayloadSources(tarball, ["CONFIG.md"])
+    expect(extracted.get("CONFIG.md")).toContain("Ask the user")
+  })
+
   test("returns empty for a corrupt tarball instead of throwing", async () => {
     const bogus = new TextEncoder().encode("not a gzip file at all")
     const extracted = await extractPayloadSources(

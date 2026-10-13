@@ -102,7 +102,7 @@ export function Improvements() {
     <Paper variant="outlined" sx={{ p: 1.5 }}>
       <Typography variant="subtitle1">Product reports</Typography>
       <Typography variant="caption" color="textSecondary">
-        Filed by development desktops. Review and patch from the repo queue.
+        Filed by desktops. Review and patch from the repo queue.
       </Typography>
       {error ? (
         <Alert severity="error" onClose={() => setError("")} sx={{ mt: 1 }}>

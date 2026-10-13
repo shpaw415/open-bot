@@ -1,5 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
+import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
   DialogContent,
@@ -19,6 +20,7 @@ export type PersonaInfo = {
   name: string
   instruction: string
   builtin: boolean
+  plugin?: { id: string; name: string }
 }
 
 type Draft = {
@@ -149,10 +151,24 @@ export function Personalities() {
               {index > 0 ? <Divider /> : null}
               <Stack direction="row" spacing={1} alignItems="center">
                 <Stack sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="subtitle2">
-                    {persona.name}
-                    {persona.builtin ? " · built-in" : ""}
-                  </Typography>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+                  >
+                    <Typography variant="subtitle2">
+                      {persona.name}
+                      {persona.builtin ? " · built-in" : ""}
+                    </Typography>
+                    {persona.plugin ? (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={`plugin: ${persona.plugin.name}`}
+                      />
+                    ) : null}
+                  </Stack>
                   <Typography
                     variant="body2"
                     color="textSecondary"

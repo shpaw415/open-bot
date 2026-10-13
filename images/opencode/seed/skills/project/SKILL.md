@@ -32,5 +32,6 @@ Rules:
 
 - The folder must already exist. This command does not create it.
 - The path must be under `/home/agent`. Anywhere else is rejected.
+- Folders under `~/plugins-create` show under the Plugins group in Projects; `ob-plugin new` adds them automatically, so use this command for plugin folders only when the scaffold missed it.
 - Tell the user it is in Projects and can be mentioned with `@projects/` plus the project name.
 - Removing a project does not delete its files.

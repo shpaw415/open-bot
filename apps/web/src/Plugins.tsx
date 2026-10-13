@@ -26,7 +26,7 @@ import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api } from "./api"
 import { useMobile } from "./hooks"
-import { DeleteIcon, ExtensionIcon, RefreshIcon } from "./icons"
+import { DeleteIcon, RefreshIcon } from "./icons"
 import {
   type InstalledPluginInfo,
   PluginBadges,
@@ -322,7 +322,11 @@ function InstalledTable({
                   <TableRow key={plugin.id} hover>
                     <TableCell>
                       <PluginHeader plugin={plugin} />
-                      {(plugin.manifest.configs?.length ?? 0) > 0 ? (
+                      {(plugin.manifest.configs?.length ?? 0) > 0 ||
+                      (plugin.manifest.permissions?.vaultCreate?.length ?? 0) >
+                        0 ||
+                      (plugin.manifest.permissions?.vaultRead?.length ?? 0) >
+                        0 ? (
                         <Button
                           size="small"
                           variant="text"
@@ -471,6 +475,164 @@ function InstalledTable({
   )
 }
 
+type VaultKeyStatus = {
+  slug: string
+  hasKey: boolean
+  access: "create" | "read"
+  shared: boolean
+  accountId: string
+  baseUrl: string
+}
+
+function VaultKeyRow({
+  status,
+  pluginId,
+  onSaved,
+}: {
+  status: VaultKeyStatus
+  pluginId: string
+  onSaved: () => void
+}) {
+  const [apiKey, setApiKey] = useState("")
+  const [accountId, setAccountId] = useState(status.accountId)
+  const [baseUrl, setBaseUrl] = useState(status.baseUrl)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+
+  async function save(fields: Record<string, string>) {
+    setBusy(true)
+    setError("")
+    try {
+      await api(
+        `/api/plugins/installed/${encodeURIComponent(pluginId)}/vault`,
+        {
+          method: "POST",
+          body: JSON.stringify({ slug: status.slug, value: fields }),
+        },
+      )
+      onSaved()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "could not save")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const dirty =
+    apiKey !== "" ||
+    accountId !== status.accountId ||
+    baseUrl !== status.baseUrl
+
+  if (status.shared) {
+    return (
+      <Stack spacing={0.5}>
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+        >
+          <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+            {status.slug}
+          </Typography>
+          <Chip size="small" variant="outlined" label="shared provider key" />
+          <Chip
+            size="small"
+            variant="outlined"
+            color={status.hasKey ? "success" : undefined}
+            label={status.hasKey ? "set" : "not set"}
+          />
+        </Stack>
+        <Typography variant="caption" color="textSecondary">
+          Managed on the Config page Keys tab — set it there once and every
+          plugin that reads it picks it up.
+        </Typography>
+      </Stack>
+    )
+  }
+
+  return (
+    <Stack spacing={1}>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+      >
+        <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+          {status.slug}
+        </Typography>
+        <Chip
+          size="small"
+          variant="outlined"
+          label={status.access === "create" ? "plugin key" : "reads your key"}
+        />
+        <Chip
+          size="small"
+          variant="outlined"
+          color={status.hasKey ? "success" : undefined}
+          label={status.hasKey ? "set" : "not set"}
+        />
+      </Stack>
+      <TextField
+        label="API key"
+        type="password"
+        value={apiKey}
+        disabled={busy}
+        onChange={(event) => setApiKey(event.currentTarget.value)}
+      />
+      <Stack direction="row" spacing={1}>
+        <TextField
+          label="Account ID (optional)"
+          value={accountId}
+          disabled={busy}
+          onChange={(event) => setAccountId(event.currentTarget.value)}
+          sx={{ flex: 1 }}
+        />
+        <TextField
+          label="Base URL (optional)"
+          value={baseUrl}
+          disabled={busy}
+          onChange={(event) => setBaseUrl(event.currentTarget.value)}
+          sx={{ flex: 1 }}
+        />
+      </Stack>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+      <Stack direction="row" spacing={1}>
+        <Button
+          size="small"
+          variant="contained"
+          disabled={busy || !dirty}
+          startIcon={busy ? <CircularProgress size={1} /> : undefined}
+          onClick={() =>
+            void save({
+              // Leave the key out when blank so the stored one survives a
+              // metadata-only edit; the route keeps omitted fields.
+              ...(apiKey !== "" ? { apiKey } : {}),
+              accountId,
+              baseUrl,
+            })
+          }
+        >
+          Save
+        </Button>
+        {status.hasKey || dirty ? (
+          <Button
+            size="small"
+            variant="text"
+            disabled={busy}
+            onClick={() =>
+              void save({ apiKey: "", accountId: "", baseUrl: "" })
+            }
+          >
+            Clear
+          </Button>
+        ) : null}
+      </Stack>
+    </Stack>
+  )
+}
+
 function SettingsDialog({
   plugin,
   onClose,
@@ -486,6 +648,41 @@ function SettingsDialog({
   })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const vaultSlugs = [
+    ...new Set([
+      ...(plugin.manifest.permissions?.vaultCreate ?? []),
+      ...(plugin.manifest.permissions?.vaultRead ?? []),
+    ]),
+  ]
+  // null until the first status load resolves; rows then fall back to a
+  // manifest-derived view if the load fails, so keys stay editable.
+  const [vault, setVault] = useState<VaultKeyStatus[] | null>(null)
+  const [vaultReload, setVaultReload] = useState(0)
+
+  const loadVault = useCallback(() => {
+    api<{ slugs: VaultKeyStatus[] }>(
+      `/api/plugins/installed/${encodeURIComponent(plugin.pluginId)}/vault`,
+    )
+      .then((body) => setVault(body.slugs ?? []))
+      .catch(() => setVault(null))
+  }, [plugin.pluginId])
+
+  useEffect(() => {
+    if (vaultSlugs.length > 0) loadVault()
+  }, [loadVault, vaultSlugs.length])
+
+  const vaultRows: VaultKeyStatus[] =
+    vault ??
+    vaultSlugs.map((slug) => ({
+      slug,
+      hasKey: false,
+      access: (plugin.manifest.permissions?.vaultCreate ?? []).includes(slug)
+        ? "create"
+        : "read",
+      shared: false,
+      accountId: "",
+      baseUrl: "",
+    }))
 
   async function save() {
     setBusy(true)
@@ -509,7 +706,9 @@ function SettingsDialog({
   return (
     <Dialog open onClose={() => !busy && onClose()} fullWidth>
       <Stack spacing={2} sx={{ p: 3 }}>
-        <Typography variant="h6">{plugin.name} settings</Typography>
+        <Typography variant="h6">
+          {plugin.name} {vaultSlugs.length > 0 ? "settings & keys" : "settings"}
+        </Typography>
         {(plugin.manifest.configs ?? []).map((config) => {
           const type = config.type ?? (config.secret ? "secret" : "string")
           if (type === "bool") {
@@ -578,6 +777,28 @@ function SettingsDialog({
             />
           )
         })}
+        {vaultSlugs.length > 0 ? (
+          <>
+            <Divider />
+            <Typography variant="subtitle2">Vault keys</Typography>
+            <Typography variant="caption" color="textSecondary">
+              Secrets this plugin uses. Values are write-only — never shown
+              again after saving.
+            </Typography>
+            {vaultRows.map((status) => (
+              <VaultKeyRow
+                // The reload counter remounts saved rows so their inputs reset.
+                key={`${status.slug}-${vaultReload}`}
+                status={status}
+                pluginId={plugin.pluginId}
+                onSaved={() => {
+                  setVaultReload((n) => n + 1)
+                  loadVault()
+                }}
+              />
+            ))}
+          </>
+        ) : null}
         {error ? <Alert severity="error">{error}</Alert> : null}
       </Stack>
       <DialogActions>
@@ -1152,207 +1373,192 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   }
 
   return (
-    <Box
-      className="ob-scroll"
-      sx={{ p: 2, maxWidth: 960, mx: "auto", width: "100%" }}
-    >
-      <Stack spacing={2}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <ExtensionIcon />
-          <Typography variant="h6" sx={{ flex: 1 }}>
-            Plugins
-          </Typography>
-          <Chip label={`policy: ${policy}`} size="small" variant="outlined" />
-          {isAdmin ? (
-            <ToolTip title="Automatically install newer approved stable versions of installed plugins">
-              <Chip
-                label={`auto-update: ${autoUpdate}`}
-                size="small"
-                variant="outlined"
-                color={autoUpdate === "stable" ? "primary" : undefined}
-                onClick={() => void toggleAutoUpdate()}
-              />
-            </ToolTip>
-          ) : null}
-          {isAdmin ? (
-            <Button
+    <Stack spacing={2} sx={{ width: "100%" }}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Chip label={`policy: ${policy}`} size="small" variant="outlined" />
+        {isAdmin ? (
+          <ToolTip title="Automatically install newer approved stable versions of installed plugins">
+            <Chip
+              label={`auto-update: ${autoUpdate}`}
               size="small"
-              variant="text"
-              disabled={policyBusy}
-              startIcon={policyBusy ? <CircularProgress size={1} /> : undefined}
-              onClick={() => void togglePolicy()}
-            >
-              switch to {policy === "auto" ? "manual" : "auto"}
-            </Button>
-          ) : null}
-        </Stack>
-        {!configured ? (
-          <Alert severity="info">
-            The marketplace is not configured on this instance. Paste a
-            marketplace API key below (admin), or set OPEN_BOT_MARKETPLACE_URL
-            and OPEN_BOT_MARKETPLACE_TOKEN on the control plane.
-          </Alert>
-        ) : null}
-        <MarketplaceAccount isAdmin={isAdmin} />
-        {error ? (
-          <Alert severity="error" onClose={() => setError("")}>
-            {error}
-          </Alert>
-        ) : null}
-        {notice ? (
-          <Alert severity="success" onClose={() => setNotice("")}>
-            {notice}
-          </Alert>
-        ) : null}
-
-        <Typography variant="subtitle2">
-          Installed ({plugins.length})
-        </Typography>
-        <InstalledTable
-          plugins={plugins}
-          loaded={loaded}
-          actionId={actionId}
-          page={installedPage}
-          rowsPerPage={installedRowsPerPage}
-          onPageChange={setInstalledPage}
-          onRowsPerPageChange={setInstalledRowsPerPage}
-          onToggle={(target) =>
-            void act(
-              target.pluginId,
-              () =>
-                api(
-                  `/api/plugins/installed/${encodeURIComponent(target.pluginId)}/${target.enabled ? "disable" : "enable"}`,
-                  { method: "POST" },
-                ),
-              `${target.pluginId} ${target.enabled ? "disabled" : "enabled"}`,
-            )
-          }
-          onRemove={(target) =>
-            void act(
-              target.pluginId,
-              () =>
-                api(
-                  `/api/plugins/installed/${encodeURIComponent(target.pluginId)}`,
-                  { method: "DELETE" },
-                ),
-              `${target.pluginId} removed`,
-            )
-          }
-          onSettings={setSettingsFor}
-          onReinstall={(target) =>
-            void act(
-              target.pluginId,
-              () =>
-                api("/api/plugins/install", {
-                  method: "POST",
-                  body: JSON.stringify(
-                    target.source === "local"
-                      ? {
-                          pluginId: target.pluginId,
-                          local: true,
-                          confirm: true,
-                        }
-                      : {
-                          pluginId: target.pluginId,
-                          version: target.version,
-                          confirm: true,
-                        },
-                  ),
-                }),
-              `${target.pluginId} re-installed (v${target.version})`,
-            )
-          }
-          onRetrySetup={(target) =>
-            void act(
-              target.pluginId,
-              () =>
-                api(
-                  `/api/plugins/installed/${encodeURIComponent(target.pluginId)}/setup`,
-                  { method: "POST" },
-                ),
-              `${target.pluginId} setup re-run`,
-            )
-          }
-          onUpdate={(target) =>
-            void act(
-              target.pluginId,
-              () =>
-                api("/api/plugins/install", {
-                  method: "POST",
-                  body: JSON.stringify({
-                    pluginId: target.pluginId,
-                    version: target.updateAvailable,
-                    confirm: true,
-                  }),
-                }),
-              `${target.pluginId} updated to v${target.updateAvailable}`,
-            )
-          }
-        />
-
-        <Divider />
-        <Typography variant="subtitle2">
-          Marketplace ({market.length})
-        </Typography>
-        <Stack direction="row" spacing={1}>
-          <TextField
-            label="Search plugins"
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void loadMarket(query)
-            }}
-            sx={{ flex: 1 }}
-          />
-          <Button
-            variant="outlined"
-            disabled={marketLoading}
-            startIcon={
-              marketLoading ? <CircularProgress size={1} /> : undefined
-            }
-            onClick={() => void loadMarket(query)}
-          >
-            {marketLoading ? "Searching…" : "Search"}
-          </Button>
-          <ToolTip title="Refresh">
-            <IconButton
-              aria-label="Refresh marketplace"
-              disabled={marketLoading}
-              onClick={() => void loadMarket(query)}
-            >
-              <RefreshIcon />
-            </IconButton>
+              variant="outlined"
+              color={autoUpdate === "stable" ? "primary" : undefined}
+              onClick={() => void toggleAutoUpdate()}
+            />
           </ToolTip>
-        </Stack>
-        {marketLoading ? <LinearProgress variant="indeterminate" /> : null}
-        <MarketTable
-          market={market}
-          loading={marketLoading}
-          installingId={installingId}
-          installedIds={installedIds}
-          page={marketPage}
-          rowsPerPage={marketRowsPerPage}
-          onPageChange={setMarketPage}
-          onRowsPerPageChange={setMarketRowsPerPage}
-          onInstall={(target) => void startInstall(target)}
-          onDiscuss={(target) => setDetailId(target.id)}
-        />
-        {!marketLoading && market.length === 0 && configured ? (
-          <Typography variant="body2" color="textSecondary">
-            No plugins found. Agents publish plugins with{" "}
-            <code>ob-plugin publish</code>.
-          </Typography>
         ) : null}
-
-        {detailId ? (
-          <Paper variant="outlined" sx={{ p: 2 }}>
-            <Discussion pluginId={detailId} />
-            <Button variant="text" onClick={() => setDetailId(null)}>
-              Close discussion
-            </Button>
-          </Paper>
+        {isAdmin ? (
+          <Button
+            size="small"
+            variant="text"
+            disabled={policyBusy}
+            startIcon={policyBusy ? <CircularProgress size={1} /> : undefined}
+            onClick={() => void togglePolicy()}
+          >
+            switch to {policy === "auto" ? "manual" : "auto"}
+          </Button>
         ) : null}
       </Stack>
+      {!configured ? (
+        <Alert severity="info">
+          The marketplace is not configured on this instance. Paste a
+          marketplace API key below (admin), or set OPEN_BOT_MARKETPLACE_URL and
+          OPEN_BOT_MARKETPLACE_TOKEN on the control plane.
+        </Alert>
+      ) : null}
+      <MarketplaceAccount isAdmin={isAdmin} />
+      {error ? (
+        <Alert severity="error" onClose={() => setError("")}>
+          {error}
+        </Alert>
+      ) : null}
+      {notice ? (
+        <Alert severity="success" onClose={() => setNotice("")}>
+          {notice}
+        </Alert>
+      ) : null}
+
+      <Typography variant="subtitle2">Installed ({plugins.length})</Typography>
+      <InstalledTable
+        plugins={plugins}
+        loaded={loaded}
+        actionId={actionId}
+        page={installedPage}
+        rowsPerPage={installedRowsPerPage}
+        onPageChange={setInstalledPage}
+        onRowsPerPageChange={setInstalledRowsPerPage}
+        onToggle={(target) =>
+          void act(
+            target.pluginId,
+            () =>
+              api(
+                `/api/plugins/installed/${encodeURIComponent(target.pluginId)}/${target.enabled ? "disable" : "enable"}`,
+                { method: "POST" },
+              ),
+            `${target.pluginId} ${target.enabled ? "disabled" : "enabled"}`,
+          )
+        }
+        onRemove={(target) =>
+          void act(
+            target.pluginId,
+            () =>
+              api(
+                `/api/plugins/installed/${encodeURIComponent(target.pluginId)}`,
+                { method: "DELETE" },
+              ),
+            `${target.pluginId} removed`,
+          )
+        }
+        onSettings={setSettingsFor}
+        onReinstall={(target) =>
+          void act(
+            target.pluginId,
+            () =>
+              api("/api/plugins/install", {
+                method: "POST",
+                body: JSON.stringify(
+                  target.source === "local"
+                    ? {
+                        pluginId: target.pluginId,
+                        local: true,
+                        confirm: true,
+                      }
+                    : {
+                        pluginId: target.pluginId,
+                        version: target.version,
+                        confirm: true,
+                      },
+                ),
+              }),
+            `${target.pluginId} re-installed (v${target.version})`,
+          )
+        }
+        onRetrySetup={(target) =>
+          void act(
+            target.pluginId,
+            () =>
+              api(
+                `/api/plugins/installed/${encodeURIComponent(target.pluginId)}/setup`,
+                { method: "POST" },
+              ),
+            `${target.pluginId} setup re-run`,
+          )
+        }
+        onUpdate={(target) =>
+          void act(
+            target.pluginId,
+            () =>
+              api("/api/plugins/install", {
+                method: "POST",
+                body: JSON.stringify({
+                  pluginId: target.pluginId,
+                  version: target.updateAvailable,
+                  confirm: true,
+                }),
+              }),
+            `${target.pluginId} updated to v${target.updateAvailable}`,
+          )
+        }
+      />
+
+      <Divider />
+      <Typography variant="subtitle2">Marketplace ({market.length})</Typography>
+      <Stack direction="row" spacing={1}>
+        <TextField
+          label="Search plugins"
+          value={query}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") void loadMarket(query)
+          }}
+          sx={{ flex: 1 }}
+        />
+        <Button
+          variant="outlined"
+          disabled={marketLoading}
+          startIcon={marketLoading ? <CircularProgress size={1} /> : undefined}
+          onClick={() => void loadMarket(query)}
+        >
+          {marketLoading ? "Searching…" : "Search"}
+        </Button>
+        <ToolTip title="Refresh">
+          <IconButton
+            aria-label="Refresh marketplace"
+            disabled={marketLoading}
+            onClick={() => void loadMarket(query)}
+          >
+            <RefreshIcon />
+          </IconButton>
+        </ToolTip>
+      </Stack>
+      {marketLoading ? <LinearProgress variant="indeterminate" /> : null}
+      <MarketTable
+        market={market}
+        loading={marketLoading}
+        installingId={installingId}
+        installedIds={installedIds}
+        page={marketPage}
+        rowsPerPage={marketRowsPerPage}
+        onPageChange={setMarketPage}
+        onRowsPerPageChange={setMarketRowsPerPage}
+        onInstall={(target) => void startInstall(target)}
+        onDiscuss={(target) => setDetailId(target.id)}
+      />
+      {!marketLoading && market.length === 0 && configured ? (
+        <Typography variant="body2" color="textSecondary">
+          No plugins found. Agents publish plugins with{" "}
+          <code>ob-plugin publish</code>.
+        </Typography>
+      ) : null}
+
+      {detailId ? (
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Discussion pluginId={detailId} />
+          <Button variant="text" onClick={() => setDetailId(null)}>
+            Close discussion
+          </Button>
+        </Paper>
+      ) : null}
 
       {installTarget ? (
         <InstallDialog
@@ -1379,6 +1585,6 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         position={mobile ? "bottom-center" : "bottom-left"}
         message={toast ?? ""}
       />
-    </Box>
+    </Stack>
   )
 }

@@ -1,14 +1,18 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
+import Drawer from "@shpaw415/mui-lite/Drawer"
+import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
 import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import Typography from "@shpaw415/mui-lite/Typography"
+import type { ReactNode } from "react"
 import { useCallback, useEffect, useState } from "react"
 import { api, type Me } from "./api"
 import { Backup } from "./Backup"
 import { ConfigSection } from "./ConfigSection"
+import { CronView } from "./CronView"
 import { CustomSkills } from "./CustomSkills"
 import { useMobile } from "./hooks"
 import { ImageProvider } from "./ImageProvider"
@@ -17,17 +21,21 @@ import {
   ChatIcon,
   ExtensionIcon,
   ImageIcon,
+  KeyIcon,
   MemoryIcon,
   MicIcon,
   NavigationIcon,
   PersonIcon,
   PsychologyIcon,
+  ScheduleIcon,
   VpnKeyIcon,
 } from "./icons"
 import { KeyVault } from "./KeyVault"
 import { Model3dProvider } from "./Model3dProvider"
 import { ModelSelect } from "./ModelSelect"
 import { Personalities } from "./Personalities"
+import { Plugins } from "./Plugins"
+import { Providers } from "./Providers"
 import { System1 } from "./System1"
 import { VideoProvider } from "./VideoProvider"
 import { VikingModels } from "./VikingModels"
@@ -41,6 +49,7 @@ type Model = {
 }
 
 type ConfigTab =
+  | "providers"
   | "keys"
   | "chat"
   | "memory"
@@ -49,7 +58,24 @@ type ConfigTab =
   | "voice"
   | "personas"
   | "skills"
+  | "cron"
   | "backup"
+  | "plugins"
+
+const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
+  { value: "providers", label: "Providers", icon: <VpnKeyIcon /> },
+  { value: "keys", label: "Keys", icon: <KeyIcon /> },
+  { value: "chat", label: "Chat", icon: <ChatIcon /> },
+  { value: "memory", label: "Memory", icon: <MemoryIcon /> },
+  { value: "nav", label: "System1 provider", icon: <NavigationIcon /> },
+  { value: "media", label: "Media", icon: <ImageIcon /> },
+  { value: "voice", label: "Voice", icon: <MicIcon /> },
+  { value: "personas", label: "Personas", icon: <PersonIcon /> },
+  { value: "skills", label: "Skills", icon: <ExtensionIcon /> },
+  { value: "cron", label: "Cron", icon: <ScheduleIcon /> },
+  { value: "backup", label: "Backup", icon: <BackupIcon /> },
+  { value: "plugins", label: "Plugins", icon: <ExtensionIcon /> },
+]
 
 function DefaultModelSection({
   me,
@@ -345,56 +371,105 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
   const [tab, setTab] = useState<ConfigTab>("chat")
   const mobile = useMobile()
 
+  const header = (
+    <Stack spacing={0.25}>
+      <Typography variant="h6">Configuration</Typography>
+      <Typography variant="body2" color="textSecondary">
+        Chat model providers, shared keys, chat defaults, memory, System 1,
+        media, voice, personas, skills, cron jobs, and plugins for this desktop.
+      </Typography>
+    </Stack>
+  )
+
+  const sections = (
+    <>
+      {tab === "providers" ? <Providers /> : null}
+      {tab === "keys" ? <KeyVault /> : null}
+      {tab === "chat" ? (
+        <>
+          <DefaultModelSection me={me} onChanged={onChanged} />
+          <ThinkingEffortSection me={me} onChanged={onChanged} />
+        </>
+      ) : null}
+      {tab === "memory" ? <VikingModels endpoint="/api/viking" /> : null}
+      {tab === "nav" ? <System1 /> : null}
+      {tab === "media" ? <ImageProvider /> : null}
+      {tab === "media" ? <VideoProvider /> : null}
+      {tab === "media" ? <Model3dProvider /> : null}
+      {tab === "voice" ? <VoiceProvider /> : null}
+      {tab === "personas" ? <Personalities /> : null}
+      {tab === "skills" ? <CustomSkills /> : null}
+      {tab === "cron" ? <CronView me={me} /> : null}
+      {tab === "backup" ? <Backup me={me} /> : null}
+      {tab === "plugins" ? <Plugins isAdmin={me.role === "admin"} /> : null}
+    </>
+  )
+
+  if (mobile) {
+    return (
+      <Box className="ob-scroll">
+        <Stack
+          spacing={2}
+          sx={{ p: 1, maxWidth: 1024, mx: "auto", width: "100%" }}
+        >
+          {header}
+          <Tabs
+            value={tab}
+            variant="scrollable"
+            onChange={(_event, value) => setTab(value as ConfigTab)}
+          >
+            {CONFIG_TABS.map((entry) => (
+              <Tab
+                key={entry.value}
+                label={entry.label}
+                value={entry.value}
+                icon={entry.icon}
+              />
+            ))}
+          </Tabs>
+          {sections}
+        </Stack>
+      </Box>
+    )
+  }
+
   return (
     <Box className="ob-scroll">
       <Stack
         spacing={2}
-        sx={{
-          p: mobile ? 1 : 2,
-          maxWidth: 1024,
-          mx: "auto",
-          width: "100%",
-        }}
+        sx={{ p: 2, maxWidth: 1200, mx: "auto", width: "100%" }}
       >
-        <Stack spacing={0.25}>
-          <Typography variant="h6">Configuration</Typography>
-          <Typography variant="body2" color="textSecondary">
-            Shared provider keys, chat defaults, memory, navigation, media,
-            personas, and skills for this desktop. Chat models themselves are
-            connected on the Providers page.
-          </Typography>
+        {header}
+        <Stack direction="row" spacing={2} alignItems="flex-start">
+          <Drawer
+            variant="permanent"
+            open
+            anchor="left"
+            width={220}
+            sx={{
+              position: "sticky",
+              top: 8,
+              alignSelf: "flex-start",
+              maxHeight: "calc(100vh - 48px)",
+            }}
+          >
+            <List dense sx={{ p: 1 }}>
+              {CONFIG_TABS.map((entry) => (
+                <ListItemButton
+                  key={entry.value}
+                  selected={tab === entry.value}
+                  onClick={() => setTab(entry.value)}
+                >
+                  {entry.icon}
+                  <ListItemText primary={entry.label} />
+                </ListItemButton>
+              ))}
+            </List>
+          </Drawer>
+          <Stack spacing={2} sx={{ flex: 1, minWidth: 0 }}>
+            {sections}
+          </Stack>
         </Stack>
-        <Tabs
-          value={tab}
-          variant="scrollable"
-          onChange={(_event, value) => setTab(value as ConfigTab)}
-        >
-          <Tab label="Keys" value="keys" icon={<VpnKeyIcon />} />
-          <Tab label="Chat" value="chat" icon={<ChatIcon />} />
-          <Tab label="Memory" value="memory" icon={<MemoryIcon />} />
-          <Tab label="Navigation" value="nav" icon={<NavigationIcon />} />
-          <Tab label="Media" value="media" icon={<ImageIcon />} />
-          <Tab label="Voice" value="voice" icon={<MicIcon />} />
-          <Tab label="Personas" value="personas" icon={<PersonIcon />} />
-          <Tab label="Skills" value="skills" icon={<ExtensionIcon />} />
-          <Tab label="Backup" value="backup" icon={<BackupIcon />} />
-        </Tabs>
-        {tab === "keys" ? <KeyVault /> : null}
-        {tab === "chat" ? (
-          <>
-            <DefaultModelSection me={me} onChanged={onChanged} />
-            <ThinkingEffortSection me={me} onChanged={onChanged} />
-          </>
-        ) : null}
-        {tab === "memory" ? <VikingModels endpoint="/api/viking" /> : null}
-        {tab === "nav" ? <System1 /> : null}
-        {tab === "media" ? <ImageProvider /> : null}
-        {tab === "media" ? <VideoProvider /> : null}
-        {tab === "media" ? <Model3dProvider /> : null}
-        {tab === "voice" ? <VoiceProvider /> : null}
-        {tab === "personas" ? <Personalities /> : null}
-        {tab === "skills" ? <CustomSkills /> : null}
-        {tab === "backup" ? <Backup me={me} /> : null}
       </Stack>
     </Box>
   )

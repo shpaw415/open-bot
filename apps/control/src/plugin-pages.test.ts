@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test"
+import type { InstalledPlugin } from "@open-bot/db"
 import {
   basePluginPagePort,
+  clearPluginPageState,
   PAGE_PORT_MAX,
   PAGE_PORT_MIN,
   parsePluginPagePath,
+  pendingPluginPageRestartsCount,
   pluginPageBin,
   pluginPagePath,
+  schedulePluginPageRestart,
 } from "./plugin-pages"
 
 describe("plugin pages", () => {
@@ -45,5 +49,19 @@ describe("plugin pages", () => {
     expect(pluginPagePath("stock-pro")).toBe(
       "/home/agent/.open-bot/pages/stock-pro",
     )
+  })
+
+  test("scheduled restarts coalesce per user+plugin and are clearable", () => {
+    clearPluginPageState()
+    const row = (id: string) =>
+      ({ pluginId: id, enabled: true }) as unknown as InstalledPlugin
+    // Same user+plugin twice collapses into one pending restart.
+    schedulePluginPageRestart({} as never, "u1", row("stock-pro"))
+    schedulePluginPageRestart({} as never, "u1", row("stock-pro"))
+    schedulePluginPageRestart({} as never, "u1", row("weather-pro"))
+    schedulePluginPageRestart({} as never, "u2", row("stock-pro"))
+    expect(pendingPluginPageRestartsCount()).toBe(3)
+    clearPluginPageState()
+    expect(pendingPluginPageRestartsCount()).toBe(0)
   })
 })

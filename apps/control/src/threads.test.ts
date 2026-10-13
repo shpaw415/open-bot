@@ -39,6 +39,7 @@ const db = {
   desktop: (id: string) =>
     id === "user-1" ? { opencodePassword: "pw" } : null,
   personas: () => [],
+  installedPlugins: () => [],
   setThreadPersona: () => {},
 } as unknown as Db
 
@@ -53,6 +54,7 @@ const effortDb = {
         }
       : null,
   personas: () => [],
+  installedPlugins: () => [],
   setThreadPersona: () => {},
 } as unknown as Db
 
@@ -64,6 +66,7 @@ function personaDb(bound: string[][]) {
       userId === "user-1"
         ? [{ id: "p1", name: "Software manager", instruction: "run the team" }]
         : [],
+    installedPlugins: () => [],
     setThreadPersona: (
       userId: string,
       sessionId: string,

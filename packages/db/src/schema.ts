@@ -304,6 +304,15 @@ export const pluginSettings = sqliteTable(
   ],
 )
 
+// Per-user layout of the plugin dashboard home screen (page order, folders).
+// Stored as one JSON blob; keys are tab keys "pluginId:tabId" and stale keys
+// are simply ignored until the plugin comes back.
+export const dashboardLayouts = sqliteTable("dashboard_layouts", {
+  userId: text("user_id").primaryKey(),
+  layout: text("layout").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+})
+
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

@@ -1,5 +1,18 @@
 export const PROJECTS_ROOT = "/home/agent/workspace"
 
+export const PLUGINS_ROOT = "/home/agent/plugins-create"
+
+export type ProjectCategory = "plugins" | "general"
+
+// Plugin scaffolds (ob-plugin new) live under ~/plugins-create; projects
+// pointing there are grouped under the "plugins" sub-category in the
+// dashboard project list.
+export function projectCategory(path: string): ProjectCategory {
+  return path === PLUGINS_ROOT || path.startsWith(`${PLUGINS_ROOT}/`)
+    ? "plugins"
+    : "general"
+}
+
 const SLUG_MAX = 64
 
 export function slugifyName(raw: string): string | null {
@@ -37,6 +50,20 @@ export function projectName(raw: unknown): string | null {
   const name = raw.trim().replace(/\s+/g, " ").slice(0, 80)
   if (!name || !slugifyName(name)) return null
   return name
+}
+
+// opencode sandboxes /file and /file/content to its instance directory
+// (the desktop working directory, ~/workspace). The ?directory= query
+// re-roots the instance at another folder, so registered projects and
+// vault files elsewhere under /home/agent resolve.
+export function opencodeFileUrl(
+  base: string,
+  route: "list" | "content",
+  directory: string,
+  path: string,
+): string {
+  const endpoint = route === "list" ? "/file" : "/file/content"
+  return `${base}${endpoint}?path=${encodeURIComponent(path)}&directory=${encodeURIComponent(directory)}`
 }
 
 export function isProjectManageRequest(

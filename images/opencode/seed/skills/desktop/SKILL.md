@@ -5,25 +5,19 @@ description: Drive this Linux desktop. Use before browser navigation or any clic
 
 # Desktop
 
-Page goals go only to `ob-nav`. Put the page URL in the goal when you know it (or pass it as `--url URL`). SESSION is the screen id in this thread's system instructions. Do not pass a host, a port, or a key. Do not print `system1-auth.json`. Do not open DevTools, CDP, port 9222-9231, `vncdo`, or a second browser. ob-nav never solves captchas: a captcha goal is refused outright, and a captcha or verification page ends `needs_user` — stop and show the screen.
+Go to a page with `ob-chrome`. SESSION is the screen id in this thread's system instructions. Do not pass a host, a port, or a key. Do not print `system1-auth.json`. Do not open DevTools, CDP, port 9222-9231, `vncdo`, or a second browser.
 
 ```sh
-ob-nav --session SESSION --goal "what to do on the page"
-ob-nav --session SESSION --url https://example.com --goal "what to do there"
+ob-chrome --session SESSION navigate https://example.com
+ob-chrome --session SESSION url
+ob-chrome --session SESSION back
+ob-chrome --session SESSION forward
+ob-chrome --session SESSION reload
 ```
 
-Read the one JSON line it prints. Do not narrate steps. The JSON may include `requested_url` (the url the goal named) and `motive: "redirect"` — the site redirected the browser itself. Trust the final `url` and `title`; a redirect is not a failure. If the run strays from the goal url, ob-nav navigates back and retries once on its own before giving up.
+`navigate` also accepts `--url URL` and a bare domain (the scheme is added). It prints one JSON line with the page `url` and `title`. If the tab crashed or hangs, navigate opens a fresh tab on its own and reports `via: "new-tab"`. If the screen or Chromium is down, the command brings it back first (a relaunch opens a blank page) — no need to diagnose the screen.
 
-Trust the JSON `url` and `title`. A dark screenshot is not a failed navigation. The screen relaunches Chromium on this thread's last page on its own. A blank or black page only means Chromium was closed or is loading: navigate with `ob-nav`. Do not call the screen dark.
-
-- `done`: tell the user the result.
-- `needs_user`: stop input and end with `![screen](open-bot://screen)`. Do not click or type.
-- `held`: the user has the screen. Stop. Do not click, type, or end with another screen link.
-- `need_text`: run again with `--value "text"` only when that text came from the user. Otherwise ask them.
-- `blocked` with `no url`: run `ob-nav` again with the page URL in the goal. Do not open the browser yourself.
-- `fallback` is `vnc`, or the status is `unconfigured`, `blocked`, `low_confidence`, or `error`: use `ob-vnc` below. A blank shared screen is not a reason to stop. Do not write a browser script.
-
-Use `ob-page --session SESSION` when ob-nav cannot finish: it controls the browser DOM directly, no screenshots or OCR needed.
+Read and act on the page with `ob-page --session SESSION`: it controls the browser DOM directly, no screenshots or OCR needed.
 
 ```sh
 ob-page --session SESSION read
@@ -33,6 +27,18 @@ ob-page --session SESSION type 3 "some text"
 ```
 
 `read` prints one JSON line: url, title, viewport, scroll position, and visible controls with stable ids. Text-entry targets (composers, search boxes, form fields) are always included even when content controls flood the window. Use those ids for `click` and `type`. `read` again after the page moves; ids die with a navigation. Clicks are occlusion-checked; a covered target says `target covered`.
+
+Reserve `ob-nav --session SESSION --goal "what to do on the page"` for a real multi-step page goal (search, compare, fill a flow) — it costs a decision-model run per step. Put the page URL in the goal when you know it (or pass it as `--url URL`). ob-nav never solves captchas: a captcha goal is refused outright, and a captcha or verification page ends `needs_user` — stop and show the screen.
+
+Read the one JSON line it prints. Do not narrate steps. The JSON may include `requested_url` (the url the goal named) and `motive: "redirect"` — the site redirected the browser itself. Trust the final `url` and `title`; a redirect is not a failure. If the run strays from the goal url, ob-nav navigates back and retries once on its own before giving up.
+
+- `done`: tell the user the result.
+- `needs_user`: stop input and end with `![screen](open-bot://screen)`. Do not click or type.
+- `held`: the user has the screen. Stop. Do not click, type, or end with another screen link.
+- `need_text`: run again with `--value "text"` only when that text came from the user. Otherwise ask them.
+- `blocked` with `no url`: run `ob-nav` again with the page URL in the goal. Do not open the browser yourself.
+
+Trust the JSON `url` and `title`. A dark screenshot is not a failed navigation. A blank page only means Chromium was closed or is loading: navigate with `ob-chrome`. Do not call the screen dark.
 
 Use only `ob-vnc --session SESSION` for pixels when the DOM path fails. Do not call `vncdo`. Do not pass `-s`, a host, or a port. Do not use `$OPEN_BOT_VNC`. Do not print secrets. Twenty fallback actions per task is the budget. Only after that, stop input and end with `![screen](open-bot://screen)`.
 

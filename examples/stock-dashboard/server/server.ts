@@ -5,19 +5,24 @@
 //   OPEN_BOT_PAGE_TOKEN shared secret (arrives as x-open-bot-page-token)
 //   OPEN_BOT_PLUGIN_ID  this plugin's id
 // Settings and vault keys live in ~/.config/open-bot/plugin-<id>.json.
+//
+// Written in TypeScript: Bun runs .ts natively on the desktop, no build step.
+
+type StockItem = { id: number; name: string; qty: number }
 
 const port = Number(process.env.OPEN_BOT_PAGE_PORT ?? 4740)
 
 // In-memory stock. Restart the page server (settings change, upgrade) resets
 // it; keep durable state under /home/agent/.open-bot/pages-data/ instead.
-const items = [
+const items: StockItem[] = [
   { id: 1, name: "Widget", qty: 12 },
   { id: 2, name: "Gear", qty: 40 },
   { id: 3, name: "Lever", qty: 7 },
 ]
 let nextId = 4
 
-const sseClients = new Set()
+type SseClient = { send: (line: string) => void }
+const sseClients = new Set<SseClient>()
 
 function broadcast() {
   const line = `data: ${JSON.stringify({ items })}\n\n`
@@ -79,7 +84,7 @@ const server = Bun.serve({
       }
       // Server-sent events for the stock list.
       const encoder = new TextEncoder()
-      let client
+      let client: SseClient
       const stream = new ReadableStream({
         start(controller) {
           client = {

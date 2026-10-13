@@ -7,6 +7,8 @@ export type RefItemView = {
   id: string
   name: string
   description?: string
+  /** Desktop path (projects); also feeds slug/path-basename alias matching. */
+  path?: string
 }
 
 export type RefSectionView = {
@@ -29,10 +31,33 @@ export type Suggestion = {
   complete: string
 }
 
+/** "@project/…" (singular) opens the same picker and resolves like "@projects/…". */
+export function normalizeSectionKey(section: string): string {
+  if (section === "project") return "projects"
+  if (section === "report") return "reports"
+  return section
+}
+
+const singularKeys: Record<string, string> = {
+  projects: "project",
+  reports: "report",
+}
+
+function sectionPattern(sections: RefSectionView[]): RegExp {
+  const forms = new Set<string>()
+  for (const section of sections) {
+    forms.add(section.key)
+    const singular = singularKeys[section.key]
+    if (singular) forms.add(singular)
+  }
+  const alternation = [...forms].sort((a, b) => b.length - a.length).join("|")
+  return new RegExp(`@(${alternation})/([^\\n@]*)`, "gi")
+}
+
 export function detectMention(
   text: string,
   caret: number,
-  sectionKeys: string[],
+  sections: RefSectionView[],
 ): MentionState | null {
   const end = Math.max(0, Math.min(caret, text.length))
   let anchor = -1
@@ -47,23 +72,62 @@ export function detectMention(
   }
   if (anchor < 0) return null
   const token = text.slice(anchor + 1, end)
-  if (/\s/.test(token)) return null
   const slash = token.indexOf("/")
-  if (slash < 0)
+  if (slash < 0) {
+    if (/\s/.test(token)) return null
     return { stage: "section", section: "", query: token, start: anchor }
-  const section = normalizeSectionKey(token.slice(0, slash).toLowerCase())
-  if (!sectionKeys.includes(section)) return null
-  return {
-    stage: "name",
-    section,
-    query: token.slice(slash + 1),
-    start: anchor,
   }
+  const section = normalizeSectionKey(token.slice(0, slash).toLowerCase())
+  const def = sections.find((item) => item.key === section)
+  if (!def) return null
+  const query = token.slice(slash + 1)
+  const trimmed = query.trim().toLowerCase()
+  if (!trimmed) {
+    // "@projects/" opens the picker; a stray trailing space closes it again
+    return query ? null : { stage: "name", section, query, start: anchor }
+  }
+  // names stay matchable across spaces; only a finished mention (exact name
+  // followed by whitespace) or a dead-end spaced query closes the flow
+  const names = sectionItemNames(def)
+  const spaced = /\s/.test(query)
+  if (spaced && names.has(trimmed) && /\s$/.test(query)) return null
+  let prefixMatch = false
+  for (const name of names) {
+    if (name.startsWith(trimmed)) {
+      prefixMatch = true
+      break
+    }
+  }
+  if (!prefixMatch && spaced) return null
+  return { stage: "name", section, query, start: anchor }
 }
 
-/** "@project/…" (singular) opens the same picker and resolves like "@projects/…". */
-export function normalizeSectionKey(section: string): string {
-  return section === "project" ? "projects" : section
+export function slugifyName(raw: string): string | null {
+  const slug = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    .replace(/-+$/g, "")
+  return slug || null
+}
+
+/** Names an item answers to: display name, path basename and slugified name. */
+function itemNames(item: RefItemView): string[] {
+  const names = [item.name]
+  const base = item.path?.replace(/\/+$/g, "").split("/").pop() ?? ""
+  if (base && base.toLowerCase() !== item.name.toLowerCase()) names.push(base)
+  const slug = slugifyName(item.name)
+  if (slug && slug.toLowerCase() !== item.name.toLowerCase()) names.push(slug)
+  return names
+}
+
+function sectionItemNames(section: RefSectionView): Set<string> {
+  const names = new Set<string>()
+  for (const item of section.items)
+    for (const name of itemNames(item)) names.add(name.toLowerCase())
+  return names
 }
 
 export type ProjectRefItem = {
@@ -72,39 +136,42 @@ export type ProjectRefItem = {
 }
 
 export type ReferenceToken = {
+  section: string
   start: number
   end: number
-  /** Matched project name; empty when nothing known matches. */
+  /** Matched item name; empty when nothing known matches. */
   name: string
   path?: string
 }
 
-const projectTokenPattern = /@(projects?)\/([^\n@]*)/gi
 const nameBoundary = /[\s,.;:!?)\]}]/
 
 /**
- * Locate `@projects/<name>` / `@project/<name>` tokens for highlighting.
- * Mirrors the control-plane matcher: longest known name wins (exact or
- * boundary-terminated prefix), else the first word (unique prefix match);
- * unmatched tokens still return a span ending at the first word so the UI
- * can flag them.
+ * Locate `@<section>/<name>` tokens across every known section for the
+ * composer overlay. Mirrors the control-plane matcher: longest known name
+ * (or slug/path-basename alias) wins (exact or boundary-terminated prefix),
+ * else the first word (unique prefix match); unmatched tokens still return
+ * a span ending at the first word so the UI can flag them.
  */
 export function findReferenceTokens(
   text: string,
-  projects: ProjectRefItem[],
+  sections: RefSectionView[],
 ): ReferenceToken[] {
+  if (!sections.length) return []
   const tokens: ReferenceToken[] = []
-  for (const match of text.matchAll(
-    new RegExp(projectTokenPattern.source, "gi"),
-  )) {
+  for (const match of text.matchAll(sectionPattern(sections))) {
     const start = match.index ?? 0
     const prev = start > 0 ? (text[start - 1] ?? "") : ""
     if (start > 0 && !/\s/.test(prev)) continue
+    const section = normalizeSectionKey((match[1] ?? "").toLowerCase())
+    const def = sections.find((item) => item.key === section)
+    if (!def) continue
     const remainder = match[2] ?? ""
     if (!remainder.trim()) continue
     const prefixLength = match[0].length - remainder.length
-    const matched = matchProjectName(remainder, projects)
+    const matched = matchItemName(remainder, def.items)
     tokens.push({
+      section,
       start,
       end: start + prefixLength + matched.length,
       name: matched.name,
@@ -114,39 +181,67 @@ export function findReferenceTokens(
   return tokens
 }
 
-function matchProjectName(
-  remainder: string,
+/** Bubble-renderer helper: only project tokens become `#project-ref/…` links. */
+export function findProjectReferenceTokens(
+  text: string,
   projects: ProjectRefItem[],
+): ReferenceToken[] {
+  return findReferenceTokens(text, [
+    {
+      key: "projects",
+      label: "Projects",
+      items: projects.map((project) => ({
+        id: project.name,
+        name: project.name,
+        path: project.path,
+      })),
+    },
+  ]).filter((token) => token.section === "projects")
+}
+
+function matchItemName(
+  remainder: string,
+  items: RefItemView[],
 ): { name: string; length: number; path?: string } {
   const leading = remainder.length - remainder.trimStart().length
   const lower = remainder.toLowerCase()
-  const sorted = [...projects].sort((a, b) => b.name.length - a.name.length)
-  for (const project of sorted) {
-    const nameLower = project.name.toLowerCase()
-    if (lower === nameLower)
+  const entries: { match: string; name: string; path?: string }[] = []
+  for (const item of items) {
+    for (const name of itemNames(item)) {
+      entries.push({
+        match: name.toLowerCase(),
+        name: item.name,
+        path: item.path,
+      })
+    }
+  }
+  entries.sort((a, b) => b.match.length - a.match.length)
+  for (const entry of entries) {
+    if (!entry.match) continue
+    if (lower === entry.match)
       return {
-        name: project.name,
-        length: leading + project.name.length,
-        path: project.path,
+        name: entry.name,
+        length: leading + entry.match.length,
+        path: entry.path,
       }
-    if (lower.startsWith(nameLower)) {
+    if (lower.startsWith(entry.match)) {
       const next = remainder.slice(
-        leading + nameLower.length,
-        leading + nameLower.length + 1,
+        leading + entry.match.length,
+        leading + entry.match.length + 1,
       )
       if (!next || nameBoundary.test(next))
         return {
-          name: project.name,
-          length: leading + nameLower.length,
-          path: project.path,
+          name: entry.name,
+          length: leading + entry.match.length,
+          path: entry.path,
         }
     }
   }
   const firstWord = remainder.trim().split(/\s+/)[0] ?? ""
   if (firstWord) {
     const wordLower = firstWord.toLowerCase()
-    const partial = sorted.filter((project) =>
-      project.name.toLowerCase().startsWith(wordLower),
+    const partial = items.filter((item) =>
+      itemNames(item).some((name) => name.toLowerCase().startsWith(wordLower)),
     )
     if (partial.length === 1)
       return {

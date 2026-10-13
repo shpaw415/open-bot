@@ -1,4 +1,5 @@
 import type { Db, User } from "@open-bot/db"
+import { type PluginOrigin, pluginOwnership } from "./plugin-ownership"
 
 export const ASSISTANT_ID = "assistant"
 export const NAME_MAX = 48
@@ -9,6 +10,7 @@ export type PersonaView = {
   name: string
   instruction: string
   builtin: boolean
+  plugin?: PluginOrigin
 }
 
 export const builtins: PersonaView[] = [
@@ -46,12 +48,17 @@ function json(body: unknown, status = 200) {
 }
 
 export function listPersonas(db: Db, userId: string): PersonaView[] {
-  const custom = db.personas(userId).map((row) => ({
-    id: row.id,
-    name: row.name,
-    instruction: row.instruction,
-    builtin: false,
-  }))
+  const ownership = pluginOwnership(db, userId)
+  const custom = db.personas(userId).map((row) => {
+    const plugin = ownership.personaById.get(row.id)
+    return {
+      id: row.id,
+      name: row.name,
+      instruction: row.instruction,
+      builtin: false,
+      plugin,
+    }
+  })
   return [...builtins, ...custom]
 }
 

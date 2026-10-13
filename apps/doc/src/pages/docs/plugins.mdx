@@ -25,9 +25,15 @@ Key fields:
 | `permissions.notifications` | `true` unlocks `ob-plugin notify` → `POST /api/plugins/notice` (30/hour) → dashboard toast + native notification. |
 | `version` | Semver `X.Y.Z[-prerelease]` or dev tag (`beta-1`). |
 
+## Config guide (CONFIG.md)
+
+Every plugin project ships a repo-root `CONFIG.md` — the configuration guide the **installing** agent reads when it configures the plugin with the user. `ob-plugin new` scaffolds a template; fill it in whenever the manifest declares `configs[]` or vault slugs (`ob-plugin doctor` warns when it is missing or still the placeholder).
+
+What goes in it: what the plugin needs configured, each setting and what to ask the user, each `vaultCreate` slug and where the user gets the key, the ask → fill → verify order (using `ob-plugin settings` / `ob-plugin vault` — never echo secret values), and how to verify the plugin works. It ships with the release tarball, is extracted by the control plane at install, and lands on the desktop as `~/.config/open-bot/plugin-<id>.CONFIG.md`; the agent prints it with `ob-plugin guide <id>`. Lifecycle follows the plugin: overwritten on upgrade, restored on enable and boot re-sync, removed on disable/uninstall. Because it is agent-facing instructions, the marketplace security review reads CONFIG.md on every publish as a prompt-injection surface.
+
 ## Dashboard pages
 
-A plugin can ship a live dashboard — a view in the workspace drawer's **Dashboards** list where the user picks a plugin page and interacts with live data (stock lists, trackers, admin panels).
+A plugin can ship a live dashboard — the **Apps** tab in the main navigation bar, where the user picks a plugin page and interacts with live data (stock lists, trackers, admin panels).
 
 | Field | Purpose |
 | --- | --- |
@@ -40,9 +46,14 @@ The proxy strips cookies/auth toward the plugin and injects `x-open-bot-page-tok
 ## Install surfaces
 
 - Tools land in `/usr/local/bin/ob-plugin-<id>-*`; `apply-plugin-auth.sh` writes the vault config.
+- The config guide ships to `~/.config/open-bot/plugin-<id>.CONFIG.md` when the plugin has a CONFIG.md.
 - The install log on the `installed_plugins` row reverses everything on uninstall.
 - Disable is deep: pauses cron, unloads OpenViking skills, drops vault config + opencode surfaces; enable restores from the stored manifest snapshot.
-- Failed root setup shows **“setup failed — retry”** on the Plugins page (`POST /api/plugins/installed/:id/setup`).
+- Failed root setup shows **“setup failed — retry”** on the Config page's Plugins tab (`POST /api/plugins/installed/:id/setup`).
+
+## Vault
+
+`permissions.vaultCreate` declares key slugs the plugin owns (created empty at install); `permissions.vaultRead` consumes shared user keys. The config file's `vault` branch is generated from the key vault, so treat it as read-only — local edits are overwritten on enable/reinstall/settings changes. The durable write path is `POST /api/plugins/installed/:id/vault` (agent token, write-only — values are never returned) for slugs in that plugin's `vaultCreate`, or from the desktop: `ob-plugin vault ID SLUG=value`. The user can also fill any slug on the Config Keys page.
 
 ## Persistence across desktop recreates
 

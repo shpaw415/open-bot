@@ -12,6 +12,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   ob-plugin new NAME                 scaffold a plugin project in ~/plugins-create/NAME
+                                     (also adds it to the dashboard project list, plugins group)
   ob-plugin validate DIR             validate DIR/open-bot.plugin.json
   ob-plugin publish DIR              publish the plugin to the marketplace (repo + release must exist)
   ob-plugin publish DIR --dev        staging loop for a dev-tag version: commit, push, force-move the
@@ -31,6 +32,12 @@ Usage:
   ob-plugin enable ID | disable ID   toggle a plugin (disable pauses its cron jobs and unloads its skills)
   ob-plugin setup ID                 re-run a plugin's root setup commands (retry after a failure)
   ob-plugin settings ID [key=value]  show or update plugin settings
+  ob-plugin guide ID                 print the plugin's CONFIG.md configuration guide (how to configure it with the user)
+  ob-plugin vault ID                 list the plugin's vaultCreate slugs (hasKey only, never values)
+  ob-plugin vault ID SLUG=value [--account ACCOUNT] [--url URL]
+                                      fill or clear one of the plugin's vaultCreate slugs (write-only).
+                                      The user can also set these (and the plugin's vaultRead slugs)
+                                      on the dashboard: Plugins tab -> Settings -> Vault keys
   ob-plugin issue ID TITLE [BODY]    file a GitHub issue on the plugin repo
   ob-plugin notify ID TITLE [BODY]   post a dashboard notification as an installed plugin (needs permissions.notifications)
   ob-plugin comments ID              read marketplace discussion
@@ -39,6 +46,11 @@ Usage:
 Plugin layout (DIR):
   open-bot.plugin.json   the manifest (id, version, skills, personas, cron, tools, ...)
   README.md              shown on the marketplace page
+  CONFIG.md              configuration guide for the installing agent: how to
+                         configure the plugin with the user (settings, vault
+                         keys, walkthrough, verification). Installed to the
+                         desktop as ~/.config/open-bot/plugin-<id>.CONFIG.md;
+                         read it with `ob-plugin guide <id>` before configuring.
 
 Publish checklist (run before ob-plugin publish):
   cd ~/plugins-create/NAME
@@ -168,6 +180,7 @@ Manifest quick reference:
 - cron[]: {name, message, everySeconds | cronExpr} — scheduled jobs
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
 - files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools
+- Write plugin code in TypeScript, not JavaScript: tool scripts (with a "#!/usr/bin/env bun" shebang), files[] payloads, and dashboard page servers are all .ts files — Bun runs .ts natively, no build step
 - configs[]: {key, label, def} — settings shown on the Plugins page
 - setup: {commands: [...], uninstall: [...]} — shell commands run as root in the desktop at install and on every desktop start (commands must be idempotent, e.g. "apt-get install -y figlet"); uninstall runs at uninstall; the user sees them in the consent prompt, log at ~/.open-bot/plugin-init/<id>.log
 - permissions.vaultRead / vaultCreate: vault key slugs
@@ -175,11 +188,79 @@ Manifest quick reference:
 - textbox: renderers, commands, buttons, validators, attachments
 - opencode: {plugin: [npm...], mcp: {...}, agents: {...new agent defs...}, agentTools: {agent: {glob: bool}}, agentsMd: "standing instructions injected next to AGENTS.md (max 4000 chars, no secrets)"}
 - Helper sessions your plugin spawns must be titled with the "worker:" prefix so they stay out of the dashboard thread list.
+
+CONFIG.md (created alongside this file) is the configuration guide the
+installing agent reads to configure the plugin with the user — fill it in
+whenever the plugin declares configs[] or vault keys.
+EOF
+    cat > "$stage/CONFIG.md" <<EOF
+# Configuring $name with the user
+
+<!-- open-bot config guide placeholder: replace every section below before publishing -->
+
+You are configuring the \`$name\` open-bot plugin on this desktop for the user.
+Walk them through it step by step. Never print or echo secret values; fill
+them with the write-only commands shown here.
+
+## What this plugin needs
+
+- One or two bullets: what the plugin does and what must be configured
+  (settings, API keys, accounts) before it is useful.
+
+## Settings
+
+Change with \`ob-plugin settings $name KEY=value\` (or the Plugins page).
+
+| key | type | default | what to ask the user |
+| --- | ---- | ------- | -------------------- |
+| example | string | example-value | The question to ask, and how to pick a good value |
+
+## Vault keys
+
+Fill with \`ob-plugin vault $name SLUG=value\` (write-only; never echo the value).
+The user can also set them on the dashboard: Plugins tab → Settings →
+Vault keys (the agent never sees the values either way).
+
+- \`example-key\` — what it is and where the user creates/finds it.
+- Keys the plugin only reads (vaultRead) are the user's own: shared provider
+  slugs live on the Config page Keys tab; plugin-specific slugs can be set
+  from the Vault keys section above. Point them there, do not ask for the
+  value in chat.
+
+## Walkthrough
+
+1. Ask the user for the values above (only the ones still missing — check
+   \`ob-plugin settings $name\` and \`ob-plugin vault $name\` first).
+2. Fill each one as it is confirmed.
+3. Restart or re-test anything the plugin needs after configuration.
+
+## Verify
+
+- The exact command or dashboard check that proves the plugin works now.
+
+## Troubleshooting
+
+- The most likely failure and its fix.
 EOF
     mkdir -p "$CREATE_ROOT"
     mv "$stage" "$dir"
     trap - EXIT
     echo "scaffolded $dir"
+    # Register the scaffold in the dashboard project list (grouped under the
+    # "plugins" sub-category). Best effort, single attempt: a 409 means it is
+    # already registered; any failure just prints a note and keeps the exit
+    # code at 0 so the scaffold never fails because of this.
+    out=$(curl -sS -m 10 -X POST -H "Authorization: Bearer $TOKEN" \
+      -H "content-type: application/json" \
+      -d "$(jq -nc --arg path "$dir" --arg name "$name" '{path: $path, name: $name}')" \
+      "$BASE/api/projects" 2>/dev/null) && ok=1 || ok=0
+    if [ "$ok" -eq 1 ] && printf '%s' "$out" | jq -e '.project.id' >/dev/null 2>&1; then
+      echo "added to the project list (plugins)"
+    elif [ "$ok" -eq 1 ] && printf '%s' "$out" | jq -re '.error' >/dev/null 2>&1; then
+      echo "note: project entry not added ($(printf '%s' "$out" | jq -r '.error'))"
+    else
+      echo "note: could not reach the control plane to add the project entry"
+    fi
     ;;
   validate)
     [ $# -eq 1 ] || { usage; exit 2; }
@@ -237,8 +318,10 @@ EOF
         git -C "$dir" push origin "$branch"
         git -C "$dir" tag -f "v$version" >/dev/null
         git -C "$dir" push -f origin "v$version"
-        gh release create "v$version" -R "$repo" --notes "Dev build $version" --clobber >/dev/null 2>&1 ||
-          gh release edit "v$version" -R "$repo" --draft=false >/dev/null 2>&1 ||
+        # gh release create has no --clobber: fall back to editing the
+        # existing release (dev republishes force-move the tag instead).
+        gh release create "v$version" -R "$repo" --notes "Dev build $version" >/dev/null 2>&1 ||
+          gh release edit "v$version" -R "$repo" --notes "Dev build $version" --draft=false >/dev/null 2>&1 ||
           true
       else
         echo "ob-plugin: $dir is not a git repo; expecting tag v$version to exist already" >&2
@@ -249,6 +332,10 @@ EOF
       else
         echo "ob-plugin: warning: $MANIFEST_FILE for v$version is not on GitHub yet ($repo tag v$version)." >&2
         echo "  Push the repo and create the tag first — see ob-plugin help (dev tags may be force-moved)." >&2
+        if [ ! -t 0 ]; then
+          echo "ob-plugin: publish needs confirmation but stdin is not a terminal — declined" >&2
+          exit 1
+        fi
         printf 'publish anyway? [y/N] '
         read -r answer
         case "$answer" in y|Y|yes|Yes) ;; *) exit 1 ;; esac
@@ -348,6 +435,32 @@ EOF
       echo "release tag: v$version missing (push the tag + release before publishing)"
       problems=1
     fi
+    # Soft advisory: a plugin that needs configuration should tell the
+    # installing agent how to walk the user through it.
+    needs_guide=0
+    if jq -e '((.configs // []) | length > 0) or ((.permissions.vaultCreate // []) | length > 0)' "$file" >/dev/null 2>&1; then
+      needs_guide=1
+    fi
+    if [ "$needs_guide" -eq 1 ]; then
+      if [ ! -f "$dir/CONFIG.md" ]; then
+        echo "warning: the plugin declares configs/vault keys but ships no CONFIG.md — add one (ob-plugin new scaffolds a template) so the installing agent knows how to configure it with the user"
+      elif grep -q "open-bot config guide placeholder" "$dir/CONFIG.md"; then
+        echo "warning: CONFIG.md is still the untouched scaffold template — fill in the real configuration walkthrough before publishing"
+      else
+        echo "config guide: CONFIG.md ok"
+      fi
+    fi
+    # Soft advisory: Bun on the desktop runs .ts natively, so plugin code
+    # should be TypeScript; plain JavaScript only for shell scripts.
+    js_files=$(jq -r '
+      [ (.dashboard.pages.entry // empty) ] +
+      [ (.files // [])[] | .name, .source ]
+      | .[]
+      | select(test("\\.(js|mjs|cjs)$"))]' "$file" 2>/dev/null | sort -u)
+    if [ -n "$js_files" ]; then
+      echo "warning: prefer TypeScript over JavaScript for plugin code (Bun runs .ts natively); JavaScript found in:"
+      printf '%s\n' "$js_files" | sed 's/^/  - /'
+    fi
     if [ "$problems" -ne 0 ]; then
       exit 1
     fi
@@ -421,6 +534,10 @@ EOF
         echo "setup commands (run as root in this desktop at install and on every desktop start):"
         printf '%s' "$out" | jq -r '.setupCommands[] | "   $ \(.)"'
       fi
+      if [ ! -t 0 ]; then
+        echo "ob-plugin: install needs confirmation but stdin is not a terminal — re-run with --yes" >&2
+        exit 2
+      fi
       printf 'install? [y/N] '
       read -r answer
       case "$answer" in
@@ -491,6 +608,15 @@ EOF
     fail_on_error "$out"
     echo "setup re-run for $1"
     ;;
+  guide)
+    [ $# -eq 1 ] || { usage; exit 2; }
+    guide_file="$HOME/.config/open-bot/plugin-$1.CONFIG.md"
+    if [ ! -f "$guide_file" ]; then
+      echo "ob-plugin: no config guide for $1 (the plugin ships no CONFIG.md)" >&2
+      exit 1
+    fi
+    cat "$guide_file"
+    ;;
   settings)
     [ $# -ge 1 ] || { usage; exit 2; }
     id="$1"
@@ -498,6 +624,9 @@ EOF
     if [ $# -eq 0 ]; then
       out=$(request GET "/api/plugins/installed")
       fail_on_error "$out"
+      settings_hint="$HOME/.config/open-bot/plugin-$id.CONFIG.md"
+      [ -f "$settings_hint" ] &&
+        echo "config guide: $settings_hint (ob-plugin guide $id — read it and configure with the user)" >&2
       printf '%s' "$out" | jq --arg id "$id" \
         '.plugins[] | select(.pluginId == $id) | . as $p | .manifest.configs[]? | . as $c |
          (($p.settings // {})[$c.key]) as $v |
@@ -515,6 +644,39 @@ EOF
     out=$(request PUT "/api/plugins/installed/$(urlencode "$id")/settings" "$body")
     fail_on_error "$out"
     echo "updated settings for $id"
+    ;;
+  vault)
+    [ $# -ge 1 ] || { usage; exit 2; }
+    id="$1"
+    shift
+    if [ $# -eq 0 ]; then
+      out=$(request GET "/api/plugins/installed/$(urlencode "$id")/vault")
+      fail_on_error "$out"
+      vault_hint="$HOME/.config/open-bot/plugin-$id.CONFIG.md"
+      [ -f "$vault_hint" ] &&
+        echo "config guide: $vault_hint (ob-plugin guide $id — read it and configure with the user)" >&2
+      printf '%s' "$out" | jq -r '.slugs[] | "\(.slug): \(if .hasKey then "key saved" else "empty" end)"'
+      exit 0
+    fi
+    pair="$1"
+    shift
+    slug=${pair%%=*}
+    value=${pair#*=}
+    [ "$slug" != "$pair" ] || { echo "ob-plugin: expected SLUG=value, got $pair" >&2; exit 2; }
+    account=""
+    url=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --account) [ $# -ge 2 ] || { usage; exit 2; }; account="$2"; shift 2 ;;
+        --url) [ $# -ge 2 ] || { usage; exit 2; }; url="$2"; shift 2 ;;
+        *) echo "unknown option: $1" >&2; usage; exit 2 ;;
+      esac
+    done
+    body=$(jq -n --arg s "$slug" --arg k "$value" --arg a "$account" --arg u "$url" \
+      '{slug: $s, value: {apiKey: $k, accountId: $a, baseUrl: $u}}')
+    out=$(request POST "/api/plugins/installed/$(urlencode "$id")/vault" "$body")
+    fail_on_error "$out"
+    echo "vault $slug saved for $id"
     ;;
   issue)
     [ $# -ge 2 ] || { usage; exit 2; }

@@ -100,7 +100,7 @@ async function main() {
   console.log("login: admin@localhost / changeme")
   console.log("the first login must set a new password")
   console.log("then set OpenViking models in Admin")
-  console.log("chat models are connected on the Providers page")
+  console.log("chat models are connected on the Config page's Providers tab")
 }
 
 function step(n: number, title: string) {

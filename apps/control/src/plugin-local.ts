@@ -11,6 +11,8 @@ import { HttpError } from "./http-error"
 const MAX_PATH = 512
 const MAX_MANIFEST_BYTES = 512 * 1024
 const MAX_README_BYTES = 512 * 1024
+export const MAX_CONFIG_GUIDE_BYTES = 512 * 1024
+const CONFIG_GUIDE_FILE = "CONFIG.md"
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 
 export function checkLocalPluginPath(
@@ -136,6 +138,25 @@ export async function readLocalPluginManifest(userId: string, rawPath: string) {
     readme = await agentCat(userId, readmePath, MAX_README_BYTES)
   }
   return { path, manifest: parsed.manifest, readme }
+}
+
+// Reads the plugin's optional repo-root CONFIG.md (the agent-facing
+// configuration guide). Absent file → null; oversized file → 400 like README.
+export async function readLocalPluginConfigGuide(
+  userId: string,
+  root: string,
+): Promise<string | null> {
+  const base = await agentRealpath(userId, root)
+  const size = await agentFileSize(userId, `${base}/${CONFIG_GUIDE_FILE}`)
+  if (size === null) return null
+  if (size > MAX_CONFIG_GUIDE_BYTES) {
+    throw new HttpError(400, "CONFIG.md is too large", "local_file")
+  }
+  return agentCat(
+    userId,
+    `${base}/${CONFIG_GUIDE_FILE}`,
+    MAX_CONFIG_GUIDE_BYTES,
+  )
 }
 
 export async function readLocalPluginFiles(

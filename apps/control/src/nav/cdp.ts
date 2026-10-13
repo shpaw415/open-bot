@@ -8,25 +8,57 @@ export type CdpSocket = {
   close(): void
 }
 
-export async function connectCdpSocket(port: number): Promise<CdpSocket> {
-  const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then(
-    (response) => response.json(),
-  )) as { type?: string; webSocketDebuggerUrl?: string }[]
-  const page = list.find(
-    (item) => item.type === "page" && item.webSocketDebuggerUrl,
+export type PageTarget = {
+  id: string
+  url: string
+  webSocketDebuggerUrl: string
+}
+
+// A crashed or busy renderer used to hang ob-page/ob-nav for minutes; every
+// CDP hop now fails fast instead.
+const LIST_TIMEOUT = 4000
+const CALL_TIMEOUT = 6000
+const OPEN_TIMEOUT = 5000
+
+export async function listPageTargets(port: number): Promise<PageTarget[]> {
+  const list = (await fetch(`http://127.0.0.1:${port}/json/list`, {
+    signal: AbortSignal.timeout(LIST_TIMEOUT),
+  }).then((response) => response.json())) as {
+    type?: string
+    id?: string
+    url?: string
+    webSocketDebuggerUrl?: string
+  }[]
+  const out: PageTarget[] = []
+  for (const item of list) {
+    if (item.type !== "page" || !item.webSocketDebuggerUrl || !item.id) continue
+    out.push({
+      id: item.id,
+      url: typeof item.url === "string" ? item.url : "",
+      webSocketDebuggerUrl: item.webSocketDebuggerUrl,
+    })
+  }
+  return out
+}
+
+// Several Chromium windows can share a screen (app windows, new tabs); the
+// first about:blank tab is never the page the agent cares about.
+export function pickPageTarget(targets: PageTarget[]): PageTarget | null {
+  const live = targets.find(
+    (item) => item.url !== "" && !item.url.startsWith("about:"),
   )
-  if (!page?.webSocketDebuggerUrl) throw new Error("no page on this screen")
+  return live ?? targets[0] ?? null
+}
+
+export async function connectCdpSocket(port: number): Promise<CdpSocket> {
+  const page = pickPageTarget(await listPageTargets(port))
+  if (!page) throw new Error("no page on this screen")
   return openSocket(page.webSocketDebuggerUrl)
 }
 
 export async function connectCdp(port: number): Promise<CdpDriver> {
-  const list = (await fetch(`http://127.0.0.1:${port}/json/list`).then(
-    (response) => response.json(),
-  )) as { type?: string; webSocketDebuggerUrl?: string }[]
-  const page = list.find(
-    (item) => item.type === "page" && item.webSocketDebuggerUrl,
-  )
-  if (!page?.webSocketDebuggerUrl) throw new Error("no page on this screen")
+  const page = pickPageTarget(await listPageTargets(port))
+  if (!page) throw new Error("no page on this screen")
   const socket = await openSocket(page.webSocketDebuggerUrl)
   return {
     async probe() {
@@ -88,11 +120,15 @@ export async function connectCdp(port: number): Promise<CdpDriver> {
   }
 }
 
-function openSocket(url: string) {
+export function openSocket(url: string) {
   const ws = new WebSocket(url)
   const pending = new Map<
     number,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: unknown) => void
+      reject: (error: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
   >()
   let next = 0
   ws.onmessage = (event) => {
@@ -105,6 +141,7 @@ function openSocket(url: string) {
     const waiter = pending.get(message.id)
     pending.delete(message.id)
     if (!waiter) return
+    clearTimeout(waiter.timer)
     if (message.error) {
       waiter.reject(new Error(message.error.message || "cdp failed"))
       return
@@ -112,12 +149,23 @@ function openSocket(url: string) {
     waiter.resolve(message.result)
   }
   return new Promise<CdpSocket>((resolve, reject) => {
-    ws.onopen = () =>
+    const openTimer = setTimeout(() => {
+      ws.close()
+      reject(new Error("cdp connection timed out"))
+    }, OPEN_TIMEOUT)
+    ws.onopen = () => {
+      clearTimeout(openTimer)
       resolve({
         call(method, params) {
           const id = ++next
           return new Promise((done, fail) => {
-            pending.set(id, { resolve: done, reject: fail })
+            const timer = setTimeout(() => {
+              pending.delete(id)
+              // A renderer that never answers is crashed or frozen, not slow;
+              // callers get a fast, explicit error instead of a silent hang.
+              fail(new Error(`cdp call timed out: ${method}`))
+            }, CALL_TIMEOUT)
+            pending.set(id, { resolve: done, reject: fail, timer })
             ws.send(JSON.stringify({ id, method, params }))
           })
         },
@@ -125,11 +173,23 @@ function openSocket(url: string) {
           ws.close()
         },
       })
-    ws.onerror = () => reject(new Error("cdp connection failed"))
+    }
+    ws.onerror = () => {
+      clearTimeout(openTimer)
+      reject(new Error("cdp connection failed"))
+    }
+    ws.onclose = () => {
+      clearTimeout(openTimer)
+      for (const [, waiter] of pending) {
+        clearTimeout(waiter.timer)
+        waiter.reject(new Error("cdp connection closed"))
+      }
+      pending.clear()
+    }
   })
 }
 
-async function present(socket: CdpSocket) {
+export async function present(socket: CdpSocket) {
   await socket.call("Page.bringToFront").catch(() => undefined)
   const found = (await socket
     .call("Browser.getWindowForTarget")

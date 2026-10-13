@@ -23,6 +23,7 @@ import {
   appSettings,
   cronJobs,
   cronNotices,
+  dashboardLayouts,
   desktops,
   improvements,
   installedPlugins,
@@ -311,6 +312,7 @@ export type PluginAppliedLog = {
   tools: string[]
   opencode: boolean
   agentsMd?: boolean
+  configGuide?: boolean
   init?: { ranAt: number; ok: boolean; output: string }
 }
 
@@ -580,6 +582,7 @@ export function openDatabase(path: string) {
       projects,
       installedPlugins,
       pluginSettings,
+      dashboardLayouts,
       appSettings,
       workspaceMedia,
     },
@@ -1741,6 +1744,25 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    dashboardLayout(userId: string): string | null {
+      const row = orm
+        .select()
+        .from(dashboardLayouts)
+        .where(eq(dashboardLayouts.userId, userId))
+        .get()
+      return row?.layout ?? null
+    },
+    setDashboardLayout(userId: string, layout: string) {
+      const updatedAt = Date.now()
+      orm
+        .insert(dashboardLayouts)
+        .values({ userId, layout, updatedAt })
+        .onConflictDoUpdate({
+          target: dashboardLayouts.userId,
+          set: { layout, updatedAt },
+        })
+        .run()
+    },
     getSetting(key: string): string | null {
       const row = orm
         .select()
@@ -2078,6 +2100,9 @@ export function openDatabase(path: string) {
           .where(eq(installedPlugins.userId, userId))
           .run()
         tx.delete(pluginSettings).where(eq(pluginSettings.userId, userId)).run()
+        tx.delete(dashboardLayouts)
+          .where(eq(dashboardLayouts.userId, userId))
+          .run()
         tx.delete(mediaItems).where(eq(mediaItems.userId, userId)).run()
         tx.delete(mediaAlbums).where(eq(mediaAlbums.userId, userId)).run()
         tx.delete(workspaceMedia).where(eq(workspaceMedia.userId, userId)).run()
