@@ -633,6 +633,81 @@ function VaultKeyRow({
   )
 }
 
+function WebhookSection({ pluginId }: { pluginId: string }) {
+  const [path, setPath] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    api<{ enabled: boolean; path?: string }>(
+      `/api/plugins/installed/${encodeURIComponent(pluginId)}/webhook`,
+    )
+      .then((body) => {
+        setPath(body.enabled ? (body.path ?? null) : null)
+        setLoaded(true)
+      })
+      .catch(() => {
+        setLoaded(true)
+        setError("could not load the webhook URL")
+      })
+  }, [pluginId])
+
+  async function rotate() {
+    setBusy(true)
+    setError("")
+    try {
+      const body = await api<{ path: string }>(
+        `/api/plugins/installed/${encodeURIComponent(pluginId)}/webhook`,
+        { method: "POST" },
+      )
+      setPath(body.path)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "could not rotate")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!loaded || !path) return null
+  const url = `${window.location.origin}${path}`
+  return (
+    <>
+      <Divider />
+      <Typography variant="subtitle2">Webhook</Typography>
+      <Typography variant="caption" color="textSecondary">
+        Public URL for external services. A request wakes the desktop (if
+        asleep) and is forwarded to this plugin. Append ?async=1 to answer 202
+        immediately, or send the secret as the X-Open-Bot-Webhook-Secret header
+        on /hooks/{pluginId}/… instead.
+      </Typography>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <TextField
+          value={url}
+          readOnly
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={() => {}}
+          sx={{ flexGrow: 1 }}
+        />
+        <Button
+          disabled={busy}
+          onClick={() => void navigator.clipboard.writeText(url)}
+        >
+          Copy
+        </Button>
+        <IconButton
+          disabled={busy}
+          onClick={() => void rotate()}
+          title="Rotate the webhook secret"
+        >
+          <RefreshIcon />
+        </IconButton>
+      </Stack>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+    </>
+  )
+}
+
 function SettingsDialog({
   plugin,
   onClose,
@@ -777,6 +852,9 @@ function SettingsDialog({
             />
           )
         })}
+        {plugin.manifest.dashboard?.pages?.webhook ? (
+          <WebhookSection pluginId={plugin.pluginId} />
+        ) : null}
         {vaultSlugs.length > 0 ? (
           <>
             <Divider />

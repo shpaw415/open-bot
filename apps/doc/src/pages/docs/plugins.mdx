@@ -38,6 +38,7 @@ A plugin can ship a live dashboard — the **Apps** tab in the main navigation b
 | Field | Purpose |
 | --- | --- |
 | `dashboard.pages.entry` | A `files[]` payload (Bun HTTP server) run by the control plane at install, enable, and after every desktop restart. Env: `OPEN_BOT_PAGE_PORT`, `OPEN_BOT_PAGE_TOKEN`, `OPEN_BOT_PLUGIN_ID`; settings/vault arrive via `~/.config/open-bot/plugin-<id>.json`. `GET /healthz` recommended (any response counts as up). |
+| `dashboard.pages.webhook` | Opt in to a public webhook surface: `/hooks/<pluginId>/<token>/<path>` (or the token as `X-Open-Bot-Webhook-Secret` / `?secret=`). A hit wakes a sleeping desktop, boots the server, and forwards the request (25 MB cap); the plugin's response returns verbatim. `?async=1` answers 202 immediately. Copy/rotate the URL on the Plugins tab → Settings → Webhook. |
 | `dashboard.tabs[].kind: "app"` | The server's full UI, proxied same-origin under `/api/pages/<pluginId>/` — relative fetches hit the plugin server; SSE and WebSockets pass through. Optional `path` (default `/`). |
 | `dashboard.tabs[].kind: "page"` + `dataUrl` / `pollSeconds` (5-3600) | The dashboard polls the plugin server for JSON and feeds it to declarative `cards` (`$.path` bindings). No HTML needed for read-only views. |
 

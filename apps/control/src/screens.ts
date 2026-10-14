@@ -154,10 +154,7 @@ async function busySessions(userId: string, db: Db): Promise<string[]> {
       signal: AbortSignal.timeout(10_000),
     })
     if (!response.ok) return []
-    const status = (await response.json()) as Record<
-      string,
-      { type?: string }
-    >
+    const status = (await response.json()) as Record<string, { type?: string }>
     return Object.entries(status)
       .filter(([, row]) => row?.type && row.type !== "idle")
       .map(([id]) => id)

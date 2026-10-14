@@ -837,6 +837,36 @@ describe("plugin store", () => {
     expect(db.pluginSettings("a", "weather-pro")).toHaveLength(0)
   })
 
+  test("resolves plugins by webhook token per install", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createInstalledPlugin(
+      installed({ id: "r1", userId: "a", pluginId: "weather-pro" }),
+    )
+    expect(db.installedPluginByWebhookToken("")).toBeNull()
+    expect(db.installedPluginByWebhookToken("nope")).toBeNull()
+    expect(db.installedPlugin("a", "weather-pro")?.webhookToken).toBeNull()
+    expect(
+      db.setInstalledPluginWebhookToken("a", "weather-pro", "tok-1")
+        ?.webhookToken,
+    ).toBe("tok-1")
+    expect(db.installedPluginByWebhookToken("tok-1")?.pluginId).toBe(
+      "weather-pro",
+    )
+    expect(db.installedPluginByWebhookToken("tok-1")?.userId).toBe("a")
+    expect(
+      db.setInstalledPluginWebhookToken("a", "weather-pro", "tok-2")
+        ?.webhookToken,
+    ).toBe("tok-2")
+    expect(db.installedPluginByWebhookToken("tok-1")).toBeNull()
+    expect(db.installedPluginByWebhookToken("tok-2")?.pluginId).toBe(
+      "weather-pro",
+    )
+    expect(db.setInstalledPluginWebhookToken("a", "nope", "x")).toBeNull()
+  })
+
   test("keeps app settings and cleans up plugins on user delete", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),

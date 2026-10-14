@@ -11,12 +11,14 @@ import { nextRunMs } from "./cron"
 import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 import { keyVaultSpecById } from "./key-vault"
+import { randomToken } from "./passwords"
 import {
   checkLocalPluginPath,
   readLocalPluginFiles,
   readLocalPluginManifest,
 } from "./plugin-local"
 import { schedulePluginPageRestart } from "./plugin-pages"
+import { webhookManifestEnabled } from "./plugin-webhooks"
 import {
   applyPluginInstall,
   applyPluginUninstall,
@@ -1167,6 +1169,42 @@ export function handlePlugins(
         return json({ ok: true, slug })
       })
       .catch(() => json({ error: "invalid json" }, 400))
+  }
+
+  // Plugin webhook surface (dashboard only — the agent token neither needs
+  // nor gets webhook secrets). GET lazily provisions the token and returns
+  // the URL path; POST rotates it. The full URL is dashboard-origin +
+  // returned path.
+  const webhookRoute = path.match(
+    /^\/api\/plugins\/installed\/([^/]+)\/webhook$/,
+  )
+  if (webhookRoute) {
+    if (agent) return json({ error: "dashboard only" }, 403)
+    const pluginId = decodeURIComponent(webhookRoute[1] ?? "")
+    const row = db.installedPlugin(user.id, pluginId)
+    if (!row) return json({ error: "not found" }, 404)
+    const manifest = row.manifest as PluginManifest
+    if (!webhookManifestEnabled(manifest)) {
+      if (req.method === "GET") return json({ enabled: false })
+      return json({ error: "this plugin has no webhook surface" }, 400)
+    }
+    if (req.method === "GET") {
+      let token = row.webhookToken
+      if (!token) {
+        token = randomToken()
+        const updated = db.setInstalledPluginWebhookToken(
+          user.id,
+          pluginId,
+          token,
+        )
+        token = updated?.webhookToken ?? token
+      }
+      return json({ enabled: true, path: `/hooks/${pluginId}/${token}/` })
+    }
+    if (req.method !== "POST") return json({ error: "not found" }, 404)
+    const token = randomToken()
+    db.setInstalledPluginWebhookToken(user.id, pluginId, token)
+    return json({ ok: true, path: `/hooks/${pluginId}/${token}/` })
   }
 
   const reviewPoll = path === "/api/plugins/review" && req.method === "GET"

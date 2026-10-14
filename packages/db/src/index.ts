@@ -331,6 +331,7 @@ export type InstalledPlugin = {
   applied: PluginAppliedLog
   latestVersion: string | null
   latestCheckedAt: number | null
+  webhookToken: string | null
   createdAt: number
   updatedAt: number
 }
@@ -424,6 +425,7 @@ function mapInstalledPlugin(
     applied,
     latestVersion: row.latestVersion ?? null,
     latestCheckedAt: row.latestCheckedAt ?? null,
+    webhookToken: row.webhookToken ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -1538,6 +1540,7 @@ export function openDatabase(path: string) {
         | "localPath"
         | "latestVersion"
         | "latestCheckedAt"
+        | "webhookToken"
       > & {
         manifest: string
         applied?: string
@@ -1545,6 +1548,7 @@ export function openDatabase(path: string) {
         localPath?: string | null
         latestVersion?: string | null
         latestCheckedAt?: number | null
+        webhookToken?: string | null
       },
     ) {
       orm
@@ -1555,6 +1559,7 @@ export function openDatabase(path: string) {
           localPath: row.localPath ?? null,
           latestVersion: row.latestVersion ?? null,
           latestCheckedAt: row.latestCheckedAt ?? null,
+          webhookToken: row.webhookToken ?? null,
         })
         .run()
     },
@@ -1581,6 +1586,34 @@ export function openDatabase(path: string) {
           )
           .get(),
       )
+    },
+    installedPluginByWebhookToken(token: string) {
+      if (!token) return null
+      return mapInstalledPlugin(
+        orm
+          .select()
+          .from(installedPlugins)
+          .where(eq(installedPlugins.webhookToken, token))
+          .get(),
+      )
+    },
+    setInstalledPluginWebhookToken(
+      userId: string,
+      pluginId: string,
+      token: string | null,
+    ) {
+      if (!this.installedPlugin(userId, pluginId)) return null
+      orm
+        .update(installedPlugins)
+        .set({ webhookToken: token, updatedAt: Date.now() })
+        .where(
+          and(
+            eq(installedPlugins.userId, userId),
+            eq(installedPlugins.pluginId, pluginId),
+          ),
+        )
+        .run()
+      return this.installedPlugin(userId, pluginId)
     },
     setInstalledPluginEnabled(
       userId: string,

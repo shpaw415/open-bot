@@ -278,6 +278,7 @@ export const installedPlugins = sqliteTable(
     localPath: text("local_path"),
     latestVersion: text("latest_version"),
     latestCheckedAt: integer("latest_checked_at"),
+    webhookToken: text("webhook_token"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -287,6 +288,7 @@ export const installedPlugins = sqliteTable(
       table.userId,
       table.pluginId,
     ),
+    uniqueIndex("installed_plugins_webhook_token").on(table.webhookToken),
   ],
 )
 

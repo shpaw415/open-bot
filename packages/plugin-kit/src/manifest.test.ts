@@ -260,6 +260,32 @@ describe("plugin manifest", () => {
     expect(badName.ok).toBe(false)
   })
 
+  test("page server webhook flag must be a boolean", () => {
+    const good = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: { pages: { entry: "server.js", webhook: true }, tabs: [] },
+    })
+    expect(good.ok).toBe(true)
+    if (good.ok) {
+      expect(good.manifest.dashboard?.pages?.webhook).toBe(true)
+    }
+    const bad = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js", webhook: "yes" } as never,
+        tabs: [],
+      },
+    })
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) {
+      expect(manifestIssuesText(bad.issues)).toContain(
+        "dashboard.pages.webhook",
+      )
+    }
+  })
+
   test("app tabs require the page server and sane paths", () => {
     const noPages = validatePluginManifest({
       ...valid,

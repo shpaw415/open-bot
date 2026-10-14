@@ -57,6 +57,9 @@ describe("plugin schema", () => {
     expect(top.dashboard.properties.pages.properties.entry.pattern).toBe(
       FILE_NAME_PATTERN.source,
     )
+    expect(top.dashboard.properties.pages.properties.webhook.type).toBe(
+      "boolean",
+    )
     expect(
       source(top.textbox.properties.commands.items.properties.command.pattern),
     ).toBe(source(COMMAND_PATTERN.source))

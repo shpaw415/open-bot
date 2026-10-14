@@ -230,6 +230,7 @@ export function validateConfigValue(
 // under /api/pages/<pluginId>/… with SSE + WebSocket pass-through.
 export type PluginDashboardPages = {
   entry: string
+  webhook?: boolean
 }
 
 export type PluginTab = {
@@ -1008,6 +1009,13 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
                   "dashboard.pages.entry must be a declared files[] name",
               })
             }
+          }
+          const webhook = pages.webhook
+          if (webhook !== undefined && typeof webhook !== "boolean") {
+            issues.push({
+              path: "dashboard.pages.webhook",
+              message: "dashboard.pages.webhook must be a boolean",
+            })
           }
         }
       }

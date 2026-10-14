@@ -104,6 +104,7 @@ import {
 } from "./personas"
 import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
 import { handlePluginPagesStatus, proxyPluginPage } from "./plugin-pages"
+import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins } from "./plugins"
 import {
   mintPreviewToken,
@@ -684,6 +685,12 @@ export function createServer(
         }
         if (url.pathname.startsWith("/api/preview/frame/"))
           return await proxyPreview(req, url, server)
+        if (url.pathname.startsWith("/hooks/")) {
+          // Webhook delivery may block on a cold desktop wake; no idle
+          // timeout, the handler enforces its own upstream deadline.
+          server.timeout(req, 0)
+          return await handlePluginWebhook(req, url, db)
+        }
         if (url.pathname.startsWith("/api/pages/")) {
           // Plugin pages proxy long-lived responses (SSE); no idle timeout.
           server.timeout(req, 0)
