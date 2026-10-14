@@ -11,6 +11,7 @@ import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api } from "./api"
 import type { EventStream } from "./hooks"
+import { useEventStream } from "./hooks"
 import {
   BugReportIcon,
   ChevronDownIcon,
@@ -70,6 +71,11 @@ export function Reports({
   const [busyId, setBusyId] = useState("")
   const [copied, setCopied] = useState("")
 
+  // Standalone mounts (Config tab) attach to the shared event stream directly;
+  // Workspace keeps passing its own subscribe so nothing changes there.
+  const { subscribe: streamSubscribe } = useEventStream(true)
+  const stream = subscribe ?? streamSubscribe
+
   const load = useCallback(() => {
     api<{ reports: PluginReport[]; plugins: ReportSummary[] }>(
       "/api/reports?status=all",
@@ -88,12 +94,11 @@ export function Reports({
   }, [load])
 
   useEffect(() => {
-    if (!subscribe) return
-    return subscribe((event) => {
+    return stream((event) => {
       if (event.type !== "reports.changed") return
       load()
     })
-  }, [subscribe, load])
+  }, [stream, load])
 
   const shown = useMemo(
     () =>

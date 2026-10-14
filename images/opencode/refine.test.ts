@@ -27,14 +27,11 @@ test("refine is seeded and the standing lines name it", () => {
   const entrypoint = text("entrypoint.sh")
   const agents = text("seed/AGENTS.md")
   const prompt = text("seed/opencode.json")
-  expect(entrypoint).toContain(
-    "cp /opt/open-bot/seed/skills/refine/SKILL.md /home/agent/.config/opencode/skills/refine/SKILL.md",
-  )
+  expect(entrypoint).toContain("for skill_dir in /opt/open-bot/seed/skills/*/")
   expect(entrypoint).toContain(
     "save a user correction or an obvious missing finish with the refine skill",
   )
   expect(agents).toContain("load the `refine` skill")
-  expect(agents).toContain("add `--cutout`")
   expect(prompt).toContain(
     "save a user correction or an obvious missing finish with the refine skill",
   )

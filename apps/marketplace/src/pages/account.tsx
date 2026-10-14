@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useState } from "react"
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  LogoMark,
+  SectionHeading,
+  Spinner,
+} from "../components/ui"
 
 type AccountUser = { userId: string; email: string | null; name: string | null }
 
@@ -74,135 +83,143 @@ export default function Account() {
     await load()
   }
 
-  return (
-    <div className="container mx-auto max-w-3xl px-4 py-10">
-      <h1 className="text-3xl font-bold tracking-tight">Account</h1>
-      <p className="mt-2 text-sm text-slate-400">
-        Create an API key to publish plugins from your open-bot desktop. Paste
-        it on the dashboard Plugins page.
-      </p>
+  const displayName = user
+    ? (user.name || user.email || user.userId)
+    : ""
+  const initial = displayName ? displayName.charAt(0).toUpperCase() : "?"
 
+  return (
+    <div className="mx-auto max-w-[1120px] px-5 py-10 sm:px-8 sm:py-14">
       {error ? (
-        <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+        <p className="mb-6 rounded-[10px] border border-[rgba(255,92,92,0.32)] bg-[rgba(255,92,92,0.08)] p-4 text-sm text-[#FF8A8A]">
           {error}
         </p>
       ) : null}
 
       {loading ? (
-        <p className="mt-8 py-10 text-center text-sm text-slate-500">
-          Loading…
-        </p>
+        <Spinner size="size-8" label="Loading account…" className="py-16" />
       ) : !user ? (
-        <div className="mt-8 rounded-xl border border-slate-800 bg-slate-900/60 p-6 text-center">
-          <p className="text-slate-300">Sign in to manage your API keys.</p>
-          <button
-            type="button"
+        <Card className="mx-auto max-w-[480px] p-8 text-center">
+          <LogoMark className="mx-auto" />
+          <h1 className="mt-4 text-[22px] font-bold tracking-[-0.01em] text-[#EDF2F7]">
+            Sign in to manage keys
+          </h1>
+          <p className="mx-auto mt-2 max-w-[40ch] text-[14px] leading-6 text-[#8B9CB8]">
+            Create an API key to publish plugins from your open-bot desktop.
+            Paste it on the dashboard Plugins page.
+          </p>
+          <Button
+            size="lg"
+            className="mt-6 w-full"
             onClick={() => window.location.assign("/api/auth/login")}
-            className="mt-4 inline-block rounded-full bg-blue-600 px-6 py-2.5 text-sm font-semibold hover:bg-blue-500"
           >
             Sign in
-          </button>
-        </div>
+          </Button>
+          <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.14em] text-[#5B6B84]">
+            Keys are per-human. Agents use desktop vaults.
+          </p>
+        </Card>
       ) : (
-        <>
-          <div className="mt-6 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-            <div>
-              <p className="font-semibold text-white">
-                {user.name || user.email || user.userId}
+        <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+          <Card className="self-start p-6">
+            <span className="grid size-12 place-items-center rounded-[12px] bg-[linear-gradient(135deg,#C8FF2E,#5EEAD4)] text-[18px] font-extrabold text-[#1A2000]">
+              {initial}
+            </span>
+            <p className="mt-3 text-[15px] font-bold text-[#EDF2F7]">
+              {displayName}
+            </p>
+            {user.email ? (
+              <p className="mt-0.5 break-all font-mono text-[12px] text-[#8B9CB8]">
+                {user.email}
               </p>
-              {user.email ? (
-                <p className="text-sm text-slate-500">{user.email}</p>
-              ) : null}
-            </div>
-            <form action="/api/auth/logout" method="post">
-              <button
-                type="submit"
-                className="rounded-full border border-slate-700 px-4 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800"
-              >
+            ) : null}
+            <form action="/api/auth/logout" method="post" className="mt-5">
+              <Button variant="secondary" size="sm" className="w-full" type="submit">
                 Sign out
-              </button>
+              </Button>
             </form>
-          </div>
+          </Card>
 
-          {freshKey ? (
-            <div className="mt-4 rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-5">
-              <p className="text-sm font-semibold text-emerald-400">
-                API key created — copy it now, it is shown only once
-              </p>
-              <code className="mt-2 block overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-200">
-                {freshKey}
-              </code>
-              <button
-                type="button"
-                onClick={() => setFreshKey("")}
-                className="mt-2 text-xs text-slate-400 hover:text-white"
-              >
-                Done, I saved it
-              </button>
-            </div>
-          ) : null}
+          <div className="min-w-0">
+            {freshKey ? (
+              <div className="rounded-[12px] border border-[rgba(200,255,46,0.4)] bg-[rgba(200,255,46,0.07)] p-5">
+                <p className="text-[14px] font-semibold text-[#C8FF2E]">
+                  API key created — shown only once
+                </p>
+                <code className="mt-2 block overflow-x-auto rounded-[10px] border border-[#1D2735] bg-[#080C12] p-3 font-mono text-[13px] text-[#D4DCE8]">
+                  {freshKey}
+                </code>
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#FFB224]">
+                    Copy now. We never show it again.
+                  </p>
+                  <Button variant="secondary" size="sm" onClick={() => setFreshKey("")}>
+                    Done, I saved it
+                  </Button>
+                </div>
+              </div>
+            ) : null}
 
-          <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-              API keys
-            </h2>
-            <div className="mt-3 flex gap-2">
-              <input
-                value={label}
-                onChange={(event) => setLabel(event.currentTarget.value)}
-                placeholder="Label (e.g. home desktop)"
-                className="min-w-0 flex-1 rounded-full border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm outline-none focus:border-blue-500"
-              />
-              <button
-                type="button"
-                onClick={() => void createKey()}
-                disabled={creating}
-                className="rounded-full bg-blue-600 px-5 py-2.5 text-sm font-semibold hover:bg-blue-500 disabled:opacity-50"
-              >
-                Create key
-              </button>
-            </div>
-            <ul className="mt-4 space-y-2">
-              {keys.map((key) => (
-                <li
-                  key={key.id}
-                  className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-4 py-3"
+            <Card className="p-6">
+              <SectionHeading label="API keys" />
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                <Input
+                  value={label}
+                  onChange={(event) => setLabel(event.currentTarget.value)}
+                  placeholder="Label (e.g. home desktop)"
+                  className="flex-1"
+                />
+                <Button
+                  onClick={() => void createKey()}
+                  disabled={creating}
+                  className="w-full sm:w-auto"
                 >
-                  <span className="font-mono text-sm text-slate-200">
-                    obm_…{key.hint}
-                  </span>
-                  <span className="text-xs text-slate-500">{key.label}</span>
-                  {key.revoked ? (
-                    <span className="rounded-full border border-red-500/40 px-2 py-0.5 text-[10px] uppercase tracking-wider text-red-400">
-                      revoked
+                  Create key
+                </Button>
+              </div>
+              <ul className="mt-4 divide-y divide-[#1D2735] border-t border-[#1D2735]">
+                {keys.map((key) => (
+                  <li
+                    key={key.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3.5"
+                  >
+                    <span className="max-w-[180px] truncate font-mono text-[13px] text-[#EDF2F7]">
+                      obm_…{key.hint}
                     </span>
-                  ) : (
-                    <span className="text-xs text-slate-500">
+                    {key.label ? (
+                      <span className="text-[13px] font-semibold text-[#EDF2F7]">
+                        {key.label}
+                      </span>
+                    ) : null}
+                    {key.revoked ? <Badge status="revoked" /> : null}
+                    <span className="w-full font-mono text-[12px] text-[#8B9CB8] sm:w-auto">
+                      LAST USED{" "}
                       {key.lastUsedAt
-                        ? `used ${new Date(key.lastUsedAt).toLocaleDateString()}`
-                        : "never used"}
+                        ? new Date(key.lastUsedAt).toLocaleDateString()
+                        : "NEVER"}{" "}
+                      · CREATED {new Date(key.createdAt).toLocaleDateString()}
                     </span>
-                  )}
-                  <span className="ml-auto text-xs text-slate-600">
-                    {new Date(key.createdAt).toLocaleDateString()}
-                  </span>
-                  {!key.revoked ? (
-                    <button
-                      type="button"
-                      onClick={() => void revokeKey(key.id)}
-                      className="rounded-full border border-red-500/50 px-3 py-1 text-xs font-semibold text-red-400 hover:bg-red-500/10"
-                    >
-                      Revoke
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-              {keys.length === 0 ? (
-                <li className="text-sm text-slate-500">No API keys yet.</li>
-              ) : null}
-            </ul>
+                    {!key.revoked ? (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => void revokeKey(key.id)}
+                        className="ml-0 sm:ml-auto"
+                      >
+                        Revoke
+                      </Button>
+                    ) : null}
+                  </li>
+                ))}
+                {keys.length === 0 ? (
+                  <li className="py-4 text-sm text-[#8B9CB8]">
+                    No API keys yet.
+                  </li>
+                ) : null}
+              </ul>
+            </Card>
           </div>
-        </>
+        </div>
       )}
     </div>
   )

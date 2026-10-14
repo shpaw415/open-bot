@@ -15,6 +15,7 @@
     "typecheck": "bun run --cwd packages/ai typecheck && bun run --cwd packages/db typecheck && bun run --cwd packages/plugin-kit typecheck && bun run --cwd apps/control typecheck && bun run --cwd apps/web typecheck && bun run --cwd apps/doc typecheck && bun run --cwd apps/marketplace typecheck",
     "test": "bun test",
     "check": "biome check --write .",
+    "gen:agents": "bun scripts/gen-agents.ts",
     "images": "bash scripts/build-images.sh",
     "db:generate": "bun run --cwd packages/db db:generate",
     "setup": "bun scripts/setup.ts",

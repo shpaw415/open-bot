@@ -23,50 +23,15 @@ cp "$idfile" /etc/machine-id
 mkdir -p /var/lib/dbus
 cp "$idfile" /var/lib/dbus/machine-id
 cp /opt/open-bot/seed/AGENTS.md /home/agent/.config/opencode/AGENTS.md
-mkdir -p /home/agent/.config/opencode/skills/desktop
-cp /opt/open-bot/seed/skills/desktop/SKILL.md /home/agent/.config/opencode/skills/desktop/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/cron
-cp /opt/open-bot/seed/skills/cron/SKILL.md /home/agent/.config/opencode/skills/cron/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/cf-ai
-cp /opt/open-bot/seed/skills/cf-ai/SKILL.md /home/agent/.config/opencode/skills/cf-ai/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/gen-image
-cp /opt/open-bot/seed/skills/gen-image/SKILL.md /home/agent/.config/opencode/skills/gen-image/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/gen-video
-cp /opt/open-bot/seed/skills/gen-video/SKILL.md /home/agent/.config/opencode/skills/gen-video/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/gen-3d
-cp /opt/open-bot/seed/skills/gen-3d/SKILL.md /home/agent/.config/opencode/skills/gen-3d/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/persona
-cp /opt/open-bot/seed/skills/persona/SKILL.md /home/agent/.config/opencode/skills/persona/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/project
-cp /opt/open-bot/seed/skills/project/SKILL.md /home/agent/.config/opencode/skills/project/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/media
-cp /opt/open-bot/seed/skills/media/SKILL.md /home/agent/.config/opencode/skills/media/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/shortcut
-cp /opt/open-bot/seed/skills/shortcut/SKILL.md /home/agent/.config/opencode/skills/shortcut/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/refine
-cp /opt/open-bot/seed/skills/refine/SKILL.md /home/agent/.config/opencode/skills/refine/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/research
-cp /opt/open-bot/seed/skills/research/SKILL.md /home/agent/.config/opencode/skills/research/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/preview
-cp /opt/open-bot/seed/skills/preview/SKILL.md /home/agent/.config/opencode/skills/preview/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/plugin
-cp /opt/open-bot/seed/skills/plugin/SKILL.md /home/agent/.config/opencode/skills/plugin/SKILL.md
-cp /opt/open-bot/seed/skills/plugin/open-bot.plugin.schema.json /home/agent/.config/opencode/skills/plugin/open-bot.plugin.schema.json
-mkdir -p /home/agent/.config/opencode/skills/stress-test
-cp /opt/open-bot/seed/skills/stress-test/SKILL.md /home/agent/.config/opencode/skills/stress-test/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/report
-cp /opt/open-bot/seed/skills/report/SKILL.md /home/agent/.config/opencode/skills/report/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/system1
-cp /opt/open-bot/seed/skills/system1/SKILL.md /home/agent/.config/opencode/skills/system1/SKILL.md
-mkdir -p /home/agent/.config/opencode/skills/gpio-3d
-cp /opt/open-bot/seed/skills/gpio-3d/SKILL.md /home/agent/.config/opencode/skills/gpio-3d/SKILL.md
-cp /opt/open-bot/seed/skills/gpio-3d/validate-manifest.ts /home/agent/.config/opencode/skills/gpio-3d/validate-manifest.ts
+for skill_dir in /opt/open-bot/seed/skills/*/; do
+  skill=$(basename "$skill_dir")
+  mkdir -p "/home/agent/.config/opencode/skills/$skill"
+  cp -a "$skill_dir." "/home/agent/.config/opencode/skills/$skill/"
+done
 # migration: the built-in blender feature moved to the marketplace plugin.
 # Strip its leftovers from persistent volumes; the plugin re-adds its own.
 rm -rf /home/agent/.config/opencode/skills/blender
 rm -f /usr/local/bin/blender-team
-mkdir -p /home/agent/.config/opencode/skills/improve
-cp /opt/open-bot/seed/skills/improve/SKILL.md /home/agent/.config/opencode/skills/improve/SKILL.md
 cat >> /home/agent/.config/opencode/AGENTS.md <<'EOF'
 
 Product defects, frictions, and missing capabilities: load the `improve` skill and run `ob-improve` when you hit a product bug, repeated friction, or a missing capability during real work. Features and frictions are first-class: file the whole improvement report, not only defects. Recovering yourself does not make it not a bug: file especially when ob-nav errors, repeats one decision, gives up, or falls back to ob-vnc more than once in the same job, and name what you attempted. Do not file user mistakes, secrets, one-offs, or a path a shortcut or the refine skill can cover. One sentence in the reply that it was filed is enough. Do not ask first. If `ob-improve` is missing, do not file.

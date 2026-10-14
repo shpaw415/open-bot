@@ -79,9 +79,7 @@ test("image wires the cli, auth script, and seed skill", () => {
     join(import.meta.dir, "entrypoint.sh"),
     "utf8",
   )
-  expect(entrypoint).toContain(
-    "cp /opt/open-bot/seed/skills/gen-3d/SKILL.md /home/agent/.config/opencode/skills/gen-3d/SKILL.md",
-  )
+  expect(entrypoint).toContain("for skill_dir in /opt/open-bot/seed/skills/*/")
   const skill = readFileSync(
     join(import.meta.dir, "seed/skills/gen-3d/SKILL.md"),
     "utf8",

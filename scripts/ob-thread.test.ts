@@ -289,3 +289,88 @@ test("missing token fails before calling curl", async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+function fakeCurlWithDelete(home: string, emptyList = false) {
+  const bin = join(home, "bin")
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+prev=""
+method=""
+for arg in "$@"; do
+  if [ "$prev" = "-d" ]; then printf '%s' "$arg" > "$CURL_BODY"; fi
+  if [ "$prev" = "-X" ]; then method="$arg"; fi
+  prev="$arg"
+done
+if [ "$method" = "GET" ]; then
+  ${emptyList ? "printf '%s\\n' '{\"threads\":[]}'" : 'printf \'%s\\n\' \'{"threads":[{"id":"t1","title":"worker:job"},{"id":"t2","title":"worker:cleanup"}]}\''}
+elif [ "$method" = "DELETE" ]; then
+  printf '%s\\n' '{"deleted":["t1"],"skipped":[{"id":"t2","reason":"not a hidden agent thread"}]}'
+else
+  printf '%s\\n' '{"id":"ses_1","title":"worker:Scrape prices","display":false}'
+fi
+`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+}
+
+test("delete sends the ids and reports skipped threads", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithDelete(home)
+    const result = await run(home, ["delete", "t1", "t2"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toBe(
+      "deleted: t1\nskipped [t2]: not a hidden agent thread\n",
+    )
+    const args = await argsOf(home)
+    expect(args).toContain("DELETE")
+    expect(args.join(" ")).toContain("/api/threads")
+    expect(await bodyOf(home)).toEqual({ ids: ["t1", "t2"] })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("delete --all expands the list into ids", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithDelete(home)
+    const result = await run(home, ["delete", "--all"])
+    expect(result.code).toBe(0)
+    // The ids were never passed on the CLI: they came from the list call.
+    expect(await bodyOf(home)).toEqual({ ids: ["t1", "t2"] })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("delete --all with nothing to delete fails before the delete call", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithDelete(home, true)
+    const result = await run(home, ["delete", "--all"])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("nothing to delete")
+    // Only the list GET ran — no DELETE request carried a body.
+    expect(await argsOf(home)).not.toContain("DELETE")
+    expect(await Bun.file(join(home, "curl.body")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("delete without ids prints usage", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithDelete(home)
+    const result = await run(home, ["delete"])
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("Usage:")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

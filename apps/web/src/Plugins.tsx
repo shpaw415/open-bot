@@ -253,6 +253,7 @@ function InstallDialog({
 
 function InstalledTable({
   plugins,
+  totalCount,
   loaded,
   actionId,
   page,
@@ -267,6 +268,7 @@ function InstalledTable({
   onUpdate,
 }: {
   plugins: InstalledPluginInfo[]
+  totalCount: number
   loaded: boolean
   actionId: string | null
   page: number
@@ -310,8 +312,9 @@ function InstalledTable({
               <TableRow>
                 <TableCell colSpan={5}>
                   <Typography variant="body2" color="textSecondary">
-                    Nothing installed yet. Ask the agent to build a plugin, or
-                    install one from the marketplace below.
+                    {totalCount > 0
+                      ? "No installed plugins match the filters."
+                      : "Nothing installed yet. Ask the agent to build a plugin, or install one from the marketplace below."}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -635,38 +638,50 @@ function VaultKeyRow({
 
 function WebhookSection({ pluginId }: { pluginId: string }) {
   const [path, setPath] = useState<string | null>(null)
+  const [secured, setSecured] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [secret, setSecret] = useState("")
   const [error, setError] = useState("")
 
   useEffect(() => {
-    api<{ enabled: boolean; path?: string }>(
+    api<{ enabled: boolean; secured?: boolean; path?: string }>(
       `/api/plugins/installed/${encodeURIComponent(pluginId)}/webhook`,
     )
       .then((body) => {
         setPath(body.enabled ? (body.path ?? null) : null)
+        setSecured(Boolean(body.secured))
         setLoaded(true)
       })
       .catch(() => {
         setLoaded(true)
-        setError("could not load the webhook URL")
+        setError("could not load the webhook state")
       })
   }, [pluginId])
 
-  async function rotate() {
+  async function saveSecret(next: string) {
     setBusy(true)
     setError("")
     try {
-      const body = await api<{ path: string }>(
+      const body = await api<{ secured: boolean }>(
         `/api/plugins/installed/${encodeURIComponent(pluginId)}/webhook`,
-        { method: "POST" },
+        { method: "POST", body: JSON.stringify({ secret: next }) },
       )
-      setPath(body.path)
+      setSecured(body.secured)
+      setSecret("")
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "could not rotate")
+      setError(caught instanceof Error ? caught.message : "could not save")
     } finally {
       setBusy(false)
     }
+  }
+
+  function generateSecret() {
+    const bytes = new Uint8Array(24)
+    crypto.getRandomValues(bytes)
+    setSecret(
+      Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    )
   }
 
   if (!loaded || !path) return null
@@ -674,12 +689,19 @@ function WebhookSection({ pluginId }: { pluginId: string }) {
   return (
     <>
       <Divider />
-      <Typography variant="subtitle2">Webhook</Typography>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Typography variant="subtitle2">Public endpoint</Typography>
+        <Chip
+          label={secured ? "secret-protected" : "public"}
+          size="small"
+          color={secured ? "success" : undefined}
+        />
+      </Stack>
       <Typography variant="caption" color="textSecondary">
-        Public URL for external services. A request wakes the desktop (if
-        asleep) and is forwarded to this plugin. Append ?async=1 to answer 202
-        immediately, or send the secret as the X-Open-Bot-Webhook-Secret header
-        on /hooks/{pluginId}/… instead.
+        Your plugin's server, reachable like a normal website — pages, APIs,
+        streams, and WebSockets. Requests wake the desktop if asleep. Append
+        ?ob_async=1 to answer 202 immediately, or send the secret as the
+        X-Open-Bot-Webhook-Secret header on /hooks/{pluginId}/… instead.
       </Typography>
       <Stack direction="row" spacing={1} alignItems="center">
         <TextField
@@ -695,13 +717,35 @@ function WebhookSection({ pluginId }: { pluginId: string }) {
         >
           Copy
         </Button>
-        <IconButton
+      </Stack>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <TextField
+          label="Optional secret"
+          value={secret}
           disabled={busy}
-          onClick={() => void rotate()}
-          title="Rotate the webhook secret"
+          type="password"
+          onChange={(event) => setSecret(event.currentTarget.value)}
+          sx={{ flexGrow: 1 }}
+        />
+        <Button disabled={busy} onClick={generateSecret}>
+          Generate
+        </Button>
+        <Button
+          variant="contained"
+          disabled={busy}
+          onClick={() => void saveSecret(secret)}
         >
-          <RefreshIcon />
-        </IconButton>
+          {secured ? "Replace" : "Set"}
+        </Button>
+        {secured ? (
+          <Button
+            disabled={busy}
+            color="error"
+            onClick={() => void saveSecret("")}
+          >
+            Remove
+          </Button>
+        ) : null}
       </Stack>
       {error ? <Alert severity="error">{error}</Alert> : null}
     </>
@@ -852,7 +896,7 @@ function SettingsDialog({
             />
           )
         })}
-        {plugin.manifest.dashboard?.pages?.webhook ? (
+        {plugin.manifest.dashboard?.pages?.public ? (
           <WebhookSection pluginId={plugin.pluginId} />
         ) : null}
         {vaultSlugs.length > 0 ? (
@@ -898,6 +942,7 @@ function SettingsDialog({
 
 function MarketTable({
   market,
+  totalCount,
   loading,
   installingId,
   installedIds,
@@ -909,6 +954,7 @@ function MarketTable({
   onDiscuss,
 }: {
   market: MarketPlugin[]
+  totalCount: number
   loading: boolean
   installingId: string | null
   installedIds: Set<string>
@@ -948,8 +994,9 @@ function MarketTable({
               <TableRow>
                 <TableCell colSpan={5}>
                   <Typography variant="body2" color="textSecondary">
-                    No plugins found. Agents publish plugins with{" "}
-                    <code>ob-plugin publish</code>.
+                    {totalCount > 0
+                      ? "No plugins match the filters."
+                      : "No plugins found. Agents publish plugins with ob-plugin publish."}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -1293,17 +1340,41 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   const [marketRowsPerPage, setMarketRowsPerPage] = useState<
     10 | 25 | 50 | 100
   >(10)
+  const [installedQuery, setInstalledQuery] = useState("")
+  const [enabledFilter, setEnabledFilter] = useState<"all" | "on" | "off">(
+    "all",
+  )
+  const [sourceFilter, setSourceFilter] = useState<
+    "" | "marketplace" | "local"
+  >("")
+  const [marketInstalled, setMarketInstalled] = useState<
+    "all" | "installed" | "missing"
+  >("all")
+  const [category, setCategory] = useState("")
+  const [categories, setCategories] = useState<string[]>([])
 
-  const loadMarket = useCallback(async (q: string) => {
+  const loadMarket = useCallback(async (q: string, cat = "") => {
     setMarketLoading(true)
     setError("")
     try {
-      const suffix = q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""
+      const params = new URLSearchParams()
+      if (q.trim()) params.set("q", q.trim())
+      if (cat) params.set("category", cat)
+      const suffix = params.toString()
       const body = await api<{ plugins?: MarketPlugin[] }>(
-        `/api/plugins/market${suffix}`,
+        `/api/plugins/market${suffix ? `?${suffix}` : ""}`,
       )
-      setMarket(body.plugins ?? [])
+      const list = body.plugins ?? []
+      setMarket(list)
       setMarketPage(0)
+      if (!q.trim() && !cat) {
+        setCategories((prev) => {
+          const seen = new Set(prev)
+          for (const plugin of list)
+            if (plugin.category) seen.add(plugin.category)
+          return [...seen].sort((a, b) => a.localeCompare(b))
+        })
+      }
     } catch (caught) {
       setMarket([])
       const message =
@@ -1323,6 +1394,43 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     () => new Set(plugins.map((plugin) => plugin.pluginId)),
     [plugins],
   )
+
+  const filteredInstalled = useMemo(() => {
+    const needle = installedQuery.trim().toLowerCase()
+    if (!needle && enabledFilter === "all" && !sourceFilter) return plugins
+    return plugins.filter((plugin) => {
+      if (enabledFilter === "on" && !plugin.enabled) return false
+      if (enabledFilter === "off" && plugin.enabled) return false
+      if (sourceFilter === "marketplace" && plugin.source === "local")
+        return false
+      if (sourceFilter === "local" && plugin.source !== "local") return false
+      if (
+        needle &&
+        !`${plugin.name} ${plugin.pluginId} ${plugin.description}`
+          .toLowerCase()
+          .includes(needle)
+      )
+        return false
+      return true
+    })
+  }, [plugins, installedQuery, enabledFilter, sourceFilter])
+
+  const shownMarket = useMemo(
+    () =>
+      marketInstalled === "all"
+        ? market
+        : market.filter((plugin) =>
+            marketInstalled === "installed"
+              ? installedIds.has(plugin.id)
+              : !installedIds.has(plugin.id),
+          ),
+    [market, marketInstalled, installedIds],
+  )
+
+  const installedActive =
+    installedQuery.trim() !== "" ||
+    enabledFilter !== "all" ||
+    sourceFilter !== ""
 
   async function act(
     id: string,
@@ -1496,9 +1604,66 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         </Alert>
       ) : null}
 
-      <Typography variant="subtitle2">Installed ({plugins.length})</Typography>
+      <Typography variant="subtitle2">
+        Installed (
+        {installedActive
+          ? `${filteredInstalled.length} of ${plugins.length}`
+          : plugins.length}
+        )
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ flexWrap: "wrap", rowGap: 1 }}
+      >
+        <TextField
+          label="Filter installed"
+          value={installedQuery}
+          onChange={(event) => {
+            setInstalledQuery(event.currentTarget.value)
+            setInstalledPage(0)
+          }}
+          sx={{ flex: 1, minWidth: 180 }}
+        />
+        {(["all", "on", "off"] as const).map((value) => (
+          <Button
+            key={value}
+            size="small"
+            variant={enabledFilter === value ? "contained" : "outlined"}
+            onClick={() => {
+              setEnabledFilter(value)
+              setInstalledPage(0)
+            }}
+          >
+            {value === "all" ? "All" : value === "on" ? "Enabled" : "Disabled"}
+          </Button>
+        ))}
+        <Select
+          name="source"
+          value={sourceFilter}
+          sx={{ minWidth: 160 }}
+          onSelect={(next) => {
+            setSourceFilter(next as "" | "marketplace" | "local")
+            setInstalledPage(0)
+          }}
+        >
+          {[
+            <option key="all" value="">
+              All sources
+            </option>,
+            <option key="marketplace" value="marketplace">
+              Marketplace
+            </option>,
+            <option key="local" value="local">
+              Local
+            </option>,
+          ]}
+        </Select>
+      </Stack>
       <InstalledTable
-        plugins={plugins}
+        plugins={filteredInstalled}
+        totalCount={plugins.length}
         loaded={loaded}
         actionId={actionId}
         page={installedPage}
@@ -1580,22 +1745,53 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
       />
 
       <Divider />
-      <Typography variant="subtitle2">Marketplace ({market.length})</Typography>
-      <Stack direction="row" spacing={1}>
+      <Typography variant="subtitle2">
+        Marketplace (
+        {marketInstalled !== "all"
+          ? `${shownMarket.length} of ${market.length}`
+          : market.length}
+        )
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ flexWrap: "wrap", rowGap: 1 }}
+      >
         <TextField
           label="Search plugins"
           value={query}
           onChange={(event) => setQuery(event.currentTarget.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter") void loadMarket(query)
+            if (event.key === "Enter") void loadMarket(query, category)
           }}
-          sx={{ flex: 1 }}
+          sx={{ flex: 1, minWidth: 180 }}
         />
+        <Select
+          name="category"
+          value={category}
+          sx={{ minWidth: 160 }}
+          onSelect={(next) => {
+            setCategory(next)
+            void loadMarket(query, next)
+          }}
+        >
+          {[
+            <option key="all" value="">
+              All categories
+            </option>,
+            ...categories.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            )),
+          ]}
+        </Select>
         <Button
           variant="outlined"
           disabled={marketLoading}
           startIcon={marketLoading ? <CircularProgress size={1} /> : undefined}
-          onClick={() => void loadMarket(query)}
+          onClick={() => void loadMarket(query, category)}
         >
           {marketLoading ? "Searching…" : "Search"}
         </Button>
@@ -1603,15 +1799,35 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           <IconButton
             aria-label="Refresh marketplace"
             disabled={marketLoading}
-            onClick={() => void loadMarket(query)}
+            onClick={() => void loadMarket(query, category)}
           >
             <RefreshIcon />
           </IconButton>
         </ToolTip>
       </Stack>
+      <Stack direction="row" spacing={1} alignItems="center">
+        {(["all", "missing", "installed"] as const).map((value) => (
+          <Button
+            key={value}
+            size="small"
+            variant={marketInstalled === value ? "contained" : "outlined"}
+            onClick={() => {
+              setMarketInstalled(value)
+              setMarketPage(0)
+            }}
+          >
+            {value === "all"
+              ? "All"
+              : value === "missing"
+                ? "Not installed"
+                : "Installed"}
+          </Button>
+        ))}
+      </Stack>
       {marketLoading ? <LinearProgress variant="indeterminate" /> : null}
       <MarketTable
-        market={market}
+        market={shownMarket}
+        totalCount={market.length}
         loading={marketLoading}
         installingId={installingId}
         installedIds={installedIds}

@@ -21,9 +21,9 @@ import { Config } from "./Config"
 import { useMobile } from "./hooks"
 import {
   AdminPanelSettingsIcon,
+  AppsIcon,
   DarkModeIcon,
   DashboardIcon,
-  ExtensionIcon,
   LightModeIcon,
   LogoutIcon,
   SettingsIcon,
@@ -146,7 +146,7 @@ export function App() {
                 value="workspace"
                 icon={<DashboardIcon />}
               />
-              <Tab label="Apps" value="apps" icon={<ExtensionIcon />} />
+              <Tab label="Apps" value="apps" icon={<AppsIcon />} />
               <Tab label="Config" value="config" icon={<SettingsIcon />} />
               {me.role === "admin" ? (
                 <Tab
@@ -256,7 +256,7 @@ export function App() {
           <BottomNavigationAction
             label="Apps"
             value="apps"
-            icon={<ExtensionIcon />}
+            icon={<AppsIcon />}
           />
           <BottomNavigationAction
             label="Config"

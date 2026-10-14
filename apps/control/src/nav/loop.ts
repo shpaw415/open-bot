@@ -18,6 +18,7 @@ import {
   pageIsError,
   pageKey,
   pageNeedsUser,
+  quoteCandidates,
   type Question,
   SCROLL_CONFIDENCE_MIN,
   type Snapshot,
@@ -208,7 +209,12 @@ export async function runNav(opts: {
         const ask = () =>
           opts.ask({
             state: buildState(space, snapshot, history, opts.goal),
-            questions: buildQuestions(space, opts.goal, values),
+            questions: buildQuestions(
+              space,
+              opts.goal,
+              values,
+              quoteCandidates(snapshot.text),
+            ),
             space,
           })
         try {
@@ -318,7 +324,22 @@ export async function runNav(opts: {
         fails = 0
       }
       if (decision.operation === "DONE") {
-        return result(snapshot, step, "done", snapshot.title || snapshot.url)
+        // An extraction goal is answered with the model's page_quote pick —
+        // a verbatim snippet offered in the question criteria — instead of
+        // the page title, which reads as success while saying nothing. The
+        // whitespace-normalized substring check keeps an off-list echo from
+        // passing as a quote.
+        const quote =
+          decision.quote &&
+          snapshot.text.replace(/\s+/g, " ").includes(decision.quote)
+            ? decision.quote
+            : null
+        return result(
+          snapshot,
+          step,
+          "done",
+          quote || snapshot.title || snapshot.url,
+        )
       }
       if (decision.operation === "WAIT") {
         waits += 1

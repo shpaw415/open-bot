@@ -29,7 +29,12 @@ import {
   readLocalPluginConfigGuide,
   readLocalPluginFiles,
 } from "./plugin-local"
-import { ensurePluginPageServer, stopPluginPageServer } from "./plugin-pages"
+import {
+  ensurePluginPageServer,
+  type PluginPageStartStatus,
+  removePluginPageLog,
+  stopPluginPageServer,
+} from "./plugin-pages"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
@@ -209,7 +214,7 @@ export async function applyPluginInstall(
   user: User,
   entry: MarketplaceEntry,
   options: PluginInstallOptions = {},
-): Promise<InstalledPlugin> {
+): Promise<InstalledPlugin & { page: PluginPageStartStatus }> {
   const { manifest } = entry
   const existing = db.installedPlugin(user.id, manifest.id)
   const previous = existing?.applied
@@ -531,22 +536,24 @@ export async function applyPluginInstall(
   }
   db.setInstalledPluginApplied(user.id, manifest.id, applied)
   // Fresh installs with a page server boot it right away when the desktop is
-  // up; failures are fine — the proxy lazily restarts on the first request.
+  // up. The outcome rides on the response (port + health) so install output
+  // is diagnosable; the proxy still lazily restarts on the first request.
+  let page: PluginPageStartStatus = { attempted: false, running: false, port: null }
   if (manifest.dashboard?.pages) {
     const row = db.installedPlugin(user.id, manifest.id)
     if (row?.enabled) {
-      await ensurePluginPageServer(user.id, row).catch((error) => {
-        console.error(
-          `plugin ${manifest.id} page server start failed: ${
-            error instanceof Error ? error.message : error
-          }`,
-        )
-      })
+      page = { attempted: true, running: false, port: null }
+      try {
+        page.port = await ensurePluginPageServer(user.id, row)
+        page.running = true
+      } catch (error) {
+        page.error = error instanceof Error ? error.message : String(error)
+      }
     }
   }
   const row = db.installedPlugin(user.id, manifest.id)
   if (!row) throw new Error("plugin row disappeared after install")
-  return row
+  return { ...row, page }
 }
 
 export type PluginRevertResult = {
@@ -630,6 +637,7 @@ export async function applyPluginUninstall(
 ): Promise<PluginRevertResult> {
   // Best-effort environment cleanup before the managed artifacts disappear.
   await stopPluginPageServer(user.id, row.pluginId).catch(() => {})
+  await removePluginPageLog(user.id, row.pluginId).catch(() => {})
   const cleanup = (row.manifest as PluginManifest).setup?.uninstall ?? []
   if (cleanup.length > 0) {
     await runPluginInitCommands(
@@ -880,11 +888,104 @@ export async function reapplyPluginConfig(
     saved[setting.key] = setting.value
   }
   const settings = pluginSettingsFor(manifest, saved)
-  await syncPluginAuth(
-    user.id,
-    row.pluginId,
-    pluginConfigPayload(db, user.id, manifest, settings),
-  )
+  try {
+    const wrote = await syncPluginAuth(
+      user.id,
+      row.pluginId,
+      pluginConfigPayload(db, user.id, manifest, settings),
+    )
+    // false = the desktop is not running: the write never happened, so the
+    // pending queue must keep the plugin for the next desktop-up flush. A
+    // silent skip here is how a freshly saved shared vault key got rolled
+    // back to its stale on-disk copy.
+    if (!wrote) {
+      throw new Error("desktop is not running — config sync deferred")
+    }
+    pendingConfigSyncs.delete(configSyncKey(user.id, row.pluginId))
+  } catch (error) {
+    markPendingConfigSync(user.id, row.pluginId)
+    throw error
+  }
+}
+
+// Config syncs that could not reach the desktop (asleep mid-save, transient
+// docker-exec failure), flushed when the desktop next comes up so a shared
+// vault key saved while the desktop slept is never left stale on disk.
+const pendingConfigSyncs = new Map<string, number>()
+
+function configSyncKey(userId: string, pluginId: string) {
+  return `${userId}\0${pluginId}`
+}
+
+function markPendingConfigSync(userId: string, pluginId: string) {
+  pendingConfigSyncs.set(configSyncKey(userId, pluginId), Date.now())
+}
+
+export function pendingPluginConfigSyncCount() {
+  return pendingConfigSyncs.size
+}
+
+export function clearPendingPluginConfigSyncs() {
+  pendingConfigSyncs.clear()
+}
+
+export async function flushPendingPluginConfigs(db: Db, userId: string) {
+  const user = db.userById(userId)
+  if (!user) {
+    for (const key of [...pendingConfigSyncs.keys()]) {
+      if (key.startsWith(`${userId}\0`)) pendingConfigSyncs.delete(key)
+    }
+    return
+  }
+  for (const key of [...pendingConfigSyncs.keys()]) {
+    if (!key.startsWith(`${userId}\0`)) continue
+    const pluginId = key.slice(userId.length + 1)
+    pendingConfigSyncs.delete(key)
+    const row = db.installedPlugin(userId, pluginId)
+    if (!row || !row.enabled) continue
+    try {
+      await reapplyPluginConfig(db, user, row)
+    } catch (error) {
+      markPendingConfigSync(userId, pluginId)
+      console.error(
+        `plugin ${pluginId} deferred config sync failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
+  }
+}
+
+export function pluginsForVaultSlug(
+  rows: InstalledPlugin[],
+  slug: string,
+): InstalledPlugin[] {
+  return rows.filter((row) => {
+    if (!row.enabled) return false
+    const manifest = row.manifest as PluginManifest
+    return (manifest.permissions?.vaultRead ?? []).includes(slug)
+  })
+}
+
+export async function resyncPluginsForVaultSlug(
+  db: Db,
+  user: User,
+  slug: string,
+) {
+  const failed: string[] = []
+  for (const row of pluginsForVaultSlug(db.installedPlugins(user.id), slug)) {
+    try {
+      await reapplyPluginConfig(db, user, row)
+    } catch (error) {
+      failed.push(row.pluginId)
+      console.error(
+        `plugin ${row.pluginId} vault re-sync failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
+  }
+  return failed
 }
 
 // Re-apply every enabled plugin after a desktop recreate: setup commands,
@@ -892,6 +993,7 @@ export async function reapplyPluginConfig(
 // desktop was asleep). Registered as the docker onDesktopReady hook; never
 // throws.
 export async function reapplyPluginSetup(db: Db, userId: string) {
+  const user = db.userById(userId)
   for (const row of db.installedPlugins(userId)) {
     if (!row.enabled) continue
     const manifest = row.manifest as PluginManifest
@@ -974,6 +1076,25 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
       } catch (error) {
         console.error(
           `plugin ${row.pluginId} boot config guide sync failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      }
+    }
+    if (
+      user &&
+      ((manifest.permissions?.vaultRead?.length ?? 0) > 0 ||
+        (manifest.configs?.length ?? 0) > 0)
+    ) {
+      // The config file is the regen source for every settings/vault value a
+      // plugin reads — rewriting it from the DB at boot heals any write that
+      // missed the desktop (saved while asleep, transient exec failure), so a
+      // shared vault slug can never stay stale on disk.
+      try {
+        await reapplyPluginConfig(db, user, row)
+      } catch (error) {
+        console.error(
+          `plugin ${row.pluginId} boot config sync failed: ${
             error instanceof Error ? error.message : error
           }`,
         )

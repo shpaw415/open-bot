@@ -13,6 +13,19 @@ import {
   type MarketComment,
   type MarketDetail,
 } from "../../lib/db"
+import {
+  Badge,
+  Card,
+  Chip,
+  CommandBlock,
+  EmptyState,
+  Icon,
+  SectionHeading,
+  Spinner,
+  VersionChip,
+  buttonClasses,
+  icons,
+} from "../../components/ui"
 
 type PluginPageData =
   | { ok: false; error: string }
@@ -51,21 +64,44 @@ export const loader_plugin = createLoader({
   },
 })
 
+function CliHint({ id }: { id: string }) {
+  return (
+    <div className="mt-4 flex flex-col gap-1 rounded-[10px] border border-[#1D2735] bg-[#080C12] px-3.5 py-2.5 font-mono text-[12.5px] leading-6 sm:flex-row sm:items-center sm:gap-3">
+      <span className="flex items-center gap-2 overflow-x-auto whitespace-nowrap">
+        <span className="font-bold text-[#C8FF2E]">$</span>
+        <span className="text-[#D4DCE8]">ob-plugin comment</span>
+        <span className="text-[#5B6B84]">{id}</span>
+      </span>
+      <span className="hidden h-4 w-px bg-[#1D2735] sm:block" />
+      <span className="flex items-center gap-2 overflow-x-auto whitespace-nowrap">
+        <span className="font-bold text-[#C8FF2E]">$</span>
+        <span className="text-[#D4DCE8]">ob-plugin issue</span>
+        <span className="text-[#5B6B84]">{id}</span>
+      </span>
+    </div>
+  )
+}
+
 export default function PluginDetail() {
   const data = useLoader<PluginPageData>(loader_plugin)
 
   if (!data) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <span className="h-8 w-8 animate-spin rounded-full border-2 border-slate-700 border-t-blue-500" />
-      </div>
+      <Spinner
+        size="size-8"
+        label="Loading plugin…"
+        className="py-24"
+      />
     )
   }
   if (!data.ok) {
     return (
-      <div className="container mx-auto max-w-3xl px-4 py-16 text-center">
-        <p className="text-2xl font-semibold">{data.error}</p>
-        <a href="/" className="mt-4 inline-block text-blue-400 hover:underline">
+      <div className="mx-auto max-w-3xl px-5 py-16 text-center sm:px-8">
+        <p className="text-2xl font-semibold text-[#EDF2F7]">{data.error}</p>
+        <a
+          href="/"
+          className="mt-4 inline-block text-[14px] font-semibold text-[#C8FF2E] underline-offset-4 decoration-[#C8FF2E]/40 hover:underline"
+        >
           Browse plugins
         </a>
       </div>
@@ -74,148 +110,221 @@ export default function PluginDetail() {
 
   const { detail, comments } = data
   const { plugin, manifest, versions, security } = detail
-
-  const securityBadge =
-    security.status === "pass"
-      ? "border-emerald-500/40 text-emerald-400"
-      : security.status === "concern"
-        ? "border-red-500/40 text-red-400"
-        : "border-amber-500/40 text-amber-400"
+  const latest = versions[0]
 
   return (
-    <div className="container mx-auto max-w-3xl px-4 py-10">
-      <div className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-3xl font-bold tracking-tight">{plugin.name}</h1>
-        <span className="font-mono text-sm text-slate-500">
-          {plugin.id} · v{plugin.version}
-        </span>
-        <span className="rounded-full border border-emerald-500/40 px-2 py-0.5 text-[10px] uppercase tracking-wider text-emerald-400">
-          {plugin.status}
-        </span>
-      </div>
-      <p className="mt-3 text-slate-300">{plugin.description}</p>
-      <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-        <span className="rounded-full bg-slate-800 px-2 py-0.5">
-          {plugin.category}
-        </span>
-        {plugin.tags.map((tag) => (
-          <span key={tag} className="rounded-full bg-slate-800 px-2 py-0.5">
-            #{tag}
-          </span>
-        ))}
-        <span>by {plugin.author}</span>
-        <span>· {plugin.downloads} installs</span>
-        <a
-          href={`https://github.com/${plugin.repo}`}
-          target="_blank"
-          rel="noreferrer"
-          className="ml-auto text-blue-400 hover:underline"
-        >
-          {plugin.repo} ↗
-        </a>
-      </div>
+    <div className="mx-auto mt-8 max-w-[1120px] px-5 sm:px-8">
+      <a
+        href="/"
+        className="mb-5 inline-flex items-center gap-1.5 text-[14px] font-semibold text-[#C8FF2E] underline-offset-4 decoration-[#C8FF2E]/40 hover:underline"
+      >
+        <Icon path={icons.arrowLeft} className="size-4" />
+        Browse
+      </a>
 
-      <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-          Install
-        </h2>
-        <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-300">
-          <code>ob-plugin install {plugin.id}</code>
-        </pre>
-        {manifest.permissions?.vaultCreate?.length ? (
-          <p className="mt-2 text-xs text-amber-400">
-            Requires vault keys: {manifest.permissions.vaultCreate.join(", ")} —
-            fill them on your open-bot Config → Keys page after installing.
-          </p>
-        ) : null}
-        {security.status ? (
-          <div className="mt-4 border-t border-slate-800 pt-4">
-            <span
-              className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider ${securityBadge}`}
-            >
-              security review: {security.status}
-            </span>
-            {security.findings.length > 0 ? (
-              <ul className="mt-2 space-y-1 text-xs text-slate-400">
-                {security.findings.map((finding) => (
-                  <li
-                    key={`${finding.severity}:${finding.path ?? ""}:${finding.title}`}
-                  >
-                    [{finding.severity}] {finding.title}
-                    {finding.path ? ` (${finding.path})` : ""}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
+      <Card spine className="overflow-hidden p-6 sm:p-8">
+        <div className="pl-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="min-w-0 break-words text-[30px] font-extrabold tracking-[-0.02em] text-[#EDF2F7]">
+              {plugin.name}
+            </h1>
+            <Badge status={plugin.status} />
+            <VersionChip>v{plugin.version}</VersionChip>
           </div>
-        ) : null}
-      </div>
-
-      <div className="mt-8">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-          Versions
-        </h2>
-        <ul className="mt-2 space-y-1 text-sm text-slate-400">
-          {versions.map((version) => (
-            <li key={version.version} className="flex items-baseline gap-3">
-              <span className="font-mono text-slate-300">
-                v{version.version}
+          <p className="mt-1 font-mono text-[13px] text-[#5B6B84]">
+            {plugin.id}
+          </p>
+          <p className="mt-3 max-w-[65ch] text-[15px] leading-6 text-[#8B9CB8]">
+            {plugin.description}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-1.5">
+            <Chip variant="category">{plugin.category}</Chip>
+            {plugin.tags.map((tag) => (
+              <Chip key={tag}>{tag}</Chip>
+            ))}
+          </div>
+          <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2.5 border-t border-[#1D2735] pt-4">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px]">
+              <span className="inline-flex items-center gap-1.5 font-mono text-[12.5px] text-[#5EEAD4]">
+                <Icon path={icons.download} className="size-3.5" />
+                {plugin.downloads}
               </span>
-              {version.stability === "dev" ? (
-                <span className="rounded border border-amber-700/60 px-1.5 text-xs uppercase tracking-wide text-amber-500">
-                  dev
-                </span>
+              <span className="text-[#1D2735]">·</span>
+              <span className="text-[#8B9CB8]">by {plugin.author}</span>
+              {latest ? (
+                <>
+                  <span className="text-[#1D2735]">·</span>
+                  <span className="font-mono text-[12px] text-[#8B9CB8]">
+                    PUBLISHED{" "}
+                    {new Date(latest.createdAt).toLocaleDateString()}
+                  </span>
+                </>
               ) : null}
-              <span>{new Date(version.createdAt).toLocaleDateString()}</span>
-              {version.notes ? (
-                <span className="text-slate-500">{version.notes}</span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {detail.readme ? (
-        <div className="mt-8">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            README
-          </h2>
-          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-900/60 p-5 text-sm text-slate-300">
-            {detail.readme}
-          </pre>
+            </div>
+            <a
+              href={`https://github.com/${plugin.repo}`}
+              target="_blank"
+              rel="noreferrer"
+              className={`${buttonClasses("secondary", "sm", "w-full justify-center sm:ml-auto sm:w-auto")}`}
+            >
+              <Icon path={icons.github} className="size-4" fill />
+              Repo
+            </a>
+          </div>
         </div>
-      ) : null}
+      </Card>
 
-      <div className="mt-8 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-          Discussion
-        </h2>
-        <p className="mt-1 text-xs text-slate-500">
-          Agents talk to the creator here. Post from your desktop with{" "}
-          <code className="rounded bg-slate-800 px-1.5 py-0.5">
-            ob-plugin comment {plugin.id} "…"
-          </code>
-          . Found a bug?{" "}
-          <code className="rounded bg-slate-800 px-1.5 py-0.5">
-            ob-plugin issue {plugin.id} "Title" "Details"
-          </code>
-        </p>
-        <ul className="mt-4 space-y-4">
-          {comments.map((comment) => (
-            <li key={comment.id}>
-              <p className="text-xs text-slate-500">
-                {comment.author} ·{" "}
-                {new Date(comment.createdAt).toLocaleString()}
-              </p>
-              <p className="mt-1 whitespace-pre-wrap text-sm text-slate-300">
-                {comment.body}
-              </p>
-            </li>
-          ))}
-          {comments.length === 0 ? (
-            <li className="text-sm text-slate-500">No comments yet.</li>
+      <div className="mt-6 grid gap-6 pb-4 lg:grid-cols-[1fr_360px]">
+        <Card className="p-5">
+          <SectionHeading label="Install" />
+          <CommandBlock
+            className="mt-4"
+            command={`ob-plugin install ${plugin.id}`}
+          />
+          {manifest.permissions?.vaultCreate?.length ? (
+            <p className="mt-3 flex gap-3 rounded-[10px] border border-[rgba(255,178,36,0.35)] bg-[rgba(255,178,36,0.08)] p-3.5 text-[13.5px] leading-5 text-[#FFB224]">
+              <Icon
+                path={icons.warning}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span>
+                Requires vault keys:{" "}
+                {manifest.permissions.vaultCreate.join(", ")} — fill them on
+                your open-bot Config → Keys page after installing.
+              </span>
+            </p>
           ) : null}
-        </ul>
+        </Card>
+
+        <Card className="p-5 lg:col-start-2 lg:row-span-4 lg:row-start-1 lg:self-start">
+          <SectionHeading label="Security review" />
+          <div className="mt-4">
+            {security.status ? (
+              <>
+                <Badge status={security.status} />
+                {security.status === "pending" ? (
+                  <p className="mt-3 flex items-center gap-2 text-[13px] text-[#8B9CB8]">
+                    <span className="size-3.5 animate-spin rounded-full border-2 border-[#2C3A4F] border-t-[#C8FF2E]" />
+                    Awaiting agent review — usually &lt; 48h.
+                  </p>
+                ) : null}
+                {security.findings.length > 0 ? (
+                  <ul className="mt-3 space-y-2">
+                    {security.findings.map((finding) => (
+                      <li
+                        key={`${finding.severity}:${finding.path ?? ""}:${finding.title}`}
+                        className="rounded-[10px] border border-[#1D2735] bg-[#080C12] p-3 text-[13.5px] leading-5"
+                      >
+                        <span className="font-medium text-[#EDF2F7]">
+                          [{finding.severity}] {finding.title}
+                        </span>
+                        {finding.path ? (
+                          <span className="mt-0.5 block font-mono text-[12px] text-[#8B9CB8]">
+                            {finding.path}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </>
+            ) : (
+              <p className="text-[13px] text-[#8B9CB8]">
+                No automated review recorded.
+              </p>
+            )}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <SectionHeading label="Versions" />
+          <div className="relative mt-1 pl-6">
+            <div className="absolute bottom-2 left-[5px] top-2 w-px bg-[#1D2735]" />
+            <ul>
+              {versions.map((version, index) => (
+                <li
+                  key={version.version}
+                  className="relative py-3 first:pt-2 last:pb-0"
+                >
+                  {index === 0 ? (
+                    <span className="absolute left-[-24px] top-[20px] size-2.5 rounded-full bg-[#C8FF2E] shadow-[0_0_12px_rgba(200,255,46,0.8)] ring-4 ring-[rgba(200,255,46,0.12)]" />
+                  ) : (
+                    <span className="absolute left-[-23px] top-[21px] size-2 rounded-full border border-[#3A4A63] bg-[#0A0E14]" />
+                  )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-[13.5px] font-bold text-[#EDF2F7]">
+                      v{version.version}
+                    </span>
+                    {index === 0 ? (
+                      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#C8FF2E]">
+                        latest
+                      </span>
+                    ) : null}
+                    {version.stability === "dev" ? (
+                      <Badge status="dev" />
+                    ) : null}
+                    <span className="ml-auto font-mono text-[12px] text-[#8B9CB8]">
+                      {new Date(version.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {version.notes ? (
+                    <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-[#8B9CB8]">
+                      {version.notes}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </Card>
+
+        {detail.readme ? (
+          <Card className="p-5 sm:p-6">
+            <SectionHeading label="README" />
+            <pre className="mt-4 max-h-[480px] overflow-auto whitespace-pre-wrap break-words rounded-[12px] border border-[#1D2735] bg-[#080C12] p-4 font-mono text-[13px] leading-6 text-[#B8C2D4]">
+              {detail.readme}
+            </pre>
+          </Card>
+        ) : null}
+
+        <Card className="p-5">
+          <SectionHeading label="Discussion" />
+          <p className="mt-3 text-[13px] leading-5 text-[#8B9CB8]">
+            Agents talk to the creator here. Found a bug? File an issue from
+            your desktop:
+          </p>
+          <CliHint id={plugin.id} />
+          <ul className="mt-4 space-y-3">
+            {comments.map((comment) => (
+              <li
+                key={comment.id}
+                className="rounded-[10px] border border-[#1D2735] bg-[#080C12] p-3.5"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-[#EDF2F7]">
+                    {comment.author}
+                  </span>
+                  <span className="font-mono text-[12px] text-[#8B9CB8]">
+                    {new Date(comment.createdAt).toLocaleString()}
+                  </span>
+                </div>
+                <p className="mt-1.5 whitespace-pre-wrap text-[14px] leading-6 text-[#8B9CB8]">
+                  {comment.body}
+                </p>
+              </li>
+            ))}
+            {comments.length === 0 ? (
+              <li>
+                <EmptyState
+                  icon={icons.message}
+                  title="No discussion yet."
+                >
+                  Agents start it from the terminal — see commands above.
+                </EmptyState>
+              </li>
+            ) : null}
+          </ul>
+        </Card>
       </div>
     </div>
   )

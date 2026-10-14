@@ -17,6 +17,7 @@ import {
   vikingProviderReady,
 } from "@open-bot/db"
 import { handleAdmin } from "./admin"
+import { handleKeys, isKeysRequest } from "./api-keys"
 import { desktopAppCatalog, launchDesktopApp } from "./apps"
 import { handleBackupApi } from "./backup-api"
 import {
@@ -106,6 +107,7 @@ import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
 import { handlePluginPagesStatus, proxyPluginPage } from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins } from "./plugins"
+import { resyncPluginsForVaultSlug } from "./plugins-apply"
 import {
   mintPreviewToken,
   PREVIEW_REPLY,
@@ -137,7 +139,6 @@ import {
   resolveRootSession,
   screenHeld,
   setScreenHold,
-  stopThreadScreen,
 } from "./screens"
 import { hardwareStats } from "./stats"
 import {
@@ -148,7 +149,7 @@ import {
   system1Providers,
 } from "./system1"
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
-import { handleThreads, isThreadRequest } from "./threads"
+import { cleanupDeletedThread, handleThreads, isThreadRequest } from "./threads"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
 import {
   videoAuthReady,
@@ -186,11 +187,7 @@ import {
   workspaceModel3dPath,
   workspaceModel3dResponse,
 } from "./workspace-model3d"
-import {
-  deleteSessionMedia,
-  MEDIA_DIR,
-  snapshotUrlFor,
-} from "./workspace-snapshots"
+import { MEDIA_DIR, snapshotUrlFor } from "./workspace-snapshots"
 import {
   VIDEO_REPLY,
   workspaceVideoPath,
@@ -577,6 +574,14 @@ async function applyVaultChange(
       }
     }
   }
+  const failedVaultResync = await resyncPluginsForVaultSlug(
+    db,
+    user,
+    changed.slug,
+  )
+  if (failedVaultResync.length > 0) {
+    applied.pluginVaultResync = failedVaultResync
+  }
   return applied
 }
 
@@ -686,10 +691,14 @@ export function createServer(
         if (url.pathname.startsWith("/api/preview/frame/"))
           return await proxyPreview(req, url, server)
         if (url.pathname.startsWith("/hooks/")) {
-          // Webhook delivery may block on a cold desktop wake; no idle
-          // timeout, the handler enforces its own upstream deadline.
+          // Public plugin endpoint: delivery may block on a cold desktop
+          // wake; no idle timeout, the handler enforces its own upstream
+          // deadline (headers only — streams run after).
           server.timeout(req, 0)
-          return await handlePluginWebhook(req, url, db)
+          return (
+            (await handlePluginWebhook(req, url, db, server)) ??
+            new Response("not found", { status: 404 })
+          )
         }
         if (url.pathname.startsWith("/api/pages/")) {
           // Plugin pages proxy long-lived responses (SSE); no idle timeout.
@@ -1012,13 +1021,15 @@ async function api(
   const isProjectManage = isProjectManageRequest(url.pathname, req.method)
   const isMedia = isMediaRequest(url.pathname, req.method)
   const isThreadPath = isThreadRequest(url.pathname, req.method)
+  const isKeysPath = isKeysRequest(url.pathname, req.method)
   if (
     isCronPath ||
     isPersonaPath ||
     isPluginPath ||
     isProjectManage ||
     isMedia ||
-    isThreadPath
+    isThreadPath ||
+    isKeysPath
   ) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
@@ -1044,6 +1055,11 @@ async function api(
       }
       if (isCronPath) return handleCron(req, url, db, agent, hub, holdOpen)
       if (isThreadPath) return handleThreads(req, url, db, agent)
+      if (isKeysPath) {
+        const handled = handleKeys(url, db, agent)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
     }
   }
   const user = userFrom(req, db)
@@ -2250,12 +2266,7 @@ async function api(
     if (sessionRef && req.method === "DELETE") {
       const id = decodeURIComponent(sessionRef[1] ?? "")
       const res = await proxy(req, base, "/api/opencode", auth)
-      if (res.ok) {
-        db.clearThreadPersona(user.id, id)
-        db.clearThreadTitle(user.id, id)
-        deleteSessionMedia(db, user.id, id)
-        await stopThreadScreen(db, user.id, id)
-      }
+      if (res.ok) await cleanupDeletedThread(db, user.id, id)
       return res
     }
     if (sessionRef && req.method === "PATCH") {

@@ -1551,6 +1551,9 @@ export function openDatabase(path: string) {
         webhookToken?: string | null
       },
     ) {
+      // Upsert on (user, plugin): a killed install, a concurrent install, or
+      // a remove that raced a retry must never surface as a UNIQUE failure —
+      // the fresh apply simply replaces the stale row.
       orm
         .insert(installedPlugins)
         .values({
@@ -1560,6 +1563,17 @@ export function openDatabase(path: string) {
           latestVersion: row.latestVersion ?? null,
           latestCheckedAt: row.latestCheckedAt ?? null,
           webhookToken: row.webhookToken ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [installedPlugins.userId, installedPlugins.pluginId],
+          set: {
+            version: row.version,
+            manifest: row.manifest,
+            readme: row.readme ?? null,
+            source: row.source ?? "marketplace",
+            localPath: row.localPath ?? null,
+            updatedAt: row.updatedAt,
+          },
         })
         .run()
     },
@@ -1587,15 +1601,15 @@ export function openDatabase(path: string) {
           .get(),
       )
     },
-    installedPluginByWebhookToken(token: string) {
-      if (!token) return null
-      return mapInstalledPlugin(
-        orm
-          .select()
-          .from(installedPlugins)
-          .where(eq(installedPlugins.webhookToken, token))
-          .get(),
-      )
+    installedPluginsByPluginId(pluginId: string) {
+      return orm
+        .select()
+        .from(installedPlugins)
+        .where(eq(installedPlugins.pluginId, pluginId))
+        .orderBy(installedPlugins.createdAt)
+        .all()
+        .map(mapInstalledPlugin)
+        .filter((row): row is InstalledPlugin => row !== null)
     },
     setInstalledPluginWebhookToken(
       userId: string,

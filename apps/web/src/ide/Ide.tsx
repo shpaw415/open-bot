@@ -49,6 +49,97 @@ import type { ProjectInfo } from "./types"
 
 loader.config({ paths: { vs: "/monaco/vs" } })
 
+// Monaco's TypeScript worker resolves bare specifiers (node:os, process, Bun,
+// react) through extra libs served from /monaco/types by scripts/ide-types.ts.
+// The worker has no directoryExists, so paths mappings (fileExists only) do the
+// node_modules-style lookup. 100 = TS 5.x ModuleResolutionKind.Bundler.
+const MODULE_RESOLUTION_BUNDLER = 100
+// Unresolvable bare specifiers (project deps not shipped in /monaco/types) are
+// noise in a lightweight browser editor, so "cannot find module" is ignored.
+const TS_DIAGNOSTIC_CODES_TO_IGNORE = [2307, 7016]
+
+type TypeScriptModule = (typeof Monaco)["typescript"]
+
+let typeAssetsPromise: Promise<void> | null = null
+
+const TS_COMPILER_PATHS: Record<string, string[]> = {
+  react: ["/node_modules/@types/react/index.d.ts"],
+  "react/jsx-runtime": ["/node_modules/@types/react/jsx-runtime.d.ts"],
+  "react/jsx-dev-runtime": ["/node_modules/@types/react/jsx-dev-runtime.d.ts"],
+  "*": [
+    "/node_modules/@types/node/*.d.ts",
+    "/node_modules/@types/react/*.d.ts",
+    "/node_modules/bun-types/*.d.ts",
+  ],
+}
+
+type TypeManifest = {
+  hash: string
+  packages: { dir: string; files: string[] }[]
+}
+
+async function loadTypeAssets(ts: TypeScriptModule): Promise<void> {
+  try {
+    const res = await fetch("/monaco/types/manifest.json")
+    if (!res.ok) return
+    const manifest: TypeManifest = await res.json()
+    await Promise.all(
+      manifest.packages.flatMap((pkg) =>
+        pkg.files.map(async (file) => {
+          const fileRes = await fetch(`/monaco/types/${pkg.dir}/${file}`)
+          if (!fileRes.ok) return
+          const content = await fileRes.text()
+          const libPath = `/node_modules/${pkg.dir}/${file}`
+          ts.typescriptDefaults.addExtraLib(content, libPath)
+          ts.javascriptDefaults.addExtraLib(content, libPath)
+        }),
+      ),
+    )
+  } catch {
+    // Type assets are best-effort; the editor still works without them.
+  }
+}
+
+function applyTsDefaults(): void {
+  const amdRequire = (
+    window as unknown as {
+      require?: (modules: string[], cb: (mod: TypeScriptModule) => void) => void
+    }
+  ).require
+  if (!amdRequire) return
+  amdRequire(["vs/language/typescript/monaco.contribution"], (ts) => {
+    const compilerOptions = {
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: MODULE_RESOLUTION_BUNDLER,
+      allowNonTsExtensions: true,
+      allowImportingTsExtensions: true,
+      esModuleInterop: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      skipLibCheck: true,
+      noEmit: true,
+      baseUrl: "/",
+      paths: TS_COMPILER_PATHS,
+    } as unknown as Monaco.typescript.CompilerOptions
+    const diagnostics: Monaco.typescript.DiagnosticsOptions = {
+      noSemanticValidation: false,
+      noSyntaxValidation: false,
+      diagnosticCodesToIgnore: TS_DIAGNOSTIC_CODES_TO_IGNORE,
+    }
+    ts.typescriptDefaults.setCompilerOptions(compilerOptions)
+    ts.typescriptDefaults.setDiagnosticsOptions(diagnostics)
+    ts.javascriptDefaults.setCompilerOptions({
+      ...compilerOptions,
+      allowJs: true,
+      checkJs: false,
+    })
+    ts.javascriptDefaults.setDiagnosticsOptions(diagnostics)
+    if (!typeAssetsPromise) {
+      typeAssetsPromise = loadTypeAssets(ts)
+    }
+  })
+}
+
 type Toast = { text: string; error?: boolean }
 
 function FileGlyph({
@@ -1071,6 +1162,7 @@ export function Ide({
                   value={draft[active]}
                   theme="vs-dark"
                   options={EDITOR_OPTIONS}
+                  beforeMount={applyTsDefaults}
                   loading={<CircularProgress size={1.6} />}
                   onMount={(editor) => {
                     editorRef.current = editor

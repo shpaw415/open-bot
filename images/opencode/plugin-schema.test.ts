@@ -26,7 +26,7 @@ describe("plugin manifest schema", () => {
       "COPY packages/plugin-kit/schema/open-bot.plugin.schema.json /opt/open-bot/seed/skills/plugin/open-bot.plugin.schema.json",
     )
     expect(entrypoint).toContain(
-      "cp /opt/open-bot/seed/skills/plugin/open-bot.plugin.schema.json /home/agent/.config/opencode/skills/plugin/open-bot.plugin.schema.json",
+      "for skill_dir in /opt/open-bot/seed/skills/*/",
     )
   })
 

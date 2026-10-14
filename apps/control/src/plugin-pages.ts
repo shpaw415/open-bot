@@ -25,7 +25,16 @@ export const PAGE_PORT_MIN = 4740
 export const PAGE_PORT_MAX = 4759
 const PAGE_HEALTH_TTL_MS = 5_000
 const PAGE_START_THROTTLE_MS = 5_000
-const PAGE_START_TIMEOUT_MS = 8_000
+const PAGE_START_TIMEOUT_MS = 15_000
+
+// Surfaced with the install/update responses so harnesses see the page
+// server's port and health instead of polling blind.
+export type PluginPageStartStatus = {
+  attempted: boolean
+  running: boolean
+  port: number | null
+  error?: string
+}
 
 export function pluginPagePath(pluginId: string) {
   return `/home/agent/.open-bot/pages/${pluginId}`
@@ -187,8 +196,10 @@ export async function ensurePluginPageServer(
     )
   }
   // Detached spawn; the wrapper records the bun pid (exec replaces the shell)
-  // so stop is a plain kill. Settings + vault reach the server through the
-  // plugin config file (~/.config/open-bot/plugin-<id>.json), same as tools.
+  // so stop is a plain kill. stdout+stderr land next to the pid file: a server
+  // that dies on boot (bad entry, EADDRINUSE) leaves a readable reason.
+  // Settings + vault reach the server through the plugin config file
+  // (~/.config/open-bot/plugin-<id>.json), same as tools.
   const spawned = await sh(
     [
       "docker",
@@ -207,7 +218,7 @@ export async function ensurePluginPageServer(
       n.opencode,
       "sh",
       "-c",
-      `echo $$ > '${pidFile}.pid' && printf '%s' '${token}' > '${pidFile}.token' && exec bun run '${bin}'`,
+      `echo $$ > '${pidFile}.pid' && printf '%s' '${token}' > '${pidFile}.token' && exec bun run '${bin}' > '${pidFile}.log' 2>&1`,
     ],
     undefined,
     30_000,
@@ -231,7 +242,7 @@ export async function ensurePluginPageServer(
   }
   throw new HttpError(
     502,
-    "page server did not come up — check the plugin logs",
+    `page server did not come up — see ~/.open-bot/pages/${pluginId}.log on the desktop`,
     "plugin_page",
   )
 }
@@ -251,6 +262,8 @@ function opencodeExecUser(container: string, args: string[]) {
 
 // Stops the plugin's page server (disable/uninstall). Best effort. Restarts
 // keep the token file so clients keep working; explicit stops rotate it.
+// TERM gets up to 3 s to land, then KILL — an old server still holding the
+// deterministic port would kill every future start with EADDRINUSE.
 export async function stopPluginPageServer(
   userId: string,
   pluginId: string,
@@ -269,9 +282,21 @@ export async function stopPluginPageServer(
   await opencodeExecUser(n.opencode, [
     "sh",
     "-c",
-    `if [ -f '${pidFile}.pid' ]; then kill "$(cat '${pidFile}.pid')" 2>/dev/null || true; fi; rm -f ${files}`,
+    `if [ -f '${pidFile}.pid' ]; then pid=$(cat '${pidFile}.pid'); kill "$pid" 2>/dev/null || true; i=0; while [ "$i" -lt 30 ] && kill -0 "$pid" 2>/dev/null; do sleep 0.1; i=$((i+1)); done; kill -9 "$pid" 2>/dev/null || true; fi; rm -f ${files}`,
   ]).catch(() => {})
   if (hub) emitChanged(hub, userId)
+}
+
+// Removes the page server's log file (uninstall cleanup only — the log is
+// kept across restarts and disables so a crash stays diagnosable).
+export async function removePluginPageLog(userId: string, pluginId: string) {
+  const n = names(userId)
+  const pidFile = pluginPagePath(pluginId)
+  await opencodeExecUser(n.opencode, [
+    "rm",
+    "-f",
+    `${pidFile}.log`,
+  ]).catch(() => {})
 }
 
 // Restart = stop + start. Used when settings change so the server observes

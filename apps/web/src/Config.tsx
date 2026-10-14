@@ -14,11 +14,14 @@ import { Backup } from "./Backup"
 import { ConfigSection } from "./ConfigSection"
 import { CronView } from "./CronView"
 import { CustomSkills } from "./CustomSkills"
+import { Hardware } from "./Hardware"
 import { useMobile } from "./hooks"
 import { ImageProvider } from "./ImageProvider"
 import {
   BackupIcon,
+  BugReportIcon,
   ChatIcon,
+  ComputerIcon,
   ExtensionIcon,
   ImageIcon,
   KeyIcon,
@@ -36,6 +39,7 @@ import { ModelSelect } from "./ModelSelect"
 import { Personalities } from "./Personalities"
 import { Plugins } from "./Plugins"
 import { Providers } from "./Providers"
+import { Reports } from "./Reports"
 import { System1 } from "./System1"
 import { VideoProvider } from "./VideoProvider"
 import { VikingModels } from "./VikingModels"
@@ -61,6 +65,8 @@ type ConfigTab =
   | "cron"
   | "backup"
   | "plugins"
+  | "hardware"
+  | "reports"
 
 const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
   { value: "providers", label: "Providers", icon: <VpnKeyIcon /> },
@@ -75,6 +81,8 @@ const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
   { value: "cron", label: "Cron", icon: <ScheduleIcon /> },
   { value: "backup", label: "Backup", icon: <BackupIcon /> },
   { value: "plugins", label: "Plugins", icon: <ExtensionIcon /> },
+  { value: "hardware", label: "Hardware", icon: <ComputerIcon /> },
+  { value: "reports", label: "Reports", icon: <BugReportIcon /> },
 ]
 
 function DefaultModelSection({
@@ -376,7 +384,8 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
       <Typography variant="h6">Configuration</Typography>
       <Typography variant="body2" color="textSecondary">
         Chat model providers, shared keys, chat defaults, memory, System 1,
-        media, voice, personas, skills, cron jobs, and plugins for this desktop.
+        media, voice, personas, skills, cron jobs, plugins, hardware, and plugin
+        reports for this desktop.
       </Typography>
     </Stack>
   )
@@ -402,6 +411,8 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
       {tab === "cron" ? <CronView me={me} /> : null}
       {tab === "backup" ? <Backup me={me} /> : null}
       {tab === "plugins" ? <Plugins isAdmin={me.role === "admin"} /> : null}
+      {tab === "hardware" ? <Hardware /> : null}
+      {tab === "reports" ? <Reports /> : null}
     </>
   )
 

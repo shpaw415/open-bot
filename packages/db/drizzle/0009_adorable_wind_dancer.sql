@@ -1,0 +1,1 @@
+ALTER TABLE `installed_plugins` ADD `webhook_token` text;

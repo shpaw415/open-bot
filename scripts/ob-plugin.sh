@@ -14,10 +14,12 @@ Usage:
   ob-plugin new NAME                 scaffold a plugin project in ~/plugins-create/NAME
                                      (also adds it to the dashboard project list, plugins group)
   ob-plugin validate DIR             validate DIR/open-bot.plugin.json
-  ob-plugin publish DIR              publish the plugin to the marketplace (repo + release must exist)
+  ob-plugin publish DIR [--yes]      publish the plugin to the marketplace (repo + release must
+                                      exist; --yes skips the non-TTY confirmation, so scripts
+                                      don't need `yes |`)
   ob-plugin publish DIR --dev        staging loop for a dev-tag version: commit, push, force-move the
-                                     v<tag> tag, clobber the release, publish, then reinstall pinned
-                                     (--no-commit skips the git commit step)
+                                      v<tag> tag, clobber the release, publish, then reinstall pinned
+                                      (--no-commit skips the git commit step)
   ob-plugin doctor DIR               pre-publish checks: manifest validity, repo reachability, tag
   ob-plugin guard status ID          show the plugin's maintenance guard cron
   ob-plugin guard off ID             delete the plugin's maintenance guard cron (stop maintaining)
@@ -104,6 +106,16 @@ fail_on_error() {
   if [ -n "$msg" ]; then
     echo "ob-plugin: $msg" >&2
     exit 1
+  fi
+}
+
+# Surface a failed page-server start from the install/update response.
+page_warn() {
+  if printf '%s' "$1" | jq -e '.plugin.page and .plugin.page.attempted and (.plugin.page.running | not)' >/dev/null 2>&1; then
+    reason=$(printf '%s' "$1" | jq -r '.plugin.page.error // "did not come up in time"')
+    id=$(printf '%s' "$1" | jq -r '.plugin.pluginId')
+    echo "ob-plugin: warning: page server is not running ($reason)" >&2
+    echo "  see ~/.open-bot/pages/$id.log on this desktop, or ob-plugin disable/enable $id to retry" >&2
   fi
 }
 
@@ -276,10 +288,12 @@ EOF
     dir=""
     dev=0
     no_commit=0
+    yes=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --dev) dev=1; shift ;;
         --no-commit) no_commit=1; shift ;;
+        --yes) yes=1; shift ;;
         -*) echo "unknown option: $1" >&2; usage; exit 2 ;;
         *)
           [ -z "$dir" ] || { echo "ob-plugin: unexpected argument: $1" >&2; usage; exit 2; }
@@ -332,13 +346,17 @@ EOF
       else
         echo "ob-plugin: warning: $MANIFEST_FILE for v$version is not on GitHub yet ($repo tag v$version)." >&2
         echo "  Push the repo and create the tag first — see ob-plugin help (dev tags may be force-moved)." >&2
-        if [ ! -t 0 ]; then
+        if [ "$yes" -eq 1 ]; then
+          echo "ob-plugin: --yes given; publishing anyway" >&2
+        elif [ ! -t 0 ]; then
           echo "ob-plugin: publish needs confirmation but stdin is not a terminal — declined" >&2
+          echo "  (pass --yes to publish from a script instead of piping \`yes |\`)" >&2
           exit 1
+        else
+          printf 'publish anyway? [y/N] '
+          read -r answer
+          case "$answer" in y|Y|yes|Yes) ;; *) exit 1 ;; esac
         fi
-        printf 'publish anyway? [y/N] '
-        read -r answer
-        case "$answer" in y|Y|yes|Yes) ;; *) exit 1 ;; esac
       fi
     fi
     body=$(jq -n --slurpfile m "$file" '{manifest: $m[0]}')
@@ -409,7 +427,8 @@ EOF
     ;;
   doctor)
     [ $# -eq 1 ] || { usage; exit 2; }
-    file="$1/$MANIFEST_FILE"
+    dir="$1"
+    file="$dir/$MANIFEST_FILE"
     [ -f "$file" ] || { echo "ob-plugin: missing $file" >&2; exit 2; }
     body=$(jq -n --slurpfile m "$file" '{manifest: $m[0]}')
     out=$(request POST /api/plugins/validate "$body")
@@ -423,15 +442,29 @@ EOF
     repo=$(jq -r '.repo' "$file")
     version=$(jq -r '.version' "$file")
     problems=0
+    # raw.githubusercontent 404s on fresh, private, or not-yet-CDN-cached
+    # repos; fall back to the GitHub API / git protocol before failing.
+    repo_ok=0
     if curl -fsSL -o /dev/null "https://raw.githubusercontent.com/$repo/HEAD/README.md" 2>/dev/null; then
+      repo_ok=1
       echo "repo: reachable ($repo)"
-    else
+    elif command -v gh >/dev/null 2>&1 && gh api "repos/$repo" --jq .full_name >/dev/null 2>&1; then
+      repo_ok=1
+      echo "repo: reachable ($repo, via gh api — raw.githubusercontent not serving it yet)"
+    fi
+    if [ "$repo_ok" -eq 0 ]; then
       echo "repo: NOT reachable ($repo)"
       problems=1
     fi
+    tag_ok=0
     if curl -fsSL -o /dev/null "https://raw.githubusercontent.com/$repo/v$version/$MANIFEST_FILE" 2>/dev/null; then
+      tag_ok=1
       echo "release tag: v$version serves the manifest"
-    else
+    elif git ls-remote --tags "https://github.com/$repo.git" "refs/tags/v$version" 2>/dev/null | grep -q "refs/tags/v$version"; then
+      tag_ok=1
+      echo "release tag: v$version exists (raw.githubusercontent not serving it yet)"
+    fi
+    if [ "$tag_ok" -eq 0 ]; then
       echo "release tag: v$version missing (push the tag + release before publishing)"
       problems=1
     fi
@@ -464,7 +497,7 @@ EOF
     if [ "$problems" -ne 0 ]; then
       exit 1
     fi
-    echo "ready: ob-plugin publish $1"
+    echo "ready: ob-plugin publish $dir (pass --yes when publishing from a script)"
     ;;
   search)
     query="${1:-}"
@@ -554,7 +587,8 @@ EOF
         *) echo "cancelled"; exit 1 ;;
       esac
     fi
-    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, name: .plugin.name, source: (.plugin.source // "marketplace")}'
+    page_warn "$out"
+    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, name: .plugin.name, source: (.plugin.source // "marketplace"), page: (.plugin.page // null)}'
     ;;
   list)
     out=$(request GET /api/plugins/installed)
@@ -588,7 +622,8 @@ EOF
     echo "installing v$target (skill indexing on OpenViking can take up to ~2 min)..." >&2
     out=$(request POST /api/plugins/install "$body")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version}'
+    page_warn "$out"
+    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, page: (.plugin.page // null)}'
     ;;
   remove)
     [ $# -eq 1 ] || { usage; exit 2; }

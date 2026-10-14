@@ -13,6 +13,7 @@ usage() {
 Usage:
   ob-thread start [--title TEXT] [--persona NAME] [--display] [--hidden] [--message TEXT]
   ob-thread list
+  ob-thread delete ID [ID...] | --all
 
 start creates a thread. Without --display the thread is hidden for background
 jobs: it does not appear on the dashboard and the media vault skips it.
@@ -26,11 +27,18 @@ add --hidden for a background teammate. Check `ob-persona list` for names.
 
 list shows the hidden threads created through this tool.
 
+delete removes hidden threads by id (as shown by list). --all removes every
+hidden agent thread. The server refuses anything that is not a hidden agent
+thread — visible dashboard threads and cron jobs come back as skipped with
+a reason.
+
 Examples:
   ob-thread start --title "Nightly sync" --display
   ob-thread start --title "Scrape prices" --message "Scrape prices and save to /home/agent/workspace/prices.json"
   ob-thread start --persona "Software manager" --title "Add export" --message "Implement CSV export in ~/project/report-app"
   ob-thread list
+  ob-thread delete ses_abc123
+  ob-thread delete --all
 EOF
 }
 
@@ -116,6 +124,47 @@ case "$cmd" in
     out=$(request GET /api/threads)
     fail_on_error "$out"
     printf '%s' "$out" | jq -r '.threads[] | "- [\(.id)] \(.title)"'
+    ;;
+  delete)
+    ids=""
+    all=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --all)
+          all=1; shift ;;
+        -h|--help)
+          usage; exit 0 ;;
+        --*)
+          echo "unknown option: $1" >&2; usage; exit 2 ;;
+        *)
+          if [ -z "$ids" ]; then ids="$1"; else ids="$ids
+$1"; fi
+          shift ;;
+      esac
+    done
+    if [ -n "$all" ]; then
+      out=$(request GET /api/threads)
+      fail_on_error "$out"
+      ids=$(printf '%s' "$out" | jq -r '.threads[].id // empty' 2>/dev/null) || ids=""
+      if [ -z "$ids" ]; then
+        echo "ob-thread: nothing to delete" >&2
+        exit 1
+      fi
+    elif [ -z "$ids" ]; then
+      usage
+      exit 2
+    fi
+    body=$(printf '%s' "$ids" | jq -R . | jq -s '{ids: .}')
+    out=$(request DELETE /api/threads "$body")
+    fail_on_error "$out"
+    deleted=$(printf '%s' "$out" | jq -r '.deleted | length')
+    if [ "$deleted" -gt 0 ]; then
+      printf '%s' "$out" | jq -r '"deleted: " + (.deleted | join(", "))'
+    fi
+    printf '%s' "$out" | jq -r '.skipped[] | "skipped [\(.id)]: \(.reason)"'
+    if [ "$deleted" -eq 0 ]; then
+      exit 1
+    fi
     ;;
   -h|--help|help)
     usage

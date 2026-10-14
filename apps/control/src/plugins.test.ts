@@ -23,9 +23,14 @@ const realCreateVikingSkills = vikingSkillsModule.createVikingSkills
 type SkillsClient = ReturnType<typeof realCreateVikingSkills>
 let fakeSkills: SkillsClient | null = null
 
+// Router tests run without a desktop: the config file write reports its
+// deferral instead of silently skipping.
+const syncPluginAuthDown = true
+
 mock.module("./docker", () => ({
   ...dockerModule,
   endpoint: async () => "http://viking.test:1933",
+  syncPluginAuth: async () => !syncPluginAuthDown,
 }))
 mock.module("./viking-skills", () => ({
   ...vikingSkillsModule,
@@ -703,7 +708,12 @@ describe("plugins router", () => {
       undefined,
       true,
     )
-    expect(await goodRes?.json()).toEqual({ ok: true, slug: "weatherapi" })
+    // No desktop in this test env: the file write defers, the response says so.
+    expect(await goodRes?.json()).toEqual({
+      ok: true,
+      slug: "weatherapi",
+      configSync: expect.stringContaining("deferred"),
+    })
     const saved = db.getUserKey("a", "weatherapi")
     expect(saved?.apiKey).toBe("wx-key-123")
     expect(saved?.accountId).toBe("acct-1")
@@ -736,7 +746,11 @@ describe("plugins router", () => {
       undefined,
       true,
     )
-    expect(await clearRes?.json()).toEqual({ ok: true, slug: "weatherapi" })
+    expect(await clearRes?.json()).toEqual({
+      ok: true,
+      slug: "weatherapi",
+      configSync: expect.stringContaining("deferred"),
+    })
     expect(db.getUserKey("a", "weatherapi")?.apiKey).toBe("")
   })
 
@@ -827,7 +841,11 @@ describe("plugins router", () => {
       user(),
       hub,
     )
-    expect(await customRes?.json()).toEqual({ ok: true, slug: "hookdeck" })
+    expect(await customRes?.json()).toEqual({
+      ok: true,
+      slug: "hookdeck",
+      configSync: expect.stringContaining("deferred"),
+    })
     expect(db.getUserKey("a", "hookdeck")?.apiKey).toBe("hd-key-1")
     expect(db.getUserKey("a", "hookdeck")?.baseUrl).toBe(
       "https://hookdeck.example",
@@ -1117,8 +1135,29 @@ describe("plugin remove/reinstall orphans", () => {
     expect(row.applied.cronJobIds).toEqual([jobs[0]?.id])
   })
 
-  test("install creates script/auto cron jobs from the manifest", async () => {
-    const scriptManifest = {
+  test("install upserts over an orphan row instead of failing UNIQUE", async () => {
+    const entry = {
+      id: "weather-pro",
+      version: "2.0.0",
+      status: "approved" as const,
+      manifest,
+      readme: null,
+      downloads: 0,
+    }
+    // A killed install left a stale row behind (remove never saw it).
+    installRow("weather-pro")
+    expect(db.installedPlugins("a")).toHaveLength(1)
+
+    const row = await applyPluginInstall(db, user(), entry)
+
+    const rows = db.installedPlugins("a")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.version).toBe("2.0.0")
+    expect(row.applied.personaIds).toEqual([])
+    expect(rows[0]?.id).toBe(row.id)
+  })
+
+  test("install creates script/auto cron jobs from the manifest", async () => {    const scriptManifest = {
       ...manifest,
       cron: [
         {

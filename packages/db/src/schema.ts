@@ -288,7 +288,6 @@ export const installedPlugins = sqliteTable(
       table.userId,
       table.pluginId,
     ),
-    uniqueIndex("installed_plugins_webhook_token").on(table.webhookToken),
   ],
 )
 

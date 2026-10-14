@@ -7,6 +7,7 @@ import {
   marksFromSpace,
   NONE_VALUE,
   parseDecision,
+  quoteCandidates,
   type Snapshot,
   withGoalUrl,
 } from "./action-space"
@@ -175,6 +176,81 @@ test("a lone target question offers an explicit opt-out", () => {
     "1",
     NONE_VALUE,
   ])
+})
+
+test("quote candidates are verbatim page-text chunks with a none opt-out", () => {
+  const text = [
+    "1. YC S24 startup",
+    "builds robots",
+    "345 points by user 2 hours ago  |  120 comments",
+    "",
+    "Second headline that is long enough to stand on its own without merging",
+    "footer",
+  ].join("\n")
+  const quotes = quoteCandidates(text)
+  const normalized = text.replace(/\s+/g, " ")
+  expect(quotes.length).toBeGreaterThan(0)
+  for (const quote of quotes) {
+    expect(normalized.includes(quote)).toBe(true)
+  }
+  // Short lines merge so a story title and its points land in one snippet.
+  expect(quotes.some((quote) => quote.includes("YC S24 startup"))).toBe(true)
+  expect(
+    quotes.some(
+      (quote) =>
+        quote.includes("YC S24 startup") && quote.includes("345 points"),
+    ),
+  ).toBe(true)
+  const questions = buildQuestions(
+    buildActionSpace(page([]), []),
+    "quote the #1 story title and points",
+    [],
+    quotes,
+  )
+  expect(questions.page_quote).toBeDefined()
+  expect(Object.keys(questions.page_quote?.criteria ?? {})).toContain(
+    NONE_VALUE,
+  )
+  for (const quote of quotes) {
+    expect(Object.keys(questions.page_quote?.criteria ?? {})).toContain(quote)
+  }
+})
+
+test("parseDecision carries the picked page quote and none clears it", () => {
+  const space = buildActionSpace(page([]), [])
+  const quote = "1. YC S24 startup builds robots"
+  const decision = parseDecision(
+    {
+      answers: {
+        operation: { choice: "DONE", confidence: 0.9 },
+        page_quote: { choice: quote, confidence: 0.8 },
+        needs_user: { noul: 0.1 },
+      },
+    },
+    space,
+  )
+  expect(decision?.quote).toBe(quote)
+  expect(
+    parseDecision(
+      {
+        answers: {
+          operation: { choice: "DONE", confidence: 0.9 },
+          page_quote: { choice: NONE_VALUE, confidence: 0.8 },
+        },
+      },
+      space,
+    )?.quote,
+  ).toBeNull()
+  expect(
+    parseDecision(
+      {
+        answers: {
+          operation: { choice: "DONE", confidence: 0.9 },
+        },
+      },
+      space,
+    )?.quote,
+  ).toBeNull()
 })
 
 test("a clef result envelope unwraps to the answers", () => {

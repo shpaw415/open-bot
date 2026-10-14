@@ -837,33 +837,32 @@ describe("plugin store", () => {
     expect(db.pluginSettings("a", "weather-pro")).toHaveLength(0)
   })
 
-  test("resolves plugins by webhook token per install", () => {
+  test("webhook secrets are per install and optional", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
     )
     db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
     db.createInstalledPlugin(
       installed({ id: "r1", userId: "a", pluginId: "weather-pro" }),
     )
-    expect(db.installedPluginByWebhookToken("")).toBeNull()
-    expect(db.installedPluginByWebhookToken("nope")).toBeNull()
+    expect(db.installedPluginsByPluginId("weather-pro")).toHaveLength(1)
+    expect(db.installedPluginsByPluginId("nope")).toHaveLength(0)
     expect(db.installedPlugin("a", "weather-pro")?.webhookToken).toBeNull()
     expect(
-      db.setInstalledPluginWebhookToken("a", "weather-pro", "tok-1")
+      db.setInstalledPluginWebhookToken("a", "weather-pro", "s3cret")
         ?.webhookToken,
-    ).toBe("tok-1")
-    expect(db.installedPluginByWebhookToken("tok-1")?.pluginId).toBe(
-      "weather-pro",
+    ).toBe("s3cret")
+    expect(db.installedPluginsByPluginId("weather-pro")[0]?.webhookToken).toBe(
+      "s3cret",
     )
-    expect(db.installedPluginByWebhookToken("tok-1")?.userId).toBe("a")
     expect(
-      db.setInstalledPluginWebhookToken("a", "weather-pro", "tok-2")
-        ?.webhookToken,
-    ).toBe("tok-2")
-    expect(db.installedPluginByWebhookToken("tok-1")).toBeNull()
-    expect(db.installedPluginByWebhookToken("tok-2")?.pluginId).toBe(
-      "weather-pro",
+      db.setInstalledPluginWebhookToken("a", "weather-pro", null)?.webhookToken,
+    ).toBeNull()
+    db.createInstalledPlugin(
+      installed({ id: "r2", userId: "b", pluginId: "weather-pro" }),
     )
+    expect(db.installedPluginsByPluginId("weather-pro")).toHaveLength(2)
     expect(db.setInstalledPluginWebhookToken("a", "nope", "x")).toBeNull()
   })
 

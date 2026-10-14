@@ -126,3 +126,85 @@ test("ob-plugin new does not leave a directory when the name is rejected", async
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+const doctorManifest = JSON.stringify({
+  id: "price-scout",
+  version: "0.1.0",
+  repo: "shpaw415/price-scout",
+  configs: [{ key: "region", type: "string" }],
+})
+
+// Succeeds only for the control-plane validate POST; raw.githubusercontent
+// "404s" so doctor must fall back to gh/git for the repo and tag checks.
+function flakyRawCurl(home: string, rawFails: boolean) {
+  const bin = join(home, "bin")
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    *raw.githubusercontent.com*)
+      ${rawFails ? "exit 7" : "exit 0"} ;;
+  esac
+done
+printf '%s\\n' '{"ok":true}'
+`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+}
+
+function doctorFixture(home: string) {
+  const dir = join(home, "plugins-create/price-scout")
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, "open-bot.plugin.json"), doctorManifest)
+  writeFileSync(join(dir, "CONFIG.md"), "# price-scout config guide\n")
+  return dir
+}
+
+test("ob-plugin doctor falls back to gh/git when raw.githubusercontent 404s", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-doctor-"))
+  try {
+    flakyRawCurl(home, true)
+    const bin = join(home, "bin")
+    writeFileSync(
+      join(bin, "gh"),
+      "#!/bin/sh\n[ \"$1\" = api ] && echo shpaw415/price-scout\n",
+    )
+    chmodSync(join(bin, "gh"), 0o755)
+    writeFileSync(
+      join(bin, "git"),
+      "#!/bin/sh\necho 'abc123\trefs/tags/v0.1.0'\n",
+    )
+    chmodSync(join(bin, "git"), 0o755)
+    const dir = doctorFixture(home)
+    const result = await run(home, ["doctor", dir], bin)
+    expect(result.stderr).not.toContain("parameter not set")
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("via gh api")
+    expect(result.stdout).toContain("release tag: v0.1.0 exists")
+    expect(result.stdout).toContain("config guide: CONFIG.md ok")
+    expect(result.stdout).toContain("ready: ob-plugin publish")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("ob-plugin doctor reports unreachable repo and missing tag without fallbacks", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-doctor-"))
+  try {
+    flakyRawCurl(home, true)
+    const bin = join(home, "bin")
+    writeFileSync(join(bin, "gh"), "#!/bin/sh\nexit 1\n")
+    chmodSync(join(bin, "gh"), 0o755)
+    writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 0\n")
+    chmodSync(join(bin, "git"), 0o755)
+    const dir = doctorFixture(home)
+    const result = await run(home, ["doctor", dir], bin)
+    expect(result.code).toBe(1)
+    expect(result.stdout).toContain("repo: NOT reachable")
+    expect(result.stdout).toContain("release tag: v0.1.0 missing")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

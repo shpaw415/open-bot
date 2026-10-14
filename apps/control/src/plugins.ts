@@ -11,14 +11,19 @@ import { nextRunMs } from "./cron"
 import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
 import { HttpError } from "./http-error"
 import { keyVaultSpecById } from "./key-vault"
-import { randomToken } from "./passwords"
 import {
   checkLocalPluginPath,
   readLocalPluginFiles,
   readLocalPluginManifest,
 } from "./plugin-local"
-import { schedulePluginPageRestart } from "./plugin-pages"
-import { webhookManifestEnabled } from "./plugin-webhooks"
+import {
+  schedulePluginPageRestart,
+  type PluginPageStartStatus,
+} from "./plugin-pages"
+import {
+  publicPagesEnabled,
+  WEBHOOK_SECRET_MAX_LENGTH,
+} from "./plugin-webhooks"
 import {
   applyPluginInstall,
   applyPluginUninstall,
@@ -316,6 +321,7 @@ function publicInstalled(
     latestCheckedAt?: number | null
     createdAt: number
     updatedAt: number
+    page?: PluginPageStartStatus
   },
 ) {
   const manifest = row.manifest as PluginManifest
@@ -350,6 +356,7 @@ function publicInstalled(
     localPath: row.source === "local" ? (row.localPath ?? null) : null,
     manifest,
     readme: row.readme,
+    ...(row.page ? { page: row.page } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -1048,7 +1055,14 @@ export function handlePlugins(
           }
           db.setPluginSetting(user.id, pluginId, key, result.value)
         }
-        await reapplyPluginConfig(db, user, row)
+        let deferred = false
+        try {
+          await reapplyPluginConfig(db, user, row)
+        } catch (error) {
+          if (!(error instanceof Error && error.message.includes("deferred")))
+            throw error
+          deferred = true
+        }
         // A restart guarantees the page server observes the new settings —
         // but the save request itself rides on that server, so defer it past
         // the response instead of killing the caller mid-flight.
@@ -1058,6 +1072,12 @@ export function handlePlugins(
         return json({
           ok: true,
           settings: db.pluginSettings(user.id, pluginId),
+          ...(deferred
+            ? {
+                configSync:
+                  "deferred — desktop asleep; the file syncs when the desktop starts",
+              }
+            : {}),
         })
       })
       .catch(() => json({ error: "invalid json" }, 400))
@@ -1162,19 +1182,35 @@ export function handlePlugins(
           gatewaySlug: "",
           baseUrl,
         })
-        await reapplyPluginConfig(db, user, row)
+        let vaultDeferred = false
+        try {
+          await reapplyPluginConfig(db, user, row)
+        } catch (error) {
+          if (!(error instanceof Error && error.message.includes("deferred")))
+            throw error
+          vaultDeferred = true
+        }
         if (manifest.dashboard?.pages) {
           schedulePluginPageRestart(db, user.id, row, hub)
         }
-        return json({ ok: true, slug })
+        return json({
+          ok: true,
+          slug,
+          ...(vaultDeferred
+            ? {
+                configSync:
+                  "deferred — desktop asleep; the file syncs when the desktop starts",
+              }
+            : {}),
+        })
       })
       .catch(() => json({ error: "invalid json" }, 400))
   }
 
   // Plugin webhook surface (dashboard only — the agent token neither needs
-  // nor gets webhook secrets). GET lazily provisions the token and returns
-  // the URL path; POST rotates it. The full URL is dashboard-origin +
-  // returned path.
+  // nor manages webhook secrets). The URL is public: /hooks/<pluginId>/.
+  // GET reports state; POST sets or clears (empty string) the optional
+  // secret that makes the endpoint require authentication.
   const webhookRoute = path.match(
     /^\/api\/plugins\/installed\/([^/]+)\/webhook$/,
   )
@@ -1184,27 +1220,42 @@ export function handlePlugins(
     const row = db.installedPlugin(user.id, pluginId)
     if (!row) return json({ error: "not found" }, 404)
     const manifest = row.manifest as PluginManifest
-    if (!webhookManifestEnabled(manifest)) {
+    if (!publicPagesEnabled(manifest)) {
       if (req.method === "GET") return json({ enabled: false })
       return json({ error: "this plugin has no webhook surface" }, 400)
     }
     if (req.method === "GET") {
-      let token = row.webhookToken
-      if (!token) {
-        token = randomToken()
+      return json({
+        enabled: true,
+        secured: Boolean(row.webhookToken),
+        path: `/hooks/${pluginId}/`,
+      })
+    }
+    if (req.method !== "POST") return json({ error: "not found" }, 404)
+    return req
+      .json()
+      .then((body: Record<string, unknown>) => {
+        if (typeof body.secret !== "string") {
+          return json({ error: "secret must be a string" }, 400)
+        }
+        const secret = body.secret.trim()
+        if (secret.length > WEBHOOK_SECRET_MAX_LENGTH) {
+          return json(
+            { error: `secret is too long (max ${WEBHOOK_SECRET_MAX_LENGTH})` },
+            400,
+          )
+        }
         const updated = db.setInstalledPluginWebhookToken(
           user.id,
           pluginId,
-          token,
+          secret || null,
         )
-        token = updated?.webhookToken ?? token
-      }
-      return json({ enabled: true, path: `/hooks/${pluginId}/${token}/` })
-    }
-    if (req.method !== "POST") return json({ error: "not found" }, 404)
-    const token = randomToken()
-    db.setInstalledPluginWebhookToken(user.id, pluginId, token)
-    return json({ ok: true, path: `/hooks/${pluginId}/${token}/` })
+        return json({
+          ok: true,
+          secured: Boolean(updated?.webhookToken),
+        })
+      })
+      .catch(() => json({ error: "invalid json" }, 400))
   }
 
   const reviewPoll = path === "/api/plugins/review" && req.method === "GET"

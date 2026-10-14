@@ -57,7 +57,7 @@ describe("plugin schema", () => {
     expect(top.dashboard.properties.pages.properties.entry.pattern).toBe(
       FILE_NAME_PATTERN.source,
     )
-    expect(top.dashboard.properties.pages.properties.webhook.type).toBe(
+    expect(top.dashboard.properties.pages.properties.public.type).toBe(
       "boolean",
     )
     expect(

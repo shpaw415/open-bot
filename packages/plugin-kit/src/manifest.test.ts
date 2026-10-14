@@ -260,29 +260,27 @@ describe("plugin manifest", () => {
     expect(badName.ok).toBe(false)
   })
 
-  test("page server webhook flag must be a boolean", () => {
+  test("page server public flag must be a boolean", () => {
     const good = validatePluginManifest({
       ...valid,
       files: [{ name: "server.js", source: "server.js" }],
-      dashboard: { pages: { entry: "server.js", webhook: true }, tabs: [] },
+      dashboard: { pages: { entry: "server.js", public: true }, tabs: [] },
     })
     expect(good.ok).toBe(true)
     if (good.ok) {
-      expect(good.manifest.dashboard?.pages?.webhook).toBe(true)
+      expect(good.manifest.dashboard?.pages?.public).toBe(true)
     }
     const bad = validatePluginManifest({
       ...valid,
       files: [{ name: "server.js", source: "server.js" }],
       dashboard: {
-        pages: { entry: "server.js", webhook: "yes" } as never,
+        pages: { entry: "server.js", public: "yes" } as never,
         tabs: [],
       },
     })
     expect(bad.ok).toBe(false)
     if (!bad.ok) {
-      expect(manifestIssuesText(bad.issues)).toContain(
-        "dashboard.pages.webhook",
-      )
+      expect(manifestIssuesText(bad.issues)).toContain("dashboard.pages.public")
     }
   })
 

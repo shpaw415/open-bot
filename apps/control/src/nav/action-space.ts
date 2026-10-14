@@ -46,7 +46,7 @@ const OPERATION_LABELS: Record<string, string> = {
   SCROLL_DOWN: "Move the viewport down the page.",
   SCROLL_UP: "Move the viewport up the page.",
   WAIT: "Give the page time to finish updating.",
-  DONE: "The page shows every requirement of the task met.",
+  DONE: "The page shows every requirement of the task met. When DONE is chosen and the goal asks for facts shown on the page, also answer page_quote with the snippet that answers the goal.",
   BLOCKED: "None of the offered operations can move the task forward.",
 }
 
@@ -328,6 +328,7 @@ export function buildQuestions(
   space: ActionSpace,
   goal: string,
   values: string[],
+  quotes: string[] = [],
 ): Record<string, Question> {
   const questions: Record<string, Question> = {
     operation: {
@@ -346,6 +347,16 @@ export function buildQuestions(
       instructions:
         "The page requires the user to log in, solve a captcha, or make a choice only they can make.",
     },
+  }
+  if (quotes.length > 0) {
+    questions.page_quote = {
+      type: "choice",
+      instructions: `If the goal asks for facts or wording shown on this page, which snippet answers it? Choose none when the goal only wants an action. Goal: ${goal}`,
+      criteria: {
+        ...Object.fromEntries(quotes.map((quote) => [quote, quote])),
+        [NONE_VALUE]: "The goal does not ask for page content.",
+      },
+    }
   }
   for (const [operation, head] of Object.entries(space.heads)) {
     const options = Object.entries(head).map(([key, candidate]) => [
@@ -396,11 +407,45 @@ export function buildState(
   })
 }
 
+// Quote candidates are verbatim snippets of the page text offered back to the
+// decision model as criteria, so an extraction goal ("quote the #1 story")
+// gets answered with real DOM wording instead of the page title. Lines are
+// whitespace-normalized and merged into readable chunks; every chunk is a
+// literal substring of the page text by construction.
+export function quoteCandidates(text: string, max = 14): string[] {
+  const chunks: string[] = []
+  let pending = ""
+  const flush = () => {
+    if (pending) {
+      chunks.push(pending)
+      pending = ""
+    }
+  }
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.replace(/\s+/g, " ").trim()
+    if (!line) {
+      flush()
+      continue
+    }
+    const merged = pending ? `${pending} ${line}` : line
+    if (merged.length > 200) {
+      flush()
+      if (line.length <= 200) pending = line
+      continue
+    }
+    pending = merged
+    if (pending.length >= 60) flush()
+  }
+  flush()
+  return [...new Set(chunks)].filter((c) => c.length >= 4).slice(0, max)
+}
+
 export type Decision = {
   operation: string
   confidence: number
   target: string | null
   textValue: string | null
+  quote: string | null
   needsUser: number
 }
 
@@ -420,6 +465,7 @@ export function parseDecision(
     target = picked.key
   }
   const text = choiceOf(record.text_value)
+  const quote = choiceOf(record.page_quote)
   const needs = record.needs_user
   const noul =
     needs && typeof needs === "object"
@@ -430,6 +476,7 @@ export function parseDecision(
     confidence: operation.confidence,
     target,
     textValue: text?.key ?? null,
+    quote: quote && quote.key !== NONE_VALUE ? quote.key : null,
     needsUser: Number.isFinite(noul) ? noul : 0,
   }
 }

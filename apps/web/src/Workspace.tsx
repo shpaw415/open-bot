@@ -1,6 +1,7 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
+import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
@@ -69,7 +70,6 @@ import {
   vncFrameSrc,
 } from "./chat-view"
 import { readDraft, writeDraft } from "./draft"
-import { Hardware } from "./Hardware"
 import {
   useDebounced,
   useEventStream,
@@ -80,15 +80,14 @@ import {
   AddIcon,
   AttachFileIcon,
   BlockIcon,
-  BugReportIcon,
   ChatIcon,
   CheckCircleIcon,
+  ChecklistIcon,
   CloseIcon,
   ComputerIcon,
   DeleteIcon,
   EditIcon,
   FolderIcon,
-  MemoryIcon,
   MenuIcon,
   MicIcon,
   MoreVertIcon,
@@ -139,7 +138,6 @@ import {
   useProjectRefs,
 } from "./project-refs"
 import ReferenceOverlay from "./ReferenceOverlay"
-import { Reports } from "./Reports"
 import {
   detectMention,
   mentionSuggestions,
@@ -863,6 +861,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
   busyIds,
   unread,
   actionBusy,
+  selectMode,
+  selectedIds,
   actions,
 }: {
   sessions: SessionInfo[]
@@ -874,12 +874,19 @@ const ThreadsPanel = memo(function ThreadsPanel({
   busyIds: ReadonlySet<string>
   unread: ReadonlySet<string>
   actionBusy: boolean
+  selectMode: boolean
+  selectedIds: ReadonlySet<string>
   actions: {
     select: (id: string) => void
     menu: (item: SessionInfo, anchor: HTMLElement) => void
     create: () => void
+    toggleSelectMode: () => void
+    toggleSelect: (id: string) => void
+    selectAll: () => void
+    requestBatchDelete: () => void
   }
 }) {
+  const allSelected = sessions.length > 0 && selectedIds.size >= sessions.length
   return (
     <Paper
       variant="outlined"
@@ -893,23 +900,69 @@ const ThreadsPanel = memo(function ThreadsPanel({
     >
       <Stack
         direction="row"
-        spacing={1}
+        spacing={0.5}
         alignItems="center"
         sx={{ px: 1.5, py: 0.75 }}
       >
-        <Typography variant="subtitle2" sx={{ flex: 1 }}>
-          Threads
-        </Typography>
-        <ToolTip title="New thread">
-          <IconButton
-            size="small"
-            aria-label="New thread"
-            disabled={actionBusy}
-            onClick={actions.create}
-          >
-            <AddIcon width={18} height={18} />
-          </IconButton>
-        </ToolTip>
+        {selectMode ? (
+          <>
+            <CheckBox
+              checked={allSelected}
+              aria-label="Select all threads"
+              onChange={() => actions.selectAll()}
+              sx={{ p: 0.5, mr: 0.5 }}
+            />
+            <Typography variant="subtitle2" sx={{ flex: 1 }}>
+              {selectedIds.size} selected
+            </Typography>
+            <ToolTip title="Delete selected">
+              <IconButton
+                size="small"
+                aria-label="Delete selected threads"
+                color="error"
+                disabled={selectedIds.size === 0}
+                onClick={actions.requestBatchDelete}
+              >
+                <DeleteIcon width={18} height={18} />
+              </IconButton>
+            </ToolTip>
+            <ToolTip title="Cancel selection">
+              <IconButton
+                size="small"
+                aria-label="Cancel thread selection"
+                onClick={actions.toggleSelectMode}
+              >
+                <CloseIcon width={18} height={18} />
+              </IconButton>
+            </ToolTip>
+          </>
+        ) : (
+          <>
+            <Typography variant="subtitle2" sx={{ flex: 1 }}>
+              Threads
+            </Typography>
+            <ToolTip title="Select threads">
+              <IconButton
+                size="small"
+                aria-label="Select threads"
+                disabled={actionBusy || sessions.length === 0}
+                onClick={actions.toggleSelectMode}
+              >
+                <ChecklistIcon width={18} height={18} />
+              </IconButton>
+            </ToolTip>
+            <ToolTip title="New thread">
+              <IconButton
+                size="small"
+                aria-label="New thread"
+                disabled={actionBusy}
+                onClick={actions.create}
+              >
+                <AddIcon width={18} height={18} />
+              </IconButton>
+            </ToolTip>
+          </>
+        )}
       </Stack>
       <Divider />
       <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
@@ -934,9 +987,22 @@ const ThreadsPanel = memo(function ThreadsPanel({
                   alignItems: "center",
                 }}
               >
+                {selectMode ? (
+                  <CheckBox
+                    checked={selectedIds.has(item.id)}
+                    aria-label={`Select ${threadTitle(item)}`}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={() => actions.toggleSelect(item.id)}
+                    sx={{ ml: 1.25, mr: 0.25 }}
+                  />
+                ) : null}
                 <ListItemButton
-                  selected={item.id === sessionId}
-                  onClick={() => actions.select(item.id)}
+                  selected={!selectMode && item.id === sessionId}
+                  onClick={() =>
+                    selectMode
+                      ? actions.toggleSelect(item.id)
+                      : actions.select(item.id)
+                  }
                   sx={{ flex: 1, minWidth: 0, pr: 5 }}
                 >
                   <ListItemText
@@ -967,22 +1033,24 @@ const ThreadsPanel = memo(function ThreadsPanel({
                     <CircularProgress size={1.2} sx={{ mr: 1 }} />
                   ) : null}
                 </ListItemButton>
-                <IconButton
-                  size="small"
-                  aria-label={`Actions for ${threadTitle(item)}`}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    actions.menu(item, event.currentTarget)
-                  }}
-                  sx={{
-                    position: "absolute",
-                    right: 4,
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                  }}
-                >
-                  <MoreVertIcon width={18} height={18} />
-                </IconButton>
+                {selectMode ? null : (
+                  <IconButton
+                    size="small"
+                    aria-label={`Actions for ${threadTitle(item)}`}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      actions.menu(item, event.currentTarget)
+                    }}
+                    sx={{
+                      position: "absolute",
+                      right: 4,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                    }}
+                  >
+                    <MoreVertIcon width={18} height={18} />
+                  </IconButton>
+                )}
               </Box>
             ))}
           </List>
@@ -1868,6 +1936,13 @@ export function Workspace({ me }: { me: Me }) {
   const [renameTitle, setRenameTitle] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<SessionInfo | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
+  const [threadSelectMode, setThreadSelectMode] = useState(false)
+  const [selectedThreads, setSelectedThreads] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const [batchTarget, setBatchTarget] = useState<string[] | null>(null)
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 })
   const [models, setModels] = useState<Model[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState("")
@@ -2257,6 +2332,10 @@ export function Workspace({ me }: { me: Me }) {
     select: (_id: string) => {},
     menu: (_item: SessionInfo, _anchor: HTMLElement) => {},
     create: () => {},
+    toggleSelectMode: () => {},
+    toggleSelect: (_id: string) => {},
+    selectAll: () => {},
+    requestBatchDelete: () => {},
   })
   const threadActions = useMemo(
     () => ({
@@ -2264,6 +2343,10 @@ export function Workspace({ me }: { me: Me }) {
       menu: (item: SessionInfo, anchor: HTMLElement) =>
         threadActionsRef.current.menu(item, anchor),
       create: () => threadActionsRef.current.create(),
+      toggleSelectMode: () => threadActionsRef.current.toggleSelectMode(),
+      toggleSelect: (id: string) => threadActionsRef.current.toggleSelect(id),
+      selectAll: () => threadActionsRef.current.selectAll(),
+      requestBatchDelete: () => threadActionsRef.current.requestBatchDelete(),
     }),
     [],
   )
@@ -2291,6 +2374,31 @@ export function Workspace({ me }: { me: Me }) {
     create: () => {
       setNewPersonaId("assistant")
       setNewThreadOpen(true)
+    },
+    toggleSelectMode: () => {
+      setThreadSelectMode((open) => !open)
+      setSelectedThreads(new Set())
+    },
+    toggleSelect: (id) => {
+      setSelectedThreads((current) => {
+        const next = new Set(current)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+    },
+    selectAll: () => {
+      setSelectedThreads((current) =>
+        current.size >= sessions.length
+          ? new Set()
+          : new Set(sessions.map((item) => item.id)),
+      )
+    },
+    requestBatchDelete: () => {
+      const live = new Set(sessions.map((item) => item.id))
+      const ids = [...selectedThreads].filter((id) => live.has(id))
+      if (ids.length === 0) return
+      setBatchTarget(ids)
     },
   }
 
@@ -3086,6 +3194,47 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
+  async function deleteThreadsBatch() {
+    const ids = batchTarget
+    if (!ids || ids.length === 0 || batchBusy) return
+    setError("")
+    setBatchBusy(true)
+    setBatchProgress({ done: 0, total: ids.length })
+    const activeId = sessionId
+    const failed: string[] = []
+    for (const [index, id] of ids.entries()) {
+      try {
+        await api(`/api/opencode/session/${id}`, { method: "DELETE" })
+        writeDraft(localStorage, id, "")
+        joinedStore.current.delete(id)
+        seenThread(id)
+        if (id === activeId) {
+          setSessionId("")
+          setMessages([])
+          setMessagesLoading(false)
+          localStorage.removeItem(THREAD_KEY)
+        }
+      } catch {
+        failed.push(id)
+      }
+      setBatchProgress({ done: index + 1, total: ids.length })
+    }
+    setBatchBusy(false)
+    setBatchTarget(null)
+    if (failed.length === 0) {
+      setSelectedThreads(new Set())
+      setThreadSelectMode(false)
+    } else {
+      setSelectedThreads(new Set(failed))
+      if (failed.length === ids.length) setError("delete failed")
+      else
+        setError(
+          `Deleted ${ids.length - failed.length} of ${ids.length} threads — the rest failed`,
+        )
+    }
+    await loadThreads()
+  }
+
   async function stopThread() {
     if (!sessionId || stopBusy) return
     setStopBusy(true)
@@ -3306,14 +3455,18 @@ export function Workspace({ me }: { me: Me }) {
                   : "Chat"
               : tab === "desktop"
                 ? "Desktop"
-                : tab === "hardware"
-                  ? "Hardware"
-                  : tab === "projects"
-                    ? "Projects"
-                    : tab === "media"
-                      ? "Media"
-                      : "Reports"}
+                : tab === "projects"
+                  ? "Projects"
+                  : "Media"}
           </Typography>
+          <IconButton
+            size="small"
+            aria-label={tab === "desktop" ? "Back to chat" : "Desktop"}
+            color={tab === "desktop" ? "primary" : undefined}
+            onClick={() => goTab(tab === "desktop" ? "chat" : "desktop")}
+          >
+            {tab === "desktop" ? <ChatIcon /> : <ComputerIcon />}
+          </IconButton>
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
             {stopping
               ? "stopping…"
@@ -3398,6 +3551,8 @@ export function Workspace({ me }: { me: Me }) {
                 busyIds={busyIds}
                 unread={unread}
                 actionBusy={actionBusy}
+                selectMode={threadSelectMode}
+                selectedIds={selectedThreads}
                 actions={threadActions}
               />
             ) : null}
@@ -3862,28 +4017,6 @@ export function Workspace({ me }: { me: Me }) {
           <MediaVault subscribe={subscribe} />
         </Box>
 
-        <Box
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            display: tab === "hardware" ? "flex" : "none",
-            flexDirection: "column",
-          }}
-        >
-          <Hardware />
-        </Box>
-
-        <Box
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            display: tab === "reports" ? "flex" : "none",
-            flexDirection: "column",
-          }}
-        >
-          <Reports subscribe={subscribe} />
-        </Box>
-
         <Drawer
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
@@ -3906,20 +4039,6 @@ export function Workspace({ me }: { me: Me }) {
                 />
               </ListItemButton>
               <ListItemButton
-                selected={tab === "desktop"}
-                onClick={() => goTab("desktop")}
-              >
-                <ComputerIcon />
-                <ListItemText primary="Desktop" />
-              </ListItemButton>
-              <ListItemButton
-                selected={tab === "hardware"}
-                onClick={() => goTab("hardware")}
-              >
-                <MemoryIcon />
-                <ListItemText primary="Hardware" />
-              </ListItemButton>
-              <ListItemButton
                 selected={tab === "projects"}
                 onClick={() => goTab("projects")}
               >
@@ -3932,13 +4051,6 @@ export function Workspace({ me }: { me: Me }) {
               >
                 <PhotoLibraryIcon />
                 <ListItemText primary="Media" />
-              </ListItemButton>
-              <ListItemButton
-                selected={tab === "reports"}
-                onClick={() => goTab("reports")}
-              >
-                <BugReportIcon />
-                <ListItemText primary="Reports" />
               </ListItemButton>
             </List>
             <Divider />
@@ -4166,6 +4278,52 @@ export function Workspace({ me }: { me: Me }) {
                 disabled={actionBusy}
                 startIcon={<DeleteIcon />}
                 onClick={() => void deleteThread()}
+              >
+                Delete
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        {batchTarget ? (
+          <Dialog
+            open
+            onClose={() => {
+              if (!batchBusy) setBatchTarget(null)
+            }}
+          >
+            <DialogTitle>
+              {batchTarget.length === 1
+                ? `Delete “${threadTitle(
+                    sessions.find((item) => item.id === batchTarget[0]) ?? {
+                      id: batchTarget[0],
+                    },
+                  )}”?`
+                : `Delete ${batchTarget.length} threads?`}
+            </DialogTitle>
+            <DialogContent>
+              <Typography variant="body2">
+                {batchBusy
+                  ? `Deleting ${batchProgress.done} of ${batchProgress.total}…`
+                  : batchTarget.length === 1
+                    ? "Deletes the thread and all of its messages. This cannot be undone."
+                    : `Deletes ${batchTarget.length} threads and all of their messages. This cannot be undone.`}
+              </Typography>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                variant="text"
+                disabled={batchBusy}
+                onClick={() => setBatchTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                color="error"
+                variant="contained"
+                disabled={batchBusy}
+                startIcon={<DeleteIcon />}
+                onClick={() => void deleteThreadsBatch()}
               >
                 Delete
               </Button>

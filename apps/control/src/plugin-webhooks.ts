@@ -1,28 +1,31 @@
+import { createHash, timingSafeEqual } from "node:crypto"
 import type { Db, InstalledPlugin } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import { endpoint, startDesktop } from "./docker"
 import { HttpError } from "./http-error"
 import { resolveDesktopProviders } from "./key-vault"
 import { ensurePluginPageServer, pageStateFor } from "./plugin-pages"
+import type { UpgradeServer } from "./preview"
 
-// Public webhook surface for plugin page servers: /hooks/<pluginId>/<token>/
-// <path>, or /hooks/<pluginId>/<path> with the token as the
-// X-Open-Bot-Webhook-Secret header (or ?secret=). The token alone
-// authenticates; a hit wakes a sleeping desktop, boots the plugin's page
-// server, and proxies the request to it. Opt-in per plugin via
-// manifest dashboard.pages.webhook.
+// Public HTTP surface for plugin page servers: /hooks/<pluginId>/<path>.
+// Behaves like a normal web server in front of the plugin — any method,
+// HTML/assets/streams, WebSocket upgrades — resolved by plugin id alone and
+// opt-in per plugin via manifest dashboard.pages.public. A hit wakes a
+// sleeping desktop, boots the page server, and proxies the request. An
+// install may set an optional secret (header X-Open-Bot-Webhook-Secret or
+// ?secret=) to require authentication.
 
 export const WEBHOOK_BODY_MAX_BYTES = 25_000_000
 export const WEBHOOK_UPSTREAM_TIMEOUT_MS = 30_000
 const WEBHOOK_WINDOW_MS = 60_000
 const WEBHOOK_WINDOW_MAX = 30
 const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/
-const TOKEN_PATTERN = /^[0-9a-f]{64}$/
 const SECRET_HEADER = "x-open-bot-webhook-secret"
+const ASYNC_PARAM = "ob_async"
+export const WEBHOOK_SECRET_MAX_LENGTH = 128
 
 export type ParsedWebhookPath = {
   pluginId: string
-  token: string | null
   rest: string
 }
 
@@ -31,38 +34,67 @@ export function parseWebhookPath(pathname: string): ParsedWebhookPath | null {
   if (!match?.[1]) return null
   const pluginId = match[1]
   if (!PLUGIN_ID_PATTERN.test(pluginId)) return null
-  let tail = match[2] && match[2] !== "/" ? match[2] : "/"
-  if (tail.includes("\0") || tail.includes("\\") || tail.includes(".."))
+  let rest = match[2] && match[2] !== "/" ? match[2] : "/"
+  if (rest.includes("\0") || rest.includes("\\") || rest.includes(".."))
     return null
   try {
-    tail = decodeURIComponent(tail)
+    rest = decodeURIComponent(rest)
   } catch {
     return null
   }
-  if (tail.includes("..") || !tail.startsWith("/")) return null
-  let token: string | null = null
-  let rest = tail
-  if (tail !== "/") {
-    const slash = tail.indexOf("/", 1)
-    const head = slash === -1 ? tail.slice(1) : tail.slice(1, slash)
-    if (TOKEN_PATTERN.test(head)) {
-      token = head
-      rest = slash === -1 ? "/" : tail.slice(slash)
-    }
-  }
-  return { pluginId, token, rest }
+  if (rest.includes("..") || !rest.startsWith("/")) return null
+  return { pluginId, rest }
 }
 
-export function webhookSecret(
-  req: Request,
-  url: URL,
-  parsed: ParsedWebhookPath,
-) {
-  if (parsed.token) return parsed.token
+export function webhookSecret(req: Request, url: URL) {
   const header = req.headers.get(SECRET_HEADER)?.trim()
   if (header) return header
   const query = url.searchParams.get("secret")?.trim()
   return query || null
+}
+
+function secretMatches(candidate: string | null, provided: string) {
+  if (!candidate) return false
+  const left = createHash("sha256").update(candidate).digest()
+  const right = createHash("sha256").update(provided).digest()
+  return timingSafeEqual(left, right)
+}
+
+export type WebhookTarget =
+  | { kind: "ok"; row: InstalledPlugin }
+  | { kind: "not_found" }
+  | { kind: "ambiguous" }
+
+export function publicPagesEnabled(manifest: PluginManifest) {
+  const pages = manifest.dashboard?.pages
+  return Boolean(pages?.entry && pages.public === true)
+}
+
+// One plugin id may be installed by several users on a shared instance.
+// Secured installs only match with their secret; public installs resolve
+// directly when unambiguous.
+export function resolveWebhookTarget(
+  db: Db,
+  pluginId: string,
+  secret: string | null,
+): WebhookTarget {
+  const candidates = db
+    .installedPluginsByPluginId(pluginId)
+    .filter(
+      (row) =>
+        row.enabled && publicPagesEnabled(row.manifest as PluginManifest),
+    )
+  if (candidates.length === 0) return { kind: "not_found" }
+  if (secret) {
+    const row = candidates.find((row) =>
+      secretMatches(row.webhookToken, secret),
+    )
+    return row ? { kind: "ok", row } : { kind: "not_found" }
+  }
+  const pub = candidates.filter((row) => !row.webhookToken)
+  if (pub.length === 1) return { kind: "ok", row: pub[0] as InstalledPlugin }
+  if (pub.length > 1) return { kind: "ambiguous" }
+  return { kind: "not_found" }
 }
 
 const hits = new Map<string, number[]>()
@@ -87,11 +119,6 @@ export function webhookRetryAfter(userId: string, pluginId: string) {
 
 export function clearWebhookState() {
   hits.clear()
-}
-
-export function webhookManifestEnabled(manifest: PluginManifest) {
-  const pages = manifest.dashboard?.pages
-  return Boolean(pages?.entry && pages.webhook === true)
 }
 
 async function wakeDesktop(db: Db, userId: string) {
@@ -135,31 +162,28 @@ async function readWebhookBody(req: Request) {
   return buffer
 }
 
-async function deliverWebhook(
+type PageServerState = NonNullable<ReturnType<typeof pageStateFor>>
+
+async function forwardToPlugin(
   req: Request,
   url: URL,
-  db: Db,
   row: InstalledPlugin,
+  parsed: ParsedWebhookPath,
+  state: PageServerState,
   body: BodyInit | undefined,
 ): Promise<Response> {
-  const parsed = parseWebhookPath(url.pathname)
-  if (!parsed) return new Response("not found", { status: 404 })
-  await wakeDesktop(db, row.userId)
-  await ensurePluginPageServer(row.userId, row)
-  const state = pageStateFor(row.userId, row.pluginId)
-  if (!state) {
-    throw new HttpError(
-      502,
-      "page server is not running",
-      "webhook_page_server",
-    )
-  }
   const base = await endpoint(row.userId, "opencode", state.port)
   const query = new URLSearchParams(url.searchParams)
-  query.delete("async")
-  query.delete("secret")
+  query.delete(ASYNC_PARAM)
   const qs = query.toString()
   const dest = new URL(`${parsed.rest}${qs ? `?${qs}` : ""}`, base)
+  // The deadline covers reaching the plugin (headers), not the body —
+  // long-lived responses (SSE, downloads) keep streaming after that.
+  const controller = new AbortController()
+  const timer = setTimeout(
+    () => controller.abort(),
+    WEBHOOK_UPSTREAM_TIMEOUT_MS,
+  )
   let upstream: Response
   try {
     upstream = await fetch(dest, {
@@ -167,7 +191,7 @@ async function deliverWebhook(
       headers: webhookHeaders(req.headers, state.token),
       body,
       redirect: "manual",
-      signal: AbortSignal.timeout(WEBHOOK_UPSTREAM_TIMEOUT_MS),
+      signal: controller.signal,
     })
   } catch (error) {
     const name = error instanceof Error ? error.name : ""
@@ -183,34 +207,44 @@ async function deliverWebhook(
       "plugin page server is not responding",
       "webhook_page_server",
     )
+  } finally {
+    clearTimeout(timer)
   }
   return upstream
 }
 
 // Entry point wired in server.ts ahead of /api/ dispatch. No cookie auth —
-// the token is the credential. Anything that fails lookup answers a plain
-// 404 so the surface leaks nothing.
+// the URL is public; a secret is checked only when the install set one.
+// Lookup failures answer a plain 404 so the surface leaks nothing.
 export async function handlePluginWebhook(
   req: Request,
   url: URL,
   db: Db,
-): Promise<Response> {
+  server: UpgradeServer,
+): Promise<Response | undefined> {
   const parsed = parseWebhookPath(url.pathname)
-  const secret = parsed ? webhookSecret(req, url, parsed) : null
-  const row = secret ? db.installedPluginByWebhookToken(secret) : null
-  if (!parsed || !row || !row.enabled) {
+  if (!parsed) return new Response("not found", { status: 404 })
+  const target = resolveWebhookTarget(
+    db,
+    parsed.pluginId,
+    webhookSecret(req, url),
+  )
+  if (target.kind === "not_found") {
     return new Response("not found", { status: 404 })
   }
-  const manifest = row.manifest as PluginManifest
-  if (!webhookManifestEnabled(manifest)) {
-    return new Response("not found", { status: 404 })
+  if (target.kind === "ambiguous") {
+    return Response.json(
+      {
+        error: "this plugin id is ambiguous on this instance — set a secret",
+        code: "webhook_ambiguous",
+      },
+      { status: 409 },
+    )
   }
+  const row = target.row
   const user = db.userById(row.userId)
   if (!user || user.disabled || !db.desktop(row.userId)) {
     return new Response("not found", { status: 404 })
-  }
-  if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-    return new Response("webhooks do not upgrade", { status: 400 })
   }
   const retry = webhookRetryAfter(row.userId, row.pluginId)
   if (retry) {
@@ -219,12 +253,34 @@ export async function handlePluginWebhook(
       { status: 429, headers: { "retry-after": String(retry) } },
     )
   }
+  await wakeDesktop(db, row.userId)
+  await ensurePluginPageServer(row.userId, row)
+  const state = pageStateFor(row.userId, row.pluginId)
+  if (!state) {
+    throw new HttpError(
+      502,
+      "page server is not running",
+      "webhook_page_server",
+    )
+  }
+  if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+    const base = await endpoint(row.userId, "opencode", state.port)
+    const ok = server.upgrade(req, {
+      data: {
+        kind: "proxy",
+        target: `${base.replace(/^http/, "ws")}${parsed.rest}${url.search}`,
+        upstream: null,
+        queue: [],
+      },
+    })
+    return ok ? undefined : new Response("upgrade failed", { status: 400 })
+  }
   // Buffered up front: the 202 path responds before delivery, and Bun would
   // cancel an unread request body once the response is sent.
   const body = await readWebhookBody(req)
-  if (url.searchParams.has("async")) {
-    void deliverWebhook(req, url, db, row, body).catch(() => {})
+  if (url.searchParams.get(ASYNC_PARAM) === "1") {
+    void forwardToPlugin(req, url, row, parsed, state, body).catch(() => {})
     return Response.json({ ok: true, accepted: true }, { status: 202 })
   }
-  return deliverWebhook(req, url, db, row, body)
+  return forwardToPlugin(req, url, row, parsed, state, body)
 }

@@ -1,6 +1,6 @@
 ---
 name: thread
-description: Start a new thread with ob-thread, or hand a task to another personality as a teammate (team delegation). Use it when the user asks for a background job thread, a helper thread, a new visible thread on the dashboard, or to give work to a persona like "the software manager".
+description: Start a new thread with ob-thread, hand a task to another personality as a teammate (team delegation), or delete hidden background threads when they are no longer needed. Use it when the user asks for a background job thread, a helper thread, a new visible thread on the dashboard, to give work to a persona like "the software manager", or to clean up old hidden threads.
 ---
 
 # Threads
@@ -59,6 +59,22 @@ List the hidden threads created through this tool:
 ```sh
 ob-thread list
 ```
+
+Delete hidden threads that are no longer needed (by id from `list`, or all of
+them at once):
+
+```sh
+ob-thread delete ses_abc123
+ob-thread delete ses_abc123 ses_def456
+ob-thread delete --all
+```
+
+- Delete only clears up your own hidden background threads. The server refuses
+  anything else — visible dashboard threads and cron jobs come back as
+  `skipped` with a reason. Never delete a hidden thread that may still be
+  wanted: check with the user before bulk cleanup, and prefer `--all` only
+  when they asked for exactly that.
+- Deleting a thread removes its messages, persona binding, media, and screen.
 
 Tell the user the thread title you started and, for visible threads, that it
 is now on the dashboard.

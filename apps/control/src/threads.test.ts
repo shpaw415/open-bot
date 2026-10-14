@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import type { Db, User } from "@open-bot/db"
 
 let phase = "running"
@@ -139,8 +139,9 @@ describe("isThreadRequest", () => {
   test("matches only the agent thread routes", () => {
     expect(isThreadRequest("/api/threads", "GET")).toBe(true)
     expect(isThreadRequest("/api/threads", "POST")).toBe(true)
-    expect(isThreadRequest("/api/threads", "DELETE")).toBe(false)
-    expect(isThreadRequest("/api/threads/s1", "GET")).toBe(false)
+    expect(isThreadRequest("/api/threads", "DELETE")).toBe(true)
+    expect(isThreadRequest("/api/threads", "PATCH")).toBe(false)
+    expect(isThreadRequest("/api/threads/s1", "DELETE")).toBe(false)
     expect(isThreadRequest("/api/cron", "GET")).toBe(false)
   })
 })
@@ -411,11 +412,153 @@ describe("GET /api/threads", () => {
 
   test("unknown methods 404", async () => {
     const res = await handleThreads(
-      new Request("http://control/api/threads", { method: "DELETE" }),
+      new Request("http://control/api/threads", { method: "PATCH" }),
       new URL("http://control/api/threads"),
       db,
       agent,
     )
     expect(res.status).toBe(404)
+  })
+})
+
+describe("DELETE /api/threads", () => {
+  function deleteRequest(body: unknown) {
+    return handleThreads(
+      new Request("http://control/api/threads", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      new URL("http://control/api/threads"),
+      deleteDb,
+      agent,
+    )
+  }
+
+  let cleanupLog: string[]
+  let deleteDb: Db
+  let failDeletes = false
+
+  function installDeleteFetch() {
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      options?: RequestInit,
+    ) => {
+      const url = String(input)
+      const init = options
+      calls.push({ url, init })
+      if (url.endsWith("/session") && (!init?.method || init.method === "GET"))
+        return Response.json([
+          { id: "s1", title: "worker:job" },
+          { id: "s2", title: "Chat" },
+          { id: "s3", title: "worker:helper", parentID: "p1" },
+          { id: "s4", title: "cron-run:nightly" },
+        ])
+      if (url.includes("/session/") && init?.method === "DELETE") {
+        if (failDeletes) return new Response("nope", { status: 500 })
+        return Response.json({ id: url.split("/session/")[1] })
+      }
+      return Response.json({})
+    }) as unknown as typeof fetch
+  }
+
+  beforeEach(() => {
+    cleanupLog = []
+    failDeletes = false
+    deleteDb = {
+      desktop: (id: string) =>
+        id === "user-1" ? { opencodePassword: "pw" } : null,
+      clearThreadPersona: (_userId: string, sessionId: string) => {
+        cleanupLog.push(`persona:${sessionId}`)
+      },
+      clearThreadTitle: (_userId: string, sessionId: string) => {
+        cleanupLog.push(`title:${sessionId}`)
+      },
+      workspaceMediaForSession: () => [],
+      deleteWorkspaceMedia: () => {},
+      clearThreadScreen: () => {},
+    } as unknown as Db
+  })
+
+  afterEach(() => {
+    failDeletes = false
+  })
+
+  test("validates the ids body", async () => {
+    installFetch()
+    expect((await deleteRequest({})).status).toBe(400)
+    expect((await deleteRequest({ ids: "s1" })).status).toBe(400)
+    expect((await deleteRequest({ ids: [42] })).status).toBe(400)
+    expect((await deleteRequest({ ids: [] })).status).toBe(400)
+    expect((await deleteRequest({ ids: ["   "] })).status).toBe(400)
+    expect(calls).toHaveLength(0)
+  })
+
+  test("deletes hidden agent threads and runs the cleanup", async () => {
+    installDeleteFetch()
+    const res = await deleteRequest({ ids: ["s1", "s1"] })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      deleted: string[]
+      skipped: { id: string; reason: string }[]
+    }
+    expect(body.deleted).toEqual(["s1"])
+    expect(body.skipped).toEqual([])
+    expect(cleanupLog).toEqual(["persona:s1", "title:s1"])
+    const del = calls.find(
+      (call) =>
+        call.url.endsWith("/session/s1") && call.init?.method === "DELETE",
+    )
+    expect(del).toBeDefined()
+  })
+
+  test("skips anything that is not a hidden agent thread", async () => {
+    installDeleteFetch()
+    const res = await deleteRequest({
+      ids: ["s1", "s2", "s3", "s4", "missing"],
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      deleted: string[]
+      skipped: { id: string; reason: string }[]
+    }
+    expect(body.deleted).toEqual(["s1"])
+    expect(body.skipped).toEqual([
+      { id: "s2", reason: "not a hidden agent thread" },
+      { id: "s3", reason: "not a hidden agent thread" },
+      { id: "s4", reason: "not a hidden agent thread" },
+      { id: "missing", reason: "not a hidden agent thread" },
+    ])
+    expect(cleanupLog).toEqual(["persona:s1", "title:s1"])
+  })
+
+  test("reports a delete failure as skipped", async () => {
+    installDeleteFetch()
+    failDeletes = true
+    const res = await deleteRequest({ ids: ["s1"] })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      deleted: string[]
+      skipped: { id: string; reason: string }[]
+    }
+    expect(body.deleted).toEqual([])
+    expect(body.skipped).toEqual([{ id: "s1", reason: "delete failed" }])
+    expect(cleanupLog).toEqual([])
+  })
+
+  test("reports a sleeping desktop and never reaches opencode", async () => {
+    installFetch()
+    phase = "sleeping"
+    const res = await deleteRequest({ ids: ["s1"] })
+    expect(res.status).toBe(409)
+    expect(calls).toHaveLength(0)
+  })
+
+  test("caps the batch at 100 ids", async () => {
+    installDeleteFetch()
+    const res = await deleteRequest({
+      ids: Array.from({ length: 101 }, (_, index) => `s${index}`),
+    })
+    expect(res.status).toBe(400)
   })
 })

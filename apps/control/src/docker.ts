@@ -577,6 +577,16 @@ async function startDesktopInner(
     )
     pluginSetups.get(userId)?.finally(() => pluginSetups.delete(userId))
   }
+  if (desktopUpHook) {
+    // Fire-and-forget: deferred re-syncs must never delay a desktop start.
+    desktopUpHook(userId).catch((error: unknown) => {
+      console.error(
+        `desktop-up re-sync failed for ${n.key}: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    })
+  }
 
   if (!(await isRunning(n.computer))) {
     await removeAndRunDetached(n.computer, [
@@ -1345,12 +1355,21 @@ export async function removeAllPluginTools(userId: string, pluginId: string) {
 // /usr/local and /home volumes has to be redone.
 let desktopReadyHook: ((userId: string) => Promise<void>) | null = null
 
+// Fires on every successful desktop start (create or wake), unlike the
+// ready hook above which only fires on a recreate. Used for deferred
+// re-syncs that could not reach a sleeping desktop.
+let desktopUpHook: ((userId: string) => Promise<void>) | null = null
+
 // Tracks the in-flight boot re-apply per user so callers that own the process
 // lifetime (recycle) can wait for it instead of killing it on exit.
 const pluginSetups = new Map<string, Promise<void>>()
 
 export function onDesktopReady(hook: (userId: string) => Promise<void>) {
   desktopReadyHook = hook
+}
+
+export function onDesktopUp(hook: (userId: string) => Promise<void>) {
+  desktopUpHook = hook
 }
 
 // Resolves when the plugin boot re-apply started by the last desktop (re)create

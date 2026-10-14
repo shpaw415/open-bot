@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f1e96191-2a59-467a-9f86-78f4d6945cdf",
+  "id": "150db35e-6d81-4f2b-b47b-53dfc2e86714",
   "prevId": "1263ce87-8f95-48c2-b5d5-e904624319e9",
   "tables": {
     "app_settings": {
@@ -858,11 +858,6 @@
         "installed_plugins_user_plugin": {
           "name": "installed_plugins_user_plugin",
           "columns": ["user_id", "plugin_id"],
-          "isUnique": true
-        },
-        "installed_plugins_webhook_token": {
-          "name": "installed_plugins_webhook_token",
-          "columns": ["webhook_token"],
           "isUnique": true
         }
       },

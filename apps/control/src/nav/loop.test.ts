@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { system1Providers } from "../system1"
-import type { Decision, Snapshot } from "./action-space"
+import { type Decision, NONE_VALUE, type Snapshot } from "./action-space"
 import { type Act, runNav } from "./loop"
 import {
   annotateQuestions,
@@ -44,6 +44,7 @@ function decision(partial: Partial<Decision>): Decision {
     confidence: 0.9,
     target: null,
     textValue: null,
+    quote: null,
     needsUser: 0,
     ...partial,
   }
@@ -65,6 +66,37 @@ test("a low-confidence click is skipped, then the run recovers", async () => {
   expect(asked).toBe(2)
   expect(acts).toEqual([])
   expect(result.status).toBe("done")
+})
+
+test("a DONE quote becomes the detail and questions offer page snippets", async () => {
+  const quote = "results"
+  const quotesSeen: string[][] = []
+  const result = await runNav({
+    goal: "quote the #1 story title and points",
+    ask: async (input) => {
+      quotesSeen.push(
+        Object.keys(input.questions.page_quote?.criteria ?? {}).filter(
+          (key) => key !== NONE_VALUE,
+        ),
+      )
+      return decision({ operation: "DONE", quote })
+    },
+    driver: driver([]),
+  })
+  expect(result.status).toBe("done")
+  expect(result.detail).toBe(quote)
+  expect(quotesSeen[0]).toContain(quote)
+})
+
+test("a DONE quote that is not page text falls back to the title", async () => {
+  const result = await runNav({
+    goal: "quote the #1 story title and points",
+    ask: async () =>
+      decision({ operation: "DONE", quote: "fabricated wording" }),
+    driver: driver([]),
+  })
+  expect(result.status).toBe("done")
+  expect(result.detail).toBe("Search")
 })
 
 test("a mid-confidence scroll proceeds instead of stalling", async () => {

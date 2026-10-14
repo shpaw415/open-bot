@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -61,13 +67,12 @@ test("dockerfile builds the gpio-3d venv and wrapper", () => {
   expect(dockerfile).toContain("/usr/local/bin/gpio-3d")
 })
 
-test("entrypoint seeds the gpio-3d skill and validator", () => {
+test("entrypoint seeds every skill directory, validator included", () => {
+  expect(entrypoint).toContain("for skill_dir in /opt/open-bot/seed/skills/*/")
   expect(entrypoint).toContain(
-    "cp /opt/open-bot/seed/skills/gpio-3d/SKILL.md /home/agent/.config/opencode/skills/gpio-3d/SKILL.md",
+    'cp -a "$skill_dir." "/home/agent/.config/opencode/skills/$skill/"',
   )
-  expect(entrypoint).toContain(
-    "cp /opt/open-bot/seed/skills/gpio-3d/validate-manifest.ts /home/agent/.config/opencode/skills/gpio-3d/validate-manifest.ts",
-  )
+  expect(existsSync(join(skillDir, "validate-manifest.ts"))).toBe(true)
 })
 
 test("seeded skill declares itself and the workspace model dir", () => {

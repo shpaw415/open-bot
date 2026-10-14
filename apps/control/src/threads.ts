@@ -8,6 +8,8 @@ import {
   type PersonaMatch,
   personaSystem,
 } from "./personas"
+import { stopThreadScreen } from "./screens"
+import { deleteSessionMedia } from "./workspace-snapshots"
 
 // Hidden threads reuse the worker: title prefix. The dashboard thread list and
 // the media vault already skip worker:/cron-run: titled sessions, so a hidden
@@ -17,9 +19,13 @@ const CRON_TITLE_PREFIX = "cron-run:"
 const TITLE_LIMIT = 80
 const MESSAGE_LIMIT = 8000
 const PROMPT_TIMEOUT_MS = 30_000
+const DELETE_LIMIT = 100
 
 export function isThreadRequest(pathname: string, method: string): boolean {
-  return pathname === "/api/threads" && (method === "GET" || method === "POST")
+  return (
+    pathname === "/api/threads" &&
+    (method === "GET" || method === "POST" || method === "DELETE")
+  )
 }
 
 export function sanitizeThreadTitle(raw: unknown): string | null {
@@ -72,7 +78,23 @@ export async function handleThreads(
     return startThread(req, db, agent)
   if (url.pathname === "/api/threads" && req.method === "GET")
     return listThreads(db, agent)
+  if (url.pathname === "/api/threads" && req.method === "DELETE")
+    return deleteThreads(req, db, agent)
   return json({ error: "not found" }, 404)
+}
+
+// Runs after opencode confirms a session deletion: drops the control-plane
+// rows and side effects tied to that thread. Shared by the dashboard's
+// cookie route (server.ts) and the agent's DELETE /api/threads.
+export async function cleanupDeletedThread(
+  db: Db,
+  userId: string,
+  sessionId: string,
+): Promise<void> {
+  db.clearThreadPersona(userId, sessionId)
+  db.clearThreadTitle(userId, sessionId)
+  deleteSessionMedia(db, userId, sessionId)
+  await stopThreadScreen(db, userId, sessionId)
 }
 
 type ResolvedOpencode =
@@ -208,4 +230,68 @@ async function listThreads(db: Db, agent: User) {
       return { id: row.id, title: row.title }
     })
   return json({ threads })
+}
+
+// Deletes hidden agent threads in bulk. Only top-level worker:-titled
+// sessions are deletable — the same set listThreads returns — so the agent
+// can never touch the user's visible threads or cron jobs. Everything else
+// comes back skipped with a reason.
+async function deleteThreads(req: Request, db: Db, agent: User) {
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+  const raw = body.ids
+  if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string"))
+    return json({ error: "ids must be an array of strings" }, 400)
+  const ids = [...new Set(raw as string[])].filter((id) => id.trim())
+  if (ids.length === 0) return json({ error: "ids must not be empty" }, 400)
+  if (ids.length > DELETE_LIMIT)
+    return json({ error: `ids is limited to ${DELETE_LIMIT} per request` }, 400)
+
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const res = await fetch(`${base}/session`, {
+    headers,
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => null)
+  if (!res || !res.ok) return json({ error: "session list failed" }, 502)
+  const sessions = (await res.json().catch(() => null)) as unknown
+  if (!Array.isArray(sessions))
+    return json({ error: "session list failed" }, 502)
+  const deletable = new Set(
+    sessions
+      .filter((item) => {
+        const row = item as { title?: unknown; parentID?: unknown }
+        return (
+          !row.parentID &&
+          typeof row?.title === "string" &&
+          row.title.startsWith(WORKER_TITLE_PREFIX)
+        )
+      })
+      .map((item) => (item as { id?: unknown }).id)
+      .filter((id): id is string => typeof id === "string"),
+  )
+  const deleted: string[] = []
+  const skipped: { id: string; reason: string }[] = []
+  for (const id of ids) {
+    if (!deletable.has(id)) {
+      skipped.push({ id, reason: "not a hidden agent thread" })
+      continue
+    }
+    const del = await fetch(`${base}/session/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null)
+    if (!del || !del.ok) {
+      skipped.push({ id, reason: "delete failed" })
+      continue
+    }
+    try {
+      await cleanupDeletedThread(db, agent.id, id)
+    } catch {
+      // The thread is gone; leftover control-plane rows are harmless.
+    }
+    deleted.push(id)
+  }
+  return json({ deleted, skipped })
 }

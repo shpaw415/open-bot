@@ -77,7 +77,7 @@ export type InstalledPluginInfo = {
     dashboard?: {
       pages?: {
         entry: string
-        webhook?: boolean
+        public?: boolean
       }
       tabs?: {
         id: string

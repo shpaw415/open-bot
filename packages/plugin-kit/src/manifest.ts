@@ -230,7 +230,7 @@ export function validateConfigValue(
 // under /api/pages/<pluginId>/… with SSE + WebSocket pass-through.
 export type PluginDashboardPages = {
   entry: string
-  webhook?: boolean
+  public?: boolean
 }
 
 export type PluginTab = {
@@ -1010,11 +1010,11 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
               })
             }
           }
-          const webhook = pages.webhook
-          if (webhook !== undefined && typeof webhook !== "boolean") {
+          const pub = pages.public
+          if (pub !== undefined && typeof pub !== "boolean") {
             issues.push({
-              path: "dashboard.pages.webhook",
-              message: "dashboard.pages.webhook must be a boolean",
+              path: "dashboard.pages.public",
+              message: "dashboard.pages.public must be a boolean",
             })
           }
         }

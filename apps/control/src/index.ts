@@ -11,6 +11,7 @@ import {
   desktopPhase,
   isRunning,
   onDesktopReady,
+  onDesktopUp,
   runningCount,
   sleptRecently,
   startDesktop,
@@ -31,7 +32,10 @@ import { resolveDesktopProviders } from "./key-vault"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
 import { dispatchPluginHooks } from "./plugin-hooks"
 import { convertGuardCrons } from "./plugins"
-import { reapplyPluginSetup } from "./plugins-apply"
+import {
+  flushPendingPluginConfigs,
+  reapplyPluginSetup,
+} from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStatsSampler } from "./stats"
 import { startStuckWatch } from "./stuck"
@@ -95,6 +99,9 @@ onDesktopReady((userId) => {
     hub.emit(userId, { type: "plugins.changed" })
   })
 })
+// Config syncs deferred while the desktop slept (vault keys, plugin settings)
+// land the moment it is running again — create or wake.
+onDesktopUp((userId) => flushPendingPluginConfigs(db, userId))
 // Background pumps for already-running desktops so plugin hooks, media
 // capture, and other event observers work with no dashboard attached.
 for (const row of db.activeDesktops(0)) hub.ensurePump(row.userId)
