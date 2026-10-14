@@ -199,7 +199,7 @@ export function verbFrom(argv: string[]): {
 // once inside the same call saves the agent a whole step. Healthy calls pay
 // no heal cost at all — the wrappers no longer run it up front.
 const UNREACHABLE =
-  /unable to connect|econnrefused|fetch failed|no page on this screen|cdp connection (timed out|failed)/i
+  /unable to connect|not reachable|econnrefused|fetch failed|no page on this screen|cdp connection (timed out|failed)/i
 
 function heal(session: string | undefined) {
   if (!session) return

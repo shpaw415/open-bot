@@ -47,7 +47,18 @@ sudo -n /opt/open-bot/screen-up.sh "$session" "$display" >/dev/null 2>&1 || true
 # declaring the screen lost.
 i=0
 while [ "$i" -lt 45 ]; do
-  "$list" 2>/dev/null | grep -q "^$session " && exit 0
+  if "$list" 2>/dev/null | grep -q "^$session "; then
+    # Xvfb is listed before Chromium's CDP port is listening; the caller's
+    # retry right after a heal would otherwise still hit ECONNREFUSED.
+    cdp=$(cat "$portfile")
+    j=0
+    while [ "$j" -lt 15 ]; do
+      curl -s -m 1 -o /dev/null "http://127.0.0.1:$cdp/json/version" && exit 0
+      j=$((j + 1))
+      sleep 1
+    done
+    exit 0
+  fi
   i=$((i + 1))
   sleep 1
 done

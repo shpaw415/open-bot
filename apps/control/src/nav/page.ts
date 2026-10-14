@@ -128,7 +128,20 @@ async function run(session: string | undefined) {
         const ok = await evaluate(socket, actionScript(action))
         if (ok === false) throw new Error("target covered")
         await Bun.sleep(verb === "type" ? 200 : 80)
-        console.log(JSON.stringify(await view(socket)))
+        // A click that navigates tears the execution context down while the
+        // post-action read runs; the click still worked. Settle, then re-read
+        // on a fresh connection instead of reporting a page error.
+        try {
+          console.log(JSON.stringify(await view(socket)))
+        } catch {
+          await Bun.sleep(900)
+          const fresh = await connectCdpSocket(port)
+          try {
+            console.log(JSON.stringify(await view(fresh)))
+          } finally {
+            fresh.close()
+          }
+        }
         return
       }
       throw new Error(USAGE)
@@ -144,7 +157,11 @@ async function main() {
 
 if (import.meta.main) {
   main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : "page failed")
+    const raw = error instanceof Error ? error.message : "page failed"
+    const message = /unable to connect|econnrefused|fetch failed/i.test(raw)
+      ? "chrome is not reachable on this screen"
+      : raw
+    console.error(message)
     process.exit(1)
   })
 }

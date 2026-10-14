@@ -1,5 +1,5 @@
 import type { Db } from "@open-bot/db"
-import { desktopExec, opencodeExec } from "./docker"
+import { desktopExec, endpoint, opencodeExec } from "./docker"
 import { maxThreadScreens } from "./env"
 import { HttpError } from "./http-error"
 
@@ -141,6 +141,31 @@ function view(sessionId: string, display: number): ThreadScreenView {
   }
 }
 
+// Session ids with a turn in flight on this desktop's opencode server.
+async function busySessions(userId: string, db: Db): Promise<string[]> {
+  try {
+    const desktop = db.desktop(userId)
+    if (!desktop) return []
+    const base = await endpoint(userId, "opencode", 4096)
+    const response = await fetch(`${base}/session/status`, {
+      headers: {
+        authorization: `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`,
+      },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!response.ok) return []
+    const status = (await response.json()) as Record<
+      string,
+      { type?: string }
+    >
+    return Object.entries(status)
+      .filter(([, row]) => row?.type && row.type !== "idle")
+      .map(([id]) => id)
+  } catch {
+    return []
+  }
+}
+
 function lockUser<T>(userId: string, fn: () => Promise<T>): Promise<T> {
   const prev = chains.get(userId) ?? Promise.resolve()
   const run = prev.then(fn, fn)
@@ -227,14 +252,21 @@ async function ensureInner(
       stored.find((saved) => saved.sessionId === item.sessionId)
         ?.lastActiveAt ?? 0,
   }))
-  const victims = screensToStop(alive, threadScreenCap())
+  let victims = screensToStop(alive, threadScreenCap())
+  if (victims.length > 0) {
+    // The CLI tools drive screens without bumping lastActiveAt, so a session
+    // mid-turn can look like the least-recently-used one; never stop a screen
+    // whose thread is busy, or the agent dies mid-task with "no screen".
+    const busy = await busySessions(userId, db)
+    victims = victims.filter((victim) => !busy.includes(victim))
+  }
   for (const victim of victims) {
     await stopProcesses(userId, victim, false)
   }
-  const busy = listed
+  const busyDisplays = listed
     .filter((item) => !victims.includes(item.sessionId))
     .map((item) => item.display)
-  const display = pickDisplay(busy, row?.display ?? null)
+  const display = pickDisplay(busyDisplays, row?.display ?? null)
   if (display === null) {
     throw new HttpError(
       429,

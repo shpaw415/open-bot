@@ -18,6 +18,11 @@ case "$session" in
     ;;
 esac
 file=/home/agent/.open-bot/vnc/$session
+if [ ! -s "$file" ] && [ -s "/home/agent/.open-bot/cdp/$session" ]; then
+  # A stopped screen still has its cdp port file; heal can bring the whole
+  # screen (and this vnc file) back, so try that before giving up.
+  /opt/open-bot/screen-heal.sh "$session" >&2 || true
+fi
 if [ ! -s "$file" ]; then
   echo "no screen for $session. Do not try port 5900 or another host." >&2
   exit 1

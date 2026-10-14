@@ -18,7 +18,10 @@ case "$session" in
     ;;
 esac
 file=/home/agent/.open-bot/vnc/$session
-if [ ! -s "$file" ]; then
+portfile=/home/agent/.open-bot/cdp/$session
+# The vnc file disappears when a screen is stopped, but the cdp port file
+# survives — that combination is a healable dead screen, not "no screen".
+if [ ! -s "$file" ] && [ ! -s "$portfile" ]; then
   echo "no screen for $session. Do not guess ports or hosts." >&2
   exit 1
 fi
@@ -28,7 +31,6 @@ if [ -f "${file}.hold" ]; then
 fi
 # No pre-flight heal here: page.ts heals and retries on its own when the
 # screen or browser is actually unreachable, so healthy calls stay lean.
-portfile=/home/agent/.open-bot/cdp/$session
 port=$(cat "$portfile" 2>/dev/null || echo 0)
 case "$port" in
   922[4-9] | 923[01]) ;;

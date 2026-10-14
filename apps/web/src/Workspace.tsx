@@ -110,7 +110,7 @@ import {
   promptParts,
   readJoinedFile,
 } from "./join-file"
-import { MediaDownloadButton } from "./MediaDownload"
+import { MediaDownloadButton, MediaFullscreenButton } from "./MediaDownload"
 import { MediaVault } from "./MediaVault"
 import { Model3dView } from "./Model3dView"
 import { ModelSelect } from "./ModelSelect"
@@ -407,8 +407,12 @@ const markdownComponents: Components = {
     if (!src) return null
     if (/\.(mp4|webm)$/i.test(src)) {
       return (
-        // biome-ignore lint/a11y/useMediaCaption: generated clips ship without captions
-        <video src={src} controls preload="metadata" />
+        <div className="ob-media-wrap">
+          {/* biome-ignore lint/a11y/useMediaCaption: generated clips ship without captions */}
+          <video src={src} controls preload="metadata" />
+          <MediaDownloadButton src={src} />
+          <MediaFullscreenButton src={src} alt={alt ?? ""} />
+        </div>
       )
     }
     if (src.startsWith("/api/workspace/model3d") || /\.glb$/i.test(src)) {
@@ -418,6 +422,7 @@ const markdownComponents: Components = {
       <div className="ob-media-wrap">
         <img src={src} alt={alt ?? ""} />
         <MediaDownloadButton src={src} />
+        <MediaFullscreenButton src={src} alt={alt ?? ""} />
       </div>
     )
   },
@@ -724,6 +729,7 @@ const MessageBubble = memo(function MessageBubble({
           <div key={src} className="ob-media-wrap">
             <img src={src} alt="" />
             <MediaDownloadButton src={src} />
+            <MediaFullscreenButton src={src} />
           </div>
         ))}
         {message.handoff ? (

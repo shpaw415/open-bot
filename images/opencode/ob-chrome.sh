@@ -18,7 +18,10 @@ case "$session" in
     ;;
 esac
 file=/home/agent/.open-bot/vnc/$session
-if [ ! -s "$file" ]; then
+portfile=/home/agent/.open-bot/cdp/$session
+# The vnc file disappears when a screen is stopped, but the cdp port file
+# survives — that combination is a healable dead screen, not "no screen".
+if [ ! -s "$file" ] && [ ! -s "$portfile" ]; then
   echo "no screen for $session. Do not guess ports or hosts." >&2
   exit 1
 fi
