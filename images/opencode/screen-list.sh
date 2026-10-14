@@ -9,7 +9,13 @@ for path in "$dir"/*; do
   pid=$(cat "$path/xvfb.pid" 2>/dev/null || true)
   [ -n "$display" ] || continue
   [ -n "$pid" ] || continue
-  kill -0 "$pid" 2>/dev/null || continue
+  # The recorded pid can go stale while the screen lives (wrapper exit, pid
+  # churn); keep the session listed only when both its X server and its own
+  # Chromium are actually running, so stale rows never double-book a display.
+  if ! kill -0 "$pid" 2>/dev/null; then
+    pgrep -f "^Xvfb :$display " >/dev/null 2>&1 || continue
+    pgrep -f "user-data-dir=/home/agent/.config/chromium-threads/$session" >/dev/null 2>&1 || continue
+  fi
   [ -S "/tmp/.X11-unix/X$display" ] || continue
   echo "$session $display"
 done

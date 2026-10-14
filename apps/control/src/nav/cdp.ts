@@ -487,6 +487,9 @@ export const PROBE = `(() => {
     can_scroll_down: window.scrollY + window.innerHeight < document.documentElement.scrollHeight - 8,
     can_scroll_up: window.scrollY > 8,
     scroll_y: Math.round(window.scrollY),
+    viewport_w: window.innerWidth,
+    viewport_h: window.innerHeight,
+    scroll_height: document.documentElement.scrollHeight,
     elements: out,
     elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length + tiers[4].length > max,
   }

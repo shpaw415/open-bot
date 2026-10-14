@@ -9,9 +9,15 @@ import {
 } from "./cdp"
 
 const USAGE =
-  "usage: chrome.ts PORT navigate URL | url | back | forward | reload"
+  "usage: chrome.ts PORT SESSION navigate URL | url | back | forward | reload"
 
-export type PageState = { url: string; title: string; via?: string }
+export type PageState = {
+  url: string
+  title: string
+  heading?: string
+  text?: string
+  via?: string
+}
 
 export function normalizeTarget(raw: string): string | null {
   const value = raw.trim()
@@ -21,13 +27,18 @@ export function normalizeTarget(raw: string): string | null {
   return null
 }
 
-const STATE_SCRIPT = "({url:location.href,title:document.title})"
+// url, title, heading and the page body text ride back together so "navigate
+// then read" is one call instead of two.
+const STATE_SCRIPT =
+  '({url:location.href,title:document.title,heading:(document.querySelector("h1")?document.querySelector("h1").textContent:"").replace(/\\s+/g," ").trim().slice(0,200),text:(document.body?document.body.innerText:"").replace(/\\s+/g," ").trim().slice(0,2500)})'
 
 export function shapeState(raw: unknown): PageState {
   const row = (raw ?? {}) as Record<string, unknown>
   return {
     url: String(row.url ?? ""),
     title: String(row.title ?? ""),
+    heading: String(row.heading ?? ""),
+    text: String(row.text ?? ""),
   }
 }
 
@@ -69,7 +80,7 @@ async function navigateLive(
         throw error
     }
     if (Date.now() > deadline) break
-    await Bun.sleep(250)
+    await Bun.sleep(120)
   }
   const state = await readState(socket).catch(() => ({ url, title: "" }))
   await front(socket)
@@ -184,16 +195,51 @@ export function verbFrom(argv: string[]): {
   return { verb }
 }
 
+// One failure is often just a dead screen or browser; healing and retrying
+// once inside the same call saves the agent a whole step. Healthy calls pay
+// no heal cost at all — the wrappers no longer run it up front.
+const UNREACHABLE =
+  /unable to connect|econnrefused|fetch failed|no page on this screen|cdp connection (timed out|failed)/i
+
+function heal(session: string | undefined) {
+  if (!session) return
+  try {
+    Bun.spawnSync(["/opt/open-bot/screen-heal.sh", session], {
+      stdout: "ignore",
+      stderr: "inherit",
+    })
+  } catch {}
+}
+
+export async function withHeal<T>(
+  session: string | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!UNREACHABLE.test(message)) throw error
+    heal(session)
+    return run()
+  }
+}
+
 async function main() {
   const port = Number(process.argv[2])
-  const { verb, url } = verbFrom(process.argv.slice(3))
+  const session = process.argv[3]
+  const { verb, url } = verbFrom(process.argv.slice(4))
   if (!Number.isInteger(port) || !verb) throw new Error(USAGE)
   let state: PageState
-  if (verb === "navigate") state = await navigate(port, url ?? "")
-  else if (verb === "url") state = await current(port)
-  else if (verb === "back") state = await history(port, -1)
-  else if (verb === "forward") state = await history(port, 1)
-  else if (verb === "reload") state = await reload(port)
+  if (verb === "navigate")
+    state = await withHeal(session, () => navigate(port, url ?? ""))
+  else if (verb === "url") state = await withHeal(session, () => current(port))
+  else if (verb === "back")
+    state = await withHeal(session, () => history(port, -1))
+  else if (verb === "forward")
+    state = await withHeal(session, () => history(port, 1))
+  else if (verb === "reload")
+    state = await withHeal(session, () => reload(port))
   else throw new Error(USAGE)
   console.log(JSON.stringify(state))
 }

@@ -286,16 +286,19 @@ async function runDetached(args: string[]) {
 
 // Removes any leftover container with this name before running, and retries
 // once on a name conflict: two starters (recycle process, control boot sweep)
-// can race the rm and the run.
+// can race the rm and the run; each pass removes whatever holds the name, so
+// loop a few times instead of giving up after one retry.
 async function removeAndRunDetached(name: string, args: string[]) {
-  await sh(["docker", "rm", "-f", name], undefined, 60_000)
-  try {
-    await runDetached(args)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (!/already in use/i.test(message)) throw error
+  for (let attempt = 0; ; attempt += 1) {
     await sh(["docker", "rm", "-f", name], undefined, 60_000)
-    await runDetached(args)
+    try {
+      await runDetached(args)
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/already in use/i.test(message) || attempt >= 4) throw error
+      await Bun.sleep(2000)
+    }
   }
 }
 

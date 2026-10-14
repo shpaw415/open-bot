@@ -29,6 +29,7 @@ test("read shapes probe plus viewport into one json line", () => {
     scrollHeight: 9000,
   })
   expect(view.url).toBe("https://example.test/")
+  expect(view.text).toBe("hello")
   expect(view.viewport).toEqual({ width: 1920, height: 1200 })
   expect(view.scrollY).toBe(2400)
   expect(view.canScrollDown).toBe(true)

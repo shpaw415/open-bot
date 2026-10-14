@@ -9,14 +9,16 @@ if [[ -f /.dockerenv || "${OPEN_BOT_IN_DOCKER:-}" == "1" ]]; then
 fi
 
 pull_viking=0
+force=0
 for arg in "$@"; do
   case "$arg" in
     --pull-viking) pull_viking=1 ;;
+    --force) force=1 ;;
     --dev)
       echo "note: --dev is no longer needed; product reports are always on" >&2
       ;;
     -h | --help)
-      echo "usage: bun run update [-- --pull-viking] [-- --dev]"
+      echo "usage: bun run update [-- --pull-viking] [-- --force] [-- --dev]"
       exit 0
       ;;
     *)
@@ -75,7 +77,7 @@ if [[ "$ready" != "1" ]]; then
 fi
 
 echo "restarting running desktops"
-if ! timeout 2400 docker exec open-bot bun apps/control/src/recycle.ts; then
+if ! timeout 2400 docker exec open-bot bun apps/control/src/recycle.ts $([[ "$force" == 1 ]] && echo --force); then
   echo "WARNING: desktop restart failed or timed out;" >&2
   echo "affected desktops are asleep — start them from the dashboard" >&2
 fi

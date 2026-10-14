@@ -19,7 +19,9 @@
     "db:generate": "bun run --cwd packages/db db:generate",
     "setup": "bun scripts/setup.ts",
     "update": "bash scripts/update.sh",
-    "update:dev": "bash scripts/update.sh --dev"
+    "update:dev": "bash scripts/update.sh --dev",
+    "bench:browser": "bash scripts/bench-browser.sh",
+    "bench:agent": "bash scripts/bench-agent.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.4",

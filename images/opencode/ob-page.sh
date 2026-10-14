@@ -26,7 +26,8 @@ if [ -f "${file}.hold" ]; then
   echo "The user has this screen. Stop input until they say they are done on the screen." >&2
   exit 1
 fi
-/opt/open-bot/screen-heal.sh "$session"
+# No pre-flight heal here: page.ts heals and retries on its own when the
+# screen or browser is actually unreachable, so healthy calls stay lean.
 portfile=/home/agent/.open-bot/cdp/$session
 port=$(cat "$portfile" 2>/dev/null || echo 0)
 case "$port" in
@@ -36,4 +37,4 @@ case "$port" in
     exit 1
     ;;
 esac
-exec bun /opt/open-bot/nav/page.ts "$port" "$@"
+exec bun /opt/open-bot/nav/page.ts "$port" "$session" "$@"

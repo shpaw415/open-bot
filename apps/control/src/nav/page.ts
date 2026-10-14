@@ -6,6 +6,7 @@ import {
   normalize,
   PROBE,
 } from "./cdp"
+import { withHeal } from "./chrome"
 
 type Metrics = {
   width: number
@@ -14,11 +15,10 @@ type Metrics = {
   scrollHeight: number
 }
 
-const METRICS = `({width:innerWidth,height:innerHeight,scrollY:window.scrollY,scrollHeight:document.documentElement.scrollHeight})`
-
 export type PageView = {
   url: string
   title: string
+  text: string
   viewport: { width: number; height: number }
   scrollY: number
   pageHeight: number
@@ -39,6 +39,9 @@ export function shapeView(probe: Snapshot, metrics: Metrics): PageView {
   return {
     url: probe.url,
     title: probe.title,
+    // Body text rides along so a read answers text questions without a
+    // second tool (or a pixel detour).
+    text: probe.text,
     viewport: { width: metrics.width, height: metrics.height },
     scrollY: metrics.scrollY,
     pageHeight: metrics.scrollHeight,
@@ -56,73 +59,87 @@ export function shapeView(probe: Snapshot, metrics: Metrics): PageView {
   }
 }
 
-function metrics(raw: unknown): Metrics {
+// The probe carries the viewport metrics so a read is a single CDP round trip.
+function metricsFromProbe(raw: unknown): Metrics {
   const row = (raw ?? {}) as Record<string, unknown>
   return {
-    width: Number(row.width ?? 0),
-    height: Number(row.height ?? 0),
-    scrollY: Number(row.scrollY ?? 0),
-    scrollHeight: Number(row.scrollHeight ?? 0),
+    width: Number(row.viewport_w ?? 0),
+    height: Number(row.viewport_h ?? 0),
+    scrollY: Number(row.scroll_y ?? 0),
+    scrollHeight: Number(row.scroll_height ?? 0),
   }
 }
 
 async function view(socket: Parameters<typeof evaluate>[0]) {
   // The page world returns snake_case (target_id, can_scroll_down); without
   // normalize() every id and scroll flag would read as undefined.
-  const probe = normalize(await evaluate(socket, PROBE))
-  return shapeView(probe, metrics(await evaluate(socket, METRICS)))
+  const raw = await evaluate(socket, PROBE)
+  return shapeView(normalize(raw), metricsFromProbe(raw))
 }
 
 const USAGE =
-  "usage: page.ts PORT read | scroll down|up [pages] | click ID | type ID TEXT"
+  "usage: page.ts PORT SESSION read | scroll down|up [pages] | click ID | type ID TEXT"
+
+async function run(session: string | undefined) {
+  const port = Number(process.argv[2])
+  const verb = process.argv[4] ?? ""
+  if (!Number.isInteger(port) || !verb) throw new Error(USAGE)
+  await withHeal(session, async () => {
+    const socket = await connectCdpSocket(port)
+    try {
+      if (verb === "read") {
+        console.log(JSON.stringify(await view(socket)))
+        return
+      }
+      if (verb === "scroll") {
+        const direction = process.argv[5] === "up" ? "up" : "down"
+        const pages = Math.min(
+          Math.max(Number(process.argv[6] ?? 1) || 1, 1),
+          10,
+        )
+        for (let index = 0; index < pages; index += 1) {
+          await evaluate(socket, actionScript({ kind: "scroll", direction }))
+          await Bun.sleep(80)
+        }
+        const viewAfter = await view(socket)
+        console.log(
+          JSON.stringify({
+            scrolled: pages,
+            scrollY: viewAfter.scrollY,
+            pageHeight: viewAfter.pageHeight,
+            canScrollDown: viewAfter.canScrollDown,
+            canScrollUp: viewAfter.canScrollUp,
+          }),
+        )
+        return
+      }
+      if (verb === "click" || verb === "type") {
+        const id = process.argv[5] ?? ""
+        if (!id) throw new Error(USAGE)
+        const action =
+          verb === "click"
+            ? { kind: "click" as const, targetId: id }
+            : {
+                kind: "type" as const,
+                targetId: id,
+                text: process.argv[6] ?? "",
+              }
+        if (verb === "type" && !action.text) throw new Error(USAGE)
+        const ok = await evaluate(socket, actionScript(action))
+        if (ok === false) throw new Error("target covered")
+        await Bun.sleep(verb === "type" ? 200 : 80)
+        console.log(JSON.stringify(await view(socket)))
+        return
+      }
+      throw new Error(USAGE)
+    } finally {
+      socket.close()
+    }
+  })
+}
 
 async function main() {
-  const port = Number(process.argv[2])
-  const verb = process.argv[3] ?? ""
-  if (!Number.isInteger(port) || !verb) throw new Error(USAGE)
-  const socket = await connectCdpSocket(port)
-  try {
-    if (verb === "read") {
-      console.log(JSON.stringify(await view(socket)))
-      return
-    }
-    if (verb === "scroll") {
-      const direction = process.argv[4] === "up" ? "up" : "down"
-      const pages = Math.min(Math.max(Number(process.argv[5] ?? 1) || 1, 1), 10)
-      for (let index = 0; index < pages; index += 1) {
-        await evaluate(socket, actionScript({ kind: "scroll", direction }))
-        await Bun.sleep(80)
-      }
-      const viewAfter = await view(socket)
-      console.log(
-        JSON.stringify({
-          scrolled: pages,
-          scrollY: viewAfter.scrollY,
-          pageHeight: viewAfter.pageHeight,
-          canScrollDown: viewAfter.canScrollDown,
-          canScrollUp: viewAfter.canScrollUp,
-        }),
-      )
-      return
-    }
-    if (verb === "click" || verb === "type") {
-      const id = process.argv[4] ?? ""
-      if (!id) throw new Error(USAGE)
-      const action =
-        verb === "click"
-          ? { kind: "click" as const, targetId: id }
-          : { kind: "type" as const, targetId: id, text: process.argv[5] ?? "" }
-      if (verb === "type" && !action.text) throw new Error(USAGE)
-      const ok = await evaluate(socket, actionScript(action))
-      if (ok === false) throw new Error("target covered")
-      await Bun.sleep(verb === "type" ? 200 : 80)
-      console.log(JSON.stringify(await view(socket)))
-      return
-    }
-    throw new Error(USAGE)
-  } finally {
-    socket.close()
-  }
+  await run(process.argv[3])
 }
 
 if (import.meta.main) {

@@ -2306,7 +2306,7 @@ async function api(
           ),
         ),
         screen?.system ??
-          "This thread's screen is still starting. Do not guess a VNC port. Do not call vncdo.",
+          `This thread's screen id is ${root}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
         screen &&
         (await Promise.race([
           screenHeld(user.id, root),

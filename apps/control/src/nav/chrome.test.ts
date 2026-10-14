@@ -46,12 +46,21 @@ test("verbs parse positional and --url forms", () => {
 })
 
 test("page state shapes to a flat json line", () => {
-  expect(shapeState({ url: "https://a.test/", title: "A" })).toEqual({
-    url: "https://a.test/",
-    title: "A",
+  expect(
+    shapeState({ url: "https://a.test/", title: "A", heading: "H", text: "x" }),
+  ).toEqual({ url: "https://a.test/", title: "A", heading: "H", text: "x" })
+  expect(shapeState(null)).toEqual({
+    url: "",
+    title: "",
+    heading: "",
+    text: "",
   })
-  expect(shapeState(null)).toEqual({ url: "", title: "" })
-  expect(shapeState({ url: 5 })).toEqual({ url: "5", title: "" })
+  expect(shapeState({ url: 5 })).toEqual({
+    url: "5",
+    title: "",
+    heading: "",
+    text: "",
+  })
 })
 
 test("usage names every verb", () => {

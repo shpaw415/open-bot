@@ -9,6 +9,6 @@ for arg in "$@"; do
   prev=$arg
 done
 if [ -n "$session" ]; then
-  /opt/open-bot/screen-heal.sh "$session"
+  /opt/open-bot/screen-heal.sh "$session" >&2 || true
 fi
 exec bun /opt/open-bot/nav/ob-nav.ts "$@"

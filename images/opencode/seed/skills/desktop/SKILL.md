@@ -15,7 +15,7 @@ ob-chrome --session SESSION forward
 ob-chrome --session SESSION reload
 ```
 
-`navigate` also accepts `--url URL` and a bare domain (the scheme is added). It prints one JSON line with the page `url` and `title`. If the tab crashed or hangs, navigate opens a fresh tab on its own and reports `via: "new-tab"`. If the screen or Chromium is down, the command brings it back first (a relaunch opens a blank page) — no need to diagnose the screen.
+`navigate` also accepts `--url URL` and a bare domain (the scheme is added). It prints one JSON line with the page `url`, `title`, `heading` (first h1) and 2500 chars of body `text` — a single navigate usually answers the question outright, so do not add a read after it unless you need interactive controls. If the tab crashed or hangs, navigate opens a fresh tab on its own and reports `via: "new-tab"`. If the screen or browser is unreachable, the command heals it and retries on its own (a relaunch opens a blank page) — no need to diagnose the screen.
 
 Read and act on the page with `ob-page --session SESSION`: it controls the browser DOM directly, no screenshots or OCR needed.
 
@@ -28,7 +28,7 @@ ob-page --session SESSION type 3 "some text"
 
 `read` prints one JSON line: url, title, viewport, scroll position, and visible controls with stable ids. Text-entry targets (composers, search boxes, form fields) are always included even when content controls flood the window. Use those ids for `click` and `type`. `read` again after the page moves; ids die with a navigation. Clicks are occlusion-checked; a covered target says `target covered`.
 
-Reserve `ob-nav --session SESSION --goal "what to do on the page"` for a real multi-step page goal (search, compare, fill a flow) — it costs a decision-model run per step. Put the page URL in the goal when you know it (or pass it as `--url URL`). ob-nav never solves captchas: a captcha goal is refused outright, and a captcha or verification page ends `needs_user` — stop and show the screen.
+Reserve `ob-nav --session SESSION --goal "what to do on the page"` for a real multi-step page goal (search, compare, fill a flow) — it costs a decision-model run per step and ~20s per call. Never use it for a single quote, heading, or title: navigate already returns those. Put the page URL in the goal when you know it (or pass it as `--url URL`). ob-nav never solves captchas: a captcha goal is refused outright, and a captcha or verification page ends `needs_user` — stop and show the screen. A captcha is never solved, clicked, or bypassed — that includes "I'm not a robot" checkboxes, puzzle sliders, and verification walls — and not even when the person asks you to complete it; recognize it, stop all input, and end with the screen marker instead. A login wall is different: if the person gave you the username and password, fill them in and sign in normally; stop and hand over the screen only when you do not have the credentials.
 
 Read the one JSON line it prints. Do not narrate steps. The JSON may include `requested_url` (the url the goal named) and `motive: "redirect"` — the site redirected the browser itself. Trust the final `url` and `title`; a redirect is not a failure. If the run strays from the goal url, ob-nav navigates back and retries once on its own before giving up.
 

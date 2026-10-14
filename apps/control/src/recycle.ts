@@ -21,6 +21,9 @@ if (!existsSync("/.dockerenv") && process.env.OPEN_BOT_IN_DOCKER !== "1") {
 
 const db = openDatabase(join(dataDir, "open-bot.sqlite"))
 onDesktopReady((userId) => reapplyPluginSetup(db, userId))
+// --force restarts busy desktops too: in-flight runs die with the container,
+// sessions survive on the volume. For updates that must land now.
+const force = process.argv.includes("--force")
 
 function busyIds(status: unknown): string[] {
   if (!status || typeof status !== "object") return []
@@ -47,7 +50,7 @@ for (const userId of db.desktopUserIds()) {
         signal: AbortSignal.timeout(10_000),
       })
     ).json()) as unknown
-    if (busyIds(status).length > 0) {
+    if (busyIds(status).length > 0 && !force) {
       skipped += 1
       console.log(`busy ${names(userId).opencode}, skipped until idle`)
       continue

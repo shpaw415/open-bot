@@ -23,6 +23,11 @@ esac
 run_dir=/run/open-bot/screens/$session
 mkdir -p "$run_dir" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
+# Prompt-time ensure (control plane) and CLI-side screen-heal.sh can both get
+# here at once; serialize so a full restart never tears down the other's Xvfb.
+# A bounded wait keeps CLI calls from blocking past the agent's step budget.
+exec 9>"$run_dir.lock"
+flock -w 60 9 || true
 
 profile=/home/agent/.config/chromium-threads/$session
 port=$((5900 + display))
@@ -55,7 +60,7 @@ start_group() {
     HOME=/home/agent \
     DISPLAY=":$display" \
     XDG_RUNTIME_DIR="/tmp/open-bot-runtime-$display" \
-    "$@" >/tmp/open-bot-$name-$display.log 2>&1 &
+    "$@" >/tmp/open-bot-$name-$display.log 2>&1 9>&- &
   echo $! >"$run_dir/$name.pid"
 }
 
@@ -120,11 +125,20 @@ for name in xvfb openbox chromium; do
     kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
   fi
 done
-rm -f "/tmp/.X11-unix/X$display"
+rm -f "/tmp/.X11-unix/X$display" "/tmp/.X$display-lock"
 
 mkdir -p "$profile" "/tmp/open-bot-runtime-$display"
 /opt/open-bot/sync-chromium.sh pull "$session"
 pkill -f "user-data-dir=$profile" 2>/dev/null || true
+# A crashed earlier start can leave an Xvfb alive on this display holding the
+# abstract socket with no pid file; take the display over completely.
+pkill -f "Xvfb :$display " 2>/dev/null || true
+i=0
+while pgrep -f "^Xvfb :$display " >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -gt 30 ]; then break; fi
+  sleep 0.1
+done
 rm -f "$profile/SingletonLock" "$profile/SingletonCookie" "$profile/SingletonSocket"
 chown -R agent:agent /home/agent/.config/chromium /home/agent/.config/chromium-threads "/tmp/open-bot-runtime-$display"
 fix_prefs
@@ -133,12 +147,16 @@ start_group xvfb Xvfb ":$display" -screen 0 1920x1200x24 -ac -extension MIT-SHM
 i=0
 while [ ! -S "/tmp/.X11-unix/X$display" ]; do
   i=$((i + 1))
-  if [ "$i" -gt 50 ]; then
+  if [ "$i" -gt 150 ]; then
     echo "Xvfb did not start" >&2
     exit 1
   fi
   sleep 0.1
 done
+# start_group records the runuser wrapper pid, which can die independently of
+# the server; screen-list needs the real Xvfb pid to stay listed.
+server_pid=$(pgrep -f "^Xvfb :$display " | head -n 1 || true)
+[ -n "$server_pid" ] && echo "$server_pid" >"$run_dir/xvfb.pid" || true
 chmod 777 "/tmp/.X11-unix/X$display" || true
 start_group openbox openbox
 start_chromium
