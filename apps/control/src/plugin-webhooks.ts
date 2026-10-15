@@ -4,7 +4,12 @@ import type { PluginManifest } from "@open-bot/plugin-kit"
 import { endpoint, startDesktop } from "./docker"
 import { HttpError } from "./http-error"
 import { resolveDesktopProviders } from "./key-vault"
-import { ensurePluginPageServer, pageStateFor } from "./plugin-pages"
+import {
+  ensurePluginPageServer,
+  pageStateFor,
+  pluginUpstreamUrl,
+  sanitizePluginRest,
+} from "./plugin-pages"
 import type { UpgradeServer } from "./preview"
 
 // Public HTTP surface for plugin page servers. Canonical URLs are
@@ -33,16 +38,7 @@ export type ParsedWebhookPath =
   | { kind: "legacy"; pluginId: string; rest: string }
 
 function sanitizeRest(raw: string | undefined): string | null {
-  let rest = raw && raw !== "/" ? raw : "/"
-  if (rest.includes("\0") || rest.includes("\\") || rest.includes(".."))
-    return null
-  try {
-    rest = decodeURIComponent(rest)
-  } catch {
-    return null
-  }
-  if (rest.includes("..") || !rest.startsWith("/")) return null
-  return rest
+  return sanitizePluginRest(raw)
 }
 
 export function parseWebhookPath(pathname: string): ParsedWebhookPath | null {
@@ -223,8 +219,7 @@ async function forwardToPlugin(
   const base = await endpoint(row.userId, "opencode", state.port)
   const query = new URLSearchParams(url.searchParams)
   query.delete(ASYNC_PARAM)
-  const qs = query.toString()
-  const dest = new URL(`${parsed.rest}${qs ? `?${qs}` : ""}`, base)
+  const dest = pluginUpstreamUrl(base, parsed.rest, query.toString())
   // The deadline covers reaching the plugin (headers), not the body —
   // long-lived responses (SSE, downloads) keep streaming after that.
   const controller = new AbortController()
@@ -316,7 +311,11 @@ export async function handlePluginWebhook(
     const ok = server.upgrade(req, {
       data: {
         kind: "proxy",
-        target: `${base.replace(/^http/, "ws")}${parsed.rest}${url.search}`,
+        target: pluginUpstreamUrl(
+          base.replace(/^http/, "ws"),
+          parsed.rest,
+          url.search,
+        ).toString(),
         upstream: null,
         queue: [],
       },

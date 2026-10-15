@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   listingOnEnqueue,
   listingOnVerdict,
+  publishOwnerAllowed,
   publishShouldPoll,
   reviewPending,
   shouldQueueReview,
@@ -22,6 +23,15 @@ describe("security review queue", () => {
     expect(shouldQueueReview(true, "market.open-bot.app", undefined)).toBe(true)
     expect(shouldQueueReview(true, "market.open-bot.app", "0")).toBe(false)
     expect(shouldQueueReview(true, "127.0.0.1", "1")).toBe(true)
+  })
+
+  test("blocks a user key from taking over an existing plugin", () => {
+    expect(publishOwnerAllowed(false, null, "user-a")).toBe(true)
+    expect(publishOwnerAllowed(true, "user-a", "user-a")).toBe(true)
+    expect(publishOwnerAllowed(true, "user-a", "user-b")).toBe(false)
+    expect(publishOwnerAllowed(true, "user-a", null)).toBe(true)
+    expect(publishOwnerAllowed(true, null, "user-b")).toBe(false)
+    expect(publishOwnerAllowed(true, null, null)).toBe(true)
   })
 
   test("unlist only the version that is currently listed", () => {

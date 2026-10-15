@@ -252,16 +252,32 @@ export function bearerToken(request: Request): string {
   return (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "")
 }
 
+export function timingSafeEqualString(left: string, right: string) {
+  const a = new TextEncoder().encode(left)
+  const b = new TextEncoder().encode(right)
+  let diff = a.length ^ b.length
+  const len = Math.max(a.length, b.length)
+  for (let index = 0; index < len; index++) {
+    diff |= (a[index] ?? 0) ^ (b[index] ?? 0)
+  }
+  return diff === 0
+}
+
 export async function marketplaceWriteAuth(
   db: D1Database,
   request: Request,
   instanceToken: string | undefined,
-): Promise<{ keyId: string | null } | null> {
+): Promise<{ keyId: string | null; userId: string | null } | null> {
   const apiKey = await apiKeyAuth(db, request)
-  if (apiKey) return { keyId: apiKey.keyId }
+  if (apiKey) return { keyId: apiKey.keyId, userId: apiKey.userId }
   const token = bearerToken(request)
-  if (instanceToken && token === instanceToken) return { keyId: null }
-  return null
+  if (!instanceToken || !token) return null
+  const [left, right] = await Promise.all([
+    sha256Hex(token),
+    sha256Hex(instanceToken),
+  ])
+  if (!timingSafeEqualString(left, right)) return null
+  return { keyId: null, userId: null }
 }
 
 export async function apiKeyAuth(

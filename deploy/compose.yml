@@ -19,6 +19,7 @@ services:
       DATA_DIR: /data
       OPEN_BOT_AI_CONFIG: /app/config/ai.ts
       BIND_HOST: "0.0.0.0"
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
       PORT: "8787"
       OPEN_BOT_MARKETPLACE_URL: ${OPEN_BOT_MARKETPLACE_URL:-}
       OPEN_BOT_MARKETPLACE_TOKEN: ${OPEN_BOT_MARKETPLACE_TOKEN:-}
@@ -26,6 +27,8 @@ services:
       # Public origin of this instance (e.g. https://open-bot.example.com);
       # the agent CLI uses it to report shareable plugin endpoint URLs.
       OPEN_BOT_PUBLIC_URL: ${OPEN_BOT_PUBLIC_URL:-}
+      # Optional distinct origin for plugin app iframes (same control plane).
+      OPEN_BOT_PAGES_ORIGIN: ${OPEN_BOT_PAGES_ORIGIN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - open-bot-data:/data

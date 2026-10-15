@@ -363,13 +363,13 @@
               },
               "path": {
                 "type": "string",
-                "pattern": "^/",
+                "pattern": "^/(?:[^/].*)?$",
                 "maxLength": 200,
                 "description": "app tabs: plugin-server-relative path to load (default /)."
               },
               "dataUrl": {
                 "type": "string",
-                "pattern": "^/",
+                "pattern": "^/(?:[^/].*)?$",
                 "maxLength": 200,
                 "description": "page tabs: plugin-server-relative JSON path polled for live card data (needs dashboard.pages)."
               },

@@ -487,18 +487,51 @@ function buildUserContent(
   payloadFiles: string,
   configGuide: string,
 ): string {
-  const manifestJson = JSON.stringify(manifest, null, 2).slice(
-    0,
-    MAX_MANIFEST_CHARS,
+  const manifestJson = JSON.stringify(
+    {
+      id: manifest.id,
+      name: manifest.name,
+      version: manifest.version,
+      description: manifest.description,
+      author: manifest.author,
+      repo: manifest.repo,
+      category: manifest.category,
+      permissions: manifest.permissions,
+      cron: manifest.cron,
+      tools: manifest.tools,
+      files: manifest.files,
+      setup: manifest.setup,
+      hooks: manifest.hooks,
+      opencode: manifest.opencode,
+      configs: manifest.configs,
+      skills: manifest.skills,
+      personas: manifest.personas,
+    },
+    null,
+    2,
   )
   const parts = [
     `Plugin: ${manifest.id} v${manifest.version} by ${manifest.author}`,
     `Repo: ${manifest.repo}`,
     `Category: ${manifest.category}`,
     "",
-    "MANIFEST (skills, personas, cron jobs, tools, and configs installed on user desktops):",
-    manifestJson,
+    "MANIFEST (security-relevant fields first; skills and personas last):",
+    manifestJson.length > MAX_MANIFEST_CHARS
+      ? `${manifestJson.slice(0, MAX_MANIFEST_CHARS)}\n[truncated after security-relevant fields]`
+      : manifestJson,
   ]
+  if (manifest.cron?.length) {
+    parts.push(
+      "",
+      "CRON (scripts and prompts run on the user's desktop — review every entry):",
+      manifest.cron
+        .map(
+          (job, index) =>
+            `${index + 1}. ${job.name} run=${job.run ?? "prompt"}\n${job.script ?? ""}\n${job.message ?? ""}`,
+        )
+        .join("\n"),
+    )
+  }
   if (manifest.setup?.commands?.length) {
     parts.push(
       "",
@@ -668,20 +701,14 @@ export async function reviewPublish(
     configGuide,
   )
 
-  let verdict = await runGlmReview(env.AI, userContent)
+  const verdict = await runGlmReview(env.AI, userContent)
   if (verdict.verdict === "invalid") {
-    verdict = await runGlmReview(
-      env.AI,
-      buildUserContent(manifest, null, tag, [], "", "", ""),
-    )
-    if (verdict.verdict === "invalid") {
-      return {
-        status: "error",
-        ...base,
-        error: verdict.exhausted
-          ? "model exhausted token budget before a verdict"
-          : "security review returned no usable verdict",
-      }
+    return {
+      status: "error",
+      ...base,
+      error: verdict.exhausted
+        ? "model exhausted token budget before a verdict"
+        : "security review returned no usable verdict",
     }
   }
   findings.push(...verdict.findings)

@@ -84,6 +84,19 @@ export function emptyReview(status: "queued" | "running"): ReviewView {
   }
 }
 
+// New plugins may be created by any writer. An existing plugin with an owner
+// accepts that user or the instance token. Legacy rows with no owner accept
+// only the instance token, so a newly registered account cannot seize them.
+export function publishOwnerAllowed(
+  exists: boolean,
+  ownerUserId: string | null | undefined,
+  writerUserId: string | null,
+) {
+  if (!exists) return true
+  if (!ownerUserId) return writerUserId === null
+  return writerUserId === null || writerUserId === ownerUserId
+}
+
 export function listingOnEnqueue(
   existing: PluginListing | null,
   version: string,

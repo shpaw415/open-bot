@@ -16,6 +16,9 @@ export function httpErrorResponse(error: unknown) {
       { status: error.status },
     )
   }
-  const message = error instanceof Error ? error.message : "request failed"
-  return Response.json({ error: message, code: "internal" }, { status: 500 })
+  console.error(error)
+  return Response.json(
+    { error: "request failed", code: "internal" },
+    { status: 500 },
+  )
 }

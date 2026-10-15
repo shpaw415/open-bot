@@ -142,13 +142,14 @@ async function writeListing(
   readme: string | null,
   now: number,
   existing: PluginRow | null,
+  ownerUserId: string | null = null,
 ) {
   const tags = JSON.stringify(manifest.tags ?? [])
   if (!existing) {
     await db
       .prepare(
-        `INSERT INTO plugins (id, name, description, author, repo, category, tags, latest_version, status, security_status, downloads, readme, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13)`,
+        `INSERT INTO plugins (id, name, description, author, repo, category, tags, latest_version, status, security_status, downloads, readme, created_at, updated_at, owner_user_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14)`,
       )
       .bind(
         manifest.id,
@@ -164,6 +165,7 @@ async function writeListing(
         readme,
         now,
         now,
+        ownerUserId,
       )
       .run()
     return
@@ -196,6 +198,7 @@ export async function enqueueSecurityReview(
   manifest: PluginManifest,
   readme: string | null,
   notes: string | null,
+  ownerUserId: string | null = null,
 ): Promise<{
   enqueuedAt: number
   plugin: PluginRow | null
@@ -216,6 +219,7 @@ export async function enqueueSecurityReview(
       readme,
       enqueuedAt,
       existing,
+      existing ? null : ownerUserId,
     )
   } else if (existing) {
     await db

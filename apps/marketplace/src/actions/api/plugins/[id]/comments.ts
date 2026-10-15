@@ -1,13 +1,8 @@
 "no action"
 
+import { marketplaceWriteAuth } from "../../../../lib/auth"
 import { addComment, getComments, getPluginRow } from "../../../../lib/db"
 import { revalidatePluginPage } from "../../../../lib/page-cache"
-
-function unauthorized(request: Request) {
-  // Commenting goes through open-bot instances carrying the shared token.
-  const header = request.headers.get("authorization") ?? ""
-  return !/^Bearer\s+/i.test(header)
-}
 
 export async function onRequestGet(context: EventContext<Env, "id", never>) {
   const id = decodeURIComponent(context.params.id as string)
@@ -18,7 +13,12 @@ export async function onRequestGet(context: EventContext<Env, "id", never>) {
 }
 
 export async function onRequestPost(context: EventContext<Env, "id", never>) {
-  if (unauthorized(context.request)) {
+  const writer = await marketplaceWriteAuth(
+    context.env.DB,
+    context.request,
+    context.env.MARKETPLACE_TOKEN,
+  )
+  if (!writer) {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
   const id = decodeURIComponent(context.params.id as string)

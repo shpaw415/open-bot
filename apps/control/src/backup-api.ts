@@ -2,6 +2,7 @@ import type { Db, User } from "@open-bot/db"
 import {
   BACKUP_NEXT_RUN_KEY,
   type BackupRunState,
+  backupIdOk,
   backupInFlight,
   backupStatus,
   deleteBackup,
@@ -144,6 +145,7 @@ export async function handleBackupApi(
   const backupIdMatch = path.match(/^\/api\/backup\/([^/]+)$/)
   if (backupIdMatch && method === "GET") {
     const id = decodeURIComponent(backupIdMatch[1] ?? "")
+    if (!backupIdOk(id)) return json({ error: "not found" }, 404)
     const run = runState(id)
     if (run) {
       const visible = scopedRun(run, actor.id, scope)
@@ -182,6 +184,7 @@ export async function handleBackupApi(
   if (backupIdMatch && method === "DELETE") {
     if (scope !== "admin") return json({ error: "admin only" }, 403)
     const id = decodeURIComponent(backupIdMatch[1] ?? "")
+    if (!backupIdOk(id)) return json({ error: "not found" }, 404)
     if (!deleteBackup(id, db)) return json({ error: "not found" }, 404)
     return json({ ok: true })
   }
@@ -197,6 +200,7 @@ export async function handleBackupApi(
     return (async () => {
       const body = await readJson(req)
       const backupId = decodeURIComponent(restoreMatch[1] ?? "")
+      if (!backupIdOk(backupId)) return json({ error: "backup not found" }, 404)
       const manifest = readManifest(backupId)
       if (!manifest) return json({ error: "backup not found" }, 404)
       const options = { backup: body.backup !== false }

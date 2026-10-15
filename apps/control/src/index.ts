@@ -30,7 +30,7 @@ import {
 import { EventHub } from "./events"
 import { setFileWatchSink } from "./file-watch"
 import { resolveDesktopProviders } from "./key-vault"
-import { hashPassword, randomToken, verifyPassword } from "./passwords"
+import { hashPassword, randomToken } from "./passwords"
 import { dispatchPluginHooks } from "./plugin-hooks"
 import { convertGuardCrons } from "./plugins"
 import { flushPendingPluginConfigs, reapplyPluginSetup } from "./plugins-apply"
@@ -49,8 +49,11 @@ const ai = defineAi(loaded.default as AiConfigInput)
 const db = openDatabase(join(dataDir, "open-bot.sqlite"))
 
 const defaultEmail = "admin@localhost"
-const defaultPassword = "changeme"
 if (db.userCount() === 0) {
+  const defaultPassword = randomToken()
+  console.log(
+    `open-bot bootstrap admin ${defaultEmail} password: ${defaultPassword}`,
+  )
   const id = crypto.randomUUID()
   db.createUser({
     id,
@@ -71,15 +74,6 @@ if (db.userCount() === 0) {
     thinkingEffort: null,
     lastActiveAt: Date.now(),
   })
-} else {
-  const admin = db.userByEmail(defaultEmail)
-  if (
-    admin?.mustChangePassword &&
-    !verifyPassword(defaultPassword, admin.passwordHash)
-  ) {
-    db.setCredentials(admin.id, defaultEmail, hashPassword(defaultPassword))
-    db.forcePasswordReset(admin.id)
-  }
 }
 
 const hub = new EventHub(

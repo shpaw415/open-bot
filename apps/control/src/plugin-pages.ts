@@ -1,7 +1,7 @@
 import type { Db, InstalledPlugin, User } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import { desktopPhase, endpoint } from "./docker"
-import { names } from "./env"
+import { names, pagesOrigin } from "./env"
 import { HttpError } from "./http-error"
 import { randomToken } from "./passwords"
 import {
@@ -102,20 +102,53 @@ export function pageServerCommand(opts: {
   ].join(" && ")
 }
 
+// Decode until stable, then reject traversal, backslash, and protocol-relative
+// paths. `new URL("//host", base)` would otherwise replace the upstream origin.
+export function sanitizePluginRest(raw: string | undefined): string | null {
+  let rest = raw && raw !== "/" ? raw : "/"
+  for (let pass = 0; pass < 4; pass++) {
+    if (!rest.includes("%")) break
+    try {
+      const next = decodeURIComponent(rest)
+      if (next === rest) break
+      rest = next
+    } catch {
+      return null
+    }
+  }
+  if (
+    rest.includes("\0") ||
+    rest.includes("\\") ||
+    rest.includes("..") ||
+    !rest.startsWith("/") ||
+    rest.startsWith("//")
+  ) {
+    return null
+  }
+  return rest
+}
+
+export function pluginUpstreamUrl(base: string, rest: string, search: string) {
+  if (!rest.startsWith("/") || rest.startsWith("//")) {
+    throw new HttpError(400, "bad plugin path", "plugin_path")
+  }
+  const baseUrl = new URL(base)
+  const dest = new URL(baseUrl.origin)
+  dest.pathname = rest
+  dest.search = search.startsWith("?") ? search.slice(1) : search
+  if (dest.origin !== baseUrl.origin) {
+    throw new HttpError(400, "bad plugin path", "plugin_path")
+  }
+  return dest
+}
+
 export function parsePluginPagePath(pathname: string) {
   const match = pathname.match(/^\/api\/pages\/([^/]+)(\/.*)?$/)
   if (!match?.[1]) return null
   const pluginId = match[1]
   if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(pluginId)) return null
-  let rest = match[2] && match[2] !== "/" ? match[2] : "/"
-  if (rest.includes("\0") || rest.includes("\\") || rest.includes(".."))
-    return null
-  try {
-    rest = decodeURIComponent(rest)
-  } catch {
-    return null
-  }
-  if (rest.includes("..") || !rest.startsWith("/")) return null
+  const rest = sanitizePluginRest(match[2])
+  if (rest === null) return null
   return { pluginId, rest }
 }
 
@@ -138,6 +171,15 @@ type PageState = { port: number; token: string; startedAt: number }
 const states = new Map<string, PageState>()
 const lastStart = new Map<string, number>()
 const healthCache = new Map<string, { ok: boolean; at: number }>()
+
+const PAGE_FRAME_TTL_MS = 10 * 60 * 1000
+const PAGE_FRAME_MAX = 1000
+type PageFrameGrant = {
+  userId: string
+  pluginId: string
+  expiresAt: number
+}
+const pageFrameGrants = new Map<string, PageFrameGrant>()
 
 function stateKey(userId: string, pluginId: string) {
   return `${userId}\0${pluginId}`
@@ -512,6 +554,7 @@ export function clearPluginPageState() {
   states.clear()
   healthCache.clear()
   lastStart.clear()
+  pageFrameGrants.clear()
 }
 
 export type PluginPageInfo = {
@@ -647,14 +690,14 @@ export async function proxyPluginPage(
     const ok = server.upgrade(req, {
       data: {
         kind: "proxy",
-        target: `${wsBase}${parsed.rest}${url.search}`,
+        target: pluginUpstreamUrl(wsBase, parsed.rest, url.search).toString(),
         upstream: null,
         queue: [],
       },
     })
     return ok ? undefined : new Response("upgrade failed", { status: 400 })
   }
-  const dest = new URL(`${parsed.rest}${url.search}`, base)
+  const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
   const upstream = await fetch(dest, {
     method: req.method,
     headers: strippedHeaders(req.headers, state.token),
@@ -664,4 +707,175 @@ export async function proxyPluginPage(
     duplex: "half",
   } as RequestInit)
   return rewritePageBody(upstream, `/api/pages/${parsed.pluginId}`)
+}
+
+// Control-side JSON GET against a plugin's page server — the same ingress the
+// /api/pages proxy uses (lazily boots the server, injects the page token,
+// strips client headers). Used for plugin data the control plane itself needs,
+// e.g. dynamic @mention entry lists for the reference resolver. Throws when
+// the desktop is down, the server never comes up, the answer is not JSON, or
+// the timeout fires; the caller decides what "unavailable" means.
+export async function pluginPageJson<T>(
+  userId: string,
+  row: InstalledPlugin,
+  path: string,
+  timeoutMs = 3000,
+): Promise<T> {
+  let state = pageStateFor(userId, row.pluginId)
+  if (!state || !(await healthy(userId, row.pluginId, state.port))) {
+    await ensurePluginPageServer(userId, row)
+    state = pageStateFor(userId, row.pluginId)
+    if (!state) {
+      throw new HttpError(502, "page server is not running", "plugin_page_down")
+    }
+  }
+  const base = await endpoint(userId, "opencode", state.port)
+  const res = await fetch(new URL(path, base), {
+    headers: strippedHeaders(new Headers(), state.token),
+    signal: AbortSignal.timeout(timeoutMs),
+    redirect: "manual",
+  })
+  if (!res.ok) {
+    throw new HttpError(
+      502,
+      `page server answered ${res.status}`,
+      "plugin_page_status",
+    )
+  }
+  return (await res.json()) as T
+}
+
+export function parsePageFramePath(
+  pathname: string,
+): { token: string; rest: string } | null {
+  const match = pathname.match(
+    /^\/api\/pages\/_frame\/([A-Za-z0-9_-]{43,})(\/.*)?$/,
+  )
+  if (!match?.[1]) return null
+  const rest = sanitizePluginRest(match[2])
+  if (rest === null) return null
+  return { token: match[1], rest }
+}
+
+export function pageFrameUrl(token: string, rest = "/") {
+  const path = rest.startsWith("/") ? rest : `/${rest}`
+  const rel = `/api/pages/_frame/${token}${path}`
+  const origin = pagesOrigin()
+  return origin ? `${origin}${rel}` : rel
+}
+
+export function mintPageFrameToken(
+  userId: string,
+  pluginId: string,
+  rest = "/",
+  now = Date.now(),
+) {
+  if (pageFrameGrants.size >= PAGE_FRAME_MAX) {
+    const oldest = pageFrameGrants.keys().next().value
+    if (oldest) pageFrameGrants.delete(oldest)
+  }
+  const token = Buffer.from(
+    crypto.getRandomValues(new Uint8Array(32)),
+  ).toString("base64url")
+  pageFrameGrants.set(token, {
+    userId,
+    pluginId,
+    expiresAt: now + PAGE_FRAME_TTL_MS,
+  })
+  return {
+    token,
+    expiresAt: now + PAGE_FRAME_TTL_MS,
+    frameUrl: pageFrameUrl(token, rest),
+    isolated: Boolean(pagesOrigin()),
+  }
+}
+
+export function touchPageFrameToken(token: string, now = Date.now()) {
+  const grant = pageFrameGrants.get(token)
+  if (!grant || grant.expiresAt <= now) {
+    pageFrameGrants.delete(token)
+    return null
+  }
+  grant.expiresAt = now + PAGE_FRAME_TTL_MS
+  return grant
+}
+
+function pageFrameCors(response: Response) {
+  const headers = new Headers(response.headers)
+  headers.set("access-control-allow-origin", "*")
+  headers.set(
+    "access-control-allow-methods",
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+  )
+  headers.set("access-control-allow-headers", "*")
+  headers.delete("x-frame-options")
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
+// Capability-token frame for plugin app tabs. No session cookie: the token
+// only authorizes this plugin's page server, so a framed page cannot call
+// the rest of /api/*.
+export async function proxyPluginPageFrame(
+  req: Request,
+  url: URL,
+  db: Db,
+  hub: PageHub,
+  server: UpgradeServer,
+): Promise<Response | undefined> {
+  const parsed = parsePageFramePath(url.pathname)
+  if (!parsed) return new Response("not found", { status: 404 })
+  if (req.method === "OPTIONS") {
+    return pageFrameCors(new Response(null, { status: 204 }))
+  }
+  const grant = touchPageFrameToken(parsed.token)
+  if (!grant) return new Response("unauthorized", { status: 401 })
+  const row = db.installedPlugin(grant.userId, grant.pluginId)
+  if (
+    !row ||
+    !row.enabled ||
+    !(row.manifest as PluginManifest).dashboard?.pages
+  ) {
+    return new Response("plugin page not found", { status: 404 })
+  }
+  let state = pageStateFor(grant.userId, grant.pluginId)
+  if (!state || !(await healthy(grant.userId, grant.pluginId, state.port))) {
+    await ensurePluginPageServer(grant.userId, row, hub)
+    state = pageStateFor(grant.userId, grant.pluginId)
+    if (!state) {
+      return new Response("page server is not running", { status: 502 })
+    }
+  }
+  const base = await endpoint(grant.userId, "opencode", state.port)
+  if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+    const ok = server.upgrade(req, {
+      data: {
+        kind: "proxy",
+        target: pluginUpstreamUrl(
+          base.replace(/^http/, "ws"),
+          parsed.rest,
+          url.search,
+        ).toString(),
+        upstream: null,
+        queue: [],
+      },
+    })
+    return ok ? undefined : new Response("upgrade failed", { status: 400 })
+  }
+  const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
+  const upstream = await fetch(dest, {
+    method: req.method,
+    headers: strippedHeaders(req.headers, state.token),
+    body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+    redirect: "manual",
+    duplex: "half",
+  } as RequestInit)
+  const rewritten = await rewritePageBody(
+    upstream,
+    `/api/pages/_frame/${parsed.token}`,
+  )
+  return pageFrameCors(rewritten)
 }

@@ -348,6 +348,22 @@ describe("plugin manifest", () => {
       },
     }
     expect(validatePluginManifest(base).ok).toBe(false)
+    const protocolRelative = validatePluginManifest({
+      ...base,
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [
+          {
+            id: "s",
+            title: "S",
+            kind: "page",
+            dataUrl: "//evil.example/collect",
+            cards: [{ kind: "markdown", text: "hi" }],
+          },
+        ],
+      },
+    })
+    expect(protocolRelative.ok).toBe(false)
     const badPoll = validatePluginManifest({
       ...valid,
       files: [{ name: "server.js", source: "server.js" }],

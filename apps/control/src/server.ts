@@ -1,6 +1,6 @@
 import { createReadStream, readFileSync } from "node:fs"
 import { stat } from "node:fs/promises"
-import { join, normalize } from "node:path"
+import { join, normalize, sep } from "node:path"
 import type { AiConfig } from "@open-bot/ai"
 import {
   type CronJob,
@@ -104,7 +104,13 @@ import {
   resolvePersona,
 } from "./personas"
 import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
-import { handlePluginPagesStatus, proxyPluginPage } from "./plugin-pages"
+import {
+  handlePluginPagesStatus,
+  mintPageFrameToken,
+  proxyPluginPage,
+  proxyPluginPageFrame,
+  sanitizePluginRest,
+} from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins } from "./plugins"
 import { pluginVaultKeys, resyncPluginsForVaultSlug } from "./plugins-apply"
@@ -250,6 +256,25 @@ function json(body: unknown, status = 200, headers?: HeadersInit) {
   return Response.json(body, { status, headers })
 }
 
+function publicProviderAuth(auth: unknown) {
+  if (!auth || typeof auth !== "object") return {}
+  const out: Record<string, { type?: string; label?: string }[]> = {}
+  for (const [id, methods] of Object.entries(auth as Record<string, unknown>)) {
+    if (!Array.isArray(methods)) continue
+    out[id] = methods.flatMap((method) => {
+      if (!method || typeof method !== "object") return []
+      const row = method as Record<string, unknown>
+      return [
+        {
+          ...(typeof row.type === "string" ? { type: row.type } : {}),
+          ...(typeof row.label === "string" ? { label: row.label } : {}),
+        },
+      ]
+    })
+  }
+  return out
+}
+
 function cookie(token: string, maxAge: number) {
   const secure = cookieSecure ? "; Secure" : ""
   return `ob_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${secure}`
@@ -282,8 +307,67 @@ function userFromLlmToken(req: Request, db: Db) {
   return user
 }
 
+const JSON_BODY_MAX = 1_000_000
+
 async function readJson(req: Request) {
-  return (await req.json()) as Record<string, unknown>
+  const length = Number(req.headers.get("content-length") ?? "0")
+  if (Number.isFinite(length) && length > JSON_BODY_MAX) {
+    throw new HttpError(413, "request body too large", "body_too_large")
+  }
+  const text = await req.text()
+  if (text.length > JSON_BODY_MAX) {
+    throw new HttpError(413, "request body too large", "body_too_large")
+  }
+  if (!text) return {}
+  return JSON.parse(text) as Record<string, unknown>
+}
+
+const loginHits = new Map<string, number[]>()
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
+const LOGIN_WINDOW_MAX = 8
+
+function clientIp(req: Request) {
+  return (
+    req.headers.get("cf-connecting-ip") ||
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "local"
+  )
+}
+
+function loginKey(req: Request, email: string) {
+  return `${clientIp(req)}\0${email}`
+}
+
+function recentLoginHits(key: string) {
+  const now = Date.now()
+  const recent = (loginHits.get(key) ?? []).filter(
+    (at) => now - at < LOGIN_WINDOW_MS,
+  )
+  loginHits.set(key, recent)
+  return recent
+}
+
+function loginLimited(req: Request, email: string) {
+  return recentLoginHits(loginKey(req, email)).length >= LOGIN_WINDOW_MAX
+}
+
+function noteLoginFailure(req: Request, email: string) {
+  const key = loginKey(req, email)
+  const recent = recentLoginHits(key)
+  recent.push(Date.now())
+  loginHits.set(key, recent)
+}
+
+function passwordChangeBlocked(
+  user: { mustChangePassword: boolean },
+  pathname: string,
+) {
+  if (!user.mustChangePassword) return false
+  return (
+    pathname !== "/api/me" &&
+    pathname !== "/api/auth/credentials" &&
+    pathname !== "/api/auth/logout"
+  )
 }
 
 // Give up if the desktop does not return response headers within this budget;
@@ -686,17 +770,28 @@ const types: Record<string, string> = {
   ".woff2": "font/woff2",
 }
 
+const STATIC_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "content-security-policy": "frame-ancestors 'none'",
+}
+
+function staticPathOk(file: string) {
+  const root = webDist.endsWith(sep) ? webDist : `${webDist}${sep}`
+  return file === webDist || file.startsWith(root)
+}
+
 async function staticFile(pathname: string) {
   const rel = pathname === "/" ? "/index.html" : pathname
   const file = normalize(join(webDist, rel))
-  if (!file.startsWith(webDist))
-    return new Response("bad path", { status: 400 })
+  if (!staticPathOk(file)) return new Response("bad path", { status: 400 })
   try {
     const info = await stat(file)
     if (!info.isFile()) throw new Error("missing")
     const ext = file.slice(file.lastIndexOf("."))
     return new Response(createReadStream(file) as unknown as BodyInit, {
       headers: {
+        ...STATIC_HEADERS,
         "content-type": types[ext] ?? "application/octet-stream",
         "cache-control":
           ext === ".html" ? "no-cache" : "public, max-age=31536000",
@@ -708,6 +803,7 @@ async function staticFile(pathname: string) {
       await stat(index)
       return new Response(createReadStream(index) as unknown as BodyInit, {
         headers: {
+          ...STATIC_HEADERS,
           "content-type": "text/html; charset=utf-8",
           "cache-control": "no-cache",
         },
@@ -727,6 +823,7 @@ export function createServer(
   return Bun.serve<SocketData>({
     port: Number(process.env.PORT ?? 8787),
     hostname,
+    maxRequestBodySize: 26_000_000,
     async fetch(req, server) {
       const url = new URL(req.url)
       try {
@@ -759,6 +856,13 @@ export function createServer(
           server.timeout(req, 0)
           return (
             (await handlePluginWebhook(req, url, db, server)) ??
+            new Response("not found", { status: 404 })
+          )
+        }
+        if (url.pathname.startsWith("/api/pages/_frame/")) {
+          server.timeout(req, 0)
+          return (
+            (await proxyPluginPageFrame(req, url, db, hub, server)) ??
             new Response("not found", { status: 404 })
           )
         }
@@ -960,8 +1064,12 @@ async function api(
       .trim()
       .toLowerCase()
     const password = String(body.password ?? "")
+    if (loginLimited(req, email)) {
+      return json({ error: "too many login attempts" }, 429)
+    }
     const user = db.userByEmail(email)
     if (!user || !verifyPassword(password, user.passwordHash)) {
+      noteLoginFailure(req, email)
       return json({ error: "invalid login" }, 401)
     }
     if (user.disabled) return json({ error: "account disabled" }, 403)
@@ -1062,6 +1170,9 @@ async function api(
   if (isBackupPath) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
+      if (passwordChangeBlocked(agent, url.pathname)) {
+        return json({ error: "password change required" }, 403)
+      }
       const handled = await handleBackupApi(
         req,
         url,
@@ -1099,6 +1210,9 @@ async function api(
   ) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
+      if (passwordChangeBlocked(agent, url.pathname)) {
+        return json({ error: "password change required" }, 403)
+      }
       if (isMedia) {
         const handled = await handleMedia(req, url, db, agent, hub)
         if (handled) return handled
@@ -1135,6 +1249,9 @@ async function api(
   }
   const user = userFrom(req, db)
   if (!user) return json({ error: "unauthorized" }, 401)
+  if (passwordChangeBlocked(user, url.pathname)) {
+    return json({ error: "password change required" }, 403)
+  }
   if (isMedia) {
     const handled = await handleMedia(req, url, db, user, hub)
     if (handled) return handled
@@ -1281,6 +1398,28 @@ async function api(
     if (port === null) return json({ error: "preview is not running" }, 404)
     const minted = mintPreviewToken(user.id, root)
     return json({ frameUrl: minted.frameUrl, expiresAt: minted.expiresAt })
+  }
+  if (url.pathname === "/api/pages/frame" && req.method === "POST") {
+    const body = await readJson(req)
+    const pluginId = String(body.pluginId ?? "").trim()
+    if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(pluginId)) {
+      return json({ error: "bad plugin id" }, 400)
+    }
+    const rest = sanitizePluginRest(String(body.path ?? "/"))
+    if (!rest) return json({ error: "bad plugin path" }, 400)
+    const row = db.installedPlugin(user.id, pluginId)
+    const manifest = row?.manifest as
+      | { dashboard?: { pages?: unknown } }
+      | undefined
+    if (!row || !row.enabled || !manifest?.dashboard?.pages) {
+      return json({ error: "plugin page not found" }, 404)
+    }
+    const minted = mintPageFrameToken(user.id, pluginId, rest)
+    return json({
+      frameUrl: minted.frameUrl,
+      expiresAt: minted.expiresAt,
+      isolated: minted.isolated,
+    })
   }
   if (url.pathname === "/api/desktop/screen" && req.method === "POST") {
     const body = await readJson(req)
@@ -2153,8 +2292,15 @@ async function api(
         catalog,
         connected: providers?.connected ?? [],
       },
-      auth,
-      selected: saved,
+      auth: publicProviderAuth(auth),
+      selected: saved
+        ? {
+            selectedProvider: saved.selectedProvider,
+            selectedModel: saved.selectedModel,
+            thinkingEffort: saved.thinkingEffort,
+            lastActiveAt: saved.lastActiveAt,
+          }
+        : null,
     })
   }
   if (url.pathname === "/api/providers/login" && req.method === "POST") {

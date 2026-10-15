@@ -121,16 +121,41 @@ function PageTab({ tab }: { tab: PluginTab }) {
   )
 }
 
-// Full dynamic plugin UI served by the plugin's page server on the desktop,
-// proxied same-origin under /api/pages/<pluginId>/ (SSE + WebSockets work).
+// Dedicated pages origin keeps allow-same-origin (that origin is not the
+// dashboard). Same-host frames drop it so plugin JS cannot inherit the session.
+export function appTabSandbox(isolated: boolean) {
+  return isolated
+    ? "allow-scripts allow-forms allow-popups allow-same-origin"
+    : "allow-scripts allow-forms allow-popups"
+}
+
 function AppTab({ tab }: { tab: PluginTab }) {
-  const src = `/api/pages/${tab.pluginId}${tab.path ?? "/"}`
+  const [src, setSrc] = useState("")
+  const [isolated, setIsolated] = useState(false)
+  useEffect(() => {
+    let alive = true
+    api<{ frameUrl: string; isolated?: boolean }>("/api/pages/frame", {
+      method: "POST",
+      body: JSON.stringify({ pluginId: tab.pluginId, path: tab.path ?? "/" }),
+    })
+      .then((body) => {
+        if (!alive) return
+        setSrc(body.frameUrl)
+        setIsolated(Boolean(body.isolated))
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [tab.pluginId, tab.path])
+  if (!src) return null
   return (
     <Box sx={{ height: "100%", width: "100%" }}>
       <iframe
         title={tab.title}
         src={src}
-        sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+        sandbox={appTabSandbox(isolated)}
+        referrerPolicy="no-referrer"
         style={{ width: "100%", height: "100%", border: "none" }}
       />
     </Box>
@@ -139,13 +164,14 @@ function AppTab({ tab }: { tab: PluginTab }) {
 
 export function PluginTabView({ tab }: { tab: PluginTab }) {
   if (tab.kind === "app") return <AppTab tab={tab} />
-  if (tab.kind === "iframe" && tab.url && /^https?:\/\//.test(tab.url)) {
+  if (tab.kind === "iframe" && tab.url && /^https:\/\//.test(tab.url)) {
     return (
       <Box sx={{ height: "100%", width: "100%" }}>
         <iframe
           title={tab.title}
           src={tab.url}
-          sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+          sandbox="allow-scripts allow-forms allow-popups"
+          referrerPolicy="no-referrer"
           style={{ width: "100%", height: "100%", border: "none" }}
         />
       </Box>

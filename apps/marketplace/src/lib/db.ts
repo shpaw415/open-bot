@@ -15,6 +15,7 @@ export type PluginRow = {
   readme: string | null
   created_at: number
   updated_at: number
+  owner_user_id?: string | null
 }
 
 export type VersionRow = {

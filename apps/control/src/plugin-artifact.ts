@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -97,7 +98,7 @@ export async function fetchPluginArtifact(
     .update(new Uint8Array(buffer))
     .digest("hex")
   const declared = response.headers.get("x-artifact-sha256") ?? ""
-  if (declared && declared !== sha256) {
+  if (!declared || declared !== sha256) {
     throw new HttpError(
       502,
       "plugin artifact does not match its reviewed sha256",
@@ -156,6 +157,7 @@ export function extractPluginFiles(
       if (
         !source.startsWith(`${root}/`) ||
         !existsSync(source) ||
+        lstatSync(source).isSymbolicLink() ||
         !statSync(source).isFile()
       ) {
         throw new HttpError(
