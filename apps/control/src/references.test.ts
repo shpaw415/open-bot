@@ -337,4 +337,66 @@ describe("resolve reference line", () => {
       refSections.report = originalReport
     }
   })
+
+  test("installed plugins resolve by name and plugin-id alias", async () => {
+    const db = memoryDb()
+    db.createInstalledPlugin({
+      id: "ip-1",
+      userId: "u",
+      pluginId: "stock-dashboard",
+      version: "1.2.3",
+      manifest: JSON.stringify({
+        id: "stock-dashboard",
+        name: "Stock Dashboard",
+        description: "Live stock cards for the dashboard",
+      }),
+      readme: null,
+      enabled: true,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    for (const text of [
+      "fix @plugins/Stock Dashboard please",
+      "fix @plugins/stock-dashboard please",
+      "fix @plugin/stock-dashboard please",
+    ]) {
+      const line = await resolveReferenceLine(db, { id: "u" } as never, text)
+      expect(line).toContain('plugin "Stock Dashboard" (id stock-dashboard)')
+      expect(line).toContain("v1.2.3, enabled")
+      expect(line).toContain("ob-plugin update stock-dashboard")
+    }
+  })
+
+  test("disabled plugins resolve with the enable hint", async () => {
+    const db = memoryDb()
+    db.createInstalledPlugin({
+      id: "ip-1",
+      userId: "u",
+      pluginId: "weather-pro",
+      version: "0.9.0",
+      manifest: JSON.stringify({ id: "weather-pro", name: "Weather Pro" }),
+      readme: null,
+      enabled: false,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    const line = await resolveReferenceLine(
+      db,
+      { id: "u" } as never,
+      "fix @plugins/Weather Pro",
+    )
+    expect(line).toContain('plugin "Weather Pro" (id weather-pro)')
+    expect(line).toContain("disabled")
+    expect(line).toContain("ob-plugin enable weather-pro")
+  })
+
+  test("unknown plugins report missing", async () => {
+    const db = memoryDb()
+    const line = await resolveReferenceLine(
+      db,
+      { id: "u" } as never,
+      "@plugins/nosuch",
+    )
+    expect(line).toContain('no plugin named "nosuch"')
+  })
 })

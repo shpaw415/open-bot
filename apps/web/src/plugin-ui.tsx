@@ -5,6 +5,7 @@ import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
+import { useEventStream } from "./hooks"
 
 export type PluginTextboxManifest = {
   renderers?: {
@@ -128,6 +129,17 @@ export function useInstalledPlugins() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  const { subscribe } = useEventStream(true)
+
+  useEffect(
+    () =>
+      subscribe((event) => {
+        if (event.type !== "plugins.changed") return
+        void refresh()
+      }),
+    [subscribe, refresh],
+  )
 
   return { plugins, policy, autoUpdate, configured, loaded, refresh }
 }

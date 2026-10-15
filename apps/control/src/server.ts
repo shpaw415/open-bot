@@ -107,7 +107,7 @@ import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
 import { handlePluginPagesStatus, proxyPluginPage } from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins } from "./plugins"
-import { resyncPluginsForVaultSlug } from "./plugins-apply"
+import { pluginVaultKeys, resyncPluginsForVaultSlug } from "./plugins-apply"
 import {
   mintPreviewToken,
   PREVIEW_REPLY,
@@ -601,6 +601,50 @@ async function applyVaultChange(
     applied.pluginVaultResync = failedVaultResync
   }
   return applied
+}
+
+// Plugin-declared vault keys that are not shared provider slugs, rendered as
+// Keys-tab catalog entries so every key on the account is managed in one place.
+function pluginKeyBySlug(db: Db, userId: string, slug: string) {
+  return pluginVaultKeys(db.installedPlugins(userId)).find(
+    (key) => key.slug === slug,
+  )
+}
+
+function pluginKeyCatalog(db: Db, userId: string) {
+  return pluginVaultKeys(db.installedPlugins(userId)).map((key) => ({
+    id: key.slug,
+    label: key.slug,
+    description: `API key declared by the ${key.pluginNames.join(", ")} plugin${
+      key.pluginNames.length > 1 ? "s" : ""
+    }${key.enabled ? "" : " (plugin disabled — the key is kept)"}.`,
+    chatProvider: false,
+    fields: [
+      {
+        id: "apiKey",
+        label: "API key",
+        placeholder: `${key.slug} API key`,
+        required: true,
+      },
+      {
+        id: "accountId",
+        label: "Account ID",
+        placeholder: "Account ID (optional)",
+        required: false,
+      },
+      {
+        id: "baseUrl",
+        label: "Base URL",
+        placeholder: "Base URL (optional)",
+        required: false,
+      },
+    ],
+    usedBy: key.pluginNames.map((name) => `Plugin · ${name}`),
+    plugin: true,
+    pluginIds: key.pluginIds,
+    access: key.access,
+    enabled: key.enabled,
+  }))
 }
 
 async function skillsClient(user: User, db: Db) {
@@ -1370,7 +1414,7 @@ async function api(
       updatedAt: key.updatedAt,
     }))
     return json({
-      catalog: keyVaultPublic(),
+      catalog: [...keyVaultPublic(), ...pluginKeyCatalog(db, user.id)],
       entries,
       sources: {
         image: resolveImageProvider(db, user.id)?.keySource ?? null,
@@ -1384,8 +1428,37 @@ async function api(
     const body = await readJson(req)
     const slug = String(body.slug ?? "").trim()
     const spec = keyVaultSpecById(slug)
-    if (!spec) return json({ error: "unknown key entry" }, 400)
+    const pluginKey = spec ? null : pluginKeyBySlug(db, user.id, slug)
+    if (!spec && !pluginKey) return json({ error: "unknown key entry" }, 400)
     const current = db.getUserKey(user.id, slug)
+    if (pluginKey) {
+      // Plugin keys carry only apiKey/accountId/baseUrl (same field set as
+      // the per-plugin vault route); gateway fields are shared-spec only.
+      const pick = (name: "apiKey" | "accountId" | "baseUrl") =>
+        String(body[name] ?? "").trim() || current?.[name] || ""
+      const apiKey = pick("apiKey")
+      if (apiKey.length > 4096) {
+        return json({ error: "apiKey is too long" }, 400)
+      }
+      const fields: UserKeyFields = {
+        apiKey,
+        accountId: pick("accountId"),
+        gatewayId: "",
+        gatewayToken: "",
+        gatewaySlug: "",
+        baseUrl: pick("baseUrl"),
+      }
+      if (Object.values(fields).every((value) => value === "")) {
+        return json({ error: "at least one field is required" }, 400)
+      }
+      db.setUserKey(user.id, slug, fields)
+      const failedVaultResync = await resyncPluginsForVaultSlug(db, user, slug)
+      const applied: Record<string, unknown> = {}
+      if (failedVaultResync.length > 0) {
+        applied.pluginVaultResync = failedVaultResync
+      }
+      return json({ ok: true, applied })
+    }
     const field = (name: keyof UserKeyFields) =>
       String(body[name] ?? "").trim() || current?.[name] || ""
     const fields: UserKeyFields = {
@@ -1419,11 +1492,12 @@ async function api(
   if (url.pathname === "/api/keys" && req.method === "DELETE") {
     const slug = url.searchParams.get("slug") ?? ""
     const spec = keyVaultSpecById(slug)
-    if (!spec) return json({ error: "unknown key entry" }, 400)
+    const pluginKey = spec ? null : pluginKeyBySlug(db, user.id, slug)
+    if (!spec && !pluginKey) return json({ error: "unknown key entry" }, 400)
     const current = db.getUserKey(user.id, slug)
     db.clearUserKey(user.id, slug)
     const revoke: ChatKeyEntry[] =
-      spec.chatProvider && current?.apiKey
+      spec?.chatProvider && current?.apiKey
         ? [{ slug, key: current.apiKey }]
         : []
     const applied = await applyVaultChange(

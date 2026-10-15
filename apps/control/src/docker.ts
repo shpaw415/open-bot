@@ -100,6 +100,54 @@ async function ensureNetwork(network: string) {
   }
 }
 
+// A control recreate (compose up --build, docker restart) drops its
+// connections to every desktop network — running desktops then lose DNS for
+// the control container until their next start. ensureNetwork re-asserts the
+// alias on desktop start; this covers the other direction at control boot for
+// desktops that are already running.
+export async function reconnectDesktopNetworks() {
+  if (!inDocker || !controlName) return
+  const listed = await sh(
+    ["docker", "network", "ls", "--format", "{{.Name}}"],
+    undefined,
+    30_000,
+  )
+  for (const raw of listed.stdout.split("\n")) {
+    const network = raw.trim()
+    if (!network) continue
+    const info = await sh(
+      [
+        "docker",
+        "network",
+        "inspect",
+        "-f",
+        "{{range $k, $v := .Containers}}{{$v.Name}} {{end}}",
+        network,
+      ],
+      undefined,
+      30_000,
+    ).catch(() => ({ code: 1, stdout: "", stderr: "" }))
+    if (info.code !== 0) continue
+    const containers = info.stdout.split(" ").map((c) => c.trim())
+    if (!containers.some((c) => c.startsWith("ob-oc-"))) continue
+    if (containers.includes(controlName)) continue
+    try {
+      await docker(
+        ["network", "connect", "--alias", "open-bot", network, controlName],
+        undefined,
+        30_000,
+      )
+      console.log(`reconnected control to desktop network ${network}`)
+    } catch (error) {
+      console.error(
+        `could not reconnect control to ${network}: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
+  }
+}
+
 async function ensureVolume(name: string) {
   const exists = await sh(
     ["docker", "volume", "inspect", name],

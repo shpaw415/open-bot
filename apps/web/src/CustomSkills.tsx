@@ -188,7 +188,9 @@ export function CustomSkills() {
                 </ItemAvatar>
               }
               title={skill.name}
-              badge={skill.plugin ? <PluginBadge plugin={skill.plugin} /> : undefined}
+              badge={
+                skill.plugin ? <PluginBadge plugin={skill.plugin} /> : undefined
+              }
               description={skill.description}
               pluginOwned={Boolean(skill.plugin)}
               actions={

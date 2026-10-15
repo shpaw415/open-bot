@@ -1745,3 +1745,167 @@ describe("page server routes", () => {
     }
   })
 })
+
+describe("webhook endpoint routes", () => {
+  let db: Db
+  beforeEach(() => {
+    db = openDatabase(join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"))
+    db.createUser(user())
+    delete process.env.OPEN_BOT_PUBLIC_URL
+  })
+
+  function webhookRow(pluginId: string, opts: { public?: boolean } = {}) {
+    db.createInstalledPlugin({
+      id: `row-${pluginId}`,
+      userId: "a",
+      pluginId,
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        ...manifest,
+        id: pluginId,
+        files: [{ name: "server.ts", source: "server/server.ts" }],
+        dashboard: {
+          pages: {
+            entry: "server.ts",
+            ...(opts.public === false ? {} : { public: true }),
+          },
+        },
+      }),
+      readme: null,
+      enabled: true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+  }
+
+  test("GET: agent sees the raw secret and publicUrl, the browser never does", async () => {
+    webhookRow("hook-pro")
+    db.setInstalledPluginWebhookToken("a", "hook-pro", "s3cret")
+    process.env.OPEN_BOT_PUBLIC_URL = "https://open.test/"
+
+    const get = route("/api/plugins/installed/hook-pro/webhook", "GET")
+    const agentRes = await handlePlugins(
+      get.req,
+      get.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect(agentRes?.status).toBe(200)
+    expect(await agentRes?.json()).toEqual({
+      enabled: true,
+      secured: true,
+      path: "/hooks/a/hook-pro/",
+      secret: "s3cret",
+      publicUrl: "https://open.test/hooks/a/hook-pro/",
+    })
+
+    const browserRes = await handlePlugins(get.req, get.url, db, user(), hub)
+    expect(browserRes?.status).toBe(200)
+    expect(await browserRes?.json()).toEqual({
+      enabled: true,
+      secured: true,
+      path: "/hooks/a/hook-pro/",
+    })
+
+    // No secret, no public origin: sparse agent response.
+    webhookRow("open-pro")
+    db.setInstalledPluginWebhookToken("a", "open-pro", null)
+    delete process.env.OPEN_BOT_PUBLIC_URL
+    const bare = route("/api/plugins/installed/open-pro/webhook", "GET")
+    expect(
+      await (
+        await handlePlugins(
+          bare.req,
+          bare.url,
+          db,
+          user(),
+          hub,
+          undefined,
+          true,
+        )
+      )?.json(),
+    ).toEqual({
+      enabled: true,
+      secured: false,
+      path: "/hooks/a/open-pro/",
+      secret: null,
+    })
+  })
+
+  test("POST: agent sets, replaces, and clears the secret; bad bodies rejected", async () => {
+    webhookRow("hook-pro")
+    const post = (secret: unknown) =>
+      route("/api/plugins/installed/hook-pro/webhook", "POST", { secret })
+    const call = (secret: unknown, agent = true) =>
+      handlePlugins(
+        post(secret).req,
+        post(secret).url,
+        db,
+        user(),
+        hub,
+        undefined,
+        agent,
+      )
+
+    expect(await (await call("hunter2"))?.json()).toEqual({
+      ok: true,
+      secured: true,
+    })
+    expect(db.installedPlugin("a", "hook-pro")?.webhookToken).toBe("hunter2")
+
+    await call("n3w")
+    expect(db.installedPlugin("a", "hook-pro")?.webhookToken).toBe("n3w")
+
+    expect(await (await call(""))?.json()).toEqual({ ok: true, secured: false })
+    expect(db.installedPlugin("a", "hook-pro")?.webhookToken).toBeNull()
+
+    expect((await call(42))?.status).toBe(400)
+    expect((await call("x".repeat(129)))?.status).toBe(400)
+    expect(db.installedPlugin("a", "hook-pro")?.webhookToken).toBeNull()
+  })
+
+  test("404 unknown; non-public plugin reports enabled:false and refuses POST", async () => {
+    const missing = route("/api/plugins/installed/unknown/webhook", "GET")
+    expect(
+      (
+        await handlePlugins(
+          missing.req,
+          missing.url,
+          db,
+          user(),
+          hub,
+          undefined,
+          true,
+        )
+      )?.status,
+    ).toBe(404)
+
+    webhookRow("plain-pro", { public: false })
+    const get = route("/api/plugins/installed/plain-pro/webhook", "GET")
+    expect(
+      await (
+        await handlePlugins(get.req, get.url, db, user(), hub, undefined, true)
+      )?.json(),
+    ).toEqual({ enabled: false })
+    const post = route("/api/plugins/installed/plain-pro/webhook", "POST", {
+      secret: "x",
+    })
+    expect(
+      (
+        await handlePlugins(
+          post.req,
+          post.url,
+          db,
+          user(),
+          hub,
+          undefined,
+          true,
+        )
+      )?.status,
+    ).toBe(400)
+  })
+})

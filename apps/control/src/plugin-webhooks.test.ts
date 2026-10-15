@@ -5,10 +5,13 @@ import {
   clearWebhookState,
   parseWebhookPath,
   publicPagesEnabled,
+  resolveUserWebhookTarget,
   resolveWebhookTarget,
   webhookRetryAfter,
   webhookSecret,
 } from "./plugin-webhooks"
+
+const USER_ID = "1f0e3dad-9931-4d9a-b1a0-1a2b3c4d5e6f"
 
 function request(url: string, headers: Record<string, string> = {}) {
   return new Request(`http://control.test${url}`, { headers })
@@ -51,35 +54,75 @@ function dbOf(rows: InstalledPlugin[]) {
   return {
     installedPluginsByPluginId: (pluginId: string) =>
       rows.filter((row) => row.pluginId === pluginId),
+    installedPlugin: (userId: string, pluginId: string) =>
+      rows.find((row) => row.userId === userId && row.pluginId === pluginId) ??
+      null,
   } as unknown as Db
 }
 
 describe("plugin webhooks", () => {
-  test("parses hook paths without a token segment", () => {
+  test("parses legacy hook paths", () => {
     expect(parseWebhookPath("/hooks/stock-pro")).toEqual({
+      kind: "legacy",
       pluginId: "stock-pro",
       rest: "/",
     })
     expect(parseWebhookPath("/hooks/stock-pro/")).toEqual({
+      kind: "legacy",
       pluginId: "stock-pro",
       rest: "/",
     })
     expect(parseWebhookPath("/hooks/stock-pro/api/event?x=1")).toEqual({
+      kind: "legacy",
       pluginId: "stock-pro",
       rest: "/api/event?x=1",
     })
     expect(parseWebhookPath("/hooks/stock-pro/api/event")).toEqual({
+      kind: "legacy",
       pluginId: "stock-pro",
       rest: "/api/event",
     })
   })
 
-  test("rejects bad plugin ids and traversal", () => {
+  test("parses user-scoped hook paths", () => {
+    expect(parseWebhookPath(`/hooks/${USER_ID}/stock-pro`)).toEqual({
+      kind: "user",
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      rest: "/",
+    })
+    expect(parseWebhookPath(`/hooks/${USER_ID}/stock-pro/`)).toEqual({
+      kind: "user",
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      rest: "/",
+    })
+    expect(parseWebhookPath(`/hooks/${USER_ID}/stock-pro/api/event`)).toEqual({
+      kind: "user",
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      rest: "/api/event",
+    })
+    expect(
+      parseWebhookPath(`/hooks/${USER_ID}/stock-pro/api/event?x=1`),
+    ).toEqual({
+      kind: "user",
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      rest: "/api/event?x=1",
+    })
+  })
+
+  test("rejects bad plugin ids and traversal in both shapes", () => {
     expect(parseWebhookPath("/hooks/")).toBeNull()
     expect(parseWebhookPath("/hooks/Stock-Pro/")).toBeNull()
     expect(parseWebhookPath("/hooks/a/../etc")).toBeNull()
     expect(parseWebhookPath("/hooks/stock-pro/../..")).toBeNull()
     expect(parseWebhookPath("/hooks/%2e%2e/x")).toBeNull()
+    expect(parseWebhookPath(`/hooks/${USER_ID}/Stock-Pro/`)).toBeNull()
+    expect(parseWebhookPath(`/hooks/${USER_ID}/../etc`)).toBeNull()
+    expect(parseWebhookPath(`/hooks/${USER_ID}/stock-pro/../..`)).toBeNull()
+    expect(parseWebhookPath(`/hooks/${USER_ID}/stock-pro/%2e%2e/x`)).toBeNull()
   })
 
   test("secrets come from the header or the query", () => {
@@ -165,6 +208,65 @@ describe("plugin webhooks", () => {
       expect(resolveWebhookTarget(dbOf([row]), "stock-pro", null)).toEqual({
         kind: "not_found",
       })
+    }
+  })
+
+  test("user-scoped installs resolve directly per user", () => {
+    const row = install({ userId: USER_ID, pluginId: "stock-pro" })
+    expect(
+      resolveUserWebhookTarget(dbOf([row]), USER_ID, "stock-pro", null),
+    ).toEqual({ kind: "ok", row })
+    // Another user's install is invisible.
+    const other = install({ userId: "u2", pluginId: "stock-pro" })
+    expect(
+      resolveUserWebhookTarget(dbOf([row, other]), "u2", "stock-pro", null),
+    ).toEqual({ kind: "ok", row: other })
+    expect(
+      resolveUserWebhookTarget(dbOf([row, other]), "u3", "stock-pro", null),
+    ).toEqual({ kind: "not_found" })
+    expect(
+      resolveUserWebhookTarget(dbOf([row, other]), USER_ID, "nope", null),
+    ).toEqual({ kind: "not_found" })
+  })
+
+  test("user-scoped secured installs require and match the secret", () => {
+    const row = install({
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      webhookToken: "s3cret",
+    })
+    expect(
+      resolveUserWebhookTarget(dbOf([row]), USER_ID, "stock-pro", null),
+    ).toEqual({ kind: "not_found" })
+    expect(
+      resolveUserWebhookTarget(dbOf([row]), USER_ID, "stock-pro", "wrong"),
+    ).toEqual({ kind: "not_found" })
+    expect(
+      resolveUserWebhookTarget(dbOf([row]), USER_ID, "stock-pro", "s3cret"),
+    ).toEqual({ kind: "ok", row })
+    const open = install({ userId: USER_ID, pluginId: "weather-pro" })
+    expect(
+      resolveUserWebhookTarget(dbOf([open]), USER_ID, "weather-pro", "x"),
+    ).toEqual({ kind: "not_found" })
+  })
+
+  test("user-scoped disabled and non-opted installs are invisible", () => {
+    const off = install({
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      enabled: false,
+    })
+    const noflag = install({
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      manifest: {
+        dashboard: { pages: { entry: "server.js" } },
+      } as unknown as Record<string, unknown>,
+    })
+    for (const row of [off, noflag]) {
+      expect(
+        resolveUserWebhookTarget(dbOf([row]), USER_ID, "stock-pro", null),
+      ).toEqual({ kind: "not_found" })
     }
   })
 

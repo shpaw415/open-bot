@@ -103,7 +103,7 @@ describe("plugin pages", () => {
     ).toBeNull()
   })
 
-  test("spawn command records pid, token, and port", () => {
+  test("spawn command records pid, token, port, and the exact command line", () => {
     const base = {
       pidFile: "/home/agent/.open-bot/pages/stock-pro",
       token: "t0k3n",
@@ -116,6 +116,11 @@ describe("plugin pages", () => {
     )
     expect(frozen).toContain(".token'")
     expect(frozen).toContain(".port'")
+    // The stop path pkills this exact argv, so a spawn whose successor died
+    // on EADDRINUSE can still be found and killed.
+    expect(frozen).toContain(
+      "printf '%s' 'bun run /usr/local/bin/ob-plugin-stock-pro-server.ts' > '/home/agent/.open-bot/pages/stock-pro.cmd'",
+    )
     expect(frozen).toContain(
       "exec bun run '/usr/local/bin/ob-plugin-stock-pro-server.ts'",
     )
@@ -124,6 +129,7 @@ describe("plugin pages", () => {
       checkoutEntry: "/checkout/server.ts",
     })
     expect(hot).toContain("exec bun --hot run '/checkout/server.ts'")
+    expect(hot).toContain("'bun --hot run /checkout/server.ts'")
     expect(hot).not.toContain("ob-plugin-stock-pro-server.ts'")
   })
 
@@ -201,16 +207,76 @@ describe("plugin pages", () => {
     }
   })
 
-  test("stop waits for the old pid and escalates to KILL before the port is reused", async () => {
+  test("concurrent starts share one spawn instead of racing EADDRINUSE", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      const [a, b] = await Promise.all([
+        ensurePluginPageServer("u1", row),
+        ensurePluginPageServer("u1", row),
+      ])
+      expect(a).toBe(b)
+      expect(
+        shCalls.filter((args) => args.includes("-d")).length,
+      ).toBe(1)
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
+  })
+
+  test("stop kills the pid, pkills the recorded command line, and cleans up", async () => {
     shCalls.length = 0
     await stopPluginPageServer("u1", "stock-pro")
     const script = shCalls.at(-1)?.at(-1) ?? ""
     expect(script).toContain("kill -9")
     expect(script).toContain("kill -0")
+    expect(script).toContain("pkill -TERM -x -f")
+    expect(script).toContain("pkill -KILL -x -f")
+    expect(script).toContain(".cmd'")
     expect(script).toContain("rm -f")
     expect(script).toContain(".pid'")
     expect(script).toContain(".token'")
     expect(script).toContain(".port'")
+  })
+
+  test("start stops a stale server before spawning so the pidfile stays truthful", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      await ensurePluginPageServer("u1", row)
+      const spawnIndex = shCalls.findIndex((args) => args.includes("-d"))
+      expect(spawnIndex).toBeGreaterThan(-1)
+      const killIndex = shCalls.findIndex((args) =>
+        (args.at(-1) ?? "").includes("pkill -TERM -x -f"),
+      )
+      expect(killIndex).toBeGreaterThan(-1)
+      expect(killIndex).toBeLessThan(spawnIndex)
+      // The pre-spawn kill keeps the token file so direct clients survive.
+      const killScript = shCalls[killIndex].at(-1) ?? ""
+      expect(killScript).not.toContain(
+        "rm -f '/home/agent/.open-bot/pages/stock-pro.token'",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
   })
 
   test("uninstall log cleanup targets the page log file", async () => {

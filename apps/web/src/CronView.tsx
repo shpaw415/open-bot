@@ -380,8 +380,8 @@ export function CronView({ me }: { me: Me }) {
               <ScheduleIcon width={40} height={40} style={{ opacity: 0.5 }} />
               <Typography variant="subtitle1">No scheduled jobs</Typography>
               <Typography variant="body2" color="textSecondary">
-                Add one with the button above, or ask the agent to schedule
-                work with ob-cron.
+                Add one with the button above, or ask the agent to schedule work
+                with ob-cron.
               </Typography>
             </Stack>
           ) : (

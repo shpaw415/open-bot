@@ -184,7 +184,10 @@ export function Personalities() {
                     <LockIcon
                       width={16}
                       height={16}
-                      style={{ color: "rgba(var(--text-main), 0.6)", flexShrink: 0 }}
+                      style={{
+                        color: "rgba(var(--text-main), 0.6)",
+                        flexShrink: 0,
+                      }}
                     />
                   </ToolTip>
                 ) : undefined

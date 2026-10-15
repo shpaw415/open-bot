@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react"
-import type { MarketPlugin } from "../lib/db"
 import {
   Badge,
   Button,
@@ -8,9 +7,10 @@ import {
   Icon,
   IconTile,
   Input,
-  SectionHeading,
   icons,
+  SectionHeading,
 } from "../components/ui"
+import type { MarketPlugin } from "../lib/db"
 
 export default function Admin() {
   const [token, setToken] = useState("")
@@ -107,7 +107,9 @@ export default function Admin() {
       ) : (
         <div className="mt-8">
           <SectionHeading
-            label={pending > 0 ? `Review queue — ${pending} pending` : "Review queue"}
+            label={
+              pending > 0 ? `Review queue — ${pending} pending` : "Review queue"
+            }
             className="mb-4"
             right={
               <span className="text-[13px] text-[#5F6B80]">

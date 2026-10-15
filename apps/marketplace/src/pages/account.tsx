@@ -84,9 +84,7 @@ export default function Account() {
     await load()
   }
 
-  const displayName = user
-    ? (user.name || user.email || user.userId)
-    : ""
+  const displayName = user ? user.name || user.email || user.userId : ""
 
   return (
     <div className="mx-auto max-w-[1120px] px-5 py-10 sm:px-8 sm:py-14">
@@ -138,7 +136,12 @@ export default function Account() {
               </p>
             ) : null}
             <form action="/api/auth/logout" method="post" className="mt-4">
-              <Button variant="secondary" size="sm" className="w-full" type="submit">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-full"
+                type="submit"
+              >
                 Sign out
               </Button>
             </form>
@@ -157,7 +160,11 @@ export default function Account() {
                   <p className="text-[12.5px] text-[#157A55]">
                     Copy it now. We never show it again.
                   </p>
-                  <Button variant="secondary" size="sm" onClick={() => setFreshKey("")}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setFreshKey("")}
+                  >
                     Done
                   </Button>
                 </div>

@@ -23,6 +23,9 @@ services:
       OPEN_BOT_MARKETPLACE_URL: ${OPEN_BOT_MARKETPLACE_URL:-}
       OPEN_BOT_MARKETPLACE_TOKEN: ${OPEN_BOT_MARKETPLACE_TOKEN:-}
       OPEN_BOT_GITHUB_TOKEN: ${OPEN_BOT_GITHUB_TOKEN:-}
+      # Public origin of this instance (e.g. https://open-bot.example.com);
+      # the agent CLI uses it to report shareable plugin endpoint URLs.
+      OPEN_BOT_PUBLIC_URL: ${OPEN_BOT_PUBLIC_URL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - open-bot-data:/data

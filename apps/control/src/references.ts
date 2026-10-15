@@ -33,6 +33,8 @@ export const refSectionLabels: Record<string, string> = {
   projects: "project",
   reports: "plugin report",
   report: "plugin report",
+  plugins: "plugin",
+  plugin: "plugin",
 }
 async function skillItems(db: Db, userId: string): Promise<RefItem[]> {
   const desktop = db.desktop(userId)
@@ -44,7 +46,7 @@ async function skillItems(db: Db, userId: string): Promise<RefItem[]> {
     id: skill.name,
     name: skill.name,
     detail: `custom skill: ${skill.description}`,
-    hint: `load with openviking_read on viking://user/skills/${skill.name}/SKILL.md; replace with PUT http://viking:1933/api/v1/skills/${skill.name}`,
+    hint: `load with openviking_read on viking://user/skills/${skill.name}/SKILL.md; replace by DELETE http://viking:1933/api/v1/skills/${skill.name} then POST /api/v1/skills (PUT can hang)`,
   }))
 }
 
@@ -80,6 +82,9 @@ export const refSections: Record<string, RefSection> = {
   reports: { items: reportItems },
   // "@report/<name>" (singular) resolves the same list as "@reports/<name>"
   report: { items: reportItems },
+  plugins: { items: pluginItems },
+  // "@plugin/<name>" (singular) resolves the same list as "@plugins/<name>"
+  plugin: { items: pluginItems },
 }
 
 async function projectItems(db: Db, userId: string): Promise<RefItem[]> {
@@ -128,6 +133,42 @@ function cronDetail(job: CronJob): string {
         ? `every ${job.everySeconds ?? 0}s`
         : `one-off at ${job.atMs ? new Date(job.atMs).toISOString() : "?"}`
   return `${job.enabled ? "enabled" : "paused"}, ${schedule}`
+}
+
+/**
+ * One mention item per installed plugin. Control-DB only, so it answers even
+ * when the desktop is asleep; the stored manifest carries the friendly name
+ * and description the agent matches against.
+ */
+export async function pluginItems(db: Db, userId: string): Promise<RefItem[]> {
+  return db.installedPlugins(userId).map((row) => {
+    const manifestName =
+      typeof row.manifest.name === "string" ? row.manifest.name : ""
+    const description =
+      typeof row.manifest.description === "string"
+        ? row.manifest.description
+        : ""
+    const name = manifestName || row.pluginId
+    const aliases = new Set<string>([row.pluginId])
+    const slug = slugifyName(name)
+    if (slug) aliases.add(slug)
+    aliases.delete(name)
+    const source =
+      row.source === "local"
+        ? `local install${row.localPath ? ` from ${row.localPath}` : ""}`
+        : "marketplace"
+    const detail = `"${name}" v${row.version}, ${row.enabled ? "enabled" : "disabled"}, ${source}${description ? ` — ${compact(description)}` : ""}`
+    const hint = row.enabled
+      ? `update with ob-plugin update ${row.pluginId}, disable with ob-plugin disable ${row.pluginId}, remove with ob-plugin remove ${row.pluginId}; configure with ob-plugin settings ${row.pluginId} KEY=VALUE and read its setup guide with ob-plugin guide ${row.pluginId}`
+      : `currently disabled — enable with ob-plugin enable ${row.pluginId}, remove with ob-plugin remove ${row.pluginId}; its setup guide is ob-plugin guide ${row.pluginId}`
+    return {
+      id: row.pluginId,
+      name,
+      aliases: [...aliases],
+      detail,
+      hint,
+    }
+  })
 }
 
 const referencePattern = /(?<=^|\s)@([a-z][a-z0-9_-]*)\/([^\n@]*)/gi

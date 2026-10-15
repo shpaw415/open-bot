@@ -6,6 +6,21 @@ import {
   type PluginEventContext,
 } from "frame-master-plugin-cloudflare-pages-dynamic-ssr/server"
 import {
+  Badge,
+  Button,
+  buttonClasses,
+  Card,
+  CategoryChip,
+  CommandBlock,
+  EmptyState,
+  Icon,
+  IconTile,
+  icons,
+  SectionHeading,
+  Spinner,
+  TagChip,
+} from "../../components/ui"
+import {
   detailFromRows,
   getComments,
   getPluginRow,
@@ -13,21 +28,6 @@ import {
   type MarketComment,
   type MarketDetail,
 } from "../../lib/db"
-import {
-  Badge,
-  Button,
-  Card,
-  CategoryChip,
-  CommandBlock,
-  EmptyState,
-  Icon,
-  IconTile,
-  SectionHeading,
-  Spinner,
-  TagChip,
-  buttonClasses,
-  icons,
-} from "../../components/ui"
 
 type PluginPageData =
   | { ok: false; error: string }
@@ -245,9 +245,7 @@ export default function PluginDetail() {
                       Latest
                     </span>
                   ) : null}
-                  {version.stability === "dev" ? (
-                    <Badge status="dev" />
-                  ) : null}
+                  {version.stability === "dev" ? <Badge status="dev" /> : null}
                   <span className="ml-auto font-mono text-[12px] text-[#5F6B80]">
                     {new Date(version.createdAt).toLocaleDateString()}
                   </span>

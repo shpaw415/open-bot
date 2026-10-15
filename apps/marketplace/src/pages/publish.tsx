@@ -1,4 +1,11 @@
-import { Card, Code, CommandBlock, Icon, SectionHeading, icons } from "../components/ui"
+import {
+  Card,
+  Code,
+  CommandBlock,
+  Icon,
+  icons,
+  SectionHeading,
+} from "../components/ui"
 
 const CAPABILITIES = [
   {
@@ -11,11 +18,31 @@ const CAPABILITIES = [
     title: "personas",
     desc: "Personalities in the thread picker",
   },
-  { icon: icons.clock, title: "cron", desc: "Scheduled jobs the control plane fires" },
-  { icon: icons.wrench, title: "tools", desc: "Script files installed into /usr/local/bin" },
-  { icon: icons.sliders, title: "configs", desc: "Settings managed on the open-bot Plugins page" },
-  { icon: icons.key, title: "permissions", desc: "Vault keys to read or create" },
-  { icon: icons.layout, title: "dashboard", desc: "New tabs: card pages or sandboxed iframes" },
+  {
+    icon: icons.clock,
+    title: "cron",
+    desc: "Scheduled jobs the control plane fires",
+  },
+  {
+    icon: icons.wrench,
+    title: "tools",
+    desc: "Script files installed into /usr/local/bin",
+  },
+  {
+    icon: icons.sliders,
+    title: "configs",
+    desc: "Settings managed on the open-bot Plugins page",
+  },
+  {
+    icon: icons.key,
+    title: "permissions",
+    desc: "Vault keys to read or create",
+  },
+  {
+    icon: icons.layout,
+    title: "dashboard",
+    desc: "New tabs: card pages or sandboxed iframes",
+  },
   {
     icon: icons.message,
     title: "textbox",
@@ -73,8 +100,8 @@ export default function PublishDocs() {
           </h1>
           <p className="mt-3 max-w-[60ch] text-[15px] leading-6 text-[#3E4A5F]">
             Ship skills, personas, automation and UI to every open-bot desktop
-            in one review pass. Everything a plugin ships lives in one
-            manifest: <Code>open-bot.plugin.json</Code>.
+            in one review pass. Everything a plugin ships lives in one manifest:{" "}
+            <Code>open-bot.plugin.json</Code>.
           </p>
 
           <section id="capabilities" className="mt-12 scroll-mt-24">
@@ -116,10 +143,11 @@ export default function PublishDocs() {
             <CommandBlock className="mt-4" command={FLOW_COMMAND} />
             <p className="mt-3 text-sm leading-6 text-[#3E4A5F]">
               <Code>ob-plugin publish</Code> validates the manifest, registers
-              it here, and creates a daily <b className="text-[#1A2333]">guard
-              cron</b> on the publishing desktop. The guard checks the repo's
-              issues and pull requests and this site's discussion every day,
-              merges satisfying changes, and ships new releases.
+              it here, and creates a daily{" "}
+              <b className="text-[#1A2333]">guard cron</b> on the publishing
+              desktop. The guard checks the repo's issues and pull requests and
+              this site's discussion every day, merges satisfying changes, and
+              ships new releases.
             </p>
           </section>
 

@@ -173,6 +173,12 @@ type ReportMention = {
   open: number
   total: number
 }
+type PluginMention = {
+  pluginId: string
+  name: string
+  description: string
+  enabled: boolean
+}
 type SessionInfo = {
   id: string
   title?: string
@@ -1182,21 +1188,34 @@ const ThreadsPanel = memo(function ThreadsPanel({
                       )}
                     </IconButton>
                     {dir ? (
-                      isCollapsed ? (
-                        <FolderIcon width={14} height={14} />
-                      ) : (
-                        <FolderOpenIcon width={14} height={14} />
-                      )
+                      <Box
+                        Element="span"
+                        aria-hidden
+                        onClick={() => toggleCollapsed(group.key)}
+                        sx={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {isCollapsed ? (
+                          <FolderIcon width={14} height={14} />
+                        ) : (
+                          <FolderOpenIcon width={14} height={14} />
+                        )}
+                      </Box>
                     ) : null}
                     <Typography
                       variant="caption"
                       color="textSecondary"
+                      onClick={() => toggleCollapsed(group.key)}
                       sx={{
                         flex: 1,
                         minWidth: 0,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
+                        cursor: "pointer",
                       }}
                     >
                       {group.label} ({group.items.length})
@@ -1278,6 +1297,18 @@ const RESUME_PROMPT =
 const RESUME_BLOCK_MS = 3 * 60_000
 const RESUME_DELAY_MS = 6_000
 
+// Keep the arrow-key highlighted popup row inside the scrollable popup view.
+function scrollRowIntoView(list: HTMLElement | null, index: number) {
+  if (!list) return
+  const el = list.querySelectorAll("button")[index]
+  if (!(el instanceof HTMLElement)) return
+  const top = el.offsetTop
+  const bottom = top + el.offsetHeight
+  if (top < list.scrollTop) list.scrollTop = top
+  else if (bottom > list.scrollTop + list.clientHeight)
+    list.scrollTop = bottom - list.clientHeight
+}
+
 // Owns the composer draft and mention/slash popup state so every keystroke
 // re-renders only this subtree, not the whole workspace.
 function Composer({
@@ -1306,6 +1337,7 @@ function Composer({
   onEnsureProjects,
   reports,
   onEnsureReports,
+  plugins,
 }: {
   sessionId: string
   running: boolean
@@ -1332,6 +1364,7 @@ function Composer({
   onEnsureProjects: () => void
   reports: ReportMention[]
   onEnsureReports: () => void
+  plugins: PluginMention[]
 }) {
   const [draft, setDraft] = useState(() => {
     const stored = readDraft(localStorage, sessionId)
@@ -1548,8 +1581,25 @@ function Composer({
             },
           ]
         : []),
+      ...(plugins.length
+        ? [
+            {
+              key: "plugins",
+              label: "Plugins",
+              items: plugins.map(
+                (plugin): RefItemView => ({
+                  id: plugin.pluginId,
+                  name: plugin.name,
+                  description: plugin.enabled
+                    ? plugin.description
+                    : `disabled · ${plugin.description}`,
+                }),
+              ),
+            },
+          ]
+        : []),
     ],
-    [baseSections, skillList, projects, reports],
+    [baseSections, skillList, projects, reports, plugins],
   )
   const mention = useMemo(
     () => detectMention(draft, caret, mentionSections),
@@ -1569,6 +1619,20 @@ function Composer({
     )
     return matches.length > 0 ? matches : null
   }, [draft, pluginCommands])
+  const mentionListRef = useRef<HTMLDivElement | null>(null)
+  const slashListRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    scrollRowIntoView(
+      mentionListRef.current,
+      Math.min(mentionIndex, suggestions.length - 1),
+    )
+  }, [mentionIndex, suggestions])
+  useEffect(() => {
+    scrollRowIntoView(
+      slashListRef.current,
+      Math.min(slashIndex, (slashActive?.length ?? 0) - 1),
+    )
+  }, [slashIndex, slashActive])
 
   function rememberDraft(text: string) {
     setMentionIndex(0)
@@ -1927,6 +1991,7 @@ function Composer({
             {mention && !mentionHidden && !sending && !stopping ? (
               <Paper
                 elevation={8}
+                ref={mentionListRef}
                 sx={{
                   position: "absolute",
                   bottom: "calc(100% + 8px)",
@@ -1968,6 +2033,7 @@ function Composer({
             {slashActive && !slashHidden && !sending && !stopping ? (
               <Paper
                 elevation={8}
+                ref={slashListRef}
                 sx={{
                   position: "absolute",
                   bottom: "calc(100% + 8px)",
@@ -2243,6 +2309,17 @@ export function Workspace({ me }: { me: Me }) {
     }
     return ""
   }, [installedPlugins])
+  // installed plugins power @plugins/ mentions in the composer
+  const pluginMentions = useMemo<PluginMention[]>(
+    () =>
+      installedPlugins.map((plugin) => ({
+        pluginId: plugin.pluginId,
+        name: plugin.name || plugin.pluginId,
+        description: plugin.description,
+        enabled: plugin.enabled,
+      })),
+    [installedPlugins],
+  )
   const unread = useUnreadThreads()
   const outputRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
@@ -4166,6 +4243,7 @@ export function Workspace({ me }: { me: Me }) {
                   onEnsureProjects={ensureProjects}
                   reports={reportList}
                   onEnsureReports={ensureReports}
+                  plugins={pluginMentions}
                 />
               </Paper>
             </Dock>

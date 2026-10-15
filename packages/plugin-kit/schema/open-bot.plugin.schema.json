@@ -333,7 +333,7 @@
             },
             "public": {
               "type": "boolean",
-              "description": "Expose a public HTTP endpoint (/hooks/<pluginId>/) that wakes the desktop and forwards external requests to this page server like a normal web server."
+              "description": "Expose a public HTTP endpoint (/hooks/<userId>/<pluginId>/) that wakes the desktop and forwards external requests to this page server like a normal web server."
             }
           }
         },

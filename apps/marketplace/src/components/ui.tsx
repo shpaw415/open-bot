@@ -1,11 +1,11 @@
 import {
-  useEffect,
-  useRef,
-  useState,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
+  useEffect,
+  useRef,
+  useState,
 } from "react"
 
 export const focusRing =
@@ -54,9 +54,11 @@ export const icons = {
   sliders: "M2.5 4.5h6m3 0h2m-11 7h2m3 0h6M11 2.5v4m-5 3v4",
   key: "M9.5 11.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 3.3 4.7L14 10.4V13h-2.5l-.7-.7a3.5 3.5 0 0 1-1.3-.8Z",
   layout: "M2.5 2.5h11v11h-11v-11Zm0 4h11m-4 0v7",
-  message: "M14 10.5a1 1 0 0 1-1 1H5l-3 3v-11a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7Z",
+  message:
+    "M14 10.5a1 1 0 0 1-1 1H5l-3 3v-11a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7Z",
   plug: "M6 1.5v3m4-3v3M4 4.5h8v3a4 4 0 0 1-8 0v-3Zm4 7v3",
-  github: "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z",
+  github:
+    "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z",
 } as const
 
 type ButtonVariant = "primary" | "secondary" | "quiet" | "danger"
@@ -148,7 +150,9 @@ export function Badge({
     <span
       className={`inline-flex items-center gap-1.5 rounded-[6px] border px-2 py-[3px] text-[12.5px] font-medium ${badgeTones[tone]} ${className}`}
     >
-      {tone === "pass" ? <Icon path={icons.check} className="size-3.5" /> : null}
+      {tone === "pass" ? (
+        <Icon path={icons.check} className="size-3.5" />
+      ) : null}
       {status}
     </span>
   )
@@ -235,9 +239,7 @@ export function SectionHeading({
         <h2 className="text-[19px] font-bold tracking-[-0.01em] text-[#1A2333]">
           {label}
         </h2>
-        {sub ? (
-          <p className="mt-1 text-[14px] text-[#5F6B80]">{sub}</p>
-        ) : null}
+        {sub ? <p className="mt-1 text-[14px] text-[#5F6B80]">{sub}</p> : null}
       </div>
       {right ? <div className="shrink-0 pb-0.5">{right}</div> : null}
     </div>
@@ -410,8 +412,7 @@ export function IconTile({
   let hash = 0
   for (const char of seed) hash = (hash + char.charCodeAt(0)) % 8
   const [from, to] = (TILE_PAIRS[hash] ?? TILE_PAIRS[0]).split(",")
-  const letter =
-    (name.match(/[a-z0-9]/i)?.[0] ?? "•").toUpperCase()
+  const letter = (name.match(/[a-z0-9]/i)?.[0] ?? "•").toUpperCase()
   return (
     <span
       className={`grid shrink-0 place-items-center border border-black/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] ${size} ${rounded}`}

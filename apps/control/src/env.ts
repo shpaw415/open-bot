@@ -31,6 +31,11 @@ export const marketplaceUrl = (
 ).replace(/\/$/, "")
 export const marketplaceToken = process.env.OPEN_BOT_MARKETPLACE_TOKEN ?? ""
 export const githubToken = process.env.OPEN_BOT_GITHUB_TOKEN ?? ""
+// Public origin of this instance (e.g. https://open-bot.example.com) — lets
+// the agent CLI report shareable /hooks/... URLs. Empty when unset.
+export function publicOrigin() {
+  return (process.env.OPEN_BOT_PUBLIC_URL ?? "").replace(/\/+$/, "")
+}
 
 export function userKey(userId: string) {
   return userId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 32)

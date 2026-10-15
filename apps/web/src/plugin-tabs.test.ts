@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { pluginTabs } from "./plugin-tabs"
+import { filterTabs, pluginTabs } from "./plugin-tabs"
 import type { InstalledPluginInfo } from "./plugin-ui"
 
 function plugin(
@@ -65,5 +65,49 @@ describe("pluginTabs", () => {
       pollSeconds: 15,
     })
     expect(tabs.some((tab) => tab.pluginId === "off")).toBe(false)
+  })
+})
+
+describe("filterTabs", () => {
+  const tabs = pluginTabs([
+    plugin("stock-pro", "Stock Pro", {
+      pages: { entry: "server.js" },
+      tabs: [
+        { id: "stock", title: "Stock", kind: "app", path: "/manage" },
+        { id: "summary", title: "Summary", kind: "page", cards: [] },
+      ],
+    }),
+    plugin("media", "Media Vault", {
+      tabs: [{ id: "vault", title: "Vault", kind: "page", cards: [] }],
+    }),
+  ])
+
+  test("empty or blank query returns all tabs", () => {
+    expect(filterTabs(tabs, "")).toHaveLength(3)
+    expect(filterTabs(tabs, "")).toBe(tabs)
+    expect(filterTabs(tabs, "   ")).toHaveLength(3)
+    expect(filterTabs(tabs, "   ")).toBe(tabs)
+  })
+
+  test("query is trimmed before matching", () => {
+    expect(filterTabs(tabs, "  summa  ")).toHaveLength(1)
+  })
+
+  test("matches tab titles case-insensitively", () => {
+    expect(filterTabs(tabs, "summa").map((tab) => tab.key)).toEqual([
+      "stock-pro:summary",
+    ])
+    expect(filterTabs(tabs, "SUMMARY")).toHaveLength(1)
+  })
+
+  test("matches plugin names too", () => {
+    expect(filterTabs(tabs, "media").map((tab) => tab.key)).toEqual([
+      "media:vault",
+    ])
+    expect(filterTabs(tabs, "STOCK PRO")).toHaveLength(2)
+  })
+
+  test("no match returns an empty list", () => {
+    expect(filterTabs(tabs, "zzz")).toEqual([])
   })
 })

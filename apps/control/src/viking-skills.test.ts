@@ -94,42 +94,85 @@ describe("viking skills", () => {
     ])
   })
 
-  test("creates a skill and waits for indexing", async () => {
-    const { calls, fetchImpl } = mockFetch(() => ({
-      status: "ok",
-      result: { valid: true },
-    }))
+  test("creates a skill without blocking on indexing", async () => {
+    const { calls, fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            description: skill.description,
+            content: skill.body,
+          },
+        }
+      return { status: "ok", result: {} }
+    })
     const skills = createVikingSkills("http://viking:1933/", "k", fetchImpl)
     await skills.save(skill)
-    expect(calls[1]?.init?.method).toBe("POST")
-    expect(calls[1]?.url).toBe("http://viking:1933/api/v1/skills")
-    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+    // Deletes first so a retry after a lost response can never 409 on an
+    // existing name (the duplicate-creation failure mode from the field).
+    expect(calls[1]?.init?.method).toBe("DELETE")
+    expect(calls[2]?.init?.method).toBe("POST")
+    expect(calls[2]?.url).toBe("http://viking:1933/api/v1/skills")
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({
       data: {
         name: "search-web",
         description: skill.description,
         content: skill.body,
       },
-      wait: true,
-      timeout: 240,
+      wait: false,
     })
+    // The read-back confirm proves the write landed without a sync wait.
+    expect(calls[3]?.init?.method ?? "GET").toBe("GET")
   })
 
-  test("updates a skill in place", async () => {
-    const { calls, fetchImpl } = mockFetch(() => ({
-      status: "ok",
-      result: { valid: true },
-    }))
+  test("updates in place by delete and post instead of the wedging PUT", async () => {
+    const { calls, fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            description: skill.description,
+            content: skill.body,
+          },
+        }
+      return { status: "ok", result: {} }
+    })
     const skills = createVikingSkills("http://viking:1933", "k", fetchImpl)
     await skills.save(skill, "search-web")
-    expect(calls[1]?.init?.method).toBe("PUT")
-    expect(calls[1]?.url).toBe("http://viking:1933/api/v1/skills/search-web")
+    expect(
+      calls.map((call) => `${call.init?.method ?? "GET"} ${call.url}`),
+    ).toEqual([
+      "POST http://viking:1933/api/v1/skills/validate",
+      "DELETE http://viking:1933/api/v1/skills/search-web",
+      "POST http://viking:1933/api/v1/skills",
+      "GET http://viking:1933/api/v1/skills/search-web?include_content=true&include_files=false",
+    ])
   })
 
   test("renames by adding the new skill and deleting the old one", async () => {
-    const { calls, fetchImpl } = mockFetch(() => ({
-      status: "ok",
-      result: { valid: true },
-    }))
+    const { calls, fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            description: skill.description,
+            content: skill.body,
+          },
+        }
+      return { status: "ok", result: {} }
+    })
     const skills = createVikingSkills("http://viking:1933", "k", fetchImpl)
     await skills.save(skill, "old-skill")
     expect(
@@ -138,6 +181,7 @@ describe("viking skills", () => {
       "POST http://viking:1933/api/v1/skills/validate",
       "POST http://viking:1933/api/v1/skills",
       "DELETE http://viking:1933/api/v1/skills/old-skill",
+      "GET http://viking:1933/api/v1/skills/search-web?include_content=true&include_files=false",
     ])
   })
 

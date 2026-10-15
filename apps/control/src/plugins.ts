@@ -8,7 +8,12 @@ import {
   validateConfigValue,
 } from "@open-bot/plugin-kit"
 import { nextRunMs } from "./cron"
-import { githubToken, marketplaceToken, marketplaceUrl } from "./env"
+import {
+  githubToken,
+  marketplaceToken,
+  marketplaceUrl,
+  publicOrigin,
+} from "./env"
 import { HttpError } from "./http-error"
 import { keyVaultSpecById } from "./key-vault"
 import {
@@ -1252,15 +1257,16 @@ export function handlePlugins(
       .catch(() => json({ error: "invalid json" }, 400))
   }
 
-  // Plugin webhook surface (dashboard only — the agent token neither needs
-  // nor manages webhook secrets). The URL is public: /hooks/<pluginId>/.
-  // GET reports state; POST sets or clears (empty string) the optional
-  // secret that makes the endpoint require authentication.
+  // Plugin webhook surface: the public /hooks/<userId>/<pluginId>/ URL plus
+  // the optional secret that makes callers authenticate. The agent token
+  // manages it alongside the dashboard and may read the raw secret (same
+  // trust level as ob-api-key); the browser only ever learns whether a
+  // secret is set. GET reports state; POST sets or clears (empty string)
+  // the secret.
   const webhookRoute = path.match(
     /^\/api\/plugins\/installed\/([^/]+)\/webhook$/,
   )
   if (webhookRoute) {
-    if (agent) return json({ error: "dashboard only" }, 403)
     const pluginId = decodeURIComponent(webhookRoute[1] ?? "")
     const row = db.installedPlugin(user.id, pluginId)
     if (!row) return json({ error: "not found" }, 404)
@@ -1270,10 +1276,14 @@ export function handlePlugins(
       return json({ error: "this plugin has no webhook surface" }, 400)
     }
     if (req.method === "GET") {
+      const hookPath = `/hooks/${user.id}/${pluginId}/`
+      const origin = agent ? publicOrigin() : ""
       return json({
         enabled: true,
         secured: Boolean(row.webhookToken),
-        path: `/hooks/${pluginId}/`,
+        path: hookPath,
+        ...(agent ? { secret: row.webhookToken ?? null } : {}),
+        ...(origin ? { publicUrl: `${origin}${hookPath}` } : {}),
       })
     }
     if (req.method !== "POST") return json({ error: "not found" }, 404)

@@ -3,13 +3,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { InstalledPlugin, User } from "@open-bot/db"
-import { emptyAppliedLog, openDatabase } from "@open-bot/db"
+import { openDatabase } from "@open-bot/db"
 import * as dockerModule from "./docker"
 import {
   clearPendingPluginConfigSyncs,
   flushPendingPluginConfigs,
   pendingPluginConfigSyncCount,
   pluginsForVaultSlug,
+  pluginVaultKeys,
   reapplyPluginConfig,
 } from "./plugins-apply"
 
@@ -29,11 +30,22 @@ mock.module("./docker", () => ({
   },
 }))
 
-function row(pluginId: string, enabled: boolean, vaultRead?: string[]) {
+function row(
+  pluginId: string,
+  enabled: boolean,
+  vaultRead?: string[],
+  vaultCreate?: string[],
+  name?: string,
+) {
   return {
     pluginId,
     enabled,
-    manifest: vaultRead ? { permissions: { vaultRead } } : {},
+    manifest: {
+      ...(name ? { name } : {}),
+      ...(vaultRead || vaultCreate
+        ? { permissions: { vaultRead, vaultCreate } }
+        : {}),
+    },
   } as unknown as InstalledPlugin
 }
 
@@ -57,6 +69,64 @@ describe("pluginsForVaultSlug", () => {
   })
 })
 
+describe("pluginVaultKeys", () => {
+  test("merges vaultCreate and vaultRead slugs into one entry per slug", () => {
+    const rows = [
+      row("weather", true, undefined, ["weatherapi"], "Weather"),
+      row("alerts", true, ["weatherapi"], undefined, "Alerts"),
+    ]
+    expect(pluginVaultKeys(rows)).toEqual([
+      {
+        slug: "weatherapi",
+        pluginIds: ["weather", "alerts"],
+        pluginNames: ["Weather", "Alerts"],
+        access: "create",
+        enabled: true,
+      },
+    ])
+  })
+
+  test("excludes shared provider slugs the static vault already owns", () => {
+    const rows = [
+      row("a", true, ["xai"], undefined, "A"),
+      row("b", true, undefined, ["openai", "custom"], "B"),
+    ]
+    expect(pluginVaultKeys(rows).map((key) => key.slug)).toEqual(["custom"])
+  })
+
+  test("vaultRead-only slugs stay access read; disabled plugins mark the entry", () => {
+    const rows = [
+      row("reader", false, ["hookdeck"], undefined, "Reader"),
+      row("writer", true, undefined, ["hookdeck"], "Writer"),
+    ]
+    const keys = pluginVaultKeys(rows)
+    expect(keys).toEqual([
+      {
+        slug: "hookdeck",
+        pluginIds: ["reader", "writer"],
+        pluginNames: ["Reader", "Writer"],
+        access: "create",
+        enabled: true,
+      },
+    ])
+    expect(
+      pluginVaultKeys([row("reader", false, ["hookdeck"], undefined, "R")]),
+    ).toEqual([
+      {
+        slug: "hookdeck",
+        pluginIds: ["reader"],
+        pluginNames: ["R"],
+        access: "read",
+        enabled: false,
+      },
+    ])
+  })
+
+  test("plugins without vault permissions contribute nothing", () => {
+    expect(pluginVaultKeys([row("a", true), row("b", false)])).toEqual([])
+  })
+})
+
 describe("deferred plugin config syncs", () => {
   function user(overrides: Partial<User> = {}): User {
     return {
@@ -72,7 +142,9 @@ describe("deferred plugin config syncs", () => {
   }
 
   function setupDb() {
-    const db = openDatabase(join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"))
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
     db.createUser(user())
     const dir = mkdtempSync(join(tmpdir(), "ob-plugin-files-"))
     mkdirSync(dir, { recursive: true })

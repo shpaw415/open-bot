@@ -40,7 +40,7 @@ curl -sS -X POST http://viking:1933/api/v1/skills \
   -d '{"data":{"name":"logo-cutout","description":"when to use it, one line","content":"# Logo cutout\n\nfinished steps, including the correction"}}'
 ```
 
-Replace with PUT `http://viking:1933/api/v1/skills/<name>` and the same body.
+Replace by DELETE `http://viking:1933/api/v1/skills/<name>` then the same POST. Do not use PUT — it can hang on a loaded server.
 
 Confirm with `openviking_read` on `viking://user/skills/<name>/SKILL.md`. If the request times out, the skill was usually written: read it before retrying, or you will create a duplicate.
 

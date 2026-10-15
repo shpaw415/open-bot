@@ -1,21 +1,21 @@
 import { useEffect, useState } from "react"
-import type { MarketPlugin } from "../lib/db"
 import {
   Badge,
   Button,
+  buttonClasses,
   Card,
   Code,
   EmptyState,
+  focusRing,
   Icon,
   IconTile,
+  icons,
+  inputClasses,
   SectionHeading,
   Spinner,
   TagChip,
-  buttonClasses,
-  focusRing,
-  icons,
-  inputClasses,
 } from "../components/ui"
+import type { MarketPlugin } from "../lib/db"
 
 const CATEGORIES = ["", "utilities", "productivity", "media", "devtools", "fun"]
 
@@ -170,8 +170,8 @@ export default function Home() {
         new URLSearchParams(window.location.search).has("loginError") ? (
           <p className="mb-6 rounded-[10px] border border-[#F0C2BE] bg-[#FDEEEC] p-4 text-sm text-[#B4232B]">
             Sign-in failed (
-            {new URLSearchParams(window.location.search).get("loginError")}). Try
-            again.
+            {new URLSearchParams(window.location.search).get("loginError")}).
+            Try again.
           </p>
         ) : null}
 

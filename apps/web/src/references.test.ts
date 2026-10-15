@@ -37,6 +37,17 @@ const sections: RefSectionView[] = [
     label: "Plugin reports",
     items: [{ id: "r1", name: "stock-dashboard" }],
   },
+  {
+    key: "plugins",
+    label: "Plugins",
+    items: [
+      {
+        id: "pl1",
+        name: "Stock Dashboard",
+        description: "live stock cards",
+      },
+    ],
+  },
 ]
 
 describe("detect mention", () => {
@@ -149,6 +160,19 @@ describe("detect mention", () => {
       query: "project",
     })
   })
+
+  test("singular @plugin opens the plugins picker", () => {
+    expect(detectMention("@plugin/stock", 13, sections)).toMatchObject({
+      stage: "name",
+      section: "plugins",
+      query: "stock",
+    })
+    expect(detectMention("@plugins/", 9, sections)).toMatchObject({
+      stage: "name",
+      section: "plugins",
+      query: "",
+    })
+  })
 })
 
 describe("find reference tokens", () => {
@@ -214,6 +238,22 @@ describe("find reference tokens", () => {
         "ask @personas/Work wife".slice(tokens[0].start, tokens[0].end),
     ).toBe("@personas/Work wife")
     expect(tokens[1]).toMatchObject({ section: "cron", name: "Nightly build" })
+  })
+
+  test("matches plugin tokens by display name and slug alias", () => {
+    const tokens = findReferenceTokens(
+      "check @plugins/Stock Dashboard and @plugin/stock-dashboard",
+      sections,
+    )
+    expect(tokens).toHaveLength(2)
+    expect(tokens[0]).toMatchObject({
+      section: "plugins",
+      name: "Stock Dashboard",
+    })
+    expect(tokens[1]).toMatchObject({
+      section: "plugins",
+      name: "Stock Dashboard",
+    })
   })
 
   test("unknown items keep a span for the warning tint", () => {

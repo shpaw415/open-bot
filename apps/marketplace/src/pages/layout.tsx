@@ -1,6 +1,6 @@
 import type { JSX } from "react"
+import { buttonClasses, LogoMark } from "../components/ui"
 import { usePath } from "../hooks/usePath"
-import { LogoMark, buttonClasses } from "../components/ui"
 
 const links = [
   { href: "/", label: "Browse" },
@@ -132,10 +132,7 @@ export default function Layout({ children }: { children: JSX.Element }) {
               </p>
             </div>
             <div className="flex gap-5 text-[13.5px] text-[#3E4A5F]">
-              <a
-                href="/"
-                className="transition-colors hover:text-[#2B3DE8]"
-              >
+              <a href="/" className="transition-colors hover:text-[#2B3DE8]">
                 Browse
               </a>
               <a

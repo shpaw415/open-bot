@@ -1,11 +1,21 @@
 import type { Db, User } from "@open-bot/db"
 import { keyVaultPublic, keyVaultSpecById } from "./key-vault"
+import { pluginVaultKeys } from "./plugins-apply"
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json" },
     status,
   })
+}
+
+// The agent reads provider keys and the plugin-declared slugs its own
+// manifests let it create (permissions.vaultCreate) — vaultRead-only slugs
+// stay dashboard-managed, values are never listed for them.
+function agentCreatablePluginKeys(db: Db, user: User) {
+  return pluginVaultKeys(db.installedPlugins(user.id)).filter(
+    (key) => key.access === "create",
+  )
 }
 
 export function isKeysRequest(pathname: string, method: string): boolean {
@@ -16,14 +26,24 @@ export function isKeysRequest(pathname: string, method: string): boolean {
 }
 
 export function handleKeys(url: URL, db: Db, user: User): Response | null {
+  const pluginKeys = agentCreatablePluginKeys(db, user)
   if (url.pathname === "/api/keys") {
     return json({
-      keys: keyVaultPublic().map((spec) => ({
-        slug: spec.id,
-        label: spec.label,
-        chatProvider: spec.chatProvider,
-        hasKey: (db.getUserKey(user.id, spec.id)?.apiKey ?? "") !== "",
-      })),
+      keys: [
+        ...keyVaultPublic().map((spec) => ({
+          slug: spec.id,
+          label: spec.label,
+          chatProvider: spec.chatProvider,
+          hasKey: (db.getUserKey(user.id, spec.id)?.apiKey ?? "") !== "",
+        })),
+        ...pluginKeys.map((key) => ({
+          slug: key.slug,
+          label: `${key.pluginNames[0] ?? key.slug} · ${key.slug}`,
+          chatProvider: false,
+          plugin: true,
+          hasKey: (db.getUserKey(user.id, key.slug)?.apiKey ?? "") !== "",
+        })),
+      ],
     })
   }
   let slug = ""
@@ -32,11 +52,16 @@ export function handleKeys(url: URL, db: Db, user: User): Response | null {
   } catch {
     return json({ error: "bad key slug" }, 400)
   }
-  if (!keyVaultSpecById(slug)) {
+  const spec = keyVaultSpecById(slug)
+  const pluginKey = spec ? null : pluginKeys.find((key) => key.slug === slug)
+  if (!spec && !pluginKey) {
     return json(
       {
         error: `unknown key slug: ${slug}`,
-        slugs: keyVaultPublic().map((item) => item.id),
+        slugs: [
+          ...keyVaultPublic().map((item) => item.id),
+          ...pluginKeys.map((item) => item.slug),
+        ],
       },
       400,
     )
@@ -49,9 +74,9 @@ export function handleKeys(url: URL, db: Db, user: User): Response | null {
     slug,
     apiKey: key.apiKey,
     accountId: key.accountId,
-    gatewayId: key.gatewayId,
-    gatewayToken: key.gatewayToken,
-    gatewaySlug: key.gatewaySlug,
+    gatewayId: spec ? key.gatewayId : "",
+    gatewayToken: spec ? key.gatewayToken : "",
+    gatewaySlug: spec ? key.gatewaySlug : "",
     baseUrl: key.baseUrl,
   })
 }

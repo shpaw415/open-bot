@@ -38,7 +38,11 @@ export default function Login() {
         <p className="mt-1 text-[13.5px] text-[#5F6B80]">
           You'll be redirected back automatically.
         </p>
-        <Button size="lg" className="mt-5 w-full" onClick={() => window.location.assign("/api/auth/login")}>
+        <Button
+          size="lg"
+          className="mt-5 w-full"
+          onClick={() => window.location.assign("/api/auth/login")}
+        >
           Sign in
         </Button>
         <a

@@ -169,7 +169,7 @@ test("ob-plugin doctor falls back to gh/git when raw.githubusercontent 404s", as
     const bin = join(home, "bin")
     writeFileSync(
       join(bin, "gh"),
-      "#!/bin/sh\n[ \"$1\" = api ] && echo shpaw415/price-scout\n",
+      '#!/bin/sh\n[ "$1" = api ] && echo shpaw415/price-scout\n',
     )
     chmodSync(join(bin, "gh"), 0o755)
     writeFileSync(
@@ -204,6 +204,86 @@ test("ob-plugin doctor reports unreachable repo and missing tag without fallback
     expect(result.code).toBe(1)
     expect(result.stdout).toContain("repo: NOT reachable")
     expect(result.stdout).toContain("release tag: v0.1.0 missing")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+const webhookState =
+  '{"enabled":true,"secured":true,"path":"/hooks/uid/hook-pro/","secret":"s3cret","publicUrl":"https://open.test/hooks/uid/hook-pro/"}'
+
+test("ob-plugin endpoint reports the url and raw secret", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-endpoint-"))
+  try {
+    const bin = fakeCurl(home, webhookState)
+    const status = await run(home, ["endpoint", "hook-pro"], bin)
+    expect(status.code).toBe(0)
+    const parsed = JSON.parse(status.stdout)
+    expect(parsed).toEqual({
+      pluginId: "hook-pro",
+      enabled: true,
+      secured: true,
+      secret: "s3cret",
+      url: "https://open.test/hooks/uid/hook-pro/",
+    })
+    expect(readFileSync(join(home, "curl.args"), "utf8")).toContain(
+      "/api/plugins/installed/hook-pro/webhook",
+    )
+
+    const url = await run(home, ["endpoint", "hook-pro", "url"], bin)
+    expect(url.stdout).toBe("https://open.test/hooks/uid/hook-pro/\n")
+
+    const secret = await run(home, ["endpoint", "hook-pro", "secret"], bin)
+    expect(secret.code).toBe(0)
+    expect(secret.stdout).toBe("s3cret\n")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("ob-plugin endpoint sets, generates, and clears the secret", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-endpoint-"))
+  try {
+    const bin = fakeCurl(home, '{"ok":true,"secured":true}')
+
+    const set = await run(
+      home,
+      ["endpoint", "hook-pro", "secret", "hunter2"],
+      bin,
+    )
+    expect(set.code).toBe(0)
+    expect(set.stdout).toContain("secret set for hook-pro")
+    expect(JSON.parse(readFileSync(join(home, "curl.body"), "utf8"))).toEqual({
+      secret: "hunter2",
+    })
+
+    const generated = await run(
+      home,
+      ["endpoint", "hook-pro", "secret", "--generate"],
+      bin,
+    )
+    expect(generated.code).toBe(0)
+    expect(generated.stdout.trim()).toMatch(/^[0-9a-f]{48}$/)
+
+    const clear = await run(home, ["endpoint", "hook-pro", "clear"], bin)
+    expect(clear.code).toBe(0)
+    expect(readFileSync(join(home, "curl.body"), "utf8")).toBe('{"secret": ""}')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("ob-plugin endpoint secret exits 1 when no secret is set", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-endpoint-"))
+  try {
+    const bin = fakeCurl(
+      home,
+      '{"enabled":true,"secured":false,"path":"/hooks/uid/hook-pro/","secret":null,"publicUrl":"https://open.test/hooks/uid/hook-pro/"}',
+    )
+    const result = await run(home, ["endpoint", "hook-pro", "secret"], bin)
+    expect(result.code).toBe(1)
+    expect(result.stdout).toBe("")
+    expect(result.stderr).toContain("no secret set for hook-pro")
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

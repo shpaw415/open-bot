@@ -35,12 +35,14 @@ export type Suggestion = {
 export function normalizeSectionKey(section: string): string {
   if (section === "project") return "projects"
   if (section === "report") return "reports"
+  if (section === "plugin") return "plugins"
   return section
 }
 
 const singularKeys: Record<string, string> = {
   projects: "project",
   reports: "report",
+  plugins: "plugin",
 }
 
 function sectionPattern(sections: RefSectionView[]): RegExp {

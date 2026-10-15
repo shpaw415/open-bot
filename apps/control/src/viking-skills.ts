@@ -93,9 +93,10 @@ export function createVikingSkills(
           "x-api-key": apiKey,
           ...init?.headers,
         },
-        // Skill saves embed server-side and can take minutes on a loaded
-        // OpenViking; keep the budget well above that.
-        signal: AbortSignal.timeout(240_000),
+        // Writes return as soon as the files land (wait:false below); reads
+        // are fs-backed. The budget is only a safety net for a loaded
+        // OpenViking.
+        signal: AbortSignal.timeout(60_000),
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : "request failed"
@@ -126,12 +127,73 @@ export function createVikingSkills(
     return isRecord(body) && "result" in body ? body.result : body
   }
 
+  async function get(name: string): Promise<SkillDetail> {
+    const nameError = skillNameError(name)
+    if (nameError) throw new HttpError(400, nameError, "skill_name")
+    const result = await call(
+      `/api/v1/skills/${encodeURIComponent(name)}?include_content=true&include_files=false`,
+    )
+    const content =
+      isRecord(result) && typeof result.content === "string"
+        ? result.content
+        : ""
+    const description =
+      isRecord(result) && typeof result.description === "string"
+        ? result.description
+        : ""
+    return { name, description, body: skillBody(content) }
+  }
+
   function data(input: SkillDetail) {
     return {
       name: input.name,
       description: input.description,
       content: input.body,
     }
+  }
+
+  // A skill written seconds ago is still being indexed server-side; its
+  // DELETE answers 409 until that settles. Retry the conflict briefly so a
+  // quick save-after-save (and the rename's old-name delete) gets through.
+  async function deleteWithRetry(name: string) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await call(`/api/v1/skills/${encodeURIComponent(name)}`, {
+          method: "DELETE",
+        })
+      } catch (error) {
+        if (
+          !(error instanceof HttpError) ||
+          error.status !== 409 ||
+          attempt >= 5
+        )
+          throw error
+        await new Promise((resolve) => setTimeout(resolve, 700))
+      }
+    }
+  }
+
+  // wait:false returns after the files are written; semantic indexing keeps
+  // running server-side. Sync waits here were pushing plugin installs past
+  // two minutes (and the Skills editor past its timeout) on a loaded
+  // OpenViking — and a client timeout during a sync wait still leaves the
+  // write committed, so blind retries created duplicates. Reads see the new
+  // body immediately, which is what this confirm checks.
+  async function confirmSave(input: SkillDetail) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
+      try {
+        const saved = await get(input.name)
+        if (saved.body === input.body) return
+      } catch {
+        // not visible yet — poll again
+      }
+    }
+    throw new HttpError(
+      502,
+      `saved ${input.name}, but the read-back never matched — re-read viking://user skills before retrying (a timeout here does not mean the write failed)`,
+      "skill_confirm",
+    )
   }
 
   return {
@@ -158,22 +220,7 @@ export function createVikingSkills(
       })
     },
 
-    async get(name: string): Promise<SkillDetail> {
-      const nameError = skillNameError(name)
-      if (nameError) throw new HttpError(400, nameError, "skill_name")
-      const result = await call(
-        `/api/v1/skills/${encodeURIComponent(name)}?include_content=true&include_files=false`,
-      )
-      const content =
-        isRecord(result) && typeof result.content === "string"
-          ? result.content
-          : ""
-      const description =
-        isRecord(result) && typeof result.description === "string"
-          ? result.description
-          : ""
-      return { name, description, body: skillBody(content) }
-    },
+    get,
 
     async save(input: SkillDetail, previousName = "") {
       assertSkillInput(input)
@@ -197,36 +244,28 @@ export function createVikingSkills(
           .join("; ")
         throw new HttpError(400, message || "skill is invalid", "skill_invalid")
       }
-      // wait:true keeps installs deterministic; the timeout must cover
-      // server-side embedding, which can take minutes on a loaded OpenViking.
-      const payload = JSON.stringify({
-        data: data(input),
-        wait: true,
-        timeout: 240,
-      })
-      if (!previousName || previousName !== input.name) {
+      const payload = JSON.stringify({ data: data(input), wait: false })
+      if (previousName && previousName !== input.name) {
         await call("/api/v1/skills", { method: "POST", body: payload })
-        if (previousName && previousName !== input.name) {
-          try {
-            await call(`/api/v1/skills/${encodeURIComponent(previousName)}`, {
-              method: "DELETE",
-            })
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : "delete failed"
-            throw new HttpError(
-              502,
-              `Saved ${input.name}, but ${previousName} is still there: ${message}`,
-              "skill_rename",
-            )
-          }
+        try {
+          await deleteWithRetry(previousName)
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "delete failed"
+          throw new HttpError(
+            502,
+            `Saved ${input.name}, but ${previousName} is still there: ${message}`,
+            "skill_rename",
+          )
         }
-        return
+      } else {
+        // Same-name updates used to go through PUT, which wedges on a loaded
+        // OpenViking (no response even at 120 s while POST answers fast).
+        // DELETE + POST is the same replace through the fast paths.
+        await deleteWithRetry(input.name).catch(() => {})
+        await call("/api/v1/skills", { method: "POST", body: payload })
       }
-      await call(`/api/v1/skills/${encodeURIComponent(input.name)}`, {
-        method: "PUT",
-        body: payload,
-      })
+      await confirmSave(input)
     },
 
     async remove(name: string) {

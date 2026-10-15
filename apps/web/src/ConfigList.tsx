@@ -141,7 +141,14 @@ export function ConfigItemCard({
             direction="row"
             spacing={0.5}
             alignItems="center"
-            sx={{ pt: "2px", "@media (max-width:400px)": { flexBasis: "100%", justifyContent: "flex-end", pt: 1 } }}
+            sx={{
+              pt: "2px",
+              "@media (max-width:400px)": {
+                flexBasis: "100%",
+                justifyContent: "flex-end",
+                pt: 1,
+              },
+            }}
           >
             {actions}
           </Stack>
@@ -169,15 +176,23 @@ export function ItemAvatar({
 } & { ref?: RefObject<HTMLDivElement | null> }) {
   const palette =
     tone === "primary"
-      ? { bgcolor: "rgba(var(--bg-primary), 0.18)", color: "var(--text-primary)" }
+      ? {
+          bgcolor: "rgba(var(--bg-primary), 0.18)",
+          color: "var(--text-primary)",
+        }
       : tone === "secondary"
-        ? { bgcolor: "rgba(var(--bg-secondary), 0.18)", color: "var(--text-secondary)" }
+        ? {
+            bgcolor: "rgba(var(--bg-secondary), 0.18)",
+            color: "var(--text-secondary)",
+          }
         : {
             bgcolor: "rgba(var(--text-main), 0.08)",
             color: "rgba(var(--text-main), 0.6)",
           }
   return (
-    <Avatar sx={{ ...avatarSx, ...palette }} {...props}>{children}</Avatar>
+    <Avatar sx={{ ...avatarSx, ...palette }} {...props}>
+      {children}
+    </Avatar>
   )
 }
 
@@ -185,16 +200,52 @@ export function ItemAvatar({
 export function GhostCards({ count = 3 }: { count?: number }) {
   return (
     <>
-      <Box sx={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
+      <Box
+        sx={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+        }}
+      >
         Loading items
       </Box>
       {Array.from({ length: count }, (_, index) => (
-        <Paper key={index} variant="outlined" sx={{ borderRadius: "12px", p: { xs: 1.5, sm: 2 } }}>
+        <Paper
+          key={index}
+          variant="outlined"
+          sx={{ borderRadius: "12px", p: { xs: 1.5, sm: 2 } }}
+        >
           <Stack direction="row" spacing={1.5} alignItems="flex-start">
-            <Box sx={{ ...avatarSx, borderRadius: "50%", bgcolor: "rgba(var(--text-main), 0.08)", animation: "ob-pulse 1.6s ease-in-out infinite" }} />
+            <Box
+              sx={{
+                ...avatarSx,
+                borderRadius: "50%",
+                bgcolor: "rgba(var(--text-main), 0.08)",
+                animation: "ob-pulse 1.6s ease-in-out infinite",
+              }}
+            />
             <Box sx={{ flex: 1, pt: 0.5 }}>
-              <Box sx={{ height: 14, width: "40%", borderRadius: "4px", bgcolor: "rgba(var(--text-main), 0.08)", animation: "ob-pulse 1.6s ease-in-out infinite" }} />
-              <Box sx={{ height: 12, width: "70%", borderRadius: "4px", bgcolor: "rgba(var(--text-main), 0.08)", mt: 1, animation: "ob-pulse 1.6s ease-in-out infinite" }} />
+              <Box
+                sx={{
+                  height: 14,
+                  width: "40%",
+                  borderRadius: "4px",
+                  bgcolor: "rgba(var(--text-main), 0.08)",
+                  animation: "ob-pulse 1.6s ease-in-out infinite",
+                }}
+              />
+              <Box
+                sx={{
+                  height: 12,
+                  width: "70%",
+                  borderRadius: "4px",
+                  bgcolor: "rgba(var(--text-main), 0.08)",
+                  mt: 1,
+                  animation: "ob-pulse 1.6s ease-in-out infinite",
+                }}
+              />
             </Box>
           </Stack>
         </Paper>
@@ -213,8 +264,19 @@ export function EmptyState({
   subtext: string
 }) {
   return (
-    <Stack alignItems="center" spacing={1} sx={{ textAlign: "center", py: 4, px: 2 }}>
-      <Avatar sx={{ width: 48, height: 48, bgcolor: "rgba(var(--text-main), 0.08)", color: "rgba(var(--text-main), 0.6)" }}>
+    <Stack
+      alignItems="center"
+      spacing={1}
+      sx={{ textAlign: "center", py: 4, px: 2 }}
+    >
+      <Avatar
+        sx={{
+          width: 48,
+          height: 48,
+          bgcolor: "rgba(var(--text-main), 0.08)",
+          color: "rgba(var(--text-main), 0.6)",
+        }}
+      >
         {icon}
       </Avatar>
       <Typography variant="subtitle2">{title}</Typography>

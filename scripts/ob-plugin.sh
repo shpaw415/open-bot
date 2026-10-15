@@ -35,6 +35,12 @@ Usage:
   ob-plugin setup ID                 re-run a plugin's root setup commands (retry after a failure)
   ob-plugin page ID                  page-server status: port, health, pid (loopback 4740-4759 in this container)
   ob-plugin restart ID               restart a plugin's page server (the edit loop for dashboard pages)
+  ob-plugin endpoint ID              public endpoint status: url, secured state, secret (raw)
+  ob-plugin endpoint ID url          print the endpoint URL (shareable public origin when the instance sets one)
+  ob-plugin endpoint ID secret       print the raw secret (empty stdout + exit 1 when unset)
+  ob-plugin endpoint ID secret VALUE set the secret (callers then send X-Open-Bot-Webhook-Secret or ?secret=)
+  ob-plugin endpoint ID secret --generate   set a fresh random secret and print it
+  ob-plugin endpoint ID clear        remove the secret (endpoint becomes public)
   ob-plugin settings ID [key=value]  show or update plugin settings
   ob-plugin guide ID                 print the plugin's CONFIG.md configuration guide (how to configure it with the user)
   ob-plugin vault ID                 list the plugin's vaultCreate slugs (hasKey only, never values)
@@ -662,6 +668,72 @@ EOF
     fail_on_error "$out"
     port=$(printf '%s' "$out" | jq -r '.port')
     echo "page server for $1 restarted on port $port (local installs run the checkout with bun --hot — no restart needed after edits)"
+    ;;
+  endpoint)
+    [ $# -ge 1 ] || { usage; exit 2; }
+    id="$1"
+    shift
+    hook="/api/plugins/installed/$(urlencode "$id")/webhook"
+    no_surface() {
+      echo "ob-plugin: $id has no public endpoint (manifest dashboard.pages.public is not enabled)" >&2
+      exit 1
+    }
+    case "${1:-show}" in
+      show)
+        out=$(request GET "$hook")
+        fail_on_error "$out"
+        printf '%s' "$out" | jq -e '.enabled == false' >/dev/null 2>&1 && no_surface
+        printf '%s' "$out" | jq --arg id "$id" --arg base "$BASE" \
+          '{pluginId: $id, enabled, secured, secret: (.secret // null), url: (.publicUrl // ($base + .path))}'
+        if printf '%s' "$out" | jq -e '.secured == true' >/dev/null 2>&1; then
+          echo "test: curl -s -H \"X-Open-Bot-Webhook-Secret: \$(ob-plugin endpoint $id secret)\" \"\$(ob-plugin endpoint $id url)\"" >&2
+        fi
+        ;;
+      url)
+        out=$(request GET "$hook")
+        fail_on_error "$out"
+        printf '%s' "$out" | jq -e '.enabled == false' >/dev/null 2>&1 && no_surface
+        if printf '%s' "$out" | jq -e '.publicUrl' >/dev/null 2>&1; then
+          printf '%s\n' "$(printf '%s' "$out" | jq -r '.publicUrl')"
+        else
+          printf '%s\n' "$(printf '%s' "$out" | jq -r --arg base "$BASE" '($base + .path)')"
+          echo "ob-plugin: internal control URL (set OPEN_BOT_PUBLIC_URL on the control plane for the shareable public origin)" >&2
+        fi
+        ;;
+      secret)
+        shift
+        if [ $# -eq 0 ]; then
+          out=$(request GET "$hook")
+          fail_on_error "$out"
+          secret=$(printf '%s' "$out" | jq -r '.secret // empty')
+          if [ -z "$secret" ]; then
+            echo "ob-plugin: no secret set for $id (endpoint is public)" >&2
+            exit 1
+          fi
+          printf '%s\n' "$secret"
+        elif [ "$1" = "--generate" ]; then
+          secret=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+          out=$(request POST "$hook" "$(jq -n --arg s "$secret" '{secret: $s}')")
+          fail_on_error "$out"
+          printf '%s\n' "$secret"
+        else
+          secret="$1"
+          out=$(request POST "$hook" "$(jq -n --arg s "$secret" '{secret: $s}')")
+          fail_on_error "$out"
+          echo "secret set for $id"
+        fi
+        ;;
+      clear)
+        out=$(request POST "$hook" '{"secret": ""}')
+        fail_on_error "$out"
+        echo "secret removed — $id endpoint is public"
+        ;;
+      *)
+        echo "unknown subcommand: $1" >&2
+        usage
+        exit 2
+        ;;
+    esac
     ;;
   guide)
     [ $# -eq 1 ] || { usage; exit 2; }

@@ -63,11 +63,24 @@ export function pageCheckoutEntry(
   return `${row.localPath}/${source}`
 }
 
+// The exact bun command line the exec'd server ends up with (exec replaces
+// the shell, argv space-joined) — recorded in <id>.cmd so the stop path can
+// pkill an orphan even when its pidfile was clobbered by a failed spawn.
+export function pageServerCmdline(opts: {
+  bin: string
+  checkoutEntry?: string | null
+}) {
+  return opts.checkoutEntry
+    ? `bun --hot run ${opts.checkoutEntry}`
+    : `bun run ${opts.bin}`
+}
+
 // The in-container shell line that runs the page server: records the pid,
-// token, and resolved port next to each other (~/.open-bot/pages/<id>.{pid,token,port}),
-// then execs bun. Local checkouts run with --hot so edits apply live; the
-// installed bin (frozen payload copy) is the default and the fallback when the
-// checkout file disappeared.
+// token, resolved port, and exact bun command line next to each other
+// (~/.open-bot/pages/<id>.{pid,token,port,cmd}), then execs bun. Local
+// checkouts run with --hot so edits apply live; the installed bin (frozen
+// payload copy) is the default and the fallback when the checkout file
+// disappeared.
 export function pageServerCommand(opts: {
   pidFile: string
   token: string
@@ -78,10 +91,12 @@ export function pageServerCommand(opts: {
   const run = opts.checkoutEntry
     ? `exec bun --hot run '${opts.checkoutEntry}'`
     : `exec bun run '${opts.bin}'`
+  const cmdline = pageServerCmdline(opts)
   return [
     `echo $$ > '${opts.pidFile}.pid'`,
     `printf '%s' '${opts.token}' > '${opts.pidFile}.token'`,
     `printf '%s' '${opts.port}' > '${opts.pidFile}.port'`,
+    `printf '%s' '${cmdline}' > '${opts.pidFile}.cmd'`,
     run,
     `> '${opts.pidFile}.log' 2>&1`,
   ].join(" && ")
@@ -182,7 +197,29 @@ function emitChanged(hub: PageHub, userId: string) {
 }
 
 // Starts (or confirms) the plugin's page server. Returns the port.
-export async function ensurePluginPageServer(
+// One spawn per (user, plugin) at a time. Concurrent callers — a restart
+// route racing the boot re-sync, a lazy proxy start racing a settings save —
+// would each spawn: the second server dies on EADDRINUSE and its dead pid
+// overwrites the pidfile while the health probe celebrates the first spawn's
+// server. Late callers share the in-flight promise instead.
+const inFlightEnsures = new Map<string, Promise<number>>()
+
+export function ensurePluginPageServer(
+  userId: string,
+  row: InstalledPlugin,
+  hub?: PageHub,
+): Promise<number> {
+  const key = stateKey(userId, row.pluginId)
+  const existing = inFlightEnsures.get(key)
+  if (existing) return existing
+  const promise = ensurePluginPageServerInner(userId, row, hub).finally(() => {
+    inFlightEnsures.delete(key)
+  })
+  inFlightEnsures.set(key, promise)
+  return promise
+}
+
+async function ensurePluginPageServerInner(
   userId: string,
   row: InstalledPlugin,
   hub?: PageHub,
@@ -198,8 +235,14 @@ export async function ensurePluginPageServer(
   if (state && (await healthy(userId, pluginId, state.port))) {
     return state.port
   }
+  // A just-waking desktop can report "sleeping" mid-restart (docker ps races
+  // the container's boot); give it one short grace pass before failing the
+  // install/enable that triggered this.
   if ((await desktopPhase(userId)) !== "running") {
-    throw new HttpError(502, "desktop is asleep", "plugin_page_desktop")
+    await new Promise((resolve) => setTimeout(resolve, 3_000))
+    if ((await desktopPhase(userId)) !== "running") {
+      throw new HttpError(502, "desktop is asleep", "plugin_page_desktop")
+    }
   }
   const throttleHit = lastStart.get(key)
   if (throttleHit && Date.now() - throttleHit < PAGE_START_THROTTLE_MS) {
@@ -247,6 +290,25 @@ export async function ensurePluginPageServer(
     throw new HttpError(
       502,
       "could not prepare the page directory",
+      "plugin_page",
+    )
+  }
+  // Kill anything of this plugin's that is still on the desktop before
+  // spawning. The in-memory state dies with the control container while the
+  // desktop's server keeps running — spawning without this leaves the old
+  // server holding the port: the new one dies on EADDRINUSE, overwrites the
+  // pidfile with its dead pid, and the health probe below hits the orphan and
+  // reports success with stale code. Restart keeps the token file so clients
+  // keep working.
+  const killed = await opencodeExecUser(n.opencode, [
+    "sh",
+    "-c",
+    killPageServerScript(pidFile, true),
+  ]).catch(() => ({ code: 1, stdout: "", stderr: "" }))
+  if (killed.code !== 0) {
+    throw new HttpError(
+      502,
+      "could not stop the previous page server",
       "plugin_page",
     )
   }
@@ -315,10 +377,31 @@ function opencodeExecUser(container: string, args: string[]) {
   ])
 }
 
+// TERM the page server, wait up to 3 s, then KILL — an old server still
+// holding the deterministic port would kill every future start with
+// EADDRINUSE. Two targets: the pidfile pid, and pkill on the exact bun
+// command line recorded at spawn (an orphan whose pidfile was overwritten by
+// a failed duplicate spawn is invisible to the pid alone). agent-user only:
+// pgrep/pkill match the server's own processes, never another user's.
+export function killPageServerScript(pidFile: string, keepToken: boolean) {
+  const files = keepToken
+    ? `'${pidFile}.pid' '${pidFile}.port' '${pidFile}.cmd'`
+    : `'${pidFile}.pid' '${pidFile}.token' '${pidFile}.port' '${pidFile}.cmd'`
+  return [
+    `pid=$(cat '${pidFile}.pid' 2>/dev/null || true)`,
+    `cmd=$(cat '${pidFile}.cmd' 2>/dev/null || true)`,
+    `[ -n "$pid" ] && kill "$pid" 2>/dev/null || true`,
+    `[ -n "$cmd" ] && pkill -TERM -x -f "$cmd" 2>/dev/null || true`,
+    "i=0",
+    `while [ "$i" -lt 30 ] && { { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; } || { [ -n "$cmd" ] && pgrep -x -f "$cmd" >/dev/null 2>&1; }; }; do sleep 0.1; i=$((i+1)); done`,
+    `[ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true`,
+    `[ -n "$cmd" ] && pkill -KILL -x -f "$cmd" 2>/dev/null || true`,
+    `rm -f ${files}`,
+  ].join("; ")
+}
+
 // Stops the plugin's page server (disable/uninstall). Best effort. Restarts
 // keep the token file so clients keep working; explicit stops rotate it.
-// TERM gets up to 3 s to land, then KILL — an old server still holding the
-// deterministic port would kill every future start with EADDRINUSE.
 export async function stopPluginPageServer(
   userId: string,
   pluginId: string,
@@ -326,18 +409,18 @@ export async function stopPluginPageServer(
   keepToken = false,
 ) {
   const key = stateKey(userId, pluginId)
+  // Let a racing start finish first so the kill below lands on its server
+  // instead of racing it (restart then spawns fresh on top).
+  const inflight = inFlightEnsures.get(key)
+  if (inflight) await inflight.catch(() => {})
   states.delete(key)
   healthCache.delete(key)
   lastStart.delete(key)
   const n = names(userId)
-  const pidFile = pluginPagePath(pluginId)
-  const files = keepToken
-    ? `'${pidFile}.pid' '${pidFile}.port'`
-    : `'${pidFile}.pid' '${pidFile}.token' '${pidFile}.port'`
   await opencodeExecUser(n.opencode, [
     "sh",
     "-c",
-    `if [ -f '${pidFile}.pid' ]; then pid=$(cat '${pidFile}.pid'); kill "$pid" 2>/dev/null || true; i=0; while [ "$i" -lt 30 ] && kill -0 "$pid" 2>/dev/null; do sleep 0.1; i=$((i+1)); done; kill -9 "$pid" 2>/dev/null || true; fi; rm -f ${files}`,
+    killPageServerScript(pluginPagePath(pluginId), keepToken),
   ]).catch(() => {})
   if (hub) emitChanged(hub, userId)
 }

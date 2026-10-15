@@ -24,6 +24,7 @@ import {
   syncPluginTools,
 } from "./docker"
 import { HttpError } from "./http-error"
+import { keyVaultSpecById } from "./key-vault"
 import { extractPluginFiles, fetchPluginArtifact } from "./plugin-artifact"
 import {
   readLocalPluginConfigGuide,
@@ -538,7 +539,11 @@ export async function applyPluginInstall(
   // Fresh installs with a page server boot it right away when the desktop is
   // up. The outcome rides on the response (port + health) so install output
   // is diagnosable; the proxy still lazily restarts on the first request.
-  let page: PluginPageStartStatus = { attempted: false, running: false, port: null }
+  let page: PluginPageStartStatus = {
+    attempted: false,
+    running: false,
+    port: null,
+  }
   if (manifest.dashboard?.pages) {
     const row = db.installedPlugin(user.id, manifest.id)
     if (row?.enabled) {
@@ -965,6 +970,60 @@ export function pluginsForVaultSlug(
     const manifest = row.manifest as PluginManifest
     return (manifest.permissions?.vaultRead ?? []).includes(slug)
   })
+}
+
+// Plugin-declared vault keys that are not shared provider slugs, merged into
+// the Keys tab so every key on the account is managed in one place. Slugs a
+// shared provider already owns (keyVaultSpecById) stay on the static catalog;
+// duplicate declarations across plugins collapse into one entry.
+export type PluginVaultKey = {
+  slug: string
+  pluginIds: string[]
+  pluginNames: string[]
+  access: "create" | "read"
+  enabled: boolean
+}
+
+export function pluginVaultKeys(rows: InstalledPlugin[]): PluginVaultKey[] {
+  const merged = new Map<
+    string,
+    PluginVaultKey & { creatable: Set<string>; enabledCount: number }
+  >()
+  for (const row of rows) {
+    const manifest = row.manifest as PluginManifest
+    const creatable = new Set(manifest.permissions?.vaultCreate ?? [])
+    const slugs = new Set([
+      ...creatable,
+      ...(manifest.permissions?.vaultRead ?? []),
+    ])
+    for (const slug of slugs) {
+      if (keyVaultSpecById(slug)) continue
+      let entry = merged.get(slug)
+      if (!entry) {
+        entry = {
+          slug,
+          pluginIds: [],
+          pluginNames: [],
+          access: "read",
+          enabled: false,
+          creatable: new Set(),
+          enabledCount: 0,
+        }
+        merged.set(slug, entry)
+      }
+      if (!entry.pluginIds.includes(row.pluginId)) {
+        entry.pluginIds.push(row.pluginId)
+        entry.pluginNames.push(manifest.name || row.pluginId)
+      }
+      if (creatable.has(slug)) entry.creatable.add(row.pluginId)
+      if (row.enabled) entry.enabledCount += 1
+    }
+  }
+  return [...merged.values()].map(({ creatable, enabledCount, ...rest }) => ({
+    ...rest,
+    access: creatable.size > 0 ? ("create" as const) : ("read" as const),
+    enabled: enabledCount > 0,
+  }))
 }
 
 export async function resyncPluginsForVaultSlug(

@@ -85,7 +85,9 @@ function PluginHeader({
       </Typography>
       {isDevVersion(plugin.version) ? (
         <ToolTip title="Development build — reinstall the same version to pick up republished fixes">
-          <Chip size="small" color="warning" variant="outlined">dev</Chip>
+          <Chip size="small" color="warning" variant="outlined">
+            dev
+          </Chip>
         </ToolTip>
       ) : null}
     </Stack>
@@ -538,7 +540,9 @@ function VaultKeyRow({
           <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
             {status.slug}
           </Typography>
-          <Chip size="small" variant="outlined">shared provider key</Chip>
+          <Chip size="small" variant="outlined">
+            shared provider key
+          </Chip>
           <Chip
             size="small"
             variant="outlined"
@@ -701,7 +705,8 @@ function WebhookSection({ pluginId }: { pluginId: string }) {
         Your plugin's server, reachable like a normal website — pages, APIs,
         streams, and WebSockets. Requests wake the desktop if asleep. Append
         ?ob_async=1 to answer 202 immediately, or send the secret as the
-        X-Open-Bot-Webhook-Secret header on /hooks/{pluginId}/… instead.
+        X-Open-Bot-Webhook-Secret header on /hooks/&lt;user-id&gt;/{pluginId}/…
+        instead.
       </Typography>
       <Stack direction="row" spacing={1} alignItems="center">
         <TextField
@@ -1255,7 +1260,9 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
               }
             />
           ) : (
-            <Chip size="small" variant="outlined">not configured</Chip>
+            <Chip size="small" variant="outlined">
+              not configured
+            </Chip>
           )}
         </Stack>
         <Typography variant="body2" color="textSecondary">

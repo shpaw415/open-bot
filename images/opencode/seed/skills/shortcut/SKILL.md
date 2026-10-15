@@ -44,7 +44,7 @@ curl -sS -X POST http://viking:1933/api/v1/skills \
 
 Do not pass `wait`. The call returns fast with a `uri`, and the content is already written. Confirm with `openviking_read`. If the request times out, read the skill before retrying, or you will create a duplicate.
 
-Replace an existing one with PUT `http://viking:1933/api/v1/skills/<name>` and the same body.
+Replace an existing one by DELETE `http://viking:1933/api/v1/skills/<name>` then the same POST. Do not use PUT — it can hang on a loaded server.
 
 The description is the trigger: when to load it. The content is the fast path and what it replaces. No secrets.
 

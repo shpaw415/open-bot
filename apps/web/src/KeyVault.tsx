@@ -9,7 +9,7 @@ import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
 import { ConfigSection } from "./ConfigSection"
-import { VpnKeyIcon } from "./icons"
+import { ExtensionIcon, VpnKeyIcon } from "./icons"
 
 type VaultField = {
   id: string
@@ -25,6 +25,10 @@ type VaultSpec = {
   chatProvider: boolean
   fields: VaultField[]
   usedBy: string[]
+  plugin?: boolean
+  pluginIds?: string[]
+  access?: "create" | "read"
+  enabled?: boolean
 }
 
 type VaultEntry = {
@@ -95,6 +99,9 @@ export function KeyVault() {
     void load()
   }, [load])
 
+  const providerSpecs = catalog.filter((spec) => !spec.plugin)
+  const pluginSpecs = catalog.filter((spec) => spec.plugin)
+
   function fieldValue(slug: string, field: string) {
     return values[`${slug}:${field}`] ?? ""
   }
@@ -120,9 +127,11 @@ export function KeyVault() {
       })
       await load()
       setSaved(
-        spec.chatProvider
-          ? `Saved. ${spec.label} keys sync to chat providers when the desktop starts.`
-          : `Saved. ${spec.label} keys now back the matching provider setups.`,
+        spec.plugin
+          ? `Saved. The ${spec.label} key reaches the plugin on its next run.`
+          : spec.chatProvider
+            ? `Saved. ${spec.label} keys sync to chat providers when the desktop starts.`
+            : `Saved. ${spec.label} keys now back the matching provider setups.`,
       )
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "save failed")
@@ -157,103 +166,139 @@ export function KeyVault() {
     ([, source]) => source === "vault",
   )
 
-  return (
-    <ConfigSection
-      icon={<VpnKeyIcon />}
-      title="Provider keys"
-      description="Shared API keys for this account. Provider setups below use these when their own key is blank; a key typed into a provider setup always wins."
-      status={
-        vaultUsers.length > 0
-          ? { label: `${vaultUsers.length} in use`, color: "primary" }
-          : null
-      }
-    >
-      <Stack spacing={1.5}>
-        {error ? <Alert severity="error">{error}</Alert> : null}
-        {saved ? <Alert severity="success">{saved}</Alert> : null}
-        {vaultUsers.length > 0 ? (
-          <Stack direction="row" spacing={0.5} flexWrap="wrap">
-            {vaultUsers.map(([kind]) => (
-              <Chip key={kind} size="small">{`${kind}: vault key`}</Chip>
-            ))}
+  function renderEntry(spec: VaultSpec, index: number) {
+    const entry = entries.find((item) => item.slug === spec.id)
+    const anySaved = spec.fields.some((field) => fieldSaved(entry, field.id))
+    return (
+      <Box key={spec.id}>
+        {index > 0 ? <Divider sx={{ mb: 1.5 }} /> : null}
+        <Stack spacing={1}>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            flexWrap="wrap"
+          >
+            <Typography
+              variant="subtitle2"
+              sx={spec.plugin ? { fontFamily: "monospace" } : undefined}
+            >
+              {spec.label}
+            </Typography>
+            {spec.plugin ? (
+              <Chip
+                size="small"
+                variant="outlined"
+                icon={<ExtensionIcon />}
+                label="Plugin key"
+              />
+            ) : null}
+            {spec.plugin && spec.access === "create" ? (
+              <Chip size="small" variant="outlined">
+                agent can set
+              </Chip>
+            ) : null}
+            {spec.plugin && spec.enabled === false ? (
+              <Chip size="small" color="warning">
+                plugin disabled
+              </Chip>
+            ) : null}
+            {entry?.hasKey ? (
+              <Chip size="small" color="success">
+                Key saved
+              </Chip>
+            ) : anySaved ? (
+              <Chip size="small" color="warning">
+                Partial
+              </Chip>
+            ) : (
+              <Chip size="small">Not set</Chip>
+            )}
           </Stack>
-        ) : null}
-        {catalog.map((spec, index) => {
-          const entry = entries.find((item) => item.slug === spec.id)
-          const anySaved = spec.fields.some((field) =>
-            fieldSaved(entry, field.id),
-          )
-          return (
-            <Box key={spec.id}>
-              {index > 0 ? <Divider sx={{ mb: 1.5 }} /> : null}
-              <Stack spacing={1}>
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  flexWrap="wrap"
-                >
-                  <Typography variant="subtitle2">{spec.label}</Typography>
-                  {entry?.hasKey ? (
-                    <Chip size="small" color="success">Key saved</Chip>
-                  ) : anySaved ? (
-                    <Chip size="small" color="warning">Partial</Chip>
-                  ) : (
-                    <Chip size="small">Not set</Chip>
-                  )}
-                </Stack>
-                <Typography variant="body2" color="textSecondary">
-                  {spec.description}
-                  {spec.usedBy.length > 0
-                    ? ` Used by: ${spec.usedBy.join(", ")}.`
-                    : ""}
-                </Typography>
-                {spec.fields.map((field) => {
-                  const hasSaved = fieldSaved(entry, field.id)
-                  return (
-                    <TextField
-                      key={field.id}
-                      label={
-                        hasSaved && secretFields.has(field.id)
-                          ? `${field.label} (blank keeps the saved key)`
-                          : field.label
-                      }
-                      type={secretFields.has(field.id) ? "password" : "text"}
-                      value={fieldValue(spec.id, field.id)}
-                      placeholder={field.placeholder}
-                      onChange={(event) =>
-                        setFieldValue(
-                          spec.id,
-                          field.id,
-                          event.currentTarget.value,
-                        )
-                      }
-                    />
-                  )
-                })}
-                <Stack direction="row" spacing={1}>
-                  <Button
-                    variant="contained"
-                    disabled={busy === spec.id}
-                    onClick={() => void saveEntry(spec)}
-                  >
-                    Save
-                  </Button>
-                  {anySaved ? (
-                    <Button
-                      variant="text"
-                      disabled={busy === spec.id}
-                      onClick={() => void removeEntry(spec)}
-                    >
-                      Remove
-                    </Button>
-                  ) : null}
-                </Stack>
-              </Stack>
-            </Box>
-          )
-        })}
-      </Stack>
-    </ConfigSection>
+          <Typography variant="body2" color="textSecondary">
+            {spec.description}
+            {spec.usedBy.length > 0
+              ? ` Used by: ${spec.usedBy.join(", ")}.`
+              : ""}
+          </Typography>
+          {spec.fields.map((field) => {
+            const hasSaved = fieldSaved(entry, field.id)
+            return (
+              <TextField
+                key={field.id}
+                label={
+                  hasSaved && secretFields.has(field.id)
+                    ? `${field.label} (blank keeps the saved key)`
+                    : field.label
+                }
+                type={secretFields.has(field.id) ? "password" : "text"}
+                value={fieldValue(spec.id, field.id)}
+                placeholder={field.placeholder}
+                onChange={(event) =>
+                  setFieldValue(spec.id, field.id, event.currentTarget.value)
+                }
+              />
+            )
+          })}
+          <Stack direction="row" spacing={1}>
+            <Button
+              variant="contained"
+              disabled={busy === spec.id}
+              onClick={() => void saveEntry(spec)}
+            >
+              Save
+            </Button>
+            {anySaved ? (
+              <Button
+                variant="text"
+                disabled={busy === spec.id}
+                onClick={() => void removeEntry(spec)}
+              >
+                Remove
+              </Button>
+            ) : null}
+          </Stack>
+        </Stack>
+      </Box>
+    )
+  }
+
+  return (
+    <Stack spacing={3}>
+      <ConfigSection
+        icon={<VpnKeyIcon />}
+        title="Provider keys"
+        description="Shared API keys for this account. Provider setups below use these when their own key is blank; a key typed into a provider setup always wins. Keys that installed plugins declare are merged into this page too."
+        status={
+          vaultUsers.length > 0
+            ? { label: `${vaultUsers.length} in use`, color: "primary" }
+            : null
+        }
+      >
+        <Stack spacing={1.5}>
+          {error ? <Alert severity="error">{error}</Alert> : null}
+          {saved ? <Alert severity="success">{saved}</Alert> : null}
+          {vaultUsers.length > 0 ? (
+            <Stack direction="row" spacing={0.5} flexWrap="wrap">
+              {vaultUsers.map(([kind]) => (
+                <Chip key={kind} size="small">{`${kind}: vault key`}</Chip>
+              ))}
+            </Stack>
+          ) : null}
+          {providerSpecs.map((spec, index) => renderEntry(spec, index))}
+        </Stack>
+      </ConfigSection>
+      {pluginSpecs.length > 0 ? (
+        <ConfigSection
+          icon={<ExtensionIcon />}
+          title="Plugin keys"
+          description="API keys declared by installed plugins and merged into this vault, so every key lives in one place. Shared provider keys a plugin reads stay in the list above."
+        >
+          <Stack spacing={1.5}>
+            {pluginSpecs.map((spec, index) => renderEntry(spec, index))}
+          </Stack>
+        </ConfigSection>
+      ) : null}
+    </Stack>
   )
 }

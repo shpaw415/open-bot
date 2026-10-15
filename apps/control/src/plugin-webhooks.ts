@@ -7,34 +7,33 @@ import { resolveDesktopProviders } from "./key-vault"
 import { ensurePluginPageServer, pageStateFor } from "./plugin-pages"
 import type { UpgradeServer } from "./preview"
 
-// Public HTTP surface for plugin page servers: /hooks/<pluginId>/<path>.
-// Behaves like a normal web server in front of the plugin — any method,
-// HTML/assets/streams, WebSocket upgrades — resolved by plugin id alone and
-// opt-in per plugin via manifest dashboard.pages.public. A hit wakes a
-// sleeping desktop, boots the page server, and proxies the request. An
-// install may set an optional secret (header X-Open-Bot-Webhook-Secret or
-// ?secret=) to require authentication.
+// Public HTTP surface for plugin page servers. Canonical URLs are
+// user-scoped, /hooks/<userId>/<pluginId>/<path>, so coexisting installs of
+// one plugin id on a shared instance never collide. The short legacy form
+// /hooks/<pluginId>/<path> stays as a deprecated alias. Both behave like a
+// normal web server in front of the plugin — any method, HTML/assets/
+// streams, WebSocket upgrades — opt-in per plugin via manifest
+// dashboard.pages.public. A hit wakes a sleeping desktop, boots the page
+// server, and proxies the request. An install may set an optional secret
+// (header X-Open-Bot-Webhook-Secret or ?secret=) to require authentication.
 
 export const WEBHOOK_BODY_MAX_BYTES = 25_000_000
 export const WEBHOOK_UPSTREAM_TIMEOUT_MS = 30_000
 const WEBHOOK_WINDOW_MS = 60_000
 const WEBHOOK_WINDOW_MAX = 30
 const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/
+const USER_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SECRET_HEADER = "x-open-bot-webhook-secret"
 const ASYNC_PARAM = "ob_async"
 export const WEBHOOK_SECRET_MAX_LENGTH = 128
 
-export type ParsedWebhookPath = {
-  pluginId: string
-  rest: string
-}
+export type ParsedWebhookPath =
+  | { kind: "user"; userId: string; pluginId: string; rest: string }
+  | { kind: "legacy"; pluginId: string; rest: string }
 
-export function parseWebhookPath(pathname: string): ParsedWebhookPath | null {
-  const match = pathname.match(/^\/hooks\/([^/]+)(\/.*)?$/)
-  if (!match?.[1]) return null
-  const pluginId = match[1]
-  if (!PLUGIN_ID_PATTERN.test(pluginId)) return null
-  let rest = match[2] && match[2] !== "/" ? match[2] : "/"
+function sanitizeRest(raw: string | undefined): string | null {
+  let rest = raw && raw !== "/" ? raw : "/"
   if (rest.includes("\0") || rest.includes("\\") || rest.includes(".."))
     return null
   try {
@@ -43,7 +42,29 @@ export function parseWebhookPath(pathname: string): ParsedWebhookPath | null {
     return null
   }
   if (rest.includes("..") || !rest.startsWith("/")) return null
-  return { pluginId, rest }
+  return rest
+}
+
+export function parseWebhookPath(pathname: string): ParsedWebhookPath | null {
+  // User-scoped canonical form: /hooks/<userId>/<pluginId>/<path>. Claimed
+  // only when the first segment looks like a user id; anything else falls
+  // through to the legacy alias below.
+  const scoped = pathname.match(/^\/hooks\/([^/]+)\/([^/]+)(\/.*)?$/)
+  if (scoped?.[1] && scoped[2] && USER_ID_PATTERN.test(scoped[1])) {
+    const pluginId = scoped[2]
+    if (!PLUGIN_ID_PATTERN.test(pluginId)) return null
+    const rest = sanitizeRest(scoped[3])
+    if (rest === null) return null
+    return { kind: "user", userId: scoped[1], pluginId, rest }
+  }
+  // Deprecated alias: /hooks/<pluginId>/<path>.
+  const legacy = pathname.match(/^\/hooks\/([^/]+)(\/.*)?$/)
+  if (!legacy?.[1]) return null
+  const pluginId = legacy[1]
+  if (!PLUGIN_ID_PATTERN.test(pluginId)) return null
+  const rest = sanitizeRest(legacy[2])
+  if (rest === null) return null
+  return { kind: "legacy", pluginId, rest }
 }
 
 export function webhookSecret(req: Request, url: URL) {
@@ -72,7 +93,8 @@ export function publicPagesEnabled(manifest: PluginManifest) {
 
 // One plugin id may be installed by several users on a shared instance.
 // Secured installs only match with their secret; public installs resolve
-// directly when unambiguous.
+// directly when unambiguous. Only reached via the deprecated legacy form —
+// user-scoped URLs go through resolveUserWebhookTarget.
 export function resolveWebhookTarget(
   db: Db,
   pluginId: string,
@@ -95,6 +117,32 @@ export function resolveWebhookTarget(
   if (pub.length === 1) return { kind: "ok", row: pub[0] as InstalledPlugin }
   if (pub.length > 1) return { kind: "ambiguous" }
   return { kind: "not_found" }
+}
+
+// Canonical user-scoped resolution: (userId, pluginId) is unique, so the
+// lookup is direct — secured installs still demand their secret.
+export function resolveUserWebhookTarget(
+  db: Db,
+  userId: string,
+  pluginId: string,
+  secret: string | null,
+): WebhookTarget {
+  const row = db.installedPlugin(userId, pluginId)
+  if (
+    !row ||
+    !row.enabled ||
+    !publicPagesEnabled(row.manifest as PluginManifest)
+  ) {
+    return { kind: "not_found" }
+  }
+  if (row.webhookToken) {
+    if (!secret || !secretMatches(row.webhookToken, secret)) {
+      return { kind: "not_found" }
+    }
+    return { kind: "ok", row }
+  }
+  if (secret) return { kind: "not_found" }
+  return { kind: "ok", row }
 }
 
 const hits = new Map<string, number[]>()
@@ -224,11 +272,11 @@ export async function handlePluginWebhook(
 ): Promise<Response | undefined> {
   const parsed = parseWebhookPath(url.pathname)
   if (!parsed) return new Response("not found", { status: 404 })
-  const target = resolveWebhookTarget(
-    db,
-    parsed.pluginId,
-    webhookSecret(req, url),
-  )
+  const secret = webhookSecret(req, url)
+  const target =
+    parsed.kind === "user"
+      ? resolveUserWebhookTarget(db, parsed.userId, parsed.pluginId, secret)
+      : resolveWebhookTarget(db, parsed.pluginId, secret)
   if (target.kind === "not_found") {
     return new Response("not found", { status: 404 })
   }

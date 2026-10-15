@@ -12,6 +12,7 @@ import {
   isRunning,
   onDesktopReady,
   onDesktopUp,
+  reconnectDesktopNetworks,
   runningCount,
   sleptRecently,
   startDesktop,
@@ -32,10 +33,7 @@ import { resolveDesktopProviders } from "./key-vault"
 import { hashPassword, randomToken, verifyPassword } from "./passwords"
 import { dispatchPluginHooks } from "./plugin-hooks"
 import { convertGuardCrons } from "./plugins"
-import {
-  flushPendingPluginConfigs,
-  reapplyPluginSetup,
-} from "./plugins-apply"
+import { flushPendingPluginConfigs, reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStatsSampler } from "./stats"
 import { startStuckWatch } from "./stuck"
@@ -129,6 +127,7 @@ startCronScheduler(db, hub)
 startStuckWatch(db, hub)
 startBackupScheduler(db)
 startStatsSampler(db)
+void reconnectDesktopNetworks()
 
 const RESTART_COOLDOWN_MS = 5 * 60_000
 const restartAttempts = new Map<string, number>()

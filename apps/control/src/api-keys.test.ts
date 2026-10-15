@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Db, User } from "@open-bot/db"
+import type { Db, InstalledPlugin, User } from "@open-bot/db"
 import { handleKeys, isKeysRequest } from "./api-keys"
 
 type FakeKey = {
@@ -11,9 +11,25 @@ type FakeKey = {
   baseUrl?: string
 }
 
-function fakeDb(keys: Record<string, FakeKey | null>): Db {
+function pluginRow(
+  pluginId: string,
+  perms: { vaultRead?: string[]; vaultCreate?: string[] },
+  name = pluginId,
+): InstalledPlugin {
+  return {
+    pluginId,
+    enabled: true,
+    manifest: { id: pluginId, name, permissions: perms },
+  } as unknown as InstalledPlugin
+}
+
+function fakeDb(
+  keys: Record<string, FakeKey | null>,
+  plugins: InstalledPlugin[] = [],
+): Db {
   return {
     getUserKey: (_userId: string, slug: string) => keys[slug] ?? null,
+    installedPlugins: (_userId: string) => plugins,
   } as unknown as Db
 }
 
@@ -93,5 +109,76 @@ describe("handleKeys", () => {
     const db = fakeDb({})
     const res = handleKeys(url("/api/keys/%zz"), db, user)
     expect(res?.status).toBe(400)
+  })
+})
+
+describe("plugin vault keys", () => {
+  test("list adds vaultCreate plugin slugs, not vaultRead-only ones", async () => {
+    const db = fakeDb({}, [
+      pluginRow("weather", { vaultCreate: ["weatherapi"] }, "Weather"),
+      pluginRow("alerts", { vaultRead: ["hookdeck"] }, "Alerts"),
+    ])
+    const res = handleKeys(url("/api/keys"), db, user)
+    const body = JSON.parse((await res?.text()) ?? "{}")
+    const weatherapi = body.keys.find(
+      (k: { slug: string }) => k.slug === "weatherapi",
+    )
+    expect(weatherapi).toEqual({
+      slug: "weatherapi",
+      label: "Weather · weatherapi",
+      chatProvider: false,
+      plugin: true,
+      hasKey: false,
+    })
+    expect(
+      body.keys.find((k: { slug: string }) => k.slug === "hookdeck"),
+    ).toBeUndefined()
+  })
+
+  test("detail returns a plugin create key with blank gateway fields", async () => {
+    const db = fakeDb(
+      {
+        weatherapi: {
+          apiKey: "wkey",
+          accountId: "acc",
+          gatewayId: "should-vanish",
+          gatewayToken: "should-vanish",
+          gatewaySlug: "should-vanish",
+          baseUrl: "https://api.weather.example",
+        },
+      },
+      [pluginRow("weather", { vaultCreate: ["weatherapi"] }, "Weather")],
+    )
+    const res = handleKeys(url("/api/keys/weatherapi"), db, user)
+    expect(res?.status).toBe(200)
+    const body = JSON.parse((await res?.text()) ?? "{}")
+    expect(body).toEqual({
+      slug: "weatherapi",
+      apiKey: "wkey",
+      accountId: "acc",
+      gatewayId: "",
+      gatewayToken: "",
+      gatewaySlug: "",
+      baseUrl: "https://api.weather.example",
+    })
+  })
+
+  test("a vaultRead-only slug is unknown to the agent", async () => {
+    const db = fakeDb({ hookdeck: { apiKey: "hkey" } }, [
+      pluginRow("alerts", { vaultRead: ["hookdeck"] }, "Alerts"),
+    ])
+    const res = handleKeys(url("/api/keys/hookdeck"), db, user)
+    expect(res?.status).toBe(400)
+    const body = JSON.parse((await res?.text()) ?? "{}")
+    expect(body.error).toContain("unknown key slug: hookdeck")
+  })
+
+  test("unknown-slug 400 lists plugin create slugs as valid", async () => {
+    const db = fakeDb({}, [
+      pluginRow("weather", { vaultCreate: ["weatherapi"] }, "Weather"),
+    ])
+    const res = handleKeys(url("/api/keys/nope"), db, user)
+    const body = JSON.parse((await res?.text()) ?? "{}")
+    expect(body.slugs).toContain("weatherapi")
   })
 })
