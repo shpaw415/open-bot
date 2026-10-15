@@ -7,6 +7,7 @@ import { type Db, emptyAppliedLog, openDatabase } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import * as dockerModule from "./docker"
 import * as pluginArtifactModule from "./plugin-artifact"
+import * as pluginPages from "./plugin-pages"
 import { ensureGuardCron, handlePlugins } from "./plugins"
 import {
   applyPluginInstall,
@@ -1157,7 +1158,8 @@ describe("plugin remove/reinstall orphans", () => {
     expect(rows[0]?.id).toBe(row.id)
   })
 
-  test("install creates script/auto cron jobs from the manifest", async () => {    const scriptManifest = {
+  test("install creates script/auto cron jobs from the manifest", async () => {
+    const scriptManifest = {
       ...manifest,
       cron: [
         {
@@ -1628,6 +1630,118 @@ describe("plugin config guide", () => {
     } finally {
       artifactSpy.mockRestore()
       guideSpy.mockRestore()
+    }
+  })
+})
+
+describe("page server routes", () => {
+  let db: Db
+  beforeEach(() => {
+    db = openDatabase(join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"))
+    db.createUser(user())
+  })
+
+  function pageRow(
+    pluginId: string,
+    overrides: { enabled?: boolean; pages?: boolean } = {},
+  ) {
+    const extra: Record<string, unknown> = {}
+    if (overrides.pages ?? true) {
+      extra.files = [{ name: "server.ts", source: "server/server.ts" }]
+      extra.dashboard = { pages: { entry: "server.ts" } }
+    }
+    db.createInstalledPlugin({
+      id: `row-${pluginId}`,
+      userId: "a",
+      pluginId,
+      version: "1.0.0",
+      manifest: JSON.stringify({ ...manifest, id: pluginId, ...extra }),
+      readme: null,
+      enabled: overrides.enabled ?? true,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+  }
+
+  test("page status: 404 unknown, 400 without pages, status otherwise", async () => {
+    const missing = route("/api/plugins/installed/unknown/page", "GET")
+    expect(
+      (await handlePlugins(missing.req, missing.url, db, user(), hub))?.status,
+    ).toBe(404)
+
+    pageRow("plain-pro", { pages: false })
+    const noPages = route("/api/plugins/installed/plain-pro/page", "GET")
+    expect(
+      (await handlePlugins(noPages.req, noPages.url, db, user(), hub))?.status,
+    ).toBe(400)
+
+    pageRow("page-pro")
+    const ok = route("/api/plugins/installed/page-pro/page", "GET")
+    const okRes = await handlePlugins(ok.req, ok.url, db, user(), hub)
+    expect(okRes?.status).toBe(200)
+    // No desktop runs in tests: reads fail gracefully to a down server.
+    expect(await okRes?.json()).toMatchObject({
+      pluginId: "page-pro",
+      enabled: true,
+      running: false,
+      port: null,
+      pid: null,
+    })
+
+    // The agent token principal is allowed on this route too.
+    const agentRes = await handlePlugins(
+      ok.req,
+      ok.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect(agentRes?.status).toBe(200)
+  })
+
+  test("page restart: 404 unknown, 400 without pages or disabled, restarts otherwise", async () => {
+    const missing = route("/api/plugins/installed/unknown/page/restart", "POST")
+    expect(
+      (await handlePlugins(missing.req, missing.url, db, user(), hub))?.status,
+    ).toBe(404)
+
+    pageRow("plain-pro", { pages: false })
+    const noPages = route(
+      "/api/plugins/installed/plain-pro/page/restart",
+      "POST",
+    )
+    expect(
+      (await handlePlugins(noPages.req, noPages.url, db, user(), hub))?.status,
+    ).toBe(400)
+
+    pageRow("paused-pro", { enabled: false })
+    const disabled = route(
+      "/api/plugins/installed/paused-pro/page/restart",
+      "POST",
+    )
+    expect(
+      (await handlePlugins(disabled.req, disabled.url, db, user(), hub))
+        ?.status,
+    ).toBe(400)
+
+    pageRow("page-pro")
+    const spy = spyOn(pluginPages, "restartPluginPageServer").mockResolvedValue(
+      4742,
+    )
+    try {
+      const restart = route(
+        "/api/plugins/installed/page-pro/page/restart",
+        "POST",
+      )
+      const res = await handlePlugins(restart.req, restart.url, db, user(), hub)
+      expect(res?.status).toBe(200)
+      expect(await res?.json()).toEqual({ ok: true, port: 4742 })
+      expect(spy).toHaveBeenCalledWith("a", expect.anything(), hub)
+    } finally {
+      spy.mockRestore()
     }
   })
 })

@@ -5,6 +5,7 @@ import {
   evaluate,
   normalize,
   PROBE,
+  readActiveTabId,
 } from "./cdp"
 import { withHeal } from "./chrome"
 
@@ -84,8 +85,10 @@ async function run(session: string | undefined) {
   const port = Number(process.argv[2])
   const verb = process.argv[4] ?? ""
   if (!Number.isInteger(port) || !verb) throw new Error(USAGE)
+  // Follow the tab the agent last touched (navigate/newtab/switch record it).
+  const activeId = readActiveTabId(session)
   await withHeal(session, async () => {
-    const socket = await connectCdpSocket(port)
+    const socket = await connectCdpSocket(port, activeId)
     try {
       if (verb === "read") {
         console.log(JSON.stringify(await view(socket)))
@@ -127,6 +130,8 @@ async function run(session: string | undefined) {
         if (verb === "type" && !action.text) throw new Error(USAGE)
         const ok = await evaluate(socket, actionScript(action))
         if (ok === false) throw new Error("target covered")
+        if (typeof ok === "string" && ok.startsWith("covered:"))
+          throw new Error(`target ${ok.replace("covered:", "covered by ")}`)
         await Bun.sleep(verb === "type" ? 200 : 80)
         // A click that navigates tears the execution context down while the
         // post-action read runs; the click still worked. Settle, then re-read
@@ -135,7 +140,7 @@ async function run(session: string | undefined) {
           console.log(JSON.stringify(await view(socket)))
         } catch {
           await Bun.sleep(900)
-          const fresh = await connectCdpSocket(port)
+          const fresh = await connectCdpSocket(port, activeId)
           try {
             console.log(JSON.stringify(await view(fresh)))
           } finally {

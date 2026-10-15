@@ -46,20 +46,28 @@ export function previewPortAllowed(port: number) {
   )
 }
 
+// Roots the preview proxy may serve: the agent's workspace and the plugin dev
+// checkouts. Both are agent-writable already, so the capability token in the
+// frame URL stays the real gate; this keeps a rogue registry file from
+// pointing the proxy anywhere it likes.
+export function previewRootAllowed(root: string) {
+  if (root.includes("\0") || root.includes("..")) return false
+  return (
+    root === "/home/agent/workspace" ||
+    root.startsWith("/home/agent/workspace/") ||
+    root === "/home/agent/plugins-create" ||
+    root.startsWith("/home/agent/plugins-create/")
+  )
+}
+
 export function parsePreviewRegistry(
   text: string,
 ): { port: number; root: string } | null {
   const [portRaw, rootRaw] = text.split("\n")
   const port = Number(portRaw?.trim())
-  const root = rootRaw?.trim() ?? ""
   if (!previewPortAllowed(port)) return null
-  if (
-    root !== "/home/agent/workspace" &&
-    !root.startsWith("/home/agent/workspace/")
-  ) {
-    return null
-  }
-  if (root.includes("\0") || root.includes("..")) return null
+  const root = rootRaw?.trim() ?? ""
+  if (!previewRootAllowed(root)) return null
   return { port, root }
 }
 

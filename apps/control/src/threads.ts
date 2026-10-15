@@ -9,6 +9,11 @@ import {
   personaSystem,
 } from "./personas"
 import { stopThreadScreen } from "./screens"
+import {
+  findOrCreateThreadDir,
+  sanitizeDirName,
+  type ThreadDirView,
+} from "./thread-dirs"
 import { deleteSessionMedia } from "./workspace-snapshots"
 
 // Hidden threads reuse the worker: title prefix. The dashboard thread list and
@@ -93,6 +98,7 @@ export async function cleanupDeletedThread(
 ): Promise<void> {
   db.clearThreadPersona(userId, sessionId)
   db.clearThreadTitle(userId, sessionId)
+  db.clearThreadDir(userId, sessionId)
   deleteSessionMedia(db, userId, sessionId)
   await stopThreadScreen(db, userId, sessionId)
 }
@@ -126,6 +132,13 @@ async function startThread(req: Request, db: Db, agent: User) {
   if (body.display !== undefined && typeof body.display !== "boolean")
     return json({ error: "display must be a boolean" }, 400)
   const display = body.display === true
+  if (body.dir !== undefined && typeof body.dir !== "string")
+    return json({ error: "dir must be a string" }, 400)
+  const dirName =
+    typeof body.dir === "string" ? sanitizeDirName(body.dir) || null : null
+  if (dirName && body.display === false)
+    return json({ error: "dir requires a visible thread" }, 400)
+  const visible = display || Boolean(dirName)
   if (body.message !== undefined && typeof body.message !== "string")
     return json({ error: "message must be a string" }, 400)
   const message = body.message ?? ""
@@ -156,7 +169,7 @@ async function startThread(req: Request, db: Db, agent: User) {
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
 
-  const effectiveTitle = display ? title : hiddenThreadTitle(title)
+  const effectiveTitle = visible ? title : hiddenThreadTitle(title)
   let sessionId: string
   try {
     sessionId = await createSession(base, headers, effectiveTitle)
@@ -169,6 +182,11 @@ async function startThread(req: Request, db: Db, agent: User) {
     )
   }
   let warning: string | null = null
+  let dir: ThreadDirView | null = null
+  if (dirName) {
+    dir = findOrCreateThreadDir(db, agent.id, dirName)
+    db.setThreadDir(agent.id, sessionId, dir.id)
+  }
   if (persona && persona.persona.id !== ASSISTANT_ID)
     db.setThreadPersona(agent.id, sessionId, persona.persona.id)
   if (message) {
@@ -193,7 +211,7 @@ async function startThread(req: Request, db: Db, agent: User) {
   const result: Record<string, unknown> = {
     id: sessionId,
     title: effectiveTitle,
-    display,
+    display: visible,
   }
   if (persona)
     result.persona = {
@@ -201,6 +219,7 @@ async function startThread(req: Request, db: Db, agent: User) {
       name: persona.persona.name,
       matched: persona.matched,
     }
+  if (dir) result.dir = dir
   if (warning) result.warning = warning
   return json(result, 201)
 }

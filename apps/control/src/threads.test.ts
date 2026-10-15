@@ -354,6 +354,67 @@ describe("POST /api/threads", () => {
     expect(body.persona).toBeUndefined()
   })
 
+  test("files a visible thread into a folder, creating it when new", async () => {
+    installFetch()
+    const dirLog: [string, string, string | null][] = []
+    const dirs: {
+      id: string
+      userId: string
+      name: string
+      createdAt: number
+    }[] = []
+    const dirDb = {
+      desktop: (id: string) =>
+        id === "user-1" ? { opencodePassword: "pw" } : null,
+      personas: () => [],
+      installedPlugins: () => [],
+      setThreadPersona: () => {},
+      threadDirs: (userId: string) =>
+        dirs.filter((row) => row.userId === userId),
+      threadDirByName: (userId: string, name: string) =>
+        dirs.find(
+          (row) =>
+            row.userId === userId &&
+            row.name.toLowerCase() === name.toLowerCase(),
+        ) ?? null,
+      createThreadDir: (row: { id: string; userId: string; name: string }) => {
+        dirs.push({ ...row, createdAt: 1 })
+        return row
+      },
+      setThreadDir: (
+        userId: string,
+        sessionId: string,
+        dirId: string | null,
+      ) => {
+        dirLog.push([userId, sessionId, dirId])
+      },
+    } as unknown as Db
+    const created = await post({ title: "Follow up", dir: "Billing" }, dirDb)
+    expect(created.status).toBe(201)
+    const body = (await created.json()) as {
+      display: boolean
+      dir?: { name: string }
+    }
+    expect(body.display).toBe(true)
+    expect(body.dir?.name).toBe("Billing")
+    expect(dirLog).toEqual([["user-1", "ses_1", expect.any(String)]])
+    // second run reuses the folder case-insensitively
+    const again = await post({ title: "Again", dir: "billing" }, dirDb)
+    expect(again.status).toBe(201)
+    const againBody = (await again.json()) as { dir?: { name: string } }
+    expect(againBody.dir?.name).toBe("Billing")
+    expect(dirs).toHaveLength(1)
+  })
+
+  test("rejects dir with an explicit hidden thread and bad dir types", async () => {
+    installFetch()
+    expect(
+      (await post({ title: "Job", dir: "Billing", display: false })).status,
+    ).toBe(400)
+    expect((await post({ title: "Job", dir: 42 })).status).toBe(400)
+    expect(calls).toHaveLength(0)
+  })
+
   test("reports a sleeping desktop and never reaches opencode", async () => {
     installFetch()
     phase = "sleeping"
@@ -474,6 +535,9 @@ describe("DELETE /api/threads", () => {
       clearThreadTitle: (_userId: string, sessionId: string) => {
         cleanupLog.push(`title:${sessionId}`)
       },
+      clearThreadDir: (_userId: string, sessionId: string) => {
+        cleanupLog.push(`dir:${sessionId}`)
+      },
       workspaceMediaForSession: () => [],
       deleteWorkspaceMedia: () => {},
       clearThreadScreen: () => {},
@@ -504,7 +568,7 @@ describe("DELETE /api/threads", () => {
     }
     expect(body.deleted).toEqual(["s1"])
     expect(body.skipped).toEqual([])
-    expect(cleanupLog).toEqual(["persona:s1", "title:s1"])
+    expect(cleanupLog).toEqual(["persona:s1", "title:s1", "dir:s1"])
     const del = calls.find(
       (call) =>
         call.url.endsWith("/session/s1") && call.init?.method === "DELETE",
@@ -529,7 +593,7 @@ describe("DELETE /api/threads", () => {
       { id: "s4", reason: "not a hidden agent thread" },
       { id: "missing", reason: "not a hidden agent thread" },
     ])
-    expect(cleanupLog).toEqual(["persona:s1", "title:s1"])
+    expect(cleanupLog).toEqual(["persona:s1", "title:s1", "dir:s1"])
   })
 
   test("reports a delete failure as skipped", async () => {

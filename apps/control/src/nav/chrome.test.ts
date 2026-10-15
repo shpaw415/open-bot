@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test"
-import { normalizeTarget, shapeState, verbFrom } from "./chrome"
+import type { PageTarget } from "./cdp"
+import { matchTab, normalizeTarget, shapeState, verbFrom } from "./chrome"
 
 const USAGE =
-  "usage: chrome.ts PORT navigate URL | url | back | forward | reload"
+  "usage: chrome.ts PORT navigate URL | newtab URL | tabs | switch N | closetab N | url | back | forward | reload"
 
 test("navigate target adds the scheme to a bare domain", () => {
   expect(normalizeTarget("example.com")).toBe("https://example.com")
@@ -37,6 +38,17 @@ test("verbs parse positional and --url forms", () => {
     verb: "navigate",
     url: "https://c.test/",
   })
+  expect(verbFrom(["newtab", "https://d.test/"])).toEqual({
+    verb: "newtab",
+    url: "https://d.test/",
+  })
+  expect(verbFrom(["newtab"])).toEqual({ verb: "newtab", url: "" })
+  expect(verbFrom(["switch", "2"])).toEqual({ verb: "switch", arg: "2" })
+  expect(verbFrom(["closetab", "example.test"])).toEqual({
+    verb: "closetab",
+    arg: "example.test",
+  })
+  expect(verbFrom(["closetab"])).toEqual({ verb: "closetab", arg: "" })
   expect(verbFrom(["url"])).toEqual({ verb: "url" })
   expect(verbFrom(["back"])).toEqual({ verb: "back" })
   expect(verbFrom(["forward"])).toEqual({ verb: "forward" })
@@ -64,7 +76,43 @@ test("page state shapes to a flat json line", () => {
 })
 
 test("usage names every verb", () => {
-  for (const verb of ["navigate", "url", "back", "forward", "reload"]) {
+  for (const verb of [
+    "navigate",
+    "newtab",
+    "tabs",
+    "switch",
+    "closetab",
+    "url",
+    "back",
+    "forward",
+    "reload",
+  ]) {
     expect(USAGE).toContain(verb)
   }
+})
+
+const tabTargets: PageTarget[] = [
+  {
+    id: "t1",
+    url: "https://a.test/",
+    title: "First",
+    webSocketDebuggerUrl: "ws://a",
+  },
+  {
+    id: "t2",
+    url: "https://b.test/docs",
+    title: "Docs",
+    webSocketDebuggerUrl: "ws://b",
+  },
+  { id: "t3", url: "about:blank", title: "", webSocketDebuggerUrl: "ws://c" },
+]
+
+test("switch and closetab match by 1-based index or url/text substring", () => {
+  expect(matchTab(tabTargets, "2")?.id).toBe("t2")
+  expect(matchTab(tabTargets, "9")).toBeNull()
+  expect(matchTab(tabTargets, "b.test")?.id).toBe("t2")
+  expect(matchTab(tabTargets, "docs")?.id).toBe("t2")
+  expect(matchTab(tabTargets, "DOCS")?.id).toBe("t2")
+  expect(matchTab(tabTargets, "nope")).toBeNull()
+  expect(matchTab(tabTargets, "")).toBeNull()
 })

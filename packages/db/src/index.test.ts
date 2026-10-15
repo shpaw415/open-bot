@@ -754,6 +754,76 @@ describe("personas", () => {
   })
 })
 
+describe("thread dirs", () => {
+  test("creates, renames, assigns, and deletes folders per user", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    db.createThreadDir({
+      id: "d1",
+      userId: "a",
+      name: "Billing",
+      createdAt: 1,
+    })
+    expect(db.threadDirs("a")).toHaveLength(1)
+    expect(db.threadDirs("b")).toHaveLength(0)
+    expect(db.threadDirById("d1", "a")?.name).toBe("Billing")
+    expect(db.threadDirById("d1", "b")).toBeNull()
+    expect(db.threadDirByName("a", "billing")?.id).toBe("d1")
+    expect(db.threadDirByName("a", "nope")).toBeNull()
+    db.setThreadDir("a", "ses", "d1")
+    expect(
+      db.threadDirAssignments("a").map((row) => [row.sessionId, row.dirId]),
+    ).toEqual([["ses", "d1"]])
+    db.setThreadDir("a", "ses", "d1")
+    expect(db.threadDirAssignments("a")).toHaveLength(1)
+    expect(db.renameThreadDir("d1", "a", "Invoices")?.name).toBe("Invoices")
+    expect(db.renameThreadDir("d1", "b", "X")).toBeNull()
+    db.setThreadDir("a", "ses", null)
+    expect(db.threadDirAssignments("a")).toHaveLength(0)
+    db.setThreadDir("a", "ses", "d1")
+    expect(db.deleteThreadDir("d1", "a")).toBe(true)
+    expect(db.deleteThreadDir("d1", "a")).toBe(false)
+    expect(db.threadDirById("d1", "a")).toBeNull()
+    expect(db.threadDirAssignments("a")).toHaveLength(0)
+  })
+
+  test("clears the assignment when a thread is deleted", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createThreadDir({
+      id: "d1",
+      userId: "a",
+      name: "Work",
+      createdAt: 1,
+    })
+    db.setThreadDir("a", "ses", "d1")
+    db.clearThreadDir("a", "ses")
+    expect(db.threadDirAssignments("a")).toHaveLength(0)
+  })
+
+  test("reset wipes the folders and assignments", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createThreadDir({
+      id: "d1",
+      userId: "a",
+      name: "Work",
+      createdAt: 1,
+    })
+    db.setThreadDir("a", "ses", "d1")
+    db.resetDesktopState("a")
+    expect(db.threadDirs("a")).toHaveLength(0)
+    expect(db.threadDirAssignments("a")).toHaveLength(0)
+  })
+})
+
 describe("plugin store", () => {
   function installed(
     partial: Partial<

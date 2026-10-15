@@ -173,8 +173,14 @@ export function parsePersonaInput(
   const trimmedInstruction = instruction.trim()
   if (!trimmedName || trimmedName.length > NAME_MAX)
     return { error: `name must be 1–${NAME_MAX} characters` }
-  if (!trimmedInstruction || trimmedInstruction.length > INSTRUCTION_MAX)
-    return { error: `instruction must be 1–${INSTRUCTION_MAX} characters` }
+  if (!trimmedInstruction || trimmedInstruction.length > INSTRUCTION_MAX) {
+    const over = trimmedInstruction.length - INSTRUCTION_MAX
+    return {
+      error:
+        `instruction must be 1–${INSTRUCTION_MAX} characters` +
+        (over > 0 ? ` (got ${trimmedInstruction.length}, ${over} over)` : ""),
+    }
+  }
   if (
     builtins.some(
       (item) => item.name.toLowerCase() === trimmedName.toLowerCase(),

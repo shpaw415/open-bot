@@ -30,6 +30,25 @@ Rules:
 - Titles cannot start with `worker:` or `cron-run:`; those prefixes are
   reserved.
 
+## Folders (topics)
+
+The dashboard groups visible threads into folders. `--dir NAME` (or
+`--topic NAME`) files the new thread into a folder, creating it when the name
+is new. Run `ob-thread dirs` to list existing folder names and reuse one
+instead of creating near-duplicates:
+
+```sh
+ob-thread dirs
+ob-thread start --title "Invoice follow-up" --dir "Billing" --display
+```
+
+- Folders exist only on the dashboard, so `--dir` implies a visible thread and
+  cannot be combined with `--hidden` (that is a usage error). Use `--topic` as
+  an alias when it reads more naturally.
+- When the user asks to separate or group threads by topic, ask for or infer a
+  short folder label and pass it here — do not fake grouping with title
+  prefixes.
+
 ## Team delegation
 
 The personalities are a team. When the user asks to give a task to a named

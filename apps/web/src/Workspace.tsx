@@ -83,11 +83,14 @@ import {
   ChatIcon,
   CheckCircleIcon,
   ChecklistIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   CloseIcon,
   ComputerIcon,
   DeleteIcon,
   EditIcon,
   FolderIcon,
+  FolderOpenIcon,
   MenuIcon,
   MicIcon,
   MoreVertIcon,
@@ -176,7 +179,14 @@ type SessionInfo = {
   parentID?: string
   time?: { created?: number; updated?: number }
 }
+type ThreadDirInfo = {
+  id: string
+  name: string
+  createdAt: number
+}
 type SessionStatus = { type?: string }
+
+const FOLDERS_COLLAPSED_KEY = "ob-thread-folders-collapsed"
 
 type Phase = "starting" | "running" | "sleeping"
 type LocalReceipt = SendReceipt & { sessionId: string }
@@ -863,6 +873,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
   actionBusy,
   selectMode,
   selectedIds,
+  dirs,
+  threadDirMap,
   actions,
 }: {
   sessions: SessionInfo[]
@@ -876,10 +888,16 @@ const ThreadsPanel = memo(function ThreadsPanel({
   actionBusy: boolean
   selectMode: boolean
   selectedIds: ReadonlySet<string>
+  dirs: ThreadDirInfo[]
+  threadDirMap: Record<string, string>
   actions: {
     select: (id: string) => void
     menu: (item: SessionInfo, anchor: HTMLElement) => void
     create: () => void
+    newFolder: () => void
+    createIn: (dirId: string) => void
+    folderMenu: (dir: ThreadDirInfo, anchor: HTMLElement) => void
+    move: (sessionId: string, dirId: string | null) => void
     toggleSelectMode: () => void
     toggleSelect: (id: string) => void
     selectAll: () => void
@@ -887,6 +905,141 @@ const ThreadsPanel = memo(function ThreadsPanel({
   }
 }) {
   const allSelected = sessions.length > 0 && selectedIds.size >= sessions.length
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => {
+    try {
+      const raw = JSON.parse(
+        localStorage.getItem(FOLDERS_COLLAPSED_KEY) ?? "[]",
+      ) as unknown
+      return new Set(
+        Array.isArray(raw)
+          ? raw.filter((item) => typeof item === "string")
+          : [],
+      )
+    } catch {
+      return new Set()
+    }
+  })
+  const [dragOver, setDragOver] = useState<string | null>(null)
+  const groups = useMemo(() => {
+    const sections: {
+      key: string
+      label: string
+      dir?: ThreadDirInfo
+      items: SessionInfo[]
+    }[] = [{ key: "", label: "Threads", items: [] }]
+    for (const dir of dirs)
+      sections.push({ key: dir.id, label: dir.name, dir, items: [] })
+    for (const item of sessions) {
+      const dirId = threadDirMap[item.id]
+      const group =
+        dirId && dirs.some((dir) => dir.id === dirId)
+          ? sections.find((section) => section.key === dirId)
+          : sections[0]
+      ;(group ?? sections[0]).items.push(item)
+    }
+    return sections
+  }, [sessions, dirs, threadDirMap])
+  const toggleCollapsed = (key: string) => {
+    setCollapsed((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      localStorage.setItem(FOLDERS_COLLAPSED_KEY, JSON.stringify([...next]))
+      return next
+    })
+  }
+  const dropToGroup = (key: string) => (event: React.DragEvent) => {
+    event.preventDefault()
+    const id =
+      event.dataTransfer.getData("application/x-ob-thread") ||
+      event.dataTransfer.getData("text/plain")
+    setDragOver(null)
+    if (id) actions.move(id, key || null)
+  }
+  const overGroup = (key: string) => (event: React.DragEvent) => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "move"
+    if (dragOver !== key) setDragOver(key)
+  }
+  const renderRow = (item: SessionInfo) => (
+    <Box
+      key={item.id}
+      draggable={!selectMode}
+      onDragStart={(event) => {
+        event.dataTransfer.setData("application/x-ob-thread", item.id)
+        event.dataTransfer.setData("text/plain", item.id)
+        event.dataTransfer.effectAllowed = "move"
+      }}
+      onDragEnd={() => setDragOver(null)}
+      sx={{
+        position: "relative",
+        display: "flex",
+        alignItems: "center",
+      }}
+    >
+      {selectMode ? (
+        <CheckBox
+          checked={selectedIds.has(item.id)}
+          aria-label={`Select ${threadTitle(item)}`}
+          onClick={(event) => event.stopPropagation()}
+          onChange={() => actions.toggleSelect(item.id)}
+          sx={{ ml: 1.25, mr: 0.25 }}
+        />
+      ) : null}
+      <ListItemButton
+        selected={!selectMode && item.id === sessionId}
+        onClick={() =>
+          selectMode ? actions.toggleSelect(item.id) : actions.select(item.id)
+        }
+        sx={{ flex: 1, minWidth: 0, pr: 5 }}
+      >
+        <ListItemText
+          primary={
+            <span className="ob-thread-label">
+              {unread.has(item.id) &&
+              !(item.id === sessionId && !document.hidden) ? (
+                <span
+                  className="ob-unread-dot"
+                  role="img"
+                  aria-label="Unread"
+                />
+              ) : null}
+              <span className="ob-thread-title">{threadTitle(item)}</span>
+            </span>
+          }
+          secondary={`${personaLabel(item.id)} · ${formatAgo(threadTime(item))}`}
+          SlotProps={{
+            primary: {
+              className: "ob-thread-primary",
+            } as never,
+            secondary: { noWrap: true } as never,
+          }}
+        />
+        {busyIds.has(item.id) ? (
+          <CircularProgress size={1.2} sx={{ mr: 1 }} />
+        ) : null}
+      </ListItemButton>
+      {selectMode ? null : (
+        <IconButton
+          size="small"
+          aria-label={`Actions for ${threadTitle(item)}`}
+          onClick={(event) => {
+            event.stopPropagation()
+            actions.menu(item, event.currentTarget)
+          }}
+          sx={{
+            position: "absolute",
+            right: 4,
+            top: "50%",
+            transform: "translateY(-50%)",
+          }}
+        >
+          <MoreVertIcon width={18} height={18} />
+        </IconButton>
+      )}
+    </Box>
+  )
+
   return (
     <Paper
       variant="outlined"
@@ -951,6 +1104,16 @@ const ThreadsPanel = memo(function ThreadsPanel({
                 <ChecklistIcon width={18} height={18} />
               </IconButton>
             </ToolTip>
+            <ToolTip title="New folder">
+              <IconButton
+                size="small"
+                aria-label="New folder"
+                disabled={actionBusy}
+                onClick={actions.newFolder}
+              >
+                <FolderIcon width={18} height={18} />
+              </IconButton>
+            </ToolTip>
             <ToolTip title="New thread">
               <IconButton
                 size="small"
@@ -978,81 +1141,100 @@ const ThreadsPanel = memo(function ThreadsPanel({
           </Typography>
         ) : (
           <List dense disablePadding>
-            {sessions.map((item) => (
-              <Box
-                key={item.id}
-                sx={{
-                  position: "relative",
-                  display: "flex",
-                  alignItems: "center",
-                }}
-              >
-                {selectMode ? (
-                  <CheckBox
-                    checked={selectedIds.has(item.id)}
-                    aria-label={`Select ${threadTitle(item)}`}
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={() => actions.toggleSelect(item.id)}
-                    sx={{ ml: 1.25, mr: 0.25 }}
-                  />
-                ) : null}
-                <ListItemButton
-                  selected={!selectMode && item.id === sessionId}
-                  onClick={() =>
-                    selectMode
-                      ? actions.toggleSelect(item.id)
-                      : actions.select(item.id)
-                  }
-                  sx={{ flex: 1, minWidth: 0, pr: 5 }}
-                >
-                  <ListItemText
-                    primary={
-                      <span className="ob-thread-label">
-                        {unread.has(item.id) &&
-                        !(item.id === sessionId && !document.hidden) ? (
-                          <span
-                            className="ob-unread-dot"
-                            role="img"
-                            aria-label="Unread"
-                          />
-                        ) : null}
-                        <span className="ob-thread-title">
-                          {threadTitle(item)}
-                        </span>
-                      </span>
+            {groups.map((group) => {
+              const isCollapsed = collapsed.has(group.key)
+              const dir = group.dir
+              return (
+                <Box key={group.key || "unfiled"}>
+                  <Stack
+                    direction="row"
+                    spacing={0.5}
+                    alignItems="center"
+                    onDragOver={overGroup(group.key)}
+                    onDragLeave={() =>
+                      setDragOver((current) =>
+                        current === group.key ? null : current,
+                      )
                     }
-                    secondary={`${personaLabel(item.id)} · ${formatAgo(threadTime(item))}`}
-                    SlotProps={{
-                      primary: {
-                        className: "ob-thread-primary",
-                      } as never,
-                      secondary: { noWrap: true } as never,
-                    }}
-                  />
-                  {busyIds.has(item.id) ? (
-                    <CircularProgress size={1.2} sx={{ mr: 1 }} />
-                  ) : null}
-                </ListItemButton>
-                {selectMode ? null : (
-                  <IconButton
-                    size="small"
-                    aria-label={`Actions for ${threadTitle(item)}`}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      actions.menu(item, event.currentTarget)
-                    }}
+                    onDrop={dropToGroup(group.key)}
                     sx={{
-                      position: "absolute",
-                      right: 4,
-                      top: "50%",
-                      transform: "translateY(-50%)",
+                      px: 1,
+                      pt: 1,
+                      pb: 0.5,
+                      bgcolor:
+                        dragOver === group.key ? "action.hover" : undefined,
                     }}
                   >
-                    <MoreVertIcon width={18} height={18} />
-                  </IconButton>
-                )}
-              </Box>
-            ))}
+                    <IconButton
+                      size="small"
+                      aria-label={
+                        isCollapsed
+                          ? `Expand ${group.label}`
+                          : `Collapse ${group.label}`
+                      }
+                      onClick={() => toggleCollapsed(group.key)}
+                      sx={{ p: 0.25 }}
+                    >
+                      {isCollapsed ? (
+                        <ChevronRightIcon width={14} height={14} />
+                      ) : (
+                        <ChevronDownIcon width={14} height={14} />
+                      )}
+                    </IconButton>
+                    {dir ? (
+                      isCollapsed ? (
+                        <FolderIcon width={14} height={14} />
+                      ) : (
+                        <FolderOpenIcon width={14} height={14} />
+                      )
+                    ) : null}
+                    <Typography
+                      variant="caption"
+                      color="textSecondary"
+                      sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {group.label} ({group.items.length})
+                    </Typography>
+                    {dir ? (
+                      <>
+                        <ToolTip title={`New thread in ${dir.name}`}>
+                          <IconButton
+                            size="small"
+                            aria-label={`New thread in ${dir.name}`}
+                            disabled={actionBusy}
+                            onClick={() => actions.createIn(dir.id)}
+                            sx={{ p: 0.25 }}
+                          >
+                            <AddIcon width={14} height={14} />
+                          </IconButton>
+                        </ToolTip>
+                        <ToolTip title={`Folder actions for ${dir.name}`}>
+                          <IconButton
+                            size="small"
+                            aria-label={`Actions for folder ${dir.name}`}
+                            onClick={(event) =>
+                              actions.folderMenu(dir, event.currentTarget)
+                            }
+                            sx={{ p: 0.25 }}
+                          >
+                            <MoreVertIcon width={14} height={14} />
+                          </IconButton>
+                        </ToolTip>
+                      </>
+                    ) : null}
+                  </Stack>
+                  {isCollapsed
+                    ? null
+                    : group.items.map((item) => renderRow(item))}
+                </Box>
+              )
+            })}
           </List>
         )}
       </Box>
@@ -1932,6 +2114,18 @@ export function Workspace({ me }: { me: Me }) {
   const [newThreadOpen, setNewThreadOpen] = useState(false)
   const [newPersonaId, setNewPersonaId] = useState("assistant")
   const [menuThread, setMenuThread] = useState<SessionInfo | null>(null)
+  const [dirs, setDirs] = useState<ThreadDirInfo[]>([])
+  const [threadDirMap, setThreadDirMap] = useState<Record<string, string>>({})
+  const [folderDialog, setFolderDialog] = useState<{
+    mode: "create" | "rename"
+    dir?: ThreadDirInfo
+  } | null>(null)
+  const [folderName, setFolderName] = useState("")
+  const [folderDeleteTarget, setFolderDeleteTarget] =
+    useState<ThreadDirInfo | null>(null)
+  const [folderMenuDir, setFolderMenuDir] = useState<ThreadDirInfo | null>(null)
+  const [moveMenuThread, setMoveMenuThread] = useState<SessionInfo | null>(null)
+  const [newThreadDir, setNewThreadDir] = useState("")
   const [renameTarget, setRenameTarget] = useState<SessionInfo | null>(null)
   const [renameTitle, setRenameTitle] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<SessionInfo | null>(null)
@@ -2332,6 +2526,10 @@ export function Workspace({ me }: { me: Me }) {
     select: (_id: string) => {},
     menu: (_item: SessionInfo, _anchor: HTMLElement) => {},
     create: () => {},
+    newFolder: () => {},
+    createIn: (_dirId: string) => {},
+    folderMenu: (_dir: ThreadDirInfo, _anchor: HTMLElement) => {},
+    move: (_sessionId: string, _dirId: string | null) => {},
     toggleSelectMode: () => {},
     toggleSelect: (_id: string) => {},
     selectAll: () => {},
@@ -2343,6 +2541,12 @@ export function Workspace({ me }: { me: Me }) {
       menu: (item: SessionInfo, anchor: HTMLElement) =>
         threadActionsRef.current.menu(item, anchor),
       create: () => threadActionsRef.current.create(),
+      newFolder: () => threadActionsRef.current.newFolder(),
+      createIn: (dirId: string) => threadActionsRef.current.createIn(dirId),
+      folderMenu: (dir: ThreadDirInfo, anchor: HTMLElement) =>
+        threadActionsRef.current.folderMenu(dir, anchor),
+      move: (sessionId: string, dirId: string | null) =>
+        threadActionsRef.current.move(sessionId, dirId),
       toggleSelectMode: () => threadActionsRef.current.toggleSelectMode(),
       toggleSelect: (id: string) => threadActionsRef.current.toggleSelect(id),
       selectAll: () => threadActionsRef.current.selectAll(),
@@ -2373,8 +2577,23 @@ export function Workspace({ me }: { me: Me }) {
     },
     create: () => {
       setNewPersonaId("assistant")
+      setNewThreadDir("")
       setNewThreadOpen(true)
     },
+    newFolder: () => {
+      setFolderName("")
+      setFolderDialog({ mode: "create" })
+    },
+    createIn: (dirId) => {
+      setNewPersonaId("assistant")
+      setNewThreadDir(dirId)
+      setNewThreadOpen(true)
+    },
+    folderMenu: (dir, anchor) => {
+      menuAnchor.current = anchor
+      setFolderMenuDir(dir)
+    },
+    move: (id, dirId) => void moveThread(id, dirId),
     toggleSelectMode: () => {
       setThreadSelectMode((open) => !open)
       setSelectedThreads(new Set())
@@ -2404,7 +2623,14 @@ export function Workspace({ me }: { me: Me }) {
 
   const loadThreads = useCallback(async () => {
     try {
-      const [list, status, personaBody, assignmentBody] = await Promise.all([
+      const [
+        list,
+        status,
+        personaBody,
+        assignmentBody,
+        dirsBody,
+        dirAssignBody,
+      ] = await Promise.all([
         fetch("/api/opencode/session").then((res) => res.json()),
         fetch("/api/opencode/session/status").then((res) => res.json()),
         api<{ personas?: PersonaInfo[] }>("/api/personas").catch(() => ({
@@ -2412,6 +2638,12 @@ export function Workspace({ me }: { me: Me }) {
         })),
         api<{ threads?: { sessionId: string; personaId: string }[] }>(
           "/api/personas/threads",
+        ).catch(() => ({ threads: [] })),
+        api<{ dirs?: ThreadDirInfo[] }>("/api/thread-dirs").catch(() => ({
+          dirs: [],
+        })),
+        api<{ threads?: { sessionId: string; dirId: string }[] }>(
+          "/api/thread-dirs/assignments",
         ).catch(() => ({ threads: [] })),
       ])
       setSessions(
@@ -2436,6 +2668,12 @@ export function Workspace({ me }: { me: Me }) {
           assigned[row.sessionId] = row.personaId
       }
       setThreadPersona(assigned)
+      setDirs(dirsBody.dirs ?? [])
+      const dirAssigned: Record<string, string> = {}
+      for (const row of dirAssignBody.threads ?? []) {
+        if (row.sessionId && row.dirId) dirAssigned[row.sessionId] = row.dirId
+      }
+      setThreadDirMap(dirAssigned)
     } catch {
       // desktop may have gone to sleep; the next tick retries
     } finally {
@@ -2702,7 +2940,8 @@ export function Workspace({ me }: { me: Me }) {
       if (
         type === "session.created" ||
         type === "session.updated" ||
-        type === "session.deleted"
+        type === "session.deleted" ||
+        type === "threads.changed"
       ) {
         scheduleThreads()
       }
@@ -3136,7 +3375,10 @@ export function Workspace({ me }: { me: Me }) {
     try {
       const created = await api<SessionInfo>("/api/opencode/session", {
         method: "POST",
-        body: JSON.stringify({ personaId: newPersonaId || "assistant" }),
+        body: JSON.stringify({
+          personaId: newPersonaId || "assistant",
+          ...(newThreadDir ? { dirId: newThreadDir } : {}),
+        }),
       })
       setSessionId(created.id)
       setMessages([])
@@ -3146,6 +3388,69 @@ export function Workspace({ me }: { me: Me }) {
       await loadThreads()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "new thread failed")
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
+  async function moveThread(id: string, dirId: string | null) {
+    setError("")
+    try {
+      await api("/api/thread-dirs/assign", {
+        method: "PUT",
+        body: JSON.stringify({ sessionId: id, dirId }),
+      })
+      setThreadDirMap((current) => {
+        const next = { ...current }
+        if (dirId) next[id] = dirId
+        else delete next[id]
+        return next
+      })
+      await loadThreads()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "move failed")
+    }
+  }
+
+  async function saveFolder() {
+    const name = folderName.trim()
+    if (!folderDialog || !name || actionBusy) return
+    setError("")
+    setActionBusy(true)
+    try {
+      if (folderDialog.mode === "create") {
+        await api("/api/thread-dirs", {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        })
+      } else if (folderDialog.dir) {
+        await api(`/api/thread-dirs/${folderDialog.dir.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ name }),
+        })
+      }
+      setFolderDialog(null)
+      await loadThreads()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "folder save failed")
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
+  async function removeFolder() {
+    const dir = folderDeleteTarget
+    if (!dir || actionBusy) return
+    setError("")
+    setActionBusy(true)
+    try {
+      await api(`/api/thread-dirs/${dir.id}`, { method: "DELETE" })
+      setFolderDeleteTarget(null)
+      await loadThreads()
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "folder delete failed",
+      )
     } finally {
       setActionBusy(false)
     }
@@ -3553,6 +3858,8 @@ export function Workspace({ me }: { me: Me }) {
                 actionBusy={actionBusy}
                 selectMode={threadSelectMode}
                 selectedIds={selectedThreads}
+                dirs={dirs}
+                threadDirMap={threadDirMap}
                 actions={threadActions}
               />
             ) : null}
@@ -4131,6 +4438,7 @@ export function Workspace({ me }: { me: Me }) {
                 disabled={actionBusy}
                 onClick={() => {
                   setNewPersonaId("assistant")
+                  setNewThreadDir("")
                   setNewThreadOpen(true)
                   setDrawerOpen(false)
                 }}
@@ -4158,6 +4466,15 @@ export function Workspace({ me }: { me: Me }) {
                 <EditIcon />
                 <ListItemText primary="Rename" />
               </ListItemButton>
+              <ListItemButton
+                onClick={() => {
+                  setMoveMenuThread(menuThread)
+                  setMenuThread(null)
+                }}
+              >
+                <FolderIcon />
+                <ListItemText primary="Move to folder" />
+              </ListItemButton>
               {threadBusy(menuThread.id) ? (
                 <ListItemButton onClick={() => void abortThread(menuThread.id)}>
                   <StopIcon />
@@ -4172,6 +4489,84 @@ export function Workspace({ me }: { me: Me }) {
               >
                 <DeleteIcon />
                 <ListItemText primary="Delete" />
+              </ListItemButton>
+            </>
+          ) : null}
+        </Menu>
+
+        <Menu
+          open={Boolean(moveMenuThread)}
+          anchorEl={menuAnchor}
+          onClose={() => setMoveMenuThread(null)}
+        >
+          <ListItemButton
+            onClick={() => {
+              const id = moveMenuThread?.id
+              setMoveMenuThread(null)
+              if (id) void moveThread(id, null)
+            }}
+          >
+            {moveMenuThread && !threadDirMap[moveMenuThread.id] ? (
+              <CheckCircleIcon />
+            ) : (
+              <span style={{ width: 18, display: "inline-flex" }} />
+            )}
+            <ListItemText primary="No folder" />
+          </ListItemButton>
+          {dirs.map((dir) => (
+            <ListItemButton
+              key={dir.id}
+              onClick={() => {
+                setMoveMenuThread(null)
+                void moveThread(moveMenuThread?.id ?? "", dir.id)
+              }}
+            >
+              {moveMenuThread && threadDirMap[moveMenuThread.id] === dir.id ? (
+                <CheckCircleIcon />
+              ) : (
+                <span style={{ width: 18, display: "inline-flex" }} />
+              )}
+              <ListItemText primary={dir.name} />
+            </ListItemButton>
+          ))}
+          {dirs.length === 0 ? (
+            <ListItemButton
+              disabled
+              onClick={() => {
+                setMoveMenuThread(null)
+                threadActions.newFolder()
+              }}
+            >
+              <ListItemText primary="No folders yet — create one first" />
+            </ListItemButton>
+          ) : null}
+        </Menu>
+
+        <Menu
+          open={Boolean(folderMenuDir)}
+          anchorEl={menuAnchor}
+          onClose={() => setFolderMenuDir(null)}
+        >
+          {folderMenuDir ? (
+            <>
+              <ListItemButton
+                onClick={() => {
+                  setFolderName(folderMenuDir.name)
+                  setFolderDialog({ mode: "rename", dir: folderMenuDir })
+                  setFolderMenuDir(null)
+                }}
+              >
+                <EditIcon />
+                <ListItemText primary="Rename folder" />
+              </ListItemButton>
+              <ListItemButton
+                onClick={() => {
+                  setFolderDeleteTarget(folderMenuDir)
+                  setFolderMenuDir(null)
+                }}
+              >
+                <DeleteIcon />
+                <ListItemText primary="Delete folder" />
               </ListItemButton>
             </>
           ) : null}
@@ -4208,6 +4603,25 @@ export function Workspace({ me }: { me: Me }) {
                     {item.name}
                   </option>
                 ))}
+              </Select>
+              <Select
+                name="thread-folder"
+                label="Folder"
+                value={newThreadDir}
+                disabled={actionBusy}
+                sx={{ width: "100%", mt: 1 }}
+                onSelect={setNewThreadDir}
+              >
+                {[
+                  <option key="none" value="">
+                    No folder
+                  </option>,
+                  ...dirs.map((dir) => (
+                    <option key={dir.id} value={dir.id}>
+                      {dir.name}
+                    </option>
+                  )),
+                ]}
               </Select>
             </DialogContent>
             <DialogActions>
@@ -4326,6 +4740,74 @@ export function Workspace({ me }: { me: Me }) {
                 onClick={() => void deleteThreadsBatch()}
               >
                 Delete
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+        {folderDialog ? (
+          <Dialog open onClose={() => setFolderDialog(null)}>
+            <DialogTitle>
+              {folderDialog.mode === "create" ? "New folder" : "Rename folder"}
+            </DialogTitle>
+            <DialogContent>
+              <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
+                Folders group threads by topic on the dashboard. Deleting a
+                folder keeps its threads.
+              </Typography>
+              <TextField
+                label="Name"
+                value={folderName}
+                autoFocus
+                sx={{ width: "100%" }}
+                disabled={actionBusy}
+                onChange={(event) => setFolderName(event.currentTarget.value)}
+                onKeyDown={(event: React.KeyboardEvent) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    void saveFolder()
+                  }
+                }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setFolderDialog(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                disabled={actionBusy || !folderName.trim()}
+                onClick={() => void saveFolder()}
+              >
+                {folderDialog.mode === "create" ? "Create" : "Save"}
+              </Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        {folderDeleteTarget ? (
+          <Dialog open onClose={() => setFolderDeleteTarget(null)}>
+            <DialogTitle>Delete “{folderDeleteTarget.name}”?</DialogTitle>
+            <DialogContent>
+              <Typography variant="body2">
+                The folder is removed and its threads move back to the top
+                “Threads” group. No thread is deleted.
+              </Typography>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                variant="text"
+                onClick={() => setFolderDeleteTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                color="error"
+                variant="contained"
+                disabled={actionBusy}
+                startIcon={<DeleteIcon />}
+                onClick={() => void removeFolder()}
+              >
+                Delete folder
               </Button>
             </DialogActions>
           </Dialog>

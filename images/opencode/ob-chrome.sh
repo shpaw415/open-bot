@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 if [ "${1:-}" != "--session" ] || [ -z "${2:-}" ]; then
-  echo "usage: ob-chrome --session SESSION navigate URL | url | back | forward | reload" >&2
+  echo "usage: ob-chrome --session SESSION navigate URL | newtab URL | tabs | switch N | closetab [N] | url | back | forward | reload" >&2
   echo "SESSION is the screen id in the system instructions." >&2
   exit 1
 fi

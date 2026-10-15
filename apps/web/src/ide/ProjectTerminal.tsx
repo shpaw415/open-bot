@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react"
-import { monoFont, vscode } from "./theme"
+import { useThemeMode } from "../theme"
+import { monoFont, terminalTheme, useVscode } from "./theme"
 import type { ProjectInfo } from "./types"
 
 /**
@@ -13,14 +14,24 @@ export function ProjectTerminal({
   project: ProjectInfo
   active?: boolean
 }) {
+  const vscode = useVscode()
+  const { mode } = useThemeMode()
   const hostRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef(active)
   activeRef.current = active
   const fitRef = useRef<(() => void) | null>(null)
+  const termRef = useRef<import("@xterm/xterm").Terminal | null>(null)
+  const modeRef = useRef(mode)
+  modeRef.current = mode
 
   useEffect(() => {
     if (active) fitRef.current?.()
   }, [active])
+
+  useEffect(() => {
+    const term = termRef.current
+    if (term) term.options.theme = terminalTheme(mode)
+  }, [mode])
 
   useEffect(() => {
     const host = hostRef.current
@@ -53,29 +64,13 @@ export function ProjectTerminal({
         fontSize: 13,
         fontFamily: monoFont,
         scrollback: 4000,
-        theme: {
-          background: vscode.editorBg,
-          foreground: vscode.editorFg,
-          cursor: "#aeafad",
-          selectionBackground: "#264f78",
-          black: "#000000",
-          red: "#cd3131",
-          green: "#0dbc79",
-          yellow: "#e5e510",
-          blue: "#2472c8",
-          magenta: "#bc3fbc",
-          cyan: "#11a8cd",
-          white: "#e5e5e5",
-          brightBlack: "#666666",
-          brightBlue: "#3b8eea",
-          brightGreen: "#23d18b",
-          brightCyan: "#29b8db",
-        },
+        theme: terminalTheme(modeRef.current),
       })
       const addon = new FitAddon()
       fit = addon
       term.loadAddon(addon)
       term.open(host)
+      termRef.current = term
       fitHost()
       term.onData((data) => {
         if (ws?.readyState === WebSocket.OPEN)
@@ -134,6 +129,7 @@ export function ProjectTerminal({
       observer.disconnect()
       ws?.close()
       term?.dispose()
+      termRef.current = null
     }
   }, [project.id])
 

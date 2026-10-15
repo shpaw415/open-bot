@@ -33,6 +33,8 @@ Usage:
   ob-plugin remove ID                uninstall a plugin
   ob-plugin enable ID | disable ID   toggle a plugin (disable pauses its cron jobs and unloads its skills)
   ob-plugin setup ID                 re-run a plugin's root setup commands (retry after a failure)
+  ob-plugin page ID                  page-server status: port, health, pid (loopback 4740-4759 in this container)
+  ob-plugin restart ID               restart a plugin's page server (the edit loop for dashboard pages)
   ob-plugin settings ID [key=value]  show or update plugin settings
   ob-plugin guide ID                 print the plugin's CONFIG.md configuration guide (how to configure it with the user)
   ob-plugin vault ID                 list the plugin's vaultCreate slugs (hasKey only, never values)
@@ -115,7 +117,7 @@ page_warn() {
     reason=$(printf '%s' "$1" | jq -r '.plugin.page.error // "did not come up in time"')
     id=$(printf '%s' "$1" | jq -r '.plugin.pluginId')
     echo "ob-plugin: warning: page server is not running ($reason)" >&2
-    echo "  see ~/.open-bot/pages/$id.log on this desktop, or ob-plugin disable/enable $id to retry" >&2
+    echo "  see ~/.open-bot/pages/$id.log on this desktop, or ob-plugin restart $id to retry" >&2
   fi
 }
 
@@ -642,6 +644,24 @@ EOF
     out=$(request POST "/api/plugins/installed/$(urlencode "$1")/setup")
     fail_on_error "$out"
     echo "setup re-run for $1"
+    ;;
+  page)
+    [ $# -eq 1 ] || { usage; exit 2; }
+    out=$(request GET "/api/plugins/installed/$(urlencode "$1")/page")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{pluginId, enabled, running, port, pid}'
+    if printf '%s' "$out" | jq -e '.running == true' >/dev/null 2>&1; then
+      printf '%s' "$out" | jq -r '"loopback: http://127.0.0.1:\(.port)/  (click-test: ob-chrome navigate http://127.0.0.1:\(.port)/ — log: ~/.open-bot/pages/\(.pluginId).log)"' >&2
+    else
+      echo "ob-plugin: page server is not running (try ob-plugin restart $1; log: ~/.open-bot/pages/$1.log)" >&2
+    fi
+    ;;
+  restart)
+    [ $# -eq 1 ] || { usage; exit 2; }
+    out=$(request POST "/api/plugins/installed/$(urlencode "$1")/page/restart")
+    fail_on_error "$out"
+    port=$(printf '%s' "$out" | jq -r '.port')
+    echo "page server for $1 restarted on port $port (local installs run the checkout with bun --hot — no restart needed after edits)"
     ;;
   guide)
     [ $# -eq 1 ] || { usage; exit 2; }

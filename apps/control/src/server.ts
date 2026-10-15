@@ -148,6 +148,7 @@ import {
   system1ProviderPublic,
   system1Providers,
 } from "./system1"
+import { handleThreadDirs } from "./thread-dirs"
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
 import { cleanupDeletedThread, handleThreads, isThreadRequest } from "./threads"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
@@ -373,8 +374,17 @@ async function createOpencodeSession(
     typeof raw.personaId === "string" ? raw.personaId.trim() : ""
   if (personaId && !resolvePersona(db, userId, personaId))
     return json({ error: "unknown personality" }, 400)
+  let dirId: string | null = null
+  if (raw.dirId != null) {
+    if (typeof raw.dirId !== "string")
+      return json({ error: "dirId must be a string" }, 400)
+    if (!db.threadDirById(raw.dirId, userId))
+      return json({ error: "unknown folder" }, 400)
+    dirId = raw.dirId
+  }
   const rest = { ...raw }
   delete rest.personaId
+  delete rest.dirId
   const headers = new Headers(auth)
   headers.set("content-type", "application/json")
   const upstream = await fetch(new URL("/session", base), {
@@ -383,6 +393,14 @@ async function createOpencodeSession(
     body: JSON.stringify(rest),
   })
   const text = await upstream.text()
+  if (upstream.ok && dirId) {
+    try {
+      const created = JSON.parse(text) as { id?: string }
+      if (created.id) db.setThreadDir(userId, created.id, dirId)
+    } catch {
+      // return the upstream body even if the folder cannot be stored
+    }
+  }
   if (upstream.ok && personaId && personaId !== ASSISTANT_ID) {
     try {
       const created = JSON.parse(text) as { id?: string }
@@ -1016,6 +1034,9 @@ async function api(
   const isPersonaPath =
     url.pathname === "/api/personas" ||
     url.pathname.startsWith("/api/personas/")
+  const isThreadDirsPath =
+    url.pathname === "/api/thread-dirs" ||
+    url.pathname.startsWith("/api/thread-dirs/")
   const isPluginPath =
     url.pathname === "/api/plugins" || url.pathname.startsWith("/api/plugins/")
   const isProjectManage = isProjectManageRequest(url.pathname, req.method)
@@ -1025,6 +1046,7 @@ async function api(
   if (
     isCronPath ||
     isPersonaPath ||
+    isThreadDirsPath ||
     isPluginPath ||
     isProjectManage ||
     isMedia ||
@@ -1045,6 +1067,11 @@ async function api(
       }
       if (isPersonaPath) {
         const handled = handlePersonas(req, url, db, agent)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
+      if (isThreadDirsPath) {
+        const handled = handleThreadDirs(req, url, db, agent, hub)
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -1071,6 +1098,11 @@ async function api(
   }
   if (isPersonaPath) {
     const handled = handlePersonas(req, url, db, user)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
+  if (isThreadDirsPath) {
+    const handled = handleThreadDirs(req, url, db, user, hub)
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }

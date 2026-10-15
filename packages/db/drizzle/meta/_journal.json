@@ -71,6 +71,13 @@
       "when": 1791993056870,
       "tag": "0009_adorable_wind_dancer",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792025856195,
+      "tag": "0010_smart_slipstream",
+      "breakpoints": true
     }
   ]
 }

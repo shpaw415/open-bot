@@ -17,8 +17,10 @@ import {
   readLocalPluginManifest,
 } from "./plugin-local"
 import {
-  schedulePluginPageRestart,
   type PluginPageStartStatus,
+  pluginPageRuntime,
+  restartPluginPageServer,
+  schedulePluginPageRestart,
 } from "./plugin-pages"
 import {
   publicPagesEnabled,
@@ -1027,6 +1029,49 @@ export function handlePlugins(
         ),
       )
   }
+  // Page-server runtime status for the agent (`ob-plugin page <id>`): the
+  // resolved port, live health, and pid. Report-only — it never boots the
+  // server (the proxy does that lazily on the first dashboard request).
+  const pageRoute = path.match(/^\/api\/plugins\/installed\/([^/]+)\/page$/)
+  if (pageRoute && req.method === "GET") {
+    const pluginId = decodeURIComponent(pageRoute[1] ?? "")
+    const row = db.installedPlugin(user.id, pluginId)
+    if (!row) return json({ error: "not found" }, 404)
+    if (!(row.manifest as PluginManifest).dashboard?.pages) {
+      return json({ error: "this plugin has no page server" }, 400)
+    }
+    return pluginPageRuntime(user.id, pluginId).then((runtime) =>
+      json({ pluginId, enabled: row.enabled, ...runtime }),
+    )
+  }
+
+  // Restart = stop + start; the agent's edit loop for page servers (marketplace
+  // installs serve the frozen payload copy, so a restart is how edits land).
+  const pageRestart = path.match(
+    /^\/api\/plugins\/installed\/([^/]+)\/page\/restart$/,
+  )
+  if (pageRestart && req.method === "POST") {
+    keepAlive()
+    const pluginId = decodeURIComponent(pageRestart[1] ?? "")
+    const row = db.installedPlugin(user.id, pluginId)
+    if (!row) return json({ error: "not found" }, 404)
+    if (!(row.manifest as PluginManifest).dashboard?.pages) {
+      return json({ error: "this plugin has no page server" }, 400)
+    }
+    if (!row.enabled) return json({ error: "plugin is disabled" }, 400)
+    return restartPluginPageServer(user.id, row, hub)
+      .then((port) => json({ ok: true, port }))
+      .catch((error: unknown) =>
+        json(
+          {
+            error:
+              error instanceof Error ? error.message : "page restart failed",
+          },
+          502,
+        ),
+      )
+  }
+
   const settings = path.match(/^\/api\/plugins\/installed\/([^/]+)\/settings$/)
   if (settings && req.method === "PUT") {
     keepAlive()

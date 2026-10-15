@@ -29,6 +29,7 @@ import {
   SearchIcon,
   TerminalIcon,
 } from "../icons"
+import { useThemeMode } from "../theme"
 import {
   baseName,
   decodeContent,
@@ -44,7 +45,14 @@ import {
   type TreeEntry,
 } from "./file-utils"
 import { ProjectTerminal } from "./ProjectTerminal"
-import { iconColors, monoFont, uiFont, vscode } from "./theme"
+import {
+  iconColors,
+  monoFont,
+  uiFont,
+  useVscode,
+  VscodeContext,
+  vscodeTheme,
+} from "./theme"
 import type { ProjectInfo } from "./types"
 
 loader.config({ paths: { vs: "/monaco/vs" } })
@@ -218,6 +226,7 @@ function FolderGlyph({ open, size = 16 }: { open: boolean; size?: number }) {
 }
 
 function Chevron({ open }: { open: boolean }) {
+  const vscode = useVscode()
   return (
     <ChevronRightIcon
       width={16}
@@ -271,6 +280,8 @@ export function Ide({
   onThreadDock?: (el: HTMLDivElement | null) => void
 }) {
   const mobile = useMobile()
+  const { mode } = useThemeMode()
+  const vscode = useMemo(() => vscodeTheme(mode), [mode])
   const [root, setRoot] = useState<TreeEntry[] | null>(null)
   const [children, setChildren] = useState<Record<string, TreeEntry[]>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -750,851 +761,859 @@ export function Ide({
   const activePreview = active ? previews[active] : undefined
 
   return (
-    <Box
-      sx={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        minHeight: 0,
-        position: "relative",
-        fontFamily: uiFont,
-        backgroundColor: vscode.editorBg,
-        color: vscode.editorFg,
-        overflow: "hidden",
-      }}
-    >
-      {/* Title bar */}
+    <VscodeContext.Provider value={vscode}>
       <Box
         sx={{
           display: "flex",
-          alignItems: "center",
-          height: 35,
-          flexShrink: 0,
-          backgroundColor: vscode.titleBarBg,
-          color: vscode.titleBarFg,
-          fontSize: 12,
-          padding: "0 8px",
-          gap: 1,
+          flexDirection: "column",
+          height: "100%",
+          minHeight: 0,
+          position: "relative",
+          fontFamily: uiFont,
+          backgroundColor: vscode.editorBg,
+          color: vscode.editorFg,
+          overflow: "hidden",
         }}
       >
-        <TitleBarIcon label="Back to projects" onClick={onBack}>
-          <ArrowBackIcon width={18} height={18} />
-        </TitleBarIcon>
-        <TitleBarIcon
-          label={sidebar ? "Hide explorer" : "Show explorer"}
-          onClick={() => setSidebar((current) => !current)}
-        >
-          <DescriptionIcon width={18} height={18} />
-        </TitleBarIcon>
-        <TitleBarIcon
-          label={
-            panelOpen && panelTab === "terminal"
-              ? "Hide terminal"
-              : "Show terminal"
-          }
-          active={panelOpen && panelTab === "terminal"}
-          onClick={() => showPanel("terminal")}
-        >
-          <TerminalIcon width={18} height={18} />
-        </TitleBarIcon>
-        <TitleBarIcon
-          label={
-            panelOpen && panelTab === "thread" ? "Hide thread" : "Show thread"
-          }
-          active={panelOpen && panelTab === "thread"}
-          onClick={() => showPanel("thread")}
-        >
-          <ChatIcon width={18} height={18} />
-        </TitleBarIcon>
+        {/* Title bar */}
         <Box
           sx={{
-            flex: 1,
-            textAlign: "center",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {activeBase ? `${activeBase} — ${project.name}` : project.name}
-        </Box>
-        <Box sx={{ width: mobile ? 232 : 192 }} />
-      </Box>
-
-      {/* Body */}
-      <Box sx={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Activity bar */}
-        {!mobile ? (
-          <Box
-            sx={{
-              width: 48,
-              flexShrink: 0,
-              backgroundColor: vscode.activityBarBg,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              paddingTop: 1,
-              gap: "2px",
-            }}
-          >
-            <ActivityIcon
-              label="Explorer"
-              active={sidebar}
-              onClick={() => setSidebar((current) => !current)}
-            >
-              <DescriptionIcon width={24} height={24} />
-            </ActivityIcon>
-            <ActivityIcon
-              label="Quick open"
-              active={false}
-              onClick={openQuickOpen}
-            >
-              <SearchIcon width={24} height={24} />
-            </ActivityIcon>
-          </Box>
-        ) : null}
-
-        {/* Explorer */}
-        {sidebar ? (
-          <Box
-            onClick={(event) => event.stopPropagation()}
-            sx={{
-              ...(mobile
-                ? {
-                    position: "absolute",
-                    left: 0,
-                    top: 35,
-                    bottom: 0,
-                    zIndex: 30,
-                    boxShadow: "0 0 12px rgba(0,0,0,0.6)",
-                  }
-                : {}),
-              width: mobile ? "min(75vw, 280px)" : 240,
-              flexShrink: 0,
-              backgroundColor: vscode.sidebarBg,
-              display: "flex",
-              flexDirection: "column",
-              minHeight: 0,
-              borderRight: `1px solid ${vscode.border}`,
-            }}
-          >
-            <Box
-              sx={{
-                fontSize: 11,
-                letterSpacing: "0.04em",
-                color: vscode.sectionHeaderFg,
-                padding: "8px 20px 8px 20px",
-                flexShrink: 0,
-              }}
-            >
-              EXPLORER
-            </Box>
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: "2px",
-                padding: "3px 8px 3px 12px",
-                fontSize: 11,
-                fontWeight: 700,
-                letterSpacing: "0.02em",
-                textTransform: "uppercase",
-                color: vscode.sidebarFg,
-                flexShrink: 0,
-              }}
-            >
-              <Chevron open />
-              <Box
-                Element="span"
-                sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}
-              >
-                {project.name}
-              </Box>
-              <IconAction
-                label="Refresh explorer"
-                onClick={() => {
-                  setChildren({})
-                  void refreshTree()
-                }}
-              >
-                <RefreshIcon width={14} height={14} />
-              </IconAction>
-            </Box>
-            <Box
-              sx={{
-                flex: 1,
-                overflowY: "auto",
-                overflowX: "hidden",
-                minHeight: 0,
-                "&::-webkit-scrollbar": { width: 10 },
-                "&::-webkit-scrollbar-thumb": {
-                  background: vscode.scrollbar,
-                  borderRadius: 0,
-                },
-              }}
-            >
-              {root === null ? (
-                <Box
-                  sx={{
-                    display: "flex",
-                    justifyContent: "center",
-                    paddingTop: 3,
-                  }}
-                >
-                  <CircularProgress size={1.4} />
-                </Box>
-              ) : root.length === 0 ? (
-                <Box
-                  sx={{
-                    padding: "8px 20px",
-                    color: vscode.muted,
-                    fontSize: 12,
-                  }}
-                >
-                  Empty project — ask the agent to add files.
-                </Box>
-              ) : (
-                rows(root, 0)
-              )}
-            </Box>
-          </Box>
-        ) : null}
-
-        {/* Editor area */}
-        <Box
-          ref={editorColRef}
-          sx={{
-            flex: 1,
-            minWidth: 0,
             display: "flex",
-            flexDirection: "column",
-            position: "relative",
-            minHeight: 0,
+            alignItems: "center",
+            height: 35,
+            flexShrink: 0,
+            backgroundColor: vscode.titleBarBg,
+            color: vscode.titleBarFg,
+            fontSize: 12,
+            padding: "0 8px",
+            gap: 1,
           }}
         >
-          {/* Tabs */}
+          <TitleBarIcon label="Back to projects" onClick={onBack}>
+            <ArrowBackIcon width={18} height={18} />
+          </TitleBarIcon>
+          <TitleBarIcon
+            label={sidebar ? "Hide explorer" : "Show explorer"}
+            onClick={() => setSidebar((current) => !current)}
+          >
+            <DescriptionIcon width={18} height={18} />
+          </TitleBarIcon>
+          <TitleBarIcon
+            label={
+              panelOpen && panelTab === "terminal"
+                ? "Hide terminal"
+                : "Show terminal"
+            }
+            active={panelOpen && panelTab === "terminal"}
+            onClick={() => showPanel("terminal")}
+          >
+            <TerminalIcon width={18} height={18} />
+          </TitleBarIcon>
+          <TitleBarIcon
+            label={
+              panelOpen && panelTab === "thread" ? "Hide thread" : "Show thread"
+            }
+            active={panelOpen && panelTab === "thread"}
+            onClick={() => showPanel("thread")}
+          >
+            <ChatIcon width={18} height={18} />
+          </TitleBarIcon>
           <Box
             sx={{
-              display: "flex",
-              alignItems: "stretch",
-              height: 35,
-              flexShrink: 0,
-              backgroundColor: vscode.tabBarBg,
-              overflowX: "auto",
-              overflowY: "hidden",
-              "&::-webkit-scrollbar": { height: 3 },
-              "&::-webkit-scrollbar-thumb": { background: vscode.scrollbar },
+              flex: 1,
+              textAlign: "center",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
-            {orderedTabs.map((path) => {
-              const isActive = path === active
-              const isDirty = dirty[path] === true
-              const isPinned = pinned.includes(path)
-              const showActions = mobile || isActive || hoverTab === path
-              return (
-                <Box
-                  key={path}
-                  onClick={() => setActive(path)}
-                  onDoubleClick={() => {
-                    if (!isPinned) togglePin(path)
-                  }}
-                  onMouseEnter={() => setHoverTab(path)}
-                  onMouseLeave={() =>
-                    setHoverTab((current) =>
-                      current === path ? null : current,
-                    )
-                  }
-                  onAuxClick={(event) => {
-                    if (event.button !== 1) return
-                    event.preventDefault()
-                    closeTab(path)
-                  }}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "0 4px 0 12px",
-                    backgroundColor: isActive
-                      ? vscode.tabActiveBg
-                      : vscode.tabInactiveBg,
-                    color: isActive ? vscode.tabActiveFg : vscode.tabFg,
-                    fontSize: 13,
-                    cursor: "pointer",
-                    flexShrink: 0,
-                    borderRight: `1px solid ${vscode.tabBorder}`,
-                    position: "relative",
-                  }}
-                >
-                  <FileGlyph token={iconForFile(baseName(path))} size={15} />
-                  <Box Element="span" sx={{ whiteSpace: "nowrap" }}>
-                    {baseName(path)}
-                  </Box>
-                  {isDirty ? (
-                    <Box
-                      sx={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        flexShrink: 0,
-                        backgroundColor: vscode.tabActiveFg,
-                      }}
-                    />
-                  ) : null}
-                  <TabAction
-                    label={isPinned ? "Unpin" : "Pin"}
-                    hidden={!showActions && !isPinned}
-                    onClick={() => togglePin(path)}
-                  >
-                    <PushPinIcon
-                      width={14}
-                      height={14}
-                      style={{
-                        transform: isPinned ? "rotate(0deg)" : "rotate(45deg)",
-                        opacity: isPinned ? 1 : 0.85,
-                      }}
-                    />
-                  </TabAction>
-                  <TabAction
-                    label="Close"
-                    hidden={!showActions}
-                    onClick={() => closeTab(path)}
-                  >
-                    <CloseIcon width={14} height={14} />
-                  </TabAction>
-                </Box>
-              )
-            })}
+            {activeBase ? `${activeBase} — ${project.name}` : project.name}
           </Box>
+          <Box sx={{ width: mobile ? 232 : 192 }} />
+        </Box>
 
-          {/* Breadcrumbs */}
-          {active ? (
+        {/* Body */}
+        <Box sx={{ display: "flex", flex: 1, minHeight: 0 }}>
+          {/* Activity bar */}
+          {!mobile ? (
             <Box
               sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: "2px",
-                height: 22,
+                width: 48,
                 flexShrink: 0,
-                padding: "0 12px",
-                fontSize: 12,
-                color: vscode.breadcrumbFg,
-                backgroundColor: vscode.editorBg,
-                overflow: "hidden",
-                whiteSpace: "nowrap",
+                backgroundColor: vscode.activityBarBg,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                paddingTop: 1,
+                gap: "2px",
               }}
             >
-              {pathSegments(relPath(project.path, active)).map(
-                (segment, index, all) => (
-                  <Box
-                    key={all.slice(0, index + 1).join("/")}
-                    sx={{ display: "flex", alignItems: "center", gap: "2px" }}
-                  >
-                    {index > 0 ? (
-                      <ChevronRightIcon width={14} height={14} />
-                    ) : null}
-                    {index === all.length - 1 ? (
-                      <FileGlyph token={iconForFile(segment)} size={13} />
-                    ) : null}
-                    <Box Element="span">{segment}</Box>
-                  </Box>
-                ),
-              )}
+              <ActivityIcon
+                label="Explorer"
+                active={sidebar}
+                onClick={() => setSidebar((current) => !current)}
+              >
+                <DescriptionIcon width={24} height={24} />
+              </ActivityIcon>
+              <ActivityIcon
+                label="Quick open"
+                active={false}
+                onClick={openQuickOpen}
+              >
+                <SearchIcon width={24} height={24} />
+              </ActivityIcon>
             </Box>
           ) : null}
 
-          {/* File surface */}
-          <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
-            {loadingFile && active ? (
-              <Box
-                sx={{
-                  position: "absolute",
-                  inset: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <CircularProgress size={1.6} />
-              </Box>
-            ) : null}
-            {!loadingFile && active && activePreview ? (
-              activePreview.kind === "image" ? (
-                <Box
-                  sx={{
-                    height: "100%",
-                    overflow: "auto",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: 2,
-                  }}
-                >
-                  <Box
-                    Element="img"
-                    src={activePreview.src}
-                    alt={activeBase ?? "preview"}
-                    sx={{
-                      maxWidth: "100%",
-                      maxHeight: "100%",
-                      objectFit: "contain",
-                    }}
-                  />
-                </Box>
-              ) : (
-                <Box
-                  sx={{
-                    height: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: vscode.muted,
-                    fontSize: 13,
-                  }}
-                >
-                  This binary file cannot be displayed.
-                </Box>
-              )
-            ) : null}
-            {!loadingFile && active && !activePreview && active !== null ? (
-              draft[active] !== undefined ? (
-                <Editor
-                  path={active}
-                  language={languageFor(active)}
-                  value={draft[active]}
-                  theme="vs-dark"
-                  options={EDITOR_OPTIONS}
-                  beforeMount={applyTsDefaults}
-                  loading={<CircularProgress size={1.6} />}
-                  onMount={(editor) => {
-                    editorRef.current = editor
-                    editor.onDidChangeCursorPosition((event) => {
-                      setCursor({
-                        ln: event.position.lineNumber,
-                        col: event.position.column,
-                      })
-                    })
-                  }}
-                  onChange={(value) => {
-                    if (active === null) return
-                    const text = value ?? ""
-                    setDraft((current) => ({ ...current, [active]: text }))
-                  }}
-                />
-              ) : null
-            ) : null}
-            {!active && !loadingFile ? (
-              <Box
-                sx={{
-                  height: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 1,
-                  color: "#565656",
-                }}
-              >
-                <Typography
-                  sx={{
-                    fontSize: 42,
-                    fontWeight: 200,
-                    letterSpacing: "0.02em",
-                  }}
-                >
-                  {project.name}
-                </Typography>
-                <Box sx={{ fontSize: 13, color: vscode.muted }}>
-                  Open a file from the explorer
-                </Box>
-                {!mobile ? (
-                  <Box
-                    sx={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "4px",
-                      marginTop: 2,
-                      fontSize: 12,
-                    }}
-                  >
-                    <ShortcutRow keys="Ctrl+P" text="Quick open a file" />
-                    <ShortcutRow keys="Ctrl+S" text="Save the active file" />
-                    <ShortcutRow
-                      keys="Ctrl+`"
-                      text="Toggle the terminal panel"
-                    />
-                  </Box>
-                ) : null}
-              </Box>
-            ) : null}
-          </Box>
-
-          {panelOpen || termStarted ? (
+          {/* Explorer */}
+          {sidebar ? (
             <Box
+              onClick={(event) => event.stopPropagation()}
               sx={{
-                display: panelOpen ? "flex" : "none",
-                height: panelHeight,
+                ...(mobile
+                  ? {
+                      position: "absolute",
+                      left: 0,
+                      top: 35,
+                      bottom: 0,
+                      zIndex: 30,
+                      boxShadow: "0 0 12px rgba(0,0,0,0.6)",
+                    }
+                  : {}),
+                width: mobile ? "min(75vw, 280px)" : 240,
                 flexShrink: 0,
+                backgroundColor: vscode.sidebarBg,
+                display: "flex",
                 flexDirection: "column",
-                borderTop: `1px solid ${vscode.border}`,
-                backgroundColor: vscode.editorBg,
                 minHeight: 0,
-                position: "relative",
+                borderRight: `1px solid ${vscode.border}`,
               }}
             >
               <Box
-                title="Resize panel"
-                aria-label="Resize panel"
-                onPointerDown={(event) => {
-                  event.preventDefault()
-                  const startY = event.clientY
-                  const startH = panelHeight
-                  const parent =
-                    editorColRef.current?.clientHeight ?? window.innerHeight
-                  const max = Math.max(200, Math.floor(parent * 0.7))
-                  const move = (ev: PointerEvent) => {
-                    const next = startH - (ev.clientY - startY)
-                    setPanelHeight(Math.min(max, Math.max(160, next)))
-                  }
-                  const up = () => {
-                    window.removeEventListener("pointermove", move)
-                    window.removeEventListener("pointerup", up)
-                  }
-                  window.addEventListener("pointermove", move)
-                  window.addEventListener("pointerup", up)
-                }}
                 sx={{
-                  position: "absolute",
-                  top: -3,
-                  left: 0,
-                  right: 0,
-                  height: 6,
-                  cursor: "row-resize",
-                  zIndex: 2,
-                }}
-              />
-              <Box
-                role="tablist"
-                aria-label="Panel"
-                sx={{
-                  display: "flex",
-                  alignItems: "stretch",
-                  height: 35,
+                  fontSize: 11,
+                  letterSpacing: "0.04em",
+                  color: vscode.sectionHeaderFg,
+                  padding: "8px 20px 8px 20px",
                   flexShrink: 0,
-                  backgroundColor: vscode.sidebarBg,
-                  borderBottom: `1px solid ${vscode.border}`,
                 }}
               >
-                <PanelTabButton
-                  label="Terminal"
-                  active={panelTab === "terminal"}
-                  onClick={() => selectPanelTab("terminal")}
+                EXPLORER
+              </Box>
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "2px",
+                  padding: "3px 8px 3px 12px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.02em",
+                  textTransform: "uppercase",
+                  color: vscode.sidebarFg,
+                  flexShrink: 0,
+                }}
+              >
+                <Chevron open />
+                <Box
+                  Element="span"
+                  sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}
                 >
-                  <TerminalIcon width={14} height={14} />
-                </PanelTabButton>
-                <PanelTabButton
-                  label="Thread"
-                  active={panelTab === "thread"}
-                  onClick={() => selectPanelTab("thread")}
-                >
-                  <ChatIcon width={14} height={14} />
-                </PanelTabButton>
-                {panelTab === "terminal" ? (
-                  <Box
-                    Element="span"
-                    sx={{
-                      alignSelf: "center",
-                      color: vscode.muted,
-                      fontSize: 12,
-                      marginLeft: "4px",
-                    }}
-                  >
-                    bash — {project.name}
-                  </Box>
-                ) : null}
-                <Box sx={{ flex: 1 }} />
-                {panelTab === "terminal" ? (
-                  <Box
-                    sx={{ display: "flex", alignItems: "center", pr: "4px" }}
-                  >
-                    <IconAction
-                      label="Kill terminal"
-                      onClick={() => setTermEpoch((epoch) => epoch + 1)}
-                    >
-                      <DeleteIcon width={15} height={15} />
-                    </IconAction>
-                  </Box>
-                ) : null}
-                <Box sx={{ display: "flex", alignItems: "center", pr: "6px" }}>
-                  <IconAction
-                    label="Hide panel"
-                    onClick={() => setPanelOpen(false)}
-                  >
-                    <ChevronDownIcon width={16} height={16} />
-                  </IconAction>
+                  {project.name}
                 </Box>
+                <IconAction
+                  label="Refresh explorer"
+                  onClick={() => {
+                    setChildren({})
+                    void refreshTree()
+                  }}
+                >
+                  <RefreshIcon width={14} height={14} />
+                </IconAction>
               </Box>
               <Box
                 sx={{
                   flex: 1,
+                  overflowY: "auto",
+                  overflowX: "hidden",
                   minHeight: 0,
-                  display: "flex",
-                  flexDirection: "column",
+                  "&::-webkit-scrollbar": { width: 10 },
+                  "&::-webkit-scrollbar-thumb": {
+                    background: vscode.scrollbar,
+                    borderRadius: 0,
+                  },
                 }}
               >
-                {termStarted ? (
+                {root === null ? (
                   <Box
                     sx={{
-                      display:
-                        panelOpen && panelTab === "terminal" ? "flex" : "none",
-                      flex: 1,
-                      minHeight: 0,
+                      display: "flex",
+                      justifyContent: "center",
+                      paddingTop: 3,
                     }}
                   >
-                    <ProjectTerminal
-                      key={termEpoch}
-                      project={project}
-                      active={panelOpen && panelTab === "terminal"}
+                    <CircularProgress size={1.4} />
+                  </Box>
+                ) : root.length === 0 ? (
+                  <Box
+                    sx={{
+                      padding: "8px 20px",
+                      color: vscode.muted,
+                      fontSize: 12,
+                    }}
+                  >
+                    Empty project — ask the agent to add files.
+                  </Box>
+                ) : (
+                  rows(root, 0)
+                )}
+              </Box>
+            </Box>
+          ) : null}
+
+          {/* Editor area */}
+          <Box
+            ref={editorColRef}
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              position: "relative",
+              minHeight: 0,
+            }}
+          >
+            {/* Tabs */}
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "stretch",
+                height: 35,
+                flexShrink: 0,
+                backgroundColor: vscode.tabBarBg,
+                overflowX: "auto",
+                overflowY: "hidden",
+                "&::-webkit-scrollbar": { height: 3 },
+                "&::-webkit-scrollbar-thumb": { background: vscode.scrollbar },
+              }}
+            >
+              {orderedTabs.map((path) => {
+                const isActive = path === active
+                const isDirty = dirty[path] === true
+                const isPinned = pinned.includes(path)
+                const showActions = mobile || isActive || hoverTab === path
+                return (
+                  <Box
+                    key={path}
+                    onClick={() => setActive(path)}
+                    onDoubleClick={() => {
+                      if (!isPinned) togglePin(path)
+                    }}
+                    onMouseEnter={() => setHoverTab(path)}
+                    onMouseLeave={() =>
+                      setHoverTab((current) =>
+                        current === path ? null : current,
+                      )
+                    }
+                    onAuxClick={(event) => {
+                      if (event.button !== 1) return
+                      event.preventDefault()
+                      closeTab(path)
+                    }}
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "0 4px 0 12px",
+                      backgroundColor: isActive
+                        ? vscode.tabActiveBg
+                        : vscode.tabInactiveBg,
+                      color: isActive ? vscode.tabActiveFg : vscode.tabFg,
+                      fontSize: 13,
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      borderRight: `1px solid ${vscode.tabBorder}`,
+                      position: "relative",
+                    }}
+                  >
+                    <FileGlyph token={iconForFile(baseName(path))} size={15} />
+                    <Box Element="span" sx={{ whiteSpace: "nowrap" }}>
+                      {baseName(path)}
+                    </Box>
+                    {isDirty ? (
+                      <Box
+                        sx={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          flexShrink: 0,
+                          backgroundColor: vscode.tabActiveFg,
+                        }}
+                      />
+                    ) : null}
+                    <TabAction
+                      label={isPinned ? "Unpin" : "Pin"}
+                      hidden={!showActions && !isPinned}
+                      onClick={() => togglePin(path)}
+                    >
+                      <PushPinIcon
+                        width={14}
+                        height={14}
+                        style={{
+                          transform: isPinned
+                            ? "rotate(0deg)"
+                            : "rotate(45deg)",
+                          opacity: isPinned ? 1 : 0.85,
+                        }}
+                      />
+                    </TabAction>
+                    <TabAction
+                      label="Close"
+                      hidden={!showActions}
+                      onClick={() => closeTab(path)}
+                    >
+                      <CloseIcon width={14} height={14} />
+                    </TabAction>
+                  </Box>
+                )
+              })}
+            </Box>
+
+            {/* Breadcrumbs */}
+            {active ? (
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "2px",
+                  height: 22,
+                  flexShrink: 0,
+                  padding: "0 12px",
+                  fontSize: 12,
+                  color: vscode.breadcrumbFg,
+                  backgroundColor: vscode.editorBg,
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {pathSegments(relPath(project.path, active)).map(
+                  (segment, index, all) => (
+                    <Box
+                      key={all.slice(0, index + 1).join("/")}
+                      sx={{ display: "flex", alignItems: "center", gap: "2px" }}
+                    >
+                      {index > 0 ? (
+                        <ChevronRightIcon width={14} height={14} />
+                      ) : null}
+                      {index === all.length - 1 ? (
+                        <FileGlyph token={iconForFile(segment)} size={13} />
+                      ) : null}
+                      <Box Element="span">{segment}</Box>
+                    </Box>
+                  ),
+                )}
+              </Box>
+            ) : null}
+
+            {/* File surface */}
+            <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
+              {loadingFile && active ? (
+                <Box
+                  sx={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <CircularProgress size={1.6} />
+                </Box>
+              ) : null}
+              {!loadingFile && active && activePreview ? (
+                activePreview.kind === "image" ? (
+                  <Box
+                    sx={{
+                      height: "100%",
+                      overflow: "auto",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 2,
+                    }}
+                  >
+                    <Box
+                      Element="img"
+                      src={activePreview.src}
+                      alt={activeBase ?? "preview"}
+                      sx={{
+                        maxWidth: "100%",
+                        maxHeight: "100%",
+                        objectFit: "contain",
+                      }}
                     />
                   </Box>
-                ) : null}
-                {panelOpen && panelTab === "thread" ? (
+                ) : (
                   <Box
-                    role="tabpanel"
-                    aria-label="Thread"
                     sx={{
-                      flex: 1,
-                      minHeight: 0,
+                      height: "100%",
                       display: "flex",
-                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: vscode.muted,
+                      fontSize: 13,
                     }}
                   >
-                    {threadBar}
+                    This binary file cannot be displayed.
+                  </Box>
+                )
+              ) : null}
+              {!loadingFile && active && !activePreview && active !== null ? (
+                draft[active] !== undefined ? (
+                  <Editor
+                    path={active}
+                    language={languageFor(active)}
+                    value={draft[active]}
+                    theme={mode === "dark" ? "vs-dark" : "vs"}
+                    options={EDITOR_OPTIONS}
+                    beforeMount={applyTsDefaults}
+                    loading={<CircularProgress size={1.6} />}
+                    onMount={(editor) => {
+                      editorRef.current = editor
+                      editor.onDidChangeCursorPosition((event) => {
+                        setCursor({
+                          ln: event.position.lineNumber,
+                          col: event.position.column,
+                        })
+                      })
+                    }}
+                    onChange={(value) => {
+                      if (active === null) return
+                      const text = value ?? ""
+                      setDraft((current) => ({ ...current, [active]: text }))
+                    }}
+                  />
+                ) : null
+              ) : null}
+              {!active && !loadingFile ? (
+                <Box
+                  sx={{
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 1,
+                    color: vscode.watermarkFg,
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      fontSize: 42,
+                      fontWeight: 200,
+                      letterSpacing: "0.02em",
+                    }}
+                  >
+                    {project.name}
+                  </Typography>
+                  <Box sx={{ fontSize: 13, color: vscode.muted }}>
+                    Open a file from the explorer
+                  </Box>
+                  {!mobile ? (
                     <Box
-                      ref={dockRef}
+                      sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "4px",
+                        marginTop: 2,
+                        fontSize: 12,
+                      }}
+                    >
+                      <ShortcutRow keys="Ctrl+P" text="Quick open a file" />
+                      <ShortcutRow keys="Ctrl+S" text="Save the active file" />
+                      <ShortcutRow
+                        keys="Ctrl+`"
+                        text="Toggle the terminal panel"
+                      />
+                    </Box>
+                  ) : null}
+                </Box>
+              ) : null}
+            </Box>
+
+            {panelOpen || termStarted ? (
+              <Box
+                sx={{
+                  display: panelOpen ? "flex" : "none",
+                  height: panelHeight,
+                  flexShrink: 0,
+                  flexDirection: "column",
+                  borderTop: `1px solid ${vscode.border}`,
+                  backgroundColor: vscode.editorBg,
+                  minHeight: 0,
+                  position: "relative",
+                }}
+              >
+                <Box
+                  title="Resize panel"
+                  aria-label="Resize panel"
+                  onPointerDown={(event) => {
+                    event.preventDefault()
+                    const startY = event.clientY
+                    const startH = panelHeight
+                    const parent =
+                      editorColRef.current?.clientHeight ?? window.innerHeight
+                    const max = Math.max(200, Math.floor(parent * 0.7))
+                    const move = (ev: PointerEvent) => {
+                      const next = startH - (ev.clientY - startY)
+                      setPanelHeight(Math.min(max, Math.max(160, next)))
+                    }
+                    const up = () => {
+                      window.removeEventListener("pointermove", move)
+                      window.removeEventListener("pointerup", up)
+                    }
+                    window.addEventListener("pointermove", move)
+                    window.addEventListener("pointerup", up)
+                  }}
+                  sx={{
+                    position: "absolute",
+                    top: -3,
+                    left: 0,
+                    right: 0,
+                    height: 6,
+                    cursor: "row-resize",
+                    zIndex: 2,
+                  }}
+                />
+                <Box
+                  role="tablist"
+                  aria-label="Panel"
+                  sx={{
+                    display: "flex",
+                    alignItems: "stretch",
+                    height: 35,
+                    flexShrink: 0,
+                    backgroundColor: vscode.sidebarBg,
+                    borderBottom: `1px solid ${vscode.border}`,
+                  }}
+                >
+                  <PanelTabButton
+                    label="Terminal"
+                    active={panelTab === "terminal"}
+                    onClick={() => selectPanelTab("terminal")}
+                  >
+                    <TerminalIcon width={14} height={14} />
+                  </PanelTabButton>
+                  <PanelTabButton
+                    label="Thread"
+                    active={panelTab === "thread"}
+                    onClick={() => selectPanelTab("thread")}
+                  >
+                    <ChatIcon width={14} height={14} />
+                  </PanelTabButton>
+                  {panelTab === "terminal" ? (
+                    <Box
+                      Element="span"
+                      sx={{
+                        alignSelf: "center",
+                        color: vscode.muted,
+                        fontSize: 12,
+                        marginLeft: "4px",
+                      }}
+                    >
+                      bash — {project.name}
+                    </Box>
+                  ) : null}
+                  <Box sx={{ flex: 1 }} />
+                  {panelTab === "terminal" ? (
+                    <Box
+                      sx={{ display: "flex", alignItems: "center", pr: "4px" }}
+                    >
+                      <IconAction
+                        label="Kill terminal"
+                        onClick={() => setTermEpoch((epoch) => epoch + 1)}
+                      >
+                        <DeleteIcon width={15} height={15} />
+                      </IconAction>
+                    </Box>
+                  ) : null}
+                  <Box
+                    sx={{ display: "flex", alignItems: "center", pr: "6px" }}
+                  >
+                    <IconAction
+                      label="Hide panel"
+                      onClick={() => setPanelOpen(false)}
+                    >
+                      <ChevronDownIcon width={16} height={16} />
+                    </IconAction>
+                  </Box>
+                </Box>
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  {termStarted ? (
+                    <Box
+                      sx={{
+                        display:
+                          panelOpen && panelTab === "terminal"
+                            ? "flex"
+                            : "none",
+                        flex: 1,
+                        minHeight: 0,
+                      }}
+                    >
+                      <ProjectTerminal
+                        key={termEpoch}
+                        project={project}
+                        active={panelOpen && panelTab === "terminal"}
+                      />
+                    </Box>
+                  ) : null}
+                  {panelOpen && panelTab === "thread" ? (
+                    <Box
+                      role="tabpanel"
+                      aria-label="Thread"
                       sx={{
                         flex: 1,
                         minHeight: 0,
                         display: "flex",
                         flexDirection: "column",
-                        overflow: "hidden",
                       }}
-                    />
-                  </Box>
-                ) : null}
+                    >
+                      {threadBar}
+                      <Box
+                        ref={dockRef}
+                        sx={{
+                          flex: 1,
+                          minHeight: 0,
+                          display: "flex",
+                          flexDirection: "column",
+                          overflow: "hidden",
+                        }}
+                      />
+                    </Box>
+                  ) : null}
+                </Box>
               </Box>
-            </Box>
-          ) : null}
+            ) : null}
 
-          {/* Status bar */}
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              height: 22,
-              flexShrink: 0,
-              backgroundColor: vscode.statusBg,
-              color: vscode.statusFg,
-              fontSize: 12,
-              padding: "0 8px",
-              gap: 0.5,
-            }}
-          >
-            <StatusBarItem>
-              <ChevronRightIcon
-                width={13}
-                height={13}
-                style={{ transform: "rotate(180deg)" }}
-              />
-              <ChevronRightIcon width={13} height={13} />
-              <Box Element="span" sx={{ marginLeft: "4px" }}>
-                {project.name}
-              </Box>
-            </StatusBarItem>
-            {saving ? (
+            {/* Status bar */}
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                height: 22,
+                flexShrink: 0,
+                backgroundColor: vscode.statusBg,
+                color: vscode.statusFg,
+                fontSize: 12,
+                padding: "0 8px",
+                gap: 0.5,
+              }}
+            >
               <StatusBarItem>
-                <SaveIcon width={13} height={13} />
+                <ChevronRightIcon
+                  width={13}
+                  height={13}
+                  style={{ transform: "rotate(180deg)" }}
+                />
+                <ChevronRightIcon width={13} height={13} />
                 <Box Element="span" sx={{ marginLeft: "4px" }}>
-                  Saving…
+                  {project.name}
                 </Box>
               </StatusBarItem>
-            ) : null}
-            <Box sx={{ flex: 1 }} />
-            {active ? (
-              <>
+              {saving ? (
                 <StatusBarItem>
-                  Ln {cursor.ln}, Col {cursor.col}
+                  <SaveIcon width={13} height={13} />
+                  <Box Element="span" sx={{ marginLeft: "4px" }}>
+                    Saving…
+                  </Box>
                 </StatusBarItem>
-                <StatusBarItem>Spaces: 2</StatusBarItem>
-                <StatusBarItem>UTF-8</StatusBarItem>
-                <StatusBarItem>{languageFor(active)}</StatusBarItem>
-              </>
-            ) : null}
-          </Box>
-
-          {/* Toasts */}
-          {toast ? (
-            <Box
-              sx={{
-                position: "absolute",
-                right: 12,
-                bottom: 34,
-                zIndex: 40,
-                backgroundColor: vscode.widgetBg,
-                border: `1px solid ${toast.error ? vscode.errorBorder : vscode.widgetBorder}`,
-                color: vscode.editorFg,
-                fontSize: 12,
-                padding: "10px 14px",
-                maxWidth: 360,
-                boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
-              }}
-            >
-              {toast.text}
+              ) : null}
+              <Box sx={{ flex: 1 }} />
+              {active ? (
+                <>
+                  <StatusBarItem>
+                    Ln {cursor.ln}, Col {cursor.col}
+                  </StatusBarItem>
+                  <StatusBarItem>Spaces: 2</StatusBarItem>
+                  <StatusBarItem>UTF-8</StatusBarItem>
+                  <StatusBarItem>{languageFor(active)}</StatusBarItem>
+                </>
+              ) : null}
             </Box>
-          ) : null}
 
-          {/* Quick open */}
-          {quickOpen ? (
-            <Box
-              onClick={() => setQuickOpen(false)}
-              sx={{
-                position: "absolute",
-                inset: 0,
-                zIndex: 50,
-                backgroundColor: "rgba(0,0,0,0.25)",
-              }}
-            >
+            {/* Toasts */}
+            {toast ? (
               <Box
-                onClick={(event) => event.stopPropagation()}
                 sx={{
                   position: "absolute",
-                  top: 0,
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  width: "min(600px, calc(100% - 24px))",
-                  marginTop: 0,
+                  right: 12,
+                  bottom: 34,
+                  zIndex: 40,
                   backgroundColor: vscode.widgetBg,
-                  border: `1px solid ${vscode.widgetBorder}`,
-                  boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-                  display: "flex",
-                  flexDirection: "column",
-                  maxHeight: 440,
+                  border: `1px solid ${toast.error ? vscode.errorBorder : vscode.widgetBorder}`,
+                  color: vscode.editorFg,
+                  fontSize: 12,
+                  padding: "10px 14px",
+                  maxWidth: 360,
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+                }}
+              >
+                {toast.text}
+              </Box>
+            ) : null}
+
+            {/* Quick open */}
+            {quickOpen ? (
+              <Box
+                onClick={() => setQuickOpen(false)}
+                sx={{
+                  position: "absolute",
+                  inset: 0,
+                  zIndex: 50,
+                  backgroundColor: "rgba(0,0,0,0.25)",
                 }}
               >
                 <Box
-                  Element="input"
-                  ref={quickInputRef}
-                  value={quickQuery}
-                  placeholder="Search files by name"
-                  onChange={(event) => {
-                    setQuickQuery((event.target as HTMLInputElement).value)
-                    setQuickIndex(0)
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.stopPropagation()
-                      setQuickOpen(false)
-                    } else if (event.key === "ArrowDown") {
-                      event.preventDefault()
-                      setQuickIndex((current) =>
-                        Math.min(current + 1, results.length - 1),
-                      )
-                    } else if (event.key === "ArrowUp") {
-                      event.preventDefault()
-                      setQuickIndex((current) => Math.max(current - 1, 0))
-                    } else if (event.key === "Enter") {
-                      const pick = results[quickIndex]
-                      if (pick) quickPick(pick)
-                    }
-                  }}
+                  onClick={(event) => event.stopPropagation()}
                   sx={{
-                    backgroundColor: vscode.inputBg,
-                    border: `1px solid #007fd4`,
-                    color: vscode.editorFg,
-                    fontSize: 13,
-                    padding: "6px 10px",
-                    margin: "8px",
-                    outline: "none",
-                    fontFamily: uiFont,
-                    "&::placeholder": { color: vscode.muted },
+                    position: "absolute",
+                    top: 0,
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    width: "min(600px, calc(100% - 24px))",
+                    marginTop: 0,
+                    backgroundColor: vscode.widgetBg,
+                    border: `1px solid ${vscode.widgetBorder}`,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                    display: "flex",
+                    flexDirection: "column",
+                    maxHeight: 440,
                   }}
-                />
-                <Box sx={{ overflowY: "auto", paddingBottom: 1 }}>
-                  {quickFiles === null ? (
-                    <Box
-                      sx={{
-                        padding: "6px 18px",
-                        color: vscode.muted,
-                        fontSize: 12,
-                      }}
-                    >
-                      Loading files…
-                    </Box>
-                  ) : results.length === 0 ? (
-                    <Box
-                      sx={{
-                        padding: "6px 18px",
-                        color: vscode.muted,
-                        fontSize: 12,
-                      }}
-                    >
-                      No matching files
-                    </Box>
-                  ) : (
-                    results.map((path, index) => (
+                >
+                  <Box
+                    Element="input"
+                    ref={quickInputRef}
+                    value={quickQuery}
+                    placeholder="Search files by name"
+                    onChange={(event) => {
+                      setQuickQuery((event.target as HTMLInputElement).value)
+                      setQuickIndex(0)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.stopPropagation()
+                        setQuickOpen(false)
+                      } else if (event.key === "ArrowDown") {
+                        event.preventDefault()
+                        setQuickIndex((current) =>
+                          Math.min(current + 1, results.length - 1),
+                        )
+                      } else if (event.key === "ArrowUp") {
+                        event.preventDefault()
+                        setQuickIndex((current) => Math.max(current - 1, 0))
+                      } else if (event.key === "Enter") {
+                        const pick = results[quickIndex]
+                        if (pick) quickPick(pick)
+                      }
+                    }}
+                    sx={{
+                      backgroundColor: vscode.inputBg,
+                      border: `1px solid ${vscode.focusBorder}`,
+                      color: vscode.editorFg,
+                      fontSize: 13,
+                      padding: "6px 10px",
+                      margin: "8px",
+                      outline: "none",
+                      fontFamily: uiFont,
+                      "&::placeholder": { color: vscode.muted },
+                    }}
+                  />
+                  <Box sx={{ overflowY: "auto", paddingBottom: 1 }}>
+                    {quickFiles === null ? (
                       <Box
-                        key={path}
-                        onClick={() => quickPick(path)}
-                        onMouseEnter={() => setQuickIndex(index)}
                         sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "8px",
-                          padding: "4px 12px",
-                          fontSize: 13,
-                          cursor: "pointer",
-                          color: vscode.editorFg,
-                          backgroundColor:
-                            index === quickIndex
-                              ? vscode.quickActiveBg
-                              : undefined,
+                          padding: "6px 18px",
+                          color: vscode.muted,
+                          fontSize: 12,
                         }}
                       >
-                        <FileGlyph
-                          token={iconForFile(baseName(path))}
-                          size={15}
-                        />
-                        <Box Element="span">{baseName(path)}</Box>
+                        Loading files…
+                      </Box>
+                    ) : results.length === 0 ? (
+                      <Box
+                        sx={{
+                          padding: "6px 18px",
+                          color: vscode.muted,
+                          fontSize: 12,
+                        }}
+                      >
+                        No matching files
+                      </Box>
+                    ) : (
+                      results.map((path, index) => (
                         <Box
-                          Element="span"
+                          key={path}
+                          onClick={() => quickPick(path)}
+                          onMouseEnter={() => setQuickIndex(index)}
                           sx={{
-                            color: vscode.muted,
-                            fontSize: 11,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            padding: "4px 12px",
+                            fontSize: 13,
+                            cursor: "pointer",
+                            color: vscode.editorFg,
+                            backgroundColor:
+                              index === quickIndex
+                                ? vscode.quickActiveBg
+                                : undefined,
                           }}
                         >
-                          {relPath(project.path, dirName(path))}
+                          <FileGlyph
+                            token={iconForFile(baseName(path))}
+                            size={15}
+                          />
+                          <Box Element="span">{baseName(path)}</Box>
+                          <Box
+                            Element="span"
+                            sx={{
+                              color: vscode.muted,
+                              fontSize: 11,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {relPath(project.path, dirName(path))}
+                          </Box>
                         </Box>
-                      </Box>
-                    ))
-                  )}
+                      ))
+                    )}
+                  </Box>
                 </Box>
               </Box>
-            </Box>
-          ) : null}
+            ) : null}
+          </Box>
         </Box>
+        {mobile && sidebar ? (
+          <Box
+            onClick={() => setSidebar(false)}
+            sx={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 25,
+              backgroundColor: "rgba(0,0,0,0.35)",
+            }}
+          />
+        ) : null}
       </Box>
-      {mobile && sidebar ? (
-        <Box
-          onClick={() => setSidebar(false)}
-          sx={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 25,
-            backgroundColor: "rgba(0,0,0,0.35)",
-          }}
-        />
-      ) : null}
-    </Box>
+    </VscodeContext.Provider>
   )
 }
 
@@ -1609,6 +1628,7 @@ function TitleBarIcon({
   children: ReactNode
   active?: boolean
 }) {
+  const vscode = useVscode()
   return (
     <Box
       title={label}
@@ -1623,8 +1643,8 @@ function TitleBarIcon({
         borderRadius: "5px",
         cursor: "pointer",
         color: active ? vscode.activityBarActiveFg : vscode.titleBarFg,
-        backgroundColor: active ? "rgba(255,255,255,0.08)" : undefined,
-        "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" },
+        backgroundColor: active ? vscode.hoverOverlay : undefined,
+        "&:hover": { backgroundColor: vscode.hoverOverlay },
       }}
     >
       {children}
@@ -1643,6 +1663,7 @@ function PanelTabButton({
   onClick: () => void
   children: ReactNode
 }) {
+  const vscode = useVscode()
   return (
     <Box
       role="tab"
@@ -1680,6 +1701,7 @@ function ActivityIcon({
   onClick: () => void
   children: ReactNode
 }) {
+  const vscode = useVscode()
   return (
     <Box
       title={label}
@@ -1713,6 +1735,7 @@ function TabAction({
   onClick: () => void
   children: ReactNode
 }) {
+  const vscode = useVscode()
   return (
     <Box
       title={label}
@@ -1731,7 +1754,7 @@ function TabAction({
         height: 22,
         flexShrink: 0,
         borderRadius: "5px",
-        "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" },
+        "&:hover": { backgroundColor: vscode.hoverOverlay },
       }}
     >
       {children}
@@ -1748,6 +1771,7 @@ function IconAction({
   onClick: () => void
   children: ReactNode
 }) {
+  const vscode = useVscode()
   return (
     <Box
       title={label}
@@ -1765,7 +1789,7 @@ function IconAction({
         borderRadius: "4px",
         cursor: "pointer",
         color: vscode.sidebarFg,
-        "&:hover": { backgroundColor: "rgba(255,255,255,0.12)" },
+        "&:hover": { backgroundColor: vscode.hoverOverlay },
       }}
     >
       {children}
@@ -1774,6 +1798,7 @@ function IconAction({
 }
 
 function StatusBarItem({ children }: { children: ReactNode }) {
+  const vscode = useVscode()
   return (
     <Box
       sx={{
@@ -1782,7 +1807,7 @@ function StatusBarItem({ children }: { children: ReactNode }) {
         height: 22,
         padding: "0 8px",
         whiteSpace: "nowrap",
-        "&:hover": { backgroundColor: "rgba(255,255,255,0.12)" },
+        "&:hover": { backgroundColor: vscode.hoverOverlay },
       }}
     >
       {children}
@@ -1791,6 +1816,7 @@ function StatusBarItem({ children }: { children: ReactNode }) {
 }
 
 function ShortcutRow({ keys, text }: { keys: string; text: string }) {
+  const vscode = useVscode()
   return (
     <Box sx={{ display: "flex", gap: "8px", alignItems: "center" }}>
       <Box

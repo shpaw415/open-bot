@@ -14,6 +14,7 @@ import { Backup } from "./Backup"
 import { ConfigSection } from "./ConfigSection"
 import { CronView } from "./CronView"
 import { CustomSkills } from "./CustomSkills"
+import { Endpoints } from "./Endpoints"
 import { Hardware } from "./Hardware"
 import { useMobile } from "./hooks"
 import { ImageProvider } from "./ImageProvider"
@@ -30,6 +31,7 @@ import {
   NavigationIcon,
   PersonIcon,
   PsychologyIcon,
+  PublicIcon,
   ScheduleIcon,
   VpnKeyIcon,
 } from "./icons"
@@ -65,6 +67,7 @@ type ConfigTab =
   | "cron"
   | "backup"
   | "plugins"
+  | "endpoints"
   | "hardware"
   | "reports"
 
@@ -81,6 +84,7 @@ const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
   { value: "cron", label: "Cron", icon: <ScheduleIcon /> },
   { value: "backup", label: "Backup", icon: <BackupIcon /> },
   { value: "plugins", label: "Plugins", icon: <ExtensionIcon /> },
+  { value: "endpoints", label: "Endpoints", icon: <PublicIcon /> },
   { value: "hardware", label: "Hardware", icon: <ComputerIcon /> },
   { value: "reports", label: "Reports", icon: <BugReportIcon /> },
 ]
@@ -384,8 +388,8 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
       <Typography variant="h6">Configuration</Typography>
       <Typography variant="body2" color="textSecondary">
         Chat model providers, shared keys, chat defaults, memory, System 1,
-        media, voice, personas, skills, cron jobs, plugins, hardware, and plugin
-        reports for this desktop.
+        media, voice, personas, skills, cron jobs, plugins, public endpoints,
+        hardware, and plugin reports for this desktop.
       </Typography>
     </Stack>
   )
@@ -411,6 +415,7 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
       {tab === "cron" ? <CronView me={me} /> : null}
       {tab === "backup" ? <Backup me={me} /> : null}
       {tab === "plugins" ? <Plugins isAdmin={me.role === "admin"} /> : null}
+      {tab === "endpoints" ? <Endpoints /> : null}
       {tab === "hardware" ? <Hardware /> : null}
       {tab === "reports" ? <Reports /> : null}
     </>

@@ -5,6 +5,7 @@ import {
   parsePreviewFramePath,
   parsePreviewRegistry,
   previewPortAllowed,
+  previewRootAllowed,
   rewritePreviewCss,
   rewritePreviewHtml,
   touchPreviewToken,
@@ -28,6 +29,25 @@ describe("preview registry", () => {
     ).toBeNull()
     expect(previewPortAllowed(4719)).toBe(true)
     expect(previewPortAllowed(4720)).toBe(false)
+  })
+
+  test("accepts plugin dev checkouts as roots", () => {
+    expect(
+      parsePreviewRegistry(
+        "4705\n/home/agent/plugins-create/stock-pro/server\n",
+      ),
+    ).toEqual({
+      port: 4705,
+      root: "/home/agent/plugins-create/stock-pro/server",
+    })
+    expect(previewRootAllowed("/home/agent/plugins-create")).toBe(true)
+    expect(previewRootAllowed("/home/agent/plugins-create/a/b")).toBe(true)
+    expect(previewRootAllowed("/home/agent/plugins-create/../etc")).toBe(false)
+    expect(previewRootAllowed("/home/agent/plugins")).toBe(false)
+    expect(previewRootAllowed("/etc")).toBe(false)
+    expect(
+      parsePreviewRegistry("4700\n/home/agent/plugins-create/../secrets\n"),
+    ).toBeNull()
   })
 })
 

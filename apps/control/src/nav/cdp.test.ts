@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
+  activeTabFile,
   type CdpSocket,
   captureMarked,
+  clearActiveTabId,
   clearMarksScript,
   evaluate,
   MARK_ROOT_ID,
@@ -10,6 +15,8 @@ import {
   PROBE,
   pickPageTarget,
   probeSnapshot,
+  readActiveTabId,
+  writeActiveTabId,
 } from "./cdp"
 
 function socket(results: unknown[]): CdpSocket {
@@ -147,6 +154,20 @@ test("enter script falls back to a submit button when Enter changes nothing", as
   expect(script).toContain("/search|submit|recherch|suchen|buscar|find/i")
 })
 
+test("click script tolerates an ancestor cover and names a real one", async () => {
+  const { actionScript } = (await import("./cdp")) as {
+    actionScript: (action: { kind: "click"; targetId: string }) => string
+  }
+  const script = actionScript({ kind: "click", targetId: "n7" })
+  expect(script).toContain("data-obnav")
+  // A covering ancestor is not occlusion (delegated clicks): click anyway.
+  expect(script).toContain("!el.contains(center) && !center.contains(el)")
+  expect(script).toContain("el.click()")
+  // A real overlay refuses, describing what covers the target.
+  expect(script).toContain("'covered:' + name")
+  expect(script).toContain("center.className === 'string'")
+})
+
 test("probe ranks text entry, search, content, anchors, chrome — in that order", async () => {
   const { PROBE } = (await import("./cdp")) as { PROBE: string }
   expect(PROBE.startsWith("(() => {")).toBe(true)
@@ -186,15 +207,69 @@ test("target pick skips blank tabs but keeps the first page as a fallback", () =
   const blank = {
     id: "t1",
     url: "about:blank",
+    title: "",
     webSocketDebuggerUrl: "ws://a",
   }
   const page = {
     id: "t2",
     url: "https://example.test/",
+    title: "Example",
     webSocketDebuggerUrl: "ws://b",
   }
   expect(pickPageTarget([blank, page])).toBe(page)
   expect(pickPageTarget([page, blank])).toBe(page)
   expect(pickPageTarget([blank])).toBe(blank)
   expect(pickPageTarget([])).toBeNull()
+})
+
+test("target pick follows the recorded active tab while it is alive", () => {
+  const first = {
+    id: "t1",
+    url: "https://a.test/",
+    title: "A",
+    webSocketDebuggerUrl: "ws://a",
+  }
+  const second = {
+    id: "t2",
+    url: "https://b.test/",
+    title: "B",
+    webSocketDebuggerUrl: "ws://b",
+  }
+  const blank = {
+    id: "t3",
+    url: "about:blank",
+    title: "",
+    webSocketDebuggerUrl: "ws://c",
+  }
+  expect(pickPageTarget([first, second], "t2")).toBe(second)
+  // A stale id (closed tab, relaunch) falls back to the old behavior.
+  expect(pickPageTarget([first], "t2")).toBe(first)
+  expect(pickPageTarget([first, blank], "t2")).toBe(first)
+  expect(pickPageTarget([blank, first], "t2")).toBe(first)
+  expect(pickPageTarget([blank], "t2")).toBe(blank)
+  expect(pickPageTarget([], "t2")).toBeNull()
+})
+
+test("the active tab id round-trips through the cdp dir", () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-tabs-"))
+  const previous = process.env.HOME
+  process.env.HOME = home
+  try {
+    expect(readActiveTabId("ses_abc")).toBe("")
+    expect(readActiveTabId(undefined)).toBe("")
+    writeActiveTabId("ses_abc", "t2")
+    writeActiveTabId(undefined, "t9")
+    writeActiveTabId("ses_abc", "")
+    expect(readActiveTabId("ses_abc")).toBe("t2")
+    expect(activeTabFile("ses_abc")).toBe(
+      join(home, ".open-bot/cdp/ses_abc.tab"),
+    )
+    clearActiveTabId("ses_abc")
+    clearActiveTabId(undefined)
+    expect(readActiveTabId("ses_abc")).toBe("")
+    clearActiveTabId("ses_abc")
+  } finally {
+    if (previous === undefined) delete process.env.HOME
+    else process.env.HOME = previous
+  }
 })

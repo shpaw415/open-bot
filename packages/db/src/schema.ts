@@ -170,6 +170,33 @@ export const threadTitles = sqliteTable(
   (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
 )
 
+export const threadDirs = sqliteTable(
+  "thread_dirs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("thread_dirs_user_name").on(table.userId, table.name),
+    index("thread_dirs_user").on(table.userId, table.createdAt),
+  ],
+)
+
+export const threadDirAssignments = sqliteTable(
+  "thread_dir_assignments",
+  {
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    dirId: text("dir_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.sessionId] }),
+    index("thread_dir_assignments_dir").on(table.userId, table.dirId),
+  ],
+)
+
 export const cronJobs = sqliteTable(
   "cron_jobs",
   {

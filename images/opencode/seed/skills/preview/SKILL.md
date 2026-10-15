@@ -9,7 +9,7 @@ Show a page in the thread. Do not paste the HTML as the only deliverable. Do not
 
 SESSION is the screen id in this thread's system instructions.
 
-Put the files under `/home/agent/workspace`. Use relative URLs (`style.css`, `./app.js`), not root-absolute `/style.css`.
+Put the files under `/home/agent/workspace`. Use relative URLs (`style.css`, `./app.js`), not root-absolute `/style.css`. Plugin dashboard pages can also preview straight from their checkout: `--entry ~/plugins-create/<slug>/server/server.ts` runs the plugin's own `server.ts` unchanged (the preview port arrives as `OPEN_BOT_PAGE_PORT`, dev token `dev-preview`) — see the `plugin` skill for the full page dev loop.
 
 ## Site or design
 

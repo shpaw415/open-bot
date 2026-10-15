@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test"
-import type { Db, InstalledPlugin } from "@open-bot/db"
+import type { InstalledPlugin } from "@open-bot/db"
 import * as dockerModule from "./docker"
 import {
   basePluginPagePort,
@@ -7,6 +7,8 @@ import {
   ensurePluginPageServer,
   PAGE_PORT_MAX,
   PAGE_PORT_MIN,
+  pageCheckoutEntry,
+  pageServerCommand,
   parsePluginPagePath,
   pendingPluginPageRestartsCount,
   pluginPageBin,
@@ -70,6 +72,61 @@ describe("plugin pages", () => {
     )
   })
 
+  test("checkout entry resolves only for safe local installs", () => {
+    const manifest = {
+      files: [{ name: "server.ts", source: "server/server.ts" }],
+      dashboard: { pages: { entry: "server.ts" } },
+    } as never
+    expect(
+      pageCheckoutEntry(
+        { source: "local", localPath: "/home/agent/plugins-create/stock-pro" },
+        manifest,
+        "server.ts",
+      ),
+    ).toBe("/home/agent/plugins-create/stock-pro/server/server.ts")
+    expect(
+      pageCheckoutEntry(
+        { source: "marketplace", localPath: null },
+        manifest,
+        "server.ts",
+      ),
+    ).toBeNull()
+    expect(
+      pageCheckoutEntry(
+        { source: "local", localPath: "/tmp/it's" },
+        manifest,
+        "server.ts",
+      ),
+    ).toBeNull()
+    expect(
+      pageCheckoutEntry({ source: "local", localPath: null }, manifest, "x"),
+    ).toBeNull()
+  })
+
+  test("spawn command records pid, token, and port", () => {
+    const base = {
+      pidFile: "/home/agent/.open-bot/pages/stock-pro",
+      token: "t0k3n",
+      port: 4742,
+      bin: "/usr/local/bin/ob-plugin-stock-pro-server.ts",
+    }
+    const frozen = pageServerCommand(base)
+    expect(frozen).toContain(
+      "echo $$ > '/home/agent/.open-bot/pages/stock-pro.pid'",
+    )
+    expect(frozen).toContain(".token'")
+    expect(frozen).toContain(".port'")
+    expect(frozen).toContain(
+      "exec bun run '/usr/local/bin/ob-plugin-stock-pro-server.ts'",
+    )
+    const hot = pageServerCommand({
+      ...base,
+      checkoutEntry: "/checkout/server.ts",
+    })
+    expect(hot).toContain("exec bun --hot run '/checkout/server.ts'")
+    expect(hot).not.toContain("ob-plugin-stock-pro-server.ts'")
+  })
+
   test("scheduled restarts coalesce per user+plugin and are clearable", () => {
     clearPluginPageState()
     const row = (id: string) =>
@@ -88,7 +145,8 @@ describe("plugin pages", () => {
     clearPluginPageState()
     shCalls.length = 0
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response("ok")) as unknown as typeof fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
     try {
       const row = {
         pluginId: "stock-pro",
@@ -102,6 +160,41 @@ describe("plugin pages", () => {
       const script = spawn?.at(-1) ?? ""
       expect(script).toContain(".log' 2>&1")
       expect(script).toContain("echo $$ >")
+      // The resolved port lands in a file so the agent can find it later.
+      expect(script).toContain(".port'")
+      expect(script).toContain(`printf '%s' '${port}'`)
+      // Marketplace installs (no source/localPath) run the frozen bin.
+      expect(script).toContain(
+        "exec bun run '/usr/local/bin/ob-plugin-stock-pro-server.ts'",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
+  })
+
+  test("local installs hot-run the checkout entry", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        source: "local",
+        localPath: "/home/agent/plugins-create/stock-pro",
+        manifest: {
+          files: [{ name: "server.ts", source: "server/server.ts" }],
+          dashboard: { pages: { entry: "server.ts" } },
+        },
+      } as unknown as InstalledPlugin
+      await ensurePluginPageServer("u1", row)
+      const script = shCalls.find((args) => args.includes("-d"))?.at(-1) ?? ""
+      expect(script).toContain(
+        "exec bun --hot run '/home/agent/plugins-create/stock-pro/server/server.ts'",
+      )
     } finally {
       globalThis.fetch = originalFetch
       clearPluginPageState()
@@ -117,6 +210,7 @@ describe("plugin pages", () => {
     expect(script).toContain("rm -f")
     expect(script).toContain(".pid'")
     expect(script).toContain(".token'")
+    expect(script).toContain(".port'")
   })
 
   test("uninstall log cleanup targets the page log file", async () => {

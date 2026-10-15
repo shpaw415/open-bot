@@ -196,5 +196,11 @@ describe("persona system line", () => {
       name: "Chef",
       instruction: "cook simply",
     })
+    expect(parsePersonaInput("Chef", "")).toEqual({
+      error: "instruction must be 1–2000 characters",
+    })
+    expect(parsePersonaInput("Chef", "x".repeat(2001))).toEqual({
+      error: "instruction must be 1–2000 characters (got 2001, 1 over)",
+    })
   })
 })

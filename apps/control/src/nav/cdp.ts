@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import type { NavMark, Snapshot } from "./action-space"
 import type { Act, Driver } from "./loop"
 
@@ -11,6 +13,7 @@ export type CdpSocket = {
 export type PageTarget = {
   id: string
   url: string
+  title: string
   webSocketDebuggerUrl: string
 }
 
@@ -27,6 +30,7 @@ export async function listPageTargets(port: number): Promise<PageTarget[]> {
     type?: string
     id?: string
     url?: string
+    title?: string
     webSocketDebuggerUrl?: string
   }[]
   const out: PageTarget[] = []
@@ -35,29 +39,80 @@ export async function listPageTargets(port: number): Promise<PageTarget[]> {
     out.push({
       id: item.id,
       url: typeof item.url === "string" ? item.url : "",
+      title: typeof item.title === "string" ? item.title : "",
       webSocketDebuggerUrl: item.webSocketDebuggerUrl,
     })
   }
   return out
 }
 
+function homeDir() {
+  return process.env.HOME || "/home/agent"
+}
+
+// The active tab id lives beside the cdp port file. navigate/newtab/switch
+// write it, so ob-page and ob-nav follow the tab the agent last touched
+// instead of whichever page happens to sort first.
+export function activeTabFile(session?: string) {
+  return join(homeDir(), ".open-bot/cdp", `${session}.tab`)
+}
+
+export function readActiveTabId(session?: string): string {
+  if (!session) return ""
+  try {
+    return readFileSync(activeTabFile(session), "utf8").trim()
+  } catch {
+    return ""
+  }
+}
+
+export function writeActiveTabId(session: string | undefined, id: string) {
+  if (!session || !id) return
+  try {
+    mkdirSync(join(homeDir(), ".open-bot/cdp"), { recursive: true })
+    writeFileSync(activeTabFile(session), id)
+  } catch {}
+}
+
+export function clearActiveTabId(session?: string) {
+  if (!session) return
+  try {
+    unlinkSync(activeTabFile(session))
+  } catch {}
+}
+
 // Several Chromium windows can share a screen (app windows, new tabs); the
-// first about:blank tab is never the page the agent cares about.
-export function pickPageTarget(targets: PageTarget[]): PageTarget | null {
+// first about:blank tab is never the page the agent cares about. A recorded
+// active tab wins while it is still alive, so tab B stays the page after the
+// agent opens it.
+export function pickPageTarget(
+  targets: PageTarget[],
+  activeId?: string,
+): PageTarget | null {
+  if (activeId) {
+    const active = targets.find((item) => item.id === activeId)
+    if (active) return active
+  }
   const live = targets.find(
     (item) => item.url !== "" && !item.url.startsWith("about:"),
   )
   return live ?? targets[0] ?? null
 }
 
-export async function connectCdpSocket(port: number): Promise<CdpSocket> {
-  const page = pickPageTarget(await listPageTargets(port))
+export async function connectCdpSocket(
+  port: number,
+  activeId?: string,
+): Promise<CdpSocket> {
+  const page = pickPageTarget(await listPageTargets(port), activeId)
   if (!page) throw new Error("no page on this screen")
   return openSocket(page.webSocketDebuggerUrl)
 }
 
-export async function connectCdp(port: number): Promise<CdpDriver> {
-  const page = pickPageTarget(await listPageTargets(port))
+export async function connectCdp(
+  port: number,
+  activeId?: string,
+): Promise<CdpDriver> {
+  const page = pickPageTarget(await listPageTargets(port), activeId)
   if (!page) throw new Error("no page on this screen")
   const socket = await openSocket(page.webSocketDebuggerUrl)
   return {
@@ -80,14 +135,19 @@ export async function connectCdp(port: number): Promise<CdpDriver> {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           const ok = await evaluate(socket, actionScript(action))
-          if (ok !== false) break
+          const covered = typeof ok === "string" && ok.startsWith("covered:")
+          if (ok !== false && !covered) break
           if (attempt === 0) {
             // A transient overlay (search suggest, banner) often clears on
             // its own; give it one chance before calling the target covered.
             await Bun.sleep(700)
             continue
           }
-          throw new Error("target covered")
+          throw new Error(
+            covered
+              ? `target ${ok.replace("covered:", "covered by ")}`
+              : "target covered",
+          )
         } catch (error) {
           const message = error instanceof Error ? error.message : ""
           // The enter fallback can navigate the page mid-script; that
@@ -362,7 +422,24 @@ export function actionScript(action: Act) {
   }
   const id = JSON.stringify(action.targetId)
   if (action.kind === "click") {
-    return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el) return false; const rect = el.getBoundingClientRect(); const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2); if (center && center !== el && !el.contains(center)) return false; el.click(); return true })()`
+    // elementFromPoint naming an ancestor of the target (delegated-click
+    // pages, pointer-events:none buttons) is not occlusion: the synthetic
+    // click bubbles to the ancestor handler. Only a sibling overlay refuses.
+    return `(() => {
+    const el = document.querySelector('[data-obnav="' + ${id} + '"]')
+    if (!el) return false
+    const rect = el.getBoundingClientRect()
+    const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+    if (center && center !== el && !el.contains(center) && !center.contains(el)) {
+      let name = center.tagName.toLowerCase()
+      if (center.id) name += '#' + center.id
+      else if (typeof center.className === 'string' && center.className.trim())
+        name += '.' + center.className.trim().split(/\\s+/).slice(0, 2).join('.')
+      return ('covered:' + name).slice(0, 72)
+    }
+    el.click()
+    return true
+  })()`
   }
   if (action.kind === "type") {
     const text = JSON.stringify(action.text)

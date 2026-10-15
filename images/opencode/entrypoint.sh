@@ -55,10 +55,18 @@ if [ -f /home/agent/.open-bot/need-full-chown ]; then
   chown -R agent:agent /home/agent
   rm -f /home/agent/.open-bot/need-full-chown
 fi
+chown agent:agent \
+  /home/agent/workspace \
+  /home/agent/.config \
+  /home/agent/.local \
+  /home/agent/.local/share
 chown -R agent:agent \
   /home/agent/.open-bot \
   /home/agent/.config/opencode \
+  /home/agent/.config/chromium \
+  /home/agent/.config/chromium-threads \
   /home/agent/.openviking \
+  /home/agent/.local/share/opencode \
   /home/agent/plugins-create
 chmod 1777 /tmp/.X11-unix
 # Package restore can download for minutes on a slow mirror; run it in the

@@ -11,8 +11,9 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-thread start [--title TEXT] [--persona NAME] [--display] [--hidden] [--message TEXT]
+  ob-thread start [--title TEXT] [--persona NAME] [--display] [--hidden] [--dir NAME] [--message TEXT]
   ob-thread list
+  ob-thread dirs
   ob-thread delete ID [ID...] | --all
 
 start creates a thread. Without --display the thread is hidden for background
@@ -20,12 +21,19 @@ jobs: it does not appear on the dashboard and the media vault skips it.
 --display makes it a normal visible thread. --message TEXT posts an initial
 prompt into the thread right after creating it.
 
+--dir NAME (or --topic NAME) files the new visible thread into a dashboard
+folder, creating the folder if it does not exist. Folders only exist on the
+dashboard, so --dir implies a visible thread and cannot be combined with
+--hidden. Run `ob-thread dirs` first to reuse an existing folder name.
+
 --persona NAME hands the thread to a personality: the thread answers as that
 persona (team delegation). Typos in the name are tolerated and the output
 tells you which persona matched. Persona threads are visible by default;
 add --hidden for a background teammate. Check `ob-persona list` for names.
 
 list shows the hidden threads created through this tool.
+
+dirs lists the dashboard thread folders.
 
 delete removes hidden threads by id (as shown by list). --all removes every
 hidden agent thread. The server refuses anything that is not a hidden agent
@@ -36,6 +44,8 @@ Examples:
   ob-thread start --title "Nightly sync" --display
   ob-thread start --title "Scrape prices" --message "Scrape prices and save to /home/agent/workspace/prices.json"
   ob-thread start --persona "Software manager" --title "Add export" --message "Implement CSV export in ~/project/report-app"
+  ob-thread start --title "Invoice follow-up" --dir "Billing" --display
+  ob-thread dirs
   ob-thread list
   ob-thread delete ses_abc123
   ob-thread delete --all
@@ -75,6 +85,7 @@ case "$cmd" in
     title=""
     message=""
     persona=""
+    dir=""
     display=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -87,6 +98,9 @@ case "$cmd" in
         --persona)
           [ $# -ge 2 ] || { usage; exit 2; }
           persona="$2"; shift 2 ;;
+        --dir|--topic)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          dir="$2"; shift 2 ;;
         --display)
           display=1; shift ;;
         --hidden)
@@ -95,19 +109,26 @@ case "$cmd" in
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
     done
+    if [ -n "$dir" ] && [ "$display" = "0" ]; then
+      echo "ob-thread: --dir applies to visible threads and cannot be combined with --hidden" >&2
+      exit 2
+    fi
     body="{}"
     if [ -n "$title" ]; then
       body=$(printf '%s' "$body" | jq --arg title "$title" '. + {title: $title}')
     fi
     visible="$display"
     if [ -z "$visible" ]; then
-      if [ -n "$persona" ]; then visible=1; else visible=0; fi
+      if [ -n "$persona" ] || [ -n "$dir" ]; then visible=1; else visible=0; fi
     fi
     if [ "$visible" -eq 1 ]; then
       body=$(printf '%s' "$body" | jq '. + {display: true}')
     fi
     if [ -n "$persona" ]; then
       body=$(printf '%s' "$body" | jq --arg persona "$persona" '. + {persona: $persona}')
+    fi
+    if [ -n "$dir" ]; then
+      body=$(printf '%s' "$body" | jq --arg dir "$dir" '. + {dir: $dir}')
     fi
     if [ -n "$message" ]; then
       body=$(printf '%s' "$body" | jq --arg message "$message" '. + {message: $message}')
@@ -118,7 +139,12 @@ case "$cmd" in
     if [ -n "$warning" ]; then
       echo "ob-thread: $warning" >&2
     fi
-    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end)'
+    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end) + (if .dir then {dir: .dir} else {} end)'
+    ;;
+  dirs)
+    out=$(request GET /api/thread-dirs)
+    fail_on_error "$out"
+    printf '%s' "$out" | jq -r 'if (.dirs | length) == 0 then "(no folders yet)" else .dirs[] | "- [\(.id)] \(.name)" end'
     ;;
   list)
     out=$(request GET /api/threads)

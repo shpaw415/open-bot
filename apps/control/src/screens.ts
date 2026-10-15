@@ -52,7 +52,7 @@ export function vncSystemLine(sessionId: string, port: number) {
     "Do not call vncdo. Do not run xclip or xsel. Paste with ob-vnc paste. Do not pass a host or port.",
     "Do not use 5900, computer:5900, computer::5900, or $OPEN_BOT_VNC.",
     `A single colon is a display number. The vncdo address is ${vncHost(port)}, and ob-vnc already uses it.`,
-    `Go to a page with ob-chrome --session ${sessionId} navigate URL — one cheap command that prints the page url, title, heading and text (navigate alone usually answers the question). It opens a fresh tab on a crashed page and brings the screen back if it died. Check where you are with ob-chrome --session ${sessionId} url.`,
+    `Go to a page with ob-chrome --session ${sessionId} navigate URL — one cheap command that prints the page url, title, heading and text (navigate alone usually answers the question). It opens a fresh tab on a crashed page and brings the screen back if it died. newtab URL opens a second tab; tabs, switch N, and closetab N manage them. Check where you are with ob-chrome --session ${sessionId} url.`,
     `Read and act on the page with ob-page --session ${sessionId} (read, scroll, click, type). Reserve ob-nav --session ${sessionId} --goal for a real multi-step page goal; never for a single quote or heading (navigate already returns those), and it costs a decision-model run per step.`,
     `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}. Add 2 when text is hard to read. That restores the screen. Clicks stay in live-screen pixels.`,
     "A relaunch opens a blank page: Chromium was restarted — navigate back with ob-chrome. Do not call the screen dark.",

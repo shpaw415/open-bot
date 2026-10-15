@@ -101,11 +101,25 @@ export const HIT_SCRIPT = `
           .slice(0, 80)
       : "")
   const text = (el.textContent || "").trim().slice(0, 80)
+  const ancestor = el.closest(
+    'a, button, [role="button"], [role="link"], [role="menuitem"], [onclick], input, select, textarea, label, summary',
+  )
+  const describe = (item: Element) => {
+    const name = item.getAttribute("aria-label") || item.getAttribute("title")
+    return {
+      tag: item.tagName.toLowerCase(),
+      id: item.id || undefined,
+      label:
+        (name || (item.textContent || "").trim().slice(0, 80)) || undefined,
+    }
+  }
   return {
     tag: el.tagName.toLowerCase(),
     id: el.id || undefined,
     label: label || undefined,
     text: text || undefined,
+    ancestor:
+      ancestor && ancestor !== el ? describe(ancestor) : undefined,
   }
 }
 `

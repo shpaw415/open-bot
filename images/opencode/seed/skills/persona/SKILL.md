@@ -22,9 +22,12 @@ Add:
 ob-persona add --name "Brand designer" --instruction "Speak as a brand designer. Prefer concrete visual choices. Keep replies short."
 ```
 
-Update or remove a custom one (use the id from list):
+Update or remove a custom one (use the id from list). To add one rule, use
+`--append` — it fetches the current instruction and adds to it, so approved
+text is never resent or lost. Use `--instruction` only when rewriting wholesale:
 
 ```sh
+ob-persona update ID --append "CLI de base uniquement."
 ob-persona update ID --instruction "Shorter replies. Always give one option."
 ob-persona remove ID
 ```

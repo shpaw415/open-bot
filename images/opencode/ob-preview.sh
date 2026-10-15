@@ -18,9 +18,10 @@ valid_session() {
   printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_-]{1,128}$'
 }
 
-workspace_path() {
+allowed_path() {
   case "$1" in
     /home/agent/workspace | /home/agent/workspace/*) return 0 ;;
+    /home/agent/plugins-create | /home/agent/plugins-create/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -194,8 +195,8 @@ if [ -n "$entry" ]; then
     exit 1
   }
   entry=$(realpath "$entry")
-  workspace_path "$entry" || {
-    echo "entry must be under /home/agent/workspace" >&2
+  allowed_path "$entry" || {
+    echo "entry must be under /home/agent/workspace or /home/agent/plugins-create" >&2
     exit 1
   }
   root=$(dirname "$entry")
@@ -207,8 +208,8 @@ else
     exit 1
   }
   root=$(realpath "$dir")
-  workspace_path "$root" || {
-    echo "directory must be under /home/agent/workspace" >&2
+  allowed_path "$root" || {
+    echo "directory must be under /home/agent/workspace or /home/agent/plugins-create" >&2
     exit 1
   }
   [ -d "$root" ] || {

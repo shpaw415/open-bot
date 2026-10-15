@@ -9,6 +9,10 @@ Go to a page with `ob-chrome`. SESSION is the screen id in this thread's system 
 
 ```sh
 ob-chrome --session SESSION navigate https://example.com
+ob-chrome --session SESSION newtab https://example.com
+ob-chrome --session SESSION tabs
+ob-chrome --session SESSION switch 2
+ob-chrome --session SESSION closetab 2
 ob-chrome --session SESSION url
 ob-chrome --session SESSION back
 ob-chrome --session SESSION forward
@@ -16,6 +20,8 @@ ob-chrome --session SESSION reload
 ```
 
 `navigate` also accepts `--url URL` and a bare domain (the scheme is added). It prints one JSON line with the page `url`, `title`, `heading` (first h1) and 2500 chars of body `text` — a single navigate usually answers the question outright, so do not add a read after it unless you need interactive controls. If the tab crashed or hangs, navigate opens a fresh tab on its own and reports `via: "new-tab"`. If the screen or browser is unreachable, the command heals it and retries on its own (a relaunch opens a blank page) — no need to diagnose the screen.
+
+Tabs: `newtab URL` opens a second tab (a blank one with no URL) and switches to it — same JSON line as navigate. `tabs` lists them with 1-based indexes and marks the active one; `switch 2` moves to a tab by index or a url/text substring; `closetab 2` closes one (no number closes the active tab) and prints where the screen landed. Every other command — `navigate`, `url`, `back`, `ob-page` — follows the active tab, so `switch` before going back to work on the first one.
 
 Read and act on the page with `ob-page --session SESSION`: it controls the browser DOM directly, no screenshots or OCR needed.
 
@@ -81,7 +87,7 @@ To confirm what a click hit, check the point in the same call:
 ob-vnc --session SESSION move X Y click 1 && ob-vnc --session SESSION hit X Y
 ```
 
-`hit X Y` takes live-screen pixels and prints one JSON line with the element under that point (tag, id, label, text). `hit-image` is its scaled-capture twin and takes image coordinates straight from the last scaled capture. Use them after a click on a small target and before typing; if they report the wrong element, recompute the coordinates (`map` again on a fresh capture) and click again.
+`hit X Y` takes live-screen pixels and prints one JSON line with the element under that point (tag, id, label, text). `hit-image` is its scaled-capture twin and takes image coordinates straight from the last scaled capture. Use them after a click on a small target and before typing; if they report the wrong element, recompute the coordinates (`map` again on a fresh capture) and click again. If the raw element is not the target, the `ancestor` field names the nearest clickable element above it — some sites take clicks on a container (delegated handlers), and `ob-page click` handles that case on its own.
 
 Type, paste, and keys:
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { marksFromSpace, parseDecision, withGoalUrl } from "./action-space"
-import { connectCdp } from "./cdp"
+import { connectCdp, readActiveTabId } from "./cdp"
 import { askSystem1, noteSystem1, readSystem1Config } from "./client"
 import { runNav } from "./loop"
 import { writeFieldText } from "./text"
@@ -79,7 +79,7 @@ async function main() {
     emit({ status: "error", steps: 0, detail: "no screen" }, 1)
     return
   }
-  const driver = await connectCdp(port)
+  const driver = await connectCdp(port, readActiveTabId(session))
   try {
     const result = await runNav({
       goal,

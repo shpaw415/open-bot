@@ -11,7 +11,7 @@ usage() {
 Usage:
   ob-persona list [--verbose]
   ob-persona add --name NAME --instruction TEXT
-  ob-persona update ID [--name NAME] [--instruction TEXT]
+  ob-persona update ID [--name NAME] [--instruction TEXT | --append TEXT]
   ob-persona remove ID
 
 Creating or editing a personality does not change the current thread.
@@ -99,6 +99,7 @@ case "$cmd" in
     shift
     name=""
     instruction=""
+    append=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --name)
@@ -107,10 +108,29 @@ case "$cmd" in
         --instruction)
           [ $# -ge 2 ] || { usage; exit 2; }
           instruction="$2"; shift 2 ;;
+        --append)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          append="$2"; shift 2 ;;
         *)
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
     done
+    if [ -n "$append" ]; then
+      if [ -n "$instruction" ]; then
+        echo "ob-persona: use --instruction or --append, not both" >&2
+        exit 2
+      fi
+      out=$(request GET /api/personas)
+      fail_on_error "$out"
+      instruction=$(printf '%s' "$out" | jq -r --arg id "$id" \
+        '.personas[] | select(.id == $id) | .instruction // ""')
+      if [ -z "$instruction" ]; then
+        echo "ob-persona: persona not found: $id" >&2
+        exit 1
+      fi
+      instruction="$instruction
+$append"
+    fi
     [ -n "$name" ] || [ -n "$instruction" ] || { usage; exit 2; }
     body=$(jq -n --arg name "$name" --arg instruction "$instruction" \
       'if $name != "" then .name = $name else . end | if $instruction != "" then .instruction = $instruction else . end')

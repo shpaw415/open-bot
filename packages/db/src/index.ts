@@ -34,6 +34,8 @@ import {
   pluginSettings,
   projects,
   sessions,
+  threadDirAssignments,
+  threadDirs,
   threadPersonas,
   threadScreens,
   threadTitles,
@@ -256,6 +258,19 @@ export type ThreadTitle = {
   title: string
   author: ThreadTitleAuthor
   createdAt: number
+}
+
+export type ThreadDir = {
+  id: string
+  userId: string
+  name: string
+  createdAt: number
+}
+
+export type ThreadDirAssignment = {
+  userId: string
+  sessionId: string
+  dirId: string
 }
 
 export type CronScheduleKind = "cron" | "every" | "at"
@@ -1295,6 +1310,103 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    threadDirs(userId: string) {
+      return orm
+        .select()
+        .from(threadDirs)
+        .where(eq(threadDirs.userId, userId))
+        .orderBy(threadDirs.createdAt)
+        .all()
+    },
+    threadDirById(id: string, userId: string) {
+      return (
+        orm
+          .select()
+          .from(threadDirs)
+          .where(and(eq(threadDirs.id, id), eq(threadDirs.userId, userId)))
+          .get() ?? null
+      )
+    },
+    threadDirByName(userId: string, name: string) {
+      const wanted = name.toLowerCase()
+      return (
+        orm
+          .select()
+          .from(threadDirs)
+          .where(eq(threadDirs.userId, userId))
+          .all()
+          .find((row) => row.name.toLowerCase() === wanted) ?? null
+      )
+    },
+    createThreadDir(row: ThreadDir) {
+      orm.insert(threadDirs).values(row).run()
+    },
+    renameThreadDir(id: string, userId: string, name: string) {
+      if (!this.threadDirById(id, userId)) return null
+      orm
+        .update(threadDirs)
+        .set({ name })
+        .where(and(eq(threadDirs.id, id), eq(threadDirs.userId, userId)))
+        .run()
+      return this.threadDirById(id, userId)
+    },
+    deleteThreadDir(id: string, userId: string) {
+      if (!this.threadDirById(id, userId)) return false
+      orm
+        .delete(threadDirAssignments)
+        .where(
+          and(
+            eq(threadDirAssignments.userId, userId),
+            eq(threadDirAssignments.dirId, id),
+          ),
+        )
+        .run()
+      orm
+        .delete(threadDirs)
+        .where(and(eq(threadDirs.id, id), eq(threadDirs.userId, userId)))
+        .run()
+      return true
+    },
+    setThreadDir(userId: string, sessionId: string, dirId: string | null) {
+      if (dirId === null) {
+        orm
+          .delete(threadDirAssignments)
+          .where(
+            and(
+              eq(threadDirAssignments.userId, userId),
+              eq(threadDirAssignments.sessionId, sessionId),
+            ),
+          )
+          .run()
+        return
+      }
+      orm
+        .insert(threadDirAssignments)
+        .values({ userId, sessionId, dirId })
+        .onConflictDoUpdate({
+          target: [threadDirAssignments.userId, threadDirAssignments.sessionId],
+          set: { dirId },
+        })
+        .run()
+    },
+    threadDirAssignments(userId: string) {
+      return orm
+        .select()
+        .from(threadDirAssignments)
+        .where(eq(threadDirAssignments.userId, userId))
+        .all()
+    },
+    clearThreadDir(userId: string, sessionId: string) {
+      orm
+        .delete(threadDirAssignments)
+        .where(
+          and(
+            eq(threadDirAssignments.userId, userId),
+            eq(threadDirAssignments.sessionId, sessionId),
+          ),
+        )
+        .run()
+    },
     createCronJob(job: CronJob) {
       orm.insert(cronJobs).values(job).run()
     },
@@ -2125,6 +2237,10 @@ export function openDatabase(path: string) {
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
+        tx.delete(threadDirAssignments)
+          .where(eq(threadDirAssignments.userId, userId))
+          .run()
+        tx.delete(threadDirs).where(eq(threadDirs.userId, userId)).run()
         tx.delete(projects).where(eq(projects.userId, userId)).run()
         tx.delete(mediaItems).where(eq(mediaItems.userId, userId)).run()
         tx.delete(mediaAlbums).where(eq(mediaAlbums.userId, userId)).run()
@@ -2141,6 +2257,10 @@ export function openDatabase(path: string) {
         tx.delete(personas).where(eq(personas.userId, userId)).run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
+        tx.delete(threadDirAssignments)
+          .where(eq(threadDirAssignments.userId, userId))
+          .run()
+        tx.delete(threadDirs).where(eq(threadDirs.userId, userId)).run()
         tx.delete(improvements).where(eq(improvements.userId, userId)).run()
         tx.delete(userKeys).where(eq(userKeys.userId, userId)).run()
         tx.delete(installedPlugins)

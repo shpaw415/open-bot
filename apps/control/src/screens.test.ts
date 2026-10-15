@@ -37,6 +37,8 @@ describe("thread screens", () => {
     expect(line).toContain("xclip")
     expect(line).toContain("ob-nav --session ses_abc")
     expect(line).toContain("ob-chrome --session ses_abc navigate")
+    expect(line).toContain("newtab")
+    expect(line).toContain("closetab")
     expect(line).toContain("ob-app --session ses_abc")
     expect(line).toContain("ob-app launch chrome")
     expect(line).toContain(capturePath(5904))

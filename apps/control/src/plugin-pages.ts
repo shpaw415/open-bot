@@ -44,6 +44,49 @@ export function pluginPageBin(pluginId: string, entry: string) {
   return `/usr/local/bin/ob-plugin-${pluginId}-${entry}`
 }
 
+// Local installs run the page server straight from the checkout so edits show
+// up without a reinstall. Returns the checkout entry's absolute path, or null
+// for marketplace installs and unsafe paths (the source itself is schema-validated
+// relative, but the localPath arrives from the outside and gets quoted into a
+// shell command — refuse quotes, backslashes, and escapes from the plugin root).
+export function pageCheckoutEntry(
+  row: Pick<InstalledPlugin, "source" | "localPath">,
+  manifest: PluginManifest,
+  entry: string,
+): string | null {
+  if (row.source !== "local" || !row.localPath) return null
+  if (row.localPath.includes("'") || row.localPath.includes("\\")) return null
+  const source = (manifest.files ?? []).find(
+    (file) => file.name === entry,
+  )?.source
+  if (!source || source.includes("'")) return null
+  return `${row.localPath}/${source}`
+}
+
+// The in-container shell line that runs the page server: records the pid,
+// token, and resolved port next to each other (~/.open-bot/pages/<id>.{pid,token,port}),
+// then execs bun. Local checkouts run with --hot so edits apply live; the
+// installed bin (frozen payload copy) is the default and the fallback when the
+// checkout file disappeared.
+export function pageServerCommand(opts: {
+  pidFile: string
+  token: string
+  port: number
+  bin: string
+  checkoutEntry?: string | null
+}) {
+  const run = opts.checkoutEntry
+    ? `exec bun --hot run '${opts.checkoutEntry}'`
+    : `exec bun run '${opts.bin}'`
+  return [
+    `echo $$ > '${opts.pidFile}.pid'`,
+    `printf '%s' '${opts.token}' > '${opts.pidFile}.token'`,
+    `printf '%s' '${opts.port}' > '${opts.pidFile}.port'`,
+    run,
+    `> '${opts.pidFile}.log' 2>&1`,
+  ].join(" && ")
+}
+
 export function parsePluginPagePath(pathname: string) {
   const match = pathname.match(/^\/api\/pages\/([^/]+)(\/.*)?$/)
   if (!match?.[1]) return null
@@ -181,6 +224,18 @@ export async function ensurePluginPageServer(
   const priorToken = prior.stdout.trim()
   const token = /^[0-9a-f]{64}$/.test(priorToken) ? priorToken : randomToken()
   const bin = pluginPageBin(pluginId, entry)
+  // Local installs run the checkout copy with --hot (live edits) when it is
+  // still on disk; anything else runs the installed bin.
+  let checkoutEntry = pageCheckoutEntry(row, manifest, entry)
+  if (checkoutEntry) {
+    const exists = await opencodeExecUser(n.opencode, [
+      "test",
+      "-f",
+      "--",
+      checkoutEntry,
+    ])
+    if (exists.code !== 0) checkoutEntry = null
+  }
 
   const made = await opencodeExecUser(n.opencode, [
     "mkdir",
@@ -218,7 +273,7 @@ export async function ensurePluginPageServer(
       n.opencode,
       "sh",
       "-c",
-      `echo $$ > '${pidFile}.pid' && printf '%s' '${token}' > '${pidFile}.token' && exec bun run '${bin}' > '${pidFile}.log' 2>&1`,
+      pageServerCommand({ pidFile, token, port, bin, checkoutEntry }),
     ],
     undefined,
     30_000,
@@ -277,8 +332,8 @@ export async function stopPluginPageServer(
   const n = names(userId)
   const pidFile = pluginPagePath(pluginId)
   const files = keepToken
-    ? `'${pidFile}.pid'`
-    : `'${pidFile}.pid' '${pidFile}.token'`
+    ? `'${pidFile}.pid' '${pidFile}.port'`
+    : `'${pidFile}.pid' '${pidFile}.token' '${pidFile}.port'`
   await opencodeExecUser(n.opencode, [
     "sh",
     "-c",
@@ -292,11 +347,37 @@ export async function stopPluginPageServer(
 export async function removePluginPageLog(userId: string, pluginId: string) {
   const n = names(userId)
   const pidFile = pluginPagePath(pluginId)
-  await opencodeExecUser(n.opencode, [
-    "rm",
-    "-f",
-    `${pidFile}.log`,
-  ]).catch(() => {})
+  await opencodeExecUser(n.opencode, ["rm", "-f", `${pidFile}.log`]).catch(
+    () => {},
+  )
+}
+
+// On-demand runtime status for the agent (`ob-plugin page <id>`): the port
+// comes from the in-memory state, falling back to the .port file the spawn
+// writes (the state map only lives for one control lifetime); running is a
+// live /healthz probe against that port.
+export async function pluginPageRuntime(
+  userId: string,
+  pluginId: string,
+): Promise<{ running: boolean; port: number | null; pid: number | null }> {
+  const n = names(userId)
+  const pidFile = pluginPagePath(pluginId)
+  const read = (suffix: string) =>
+    opencodeExecUser(n.opencode, [
+      "sh",
+      "-c",
+      `cat '${pidFile}.${suffix}' 2>/dev/null || true`,
+    ]).catch(() => ({ code: 1, stdout: "", stderr: "" }))
+  const [portOut, pidOut] = await Promise.all([read("port"), read("pid")])
+  const state = pageStateFor(userId, pluginId)
+  const fromFile = Number(portOut.stdout.trim())
+  const port =
+    state?.port ??
+    (Number.isInteger(fromFile) && fromFile > 0 ? fromFile : null)
+  const pidNumber = Number(pidOut.stdout.trim())
+  const pid = Number.isInteger(pidNumber) && pidNumber > 0 ? pidNumber : null
+  const running = port !== null && (await healthy(userId, pluginId, port))
+  return { running, port, pid }
 }
 
 // Restart = stop + start. Used when settings change so the server observes
