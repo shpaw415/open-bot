@@ -281,8 +281,19 @@ async function marketplace(
     } catch {
       // keep raw text
     }
+    if (
+      (response.headers.get("content-type") ?? "").includes("text/html") ||
+      /^\s*<(?:!doctype|html)/i.test(text)
+    ) {
+      // An edge/CDN error page (Cloudflare 52x, worker exception) is not an
+      // actionable API answer — collapse the markup to a one-line diagnosis.
+      message = `marketplace returned an HTML error page (HTTP ${response.status})`
+    }
+    // Marketplace 4xx answers are real answers (bad manifest, bad key, not
+    // the owner) — surface them verbatim; only upstream/network trouble is
+    // rewritten to 502.
     throw new HttpError(
-      response.status === 404 ? 404 : 502,
+      response.status >= 400 && response.status < 500 ? response.status : 502,
       message || `marketplace request failed (${response.status})`,
       "marketplace_error",
     )

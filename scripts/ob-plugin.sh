@@ -115,6 +115,15 @@ fail_on_error() {
     echo "ob-plugin: $msg" >&2
     exit 1
   fi
+  # Success responses are always JSON objects. Anything else (an HTML error
+  # page from the edge, a truncated body) is a failure — print a compact
+  # digest instead of echoing markup or feeding it to jq as a result.
+  if ! printf '%s' "$1" | jq -e 'if type == "object" then true else empty end' >/dev/null 2>&1; then
+    digest=$(printf '%s' "$1" | tr '\n\r' '  ' | sed 's/<[^>]*>//g' | sed 's/  */ /g' | cut -c1-200)
+    echo "ob-plugin: control plane returned a non-JSON error page${digest:+: $digest}" >&2
+    echo "  the edge/tunnel in front of $BASE may be failing — retry, or check marketplace status" >&2
+    exit 1
+  fi
 }
 
 # Surface a failed page-server start from the install/update response.

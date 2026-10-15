@@ -978,7 +978,12 @@ export function pluginsForVaultSlug(
   return rows.filter((row) => {
     if (!row.enabled) return false
     const manifest = row.manifest as PluginManifest
-    return (manifest.permissions?.vaultRead ?? []).includes(slug)
+    // Both access levels: the config payload ships vault.<slug> for
+    // vaultCreate-only plugins too, so a vault write must re-sync them.
+    return (
+      (manifest.permissions?.vaultRead ?? []).includes(slug) ||
+      (manifest.permissions?.vaultCreate ?? []).includes(slug)
+    )
   })
 }
 

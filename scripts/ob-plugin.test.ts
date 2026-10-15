@@ -288,3 +288,20 @@ test("ob-plugin endpoint secret exits 1 when no secret is set", async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("an HTML error page fails with a digest instead of being echoed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-html-"))
+  try {
+    const bin = fakeCurl(
+      home,
+      "<html><body><h1>error code: 524</h1></body></html>",
+    )
+    const result = await run(home, ["list"], bin)
+    expect(result.code).toBe(1)
+    expect(result.stdout).toBe("")
+    expect(result.stderr).toContain("non-JSON error page")
+    expect(result.stderr).toContain("error code: 524")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

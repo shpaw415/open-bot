@@ -64,6 +64,18 @@ describe("pluginsForVaultSlug", () => {
     ])
   })
 
+  test("matches vaultCreate-only plugins so vault writes re-sync them", () => {
+    const rows = [
+      row("writer", true, undefined, ["weatherapi"]),
+      row("both", true, ["other"], ["weatherapi"]),
+      row("reader", true, ["fal"]),
+      row("off", false, undefined, ["weatherapi"]),
+    ]
+    expect(
+      pluginsForVaultSlug(rows, "weatherapi").map((r) => r.pluginId),
+    ).toEqual(["writer", "both"])
+  })
+
   test("returns nothing when no manifest declares the slug", () => {
     const rows = [row("a", true, ["fal"]), row("b", true)]
     expect(pluginsForVaultSlug(rows, "xai")).toEqual([])
@@ -170,7 +182,11 @@ describe("pluginConfigPayload", () => {
       {},
     )
     expect(payload.vault).toEqual({
-      "email-address": { apiKey: "justin@example.com", accountId: "", baseUrl: "" },
+      "email-address": {
+        apiKey: "justin@example.com",
+        accountId: "",
+        baseUrl: "",
+      },
     })
   })
 
@@ -198,7 +214,10 @@ describe("pluginConfigPayload", () => {
       {
         id: "p",
         version: "1.0.0",
-        permissions: { vaultRead: ["shared", "read-only"], vaultCreate: ["shared"] },
+        permissions: {
+          vaultRead: ["shared", "read-only"],
+          vaultCreate: ["shared"],
+        },
       } as never,
       {},
     )
