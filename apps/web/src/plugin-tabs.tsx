@@ -129,23 +129,47 @@ export function appTabSandbox(isolated: boolean) {
     : "allow-scripts allow-forms allow-popups"
 }
 
+// Frame tokens live 10 minutes, sliding only on requests, and die with every
+// control restart (in-memory grants). A tab parked open — or across a deploy —
+// would otherwise show the frame's plain "unauthorized" body forever. While
+// mounted, a periodic HEAD slides the token; a 401 remints and reloads the
+// frame. 502 (desktop asleep / server down) is skipped so a cold desktop does
+// not loop remints.
+const APP_TAB_KEEPALIVE_MS = 4 * 60 * 1000
+
 function AppTab({ tab }: { tab: PluginTab }) {
   const [src, setSrc] = useState("")
   const [isolated, setIsolated] = useState(false)
   useEffect(() => {
     let alive = true
-    api<{ frameUrl: string; isolated?: boolean }>("/api/pages/frame", {
-      method: "POST",
-      body: JSON.stringify({ pluginId: tab.pluginId, path: tab.path ?? "/" }),
-    })
-      .then((body) => {
+    let current = ""
+    const mint = () =>
+      api<{ frameUrl: string; isolated?: boolean }>("/api/pages/frame", {
+        method: "POST",
+        body: JSON.stringify({ pluginId: tab.pluginId, path: tab.path ?? "/" }),
+      }).then((body) => {
         if (!alive) return
+        current = body.frameUrl
         setSrc(body.frameUrl)
         setIsolated(Boolean(body.isolated))
       })
-      .catch(() => {})
+    mint().catch(() => {})
+    const timer = setInterval(() => {
+      if (!current) return
+      fetch(current, {
+        method: "HEAD",
+        cache: "no-store",
+        credentials: "include",
+      })
+        .then((res) => {
+          if (!alive || res.ok || res.status === 502) return
+          return mint().catch(() => {})
+        })
+        .catch(() => {})
+    }, APP_TAB_KEEPALIVE_MS)
     return () => {
       alive = false
+      clearInterval(timer)
     }
   }, [tab.pluginId, tab.path])
   if (!src) return null

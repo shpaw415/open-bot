@@ -9,6 +9,7 @@ import {
   clearPendingPluginConfigSyncs,
   flushPendingPluginConfigs,
   pendingPluginConfigSyncCount,
+  pluginConfigPayload,
   pluginsForVaultSlug,
   pluginVaultKeys,
   reapplyPluginConfig,
@@ -124,6 +125,87 @@ describe("pluginVaultKeys", () => {
 
   test("plugins without vault permissions contribute nothing", () => {
     expect(pluginVaultKeys([row("a", true), row("b", false)])).toEqual([])
+  })
+})
+
+describe("pluginConfigPayload", () => {
+  function user(): User {
+    return {
+      id: "a",
+      email: "a@localhost",
+      passwordHash: "hash",
+      role: "user",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    } as User
+  }
+
+  function db() {
+    const database = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    database.createUser(user())
+    return database
+  }
+
+  test("vaultCreate-only plugins get the documented vault section", () => {
+    const database = db()
+    database.setUserKey("a", "email-address", {
+      apiKey: "justin@example.com",
+      accountId: "",
+      gatewayId: "",
+      gatewayToken: "",
+      gatewaySlug: "",
+      baseUrl: "",
+    })
+    const payload = pluginConfigPayload(
+      database,
+      "a",
+      {
+        id: "email-bridge",
+        version: "1.0.0",
+        permissions: { vaultCreate: ["email-address", "email-app-password"] },
+      } as never,
+      {},
+    )
+    expect(payload.vault).toEqual({
+      "email-address": { apiKey: "justin@example.com", accountId: "", baseUrl: "" },
+    })
+  })
+
+  test("vault slugs union across access levels without duplicates", () => {
+    const database = db()
+    database.setUserKey("a", "shared", {
+      apiKey: "k1",
+      accountId: "acc",
+      gatewayId: "",
+      gatewayToken: "",
+      gatewaySlug: "",
+      baseUrl: "https://example.com",
+    })
+    database.setUserKey("a", "read-only", {
+      apiKey: "k2",
+      accountId: "",
+      gatewayId: "",
+      gatewayToken: "",
+      gatewaySlug: "",
+      baseUrl: "",
+    })
+    const payload = pluginConfigPayload(
+      database,
+      "a",
+      {
+        id: "p",
+        version: "1.0.0",
+        permissions: { vaultRead: ["shared", "read-only"], vaultCreate: ["shared"] },
+      } as never,
+      {},
+    )
+    expect(Object.keys(payload.vault as object).sort()).toEqual([
+      "read-only",
+      "shared",
+    ])
   })
 })
 

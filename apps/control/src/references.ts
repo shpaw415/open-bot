@@ -1,6 +1,9 @@
-import type { CronJob, Db, User } from "@open-bot/db"
+import type { CronJob, Db, InstalledPlugin, User } from "@open-bot/db"
+import type { PluginManifest } from "@open-bot/plugin-kit"
+import { RESERVED_MENTION_SECTIONS, SLUG_PATTERN } from "@open-bot/plugin-kit"
 import { endpoint } from "./docker"
 import { listPersonas } from "./personas"
+import { pluginPageJson } from "./plugin-pages"
 import { slugifyName } from "./projects"
 import { desktopReports, summarizeByPlugin } from "./reports"
 import { createVikingSkills } from "./viking-skills"
@@ -173,14 +176,173 @@ export async function pluginItems(db: Db, userId: string): Promise<RefItem[]> {
 
 const referencePattern = /(?<=^|\s)@([a-z][a-z0-9_-]*)\/([^\n@]*)/gi
 
-export function extractReferences(text: string): RefToken[] {
+// --- Plugin-declared dynamic mention sections (@<section>/<name>) ---------
+// A plugin's manifest declares dashboard.mentions entries; its page server
+// (dashboard.pages.entry) serves the live entry list as JSON. The composer
+// reads the same list through the /api/pages proxy; this side resolves
+// @section/name into the "Message references:" line at send time.
+
+export type PluginMentionBinding = {
+  row: InstalledPlugin
+  section: string
+  label: string
+  path: string
+}
+
+export type MentionClash = { section: string; owner: string }
+
+type PluginMentionPayload = {
+  items?: {
+    name?: unknown
+    description?: unknown
+    aliases?: unknown
+    hint?: unknown
+  }[]
+}
+
+const MENTION_FETCH_TIMEOUT_MS = 3000
+const MENTION_CACHE_TTL_MS = 5000
+const MENTION_MAX_ITEMS = 100
+const MENTION_MAX_NAME = 80
+const MENTION_MAX_TEXT = 200
+const MENTION_MAX_ALIASES = 5
+const MENTION_MAX_ALIAS = 40
+
+function mentionText(value: unknown, max: number): string {
+  if (typeof value !== "string") return ""
+  return value.replace(/\s+/g, " ").trim().slice(0, max)
+}
+
+function mentionDecl(
+  mention: { section?: string; label?: string; path?: string } | undefined,
+): { section: string; label: string; path: string } | null {
+  const section = typeof mention?.section === "string" ? mention.section : ""
+  if (!section || !SLUG_PATTERN.test(section)) return null
+  if (RESERVED_MENTION_SECTIONS.has(section) || refSections[section])
+    return null
+  const label =
+    typeof mention?.label === "string" && mention.label.trim()
+      ? mention.label
+      : section
+  const path =
+    typeof mention?.path === "string" && mention.path.startsWith("/")
+      ? mention.path
+      : "/mentions"
+  return { section, label, path }
+}
+
+/**
+ * Enabled plugins' mention claims, plus the sections a later plugin lost to
+ * an earlier one. First enabled install wins. Reserved slugs are ignored.
+ * Control-DB only, so it answers while the desktop sleeps.
+ */
+export function pluginMentionClaims(
+  db: Db,
+  userId: string,
+): { bindings: PluginMentionBinding[]; clashes: Map<string, MentionClash[]> } {
+  const claimed = new Map<string, PluginMentionBinding>()
+  const clashes = new Map<string, MentionClash[]>()
+  for (const row of db.installedPlugins(userId)) {
+    if (!clashes.has(row.pluginId)) clashes.set(row.pluginId, [])
+    if (!row.enabled) continue
+    const manifest = row.manifest as PluginManifest
+    if (!manifest.dashboard?.pages) continue
+    for (const mention of manifest.dashboard.mentions ?? []) {
+      const decl = mentionDecl(mention)
+      if (!decl) continue
+      const owner = claimed.get(decl.section)
+      if (owner) {
+        if (owner.row.pluginId !== row.pluginId) {
+          clashes.get(row.pluginId)?.push({
+            section: decl.section,
+            owner: owner.row.pluginId,
+          })
+        }
+        continue
+      }
+      claimed.set(decl.section, { row, ...decl })
+    }
+  }
+  return { bindings: [...claimed.values()], clashes }
+}
+
+export function pluginMentionBindings(
+  db: Db,
+  userId: string,
+): PluginMentionBinding[] {
+  return pluginMentionClaims(db, userId).bindings
+}
+
+/** Rewrite each installed row's clash warning so the Plugins tab stays current. */
+export function refreshMentionClashes(db: Db, userId: string) {
+  const { clashes } = pluginMentionClaims(db, userId)
+  for (const row of db.installedPlugins(userId)) {
+    const next = clashes.get(row.pluginId) ?? []
+    const prev = row.applied.mentionClashes ?? []
+    if (JSON.stringify(prev) === JSON.stringify(next)) continue
+    db.setInstalledPluginApplied(userId, row.pluginId, {
+      ...row.applied,
+      mentionClashes: next.length ? next : undefined,
+    })
+  }
+}
+
+// Tiny TTL cache so keystroke bursts (popup open per @) and a busy turn with
+// several mentions do not hammer the page server. Failures are not cached.
+const mentionCache = new Map<string, { items: RefItem[]; at: number }>()
+
+async function pluginMentionItems(
+  userId: string,
+  binding: PluginMentionBinding,
+): Promise<RefItem[]> {
+  const cacheKey = `${userId}\0${binding.row.pluginId}\0${binding.path}`
+  const hit = mentionCache.get(cacheKey)
+  const now = Date.now()
+  if (hit && now - hit.at < MENTION_CACHE_TTL_MS) return hit.items
+  const payload = await pluginPageJson<PluginMentionPayload>(
+    userId,
+    binding.row,
+    binding.path,
+    MENTION_FETCH_TIMEOUT_MS,
+  )
+  const raw = Array.isArray(payload?.items) ? payload.items : []
+  const items: RefItem[] = []
+  for (const entry of raw.slice(0, MENTION_MAX_ITEMS)) {
+    const name = mentionText(entry?.name, MENTION_MAX_NAME)
+    if (!name) continue
+    const aliases = (Array.isArray(entry?.aliases) ? entry.aliases : [])
+      .map((alias) => mentionText(alias, MENTION_MAX_ALIAS))
+      .filter(Boolean)
+      .slice(0, MENTION_MAX_ALIASES)
+    const description = mentionText(entry?.description, MENTION_MAX_TEXT)
+    items.push({
+      id: name,
+      name,
+      aliases: aliases.length ? aliases : undefined,
+      detail: description
+        ? `${description} — served live by the ${binding.row.pluginId} plugin`
+        : `entry served live by the ${binding.row.pluginId} plugin`,
+      hint:
+        mentionText(entry?.hint, MENTION_MAX_TEXT) ||
+        `work with it through the ${binding.row.pluginId} plugin's tools, skills or dashboard page`,
+    })
+  }
+  mentionCache.set(cacheKey, { items, at: now })
+  return items
+}
+
+export function extractReferences(
+  text: string,
+  extraSections?: Set<string>,
+): RefToken[] {
   const tokens: RefToken[] = []
   for (const match of text.matchAll(
     new RegExp(referencePattern.source, "gi"),
   )) {
     const section = (match[1] ?? "").toLowerCase()
     const query = (match[2] ?? "").trim()
-    if (!query || !refSections[section]) continue
+    if (!query) continue
+    if (!refSections[section] && !extraSections?.has(section)) continue
     tokens.push({ section, query })
   }
   return tokens
@@ -241,7 +403,17 @@ export async function resolveReferenceLine(
   user: User,
   text: string,
 ): Promise<string> {
-  const tokens = extractReferences(text)
+  if (!text.includes("@")) return ""
+  const bindings = pluginMentionBindings(db, user.id)
+  const sections: Record<string, RefSection> = { ...refSections }
+  const labels: Record<string, string> = { ...refSectionLabels }
+  for (const binding of bindings) {
+    sections[binding.section] = {
+      items: () => pluginMentionItems(user.id, binding),
+    }
+    labels[binding.section] = binding.label
+  }
+  const tokens = extractReferences(text, new Set(Object.keys(sections)))
   if (!tokens.length) return ""
   const grouped = new Map<string, string[]>()
   for (const token of tokens) {
@@ -255,7 +427,7 @@ export async function resolveReferenceLine(
   const itemsBySection = new Map<string, RefItem[] | "error">()
   await Promise.all(
     [...grouped.keys()].map(async (section) => {
-      const sectionDef = refSections[section]
+      const sectionDef = sections[section]
       if (!sectionDef) {
         itemsBySection.set(section, [])
         return
@@ -271,7 +443,7 @@ export async function resolveReferenceLine(
   const lines: string[] = []
   for (const [section, queries] of grouped) {
     const items = itemsBySection.get(section)
-    const label = refSectionLabels[section] ?? section
+    const label = labels[section] ?? section
     for (const query of queries) {
       const token = `@${section}/${query}`
       if (items === "error") {
@@ -291,8 +463,9 @@ export async function resolveReferenceLine(
           `- ${token} → ${label} "${match.item.name}" (id ${match.item.id}): ${compact(match.item.detail)}. ${match.item.hint}`,
         )
       } else if (match.status === "ambiguous") {
+        const plural = /s$/i.test(label) ? label : `${label}s`
         lines.push(
-          `- ${token} → ambiguous; several ${label}s match: ${match.names.join(", ")}. Ask which one.`,
+          `- ${token} → ambiguous; several ${plural} match: ${match.names.join(", ")}. Ask which one.`,
         )
       } else {
         const reported =

@@ -866,6 +866,9 @@ export function createServer(
             new Response("not found", { status: 404 })
           )
         }
+        if (url.pathname === "/api/pages/frame" && req.method === "POST") {
+          return await api(req, url, db, hub, () => server.timeout(req, 0))
+        }
         if (url.pathname.startsWith("/api/pages/")) {
           // Plugin pages proxy long-lived responses (SSE); no idle timeout.
           server.timeout(req, 0)
@@ -2847,7 +2850,75 @@ async function handleCron(
       personaId?: string | null
       runKind?: CronJob["runKind"]
       script?: string | null
+      kind?: CronJob["kind"]
+      cronExpr?: string | null
+      everySeconds?: number | null
+      atMs?: number | null
+      deleteAfterRun?: boolean
     } = {}
+    let scheduleTouched = false
+    if (body.kind !== undefined) {
+      const kind = body.kind as CronScheduleKind
+      if (kind === "cron") {
+        const cronExpr = String(body.cronExpr ?? "").trim()
+        try {
+          parseCron(cronExpr)
+        } catch (error) {
+          return json(
+            {
+              error:
+                error instanceof Error
+                  ? `invalid cron expression: ${error.message}`
+                  : "invalid cron expression",
+            },
+            400,
+          )
+        }
+        changes.kind = "cron"
+        changes.cronExpr = cronExpr
+        changes.everySeconds = null
+        changes.atMs = null
+        changes.deleteAfterRun = false
+      } else if (kind === "every") {
+        const everySeconds = Number(body.everySeconds)
+        if (
+          !Number.isInteger(everySeconds) ||
+          everySeconds < 60 ||
+          everySeconds > 31_536_000
+        )
+          return json(
+            {
+              error:
+                "everySeconds must be an integer between 60 and 31536000",
+            },
+            400,
+          )
+        changes.kind = "every"
+        changes.cronExpr = null
+        changes.everySeconds = everySeconds
+        changes.atMs = null
+        changes.deleteAfterRun = false
+      } else if (kind === "at") {
+        const atMs = Number(body.atMs)
+        if (
+          !Number.isInteger(atMs) ||
+          atMs < Date.now() ||
+          atMs > Date.now() + CRON_LOOKAHEAD_MS
+        )
+          return json(
+            { error: "atMs must be a future time within 4 years" },
+            400,
+          )
+        changes.kind = "at"
+        changes.cronExpr = null
+        changes.everySeconds = null
+        changes.atMs = atMs
+        changes.deleteAfterRun = true
+      } else {
+        return json({ error: "kind must be cron, every, or at" }, 400)
+      }
+      scheduleTouched = true
+    }
     if (body.name !== undefined) {
       const name = String(body.name ?? "").trim()
       if (!name) return json({ error: "name cannot be empty" }, 400)
@@ -2880,9 +2951,12 @@ async function handleCron(
       changes.script = normalized.script
     }
     if (body.enabled !== undefined) {
-      const enabled = Boolean(body.enabled)
-      changes.enabled = enabled
-      if (enabled) changes.nextRunAt = nextRunMs(job)
+      changes.enabled = Boolean(body.enabled)
+    }
+    // The next run follows the merged job: a schedule change (or an enable)
+    // recomputes from the new kind/expr/interval, not the pre-PATCH row.
+    if (scheduleTouched || body.enabled !== undefined) {
+      changes.nextRunAt = nextRunMs({ ...job, ...changes } as CronJob)
     }
     const model = cronModelFields(body)
     if ("error" in model) return json({ error: model.error }, 400)

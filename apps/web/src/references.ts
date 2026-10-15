@@ -9,6 +9,8 @@ export type RefItemView = {
   description?: string
   /** Desktop path (projects); also feeds slug/path-basename alias matching. */
   path?: string
+  /** Extra names this item answers to (plugin mention aliases). */
+  aliases?: string[]
 }
 
 export type RefSectionView = {
@@ -115,9 +117,9 @@ export function slugifyName(raw: string): string | null {
   return slug || null
 }
 
-/** Names an item answers to: display name, path basename and slugified name. */
+/** Names an item answers to: display name, aliases, path basename, slug. */
 function itemNames(item: RefItemView): string[] {
-  const names = [item.name]
+  const names = [item.name, ...(item.aliases ?? [])]
   const base = item.path?.replace(/\/+$/g, "").split("/").pop() ?? ""
   if (base && base.toLowerCase() !== item.name.toLowerCase()) names.push(base)
   const slug = slugifyName(item.name)
@@ -330,10 +332,8 @@ export function mentionSuggestions(
   }
   const section = sections.find((item) => item.key === mention.section)
   if (!section) return []
-  const matches = matchSuggestions(
-    section.items,
-    mention.query,
-    (item) => item.name,
+  const matches = matchSuggestions(section.items, mention.query, (item) =>
+    [item.name, ...(item.aliases ?? [])].join(" "),
   )
   return matches.map((item) => ({
     key: `item:${section.key}:${item.id}`,
@@ -341,4 +341,62 @@ export function mentionSuggestions(
     secondary: item.description ?? "",
     complete: `@${section.key}/${item.name} `,
   }))
+}
+
+// Keep in step with RESERVED_MENTION_SECTIONS in plugin-kit.
+const reservedMentionSections = new Set([
+  "persona",
+  "personas",
+  "cron",
+  "skill",
+  "skills",
+  "project",
+  "projects",
+  "report",
+  "reports",
+  "plugin",
+  "plugins",
+])
+
+const mentionSlug = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+export type PluginMentionSource = {
+  section: string
+  label: string
+  pluginId: string
+  path: string
+}
+
+/** First enabled plugin with a page server wins a section slug. */
+export function collectPluginMentionSources(
+  plugins: {
+    pluginId: string
+    enabled: boolean
+    manifest?: {
+      dashboard?: {
+        pages?: { entry?: string }
+        mentions?: { section?: string; label?: string; path?: string }[]
+      }
+    }
+  }[],
+): PluginMentionSource[] {
+  const claimed = new Map<string, PluginMentionSource>()
+  for (const plugin of plugins) {
+    if (!plugin.enabled) continue
+    const dashboard = plugin.manifest?.dashboard
+    if (!dashboard?.pages?.entry) continue
+    for (const mention of dashboard.mentions ?? []) {
+      const section = mention.section ?? ""
+      if (!mentionSlug.test(section) || reservedMentionSections.has(section))
+        continue
+      if (claimed.has(section)) continue
+      claimed.set(section, {
+        section,
+        label: mention.label?.trim() || section,
+        pluginId: plugin.pluginId,
+        path: mention.path?.startsWith("/") ? mention.path : "/mentions",
+      })
+    }
+  }
+  return [...claimed.values()]
 }

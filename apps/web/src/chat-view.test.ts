@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import {
+  applyMessageDelta,
   chatImageUrl,
   embedWorkspaceImages,
   mediaKey,
@@ -294,4 +295,81 @@ test("a preview marker embeds the latest page and strips the url", () => {
     "/api/preview/frame/tok/pricing",
   )
   expect(previewFrameSrc("https://evil.example/", "/")).toBe("")
+})
+
+test("applyMessageDelta upserts message info and parts", () => {
+  const base = [
+    {
+      info: { id: "msg_1", role: "user" },
+      parts: [{ id: "p1", type: "text", text: "hi" }],
+    },
+  ]
+  // new assistant message appends
+  const grown = applyMessageDelta(base, {
+    type: "message.updated",
+    properties: {
+      info: { id: "msg_2", role: "assistant", time: { created: 2 } },
+    },
+  })
+  expect(grown?.length).toBe(2)
+  expect(grown?.[1].info?.id).toBe("msg_2")
+  // info update replaces in place, keeps parts
+  const updated = applyMessageDelta(grown ?? [], {
+    type: "message.updated",
+    properties: {
+      info: {
+        id: "msg_2",
+        role: "assistant",
+        time: { created: 2, completed: 9 },
+      },
+    },
+  })
+  expect(updated?.[1].info?.time?.completed).toBe(9)
+  // part upsert: append then replace by id
+  const appended = applyMessageDelta(updated ?? [], {
+    type: "message.part.updated",
+    properties: {
+      part: { id: "p2", messageID: "msg_2", type: "text", text: "hel" },
+    },
+  })
+  expect(appended?.[1].parts?.length).toBe(1)
+  const replaced = applyMessageDelta(appended ?? [], {
+    type: "message.part.updated",
+    properties: {
+      part: { id: "p2", messageID: "msg_2", type: "text", text: "hello" },
+    },
+  })
+  expect(replaced?.[1].parts?.[0].text).toBe("hello")
+  // unknown message id → refetch signal
+  const unknown = applyMessageDelta(base, {
+    type: "message.part.updated",
+    properties: {
+      part: { id: "px", messageID: "msg_404", type: "text", text: "x" },
+    },
+  })
+  expect(unknown).toBeNull()
+  // missing ids → refetch signal
+  expect(
+    applyMessageDelta(base, {
+      type: "message.part.updated",
+      properties: { part: { type: "text" } },
+    }),
+  ).toBeNull()
+  expect(
+    applyMessageDelta(base, { type: "message.updated", properties: {} }),
+  ).toBeNull()
+})
+
+test("applyMessageDelta no-ops on identical info and untouched messages", () => {
+  const info = { id: "msg_1", role: "user" }
+  const base = [{ info, parts: [] }]
+  expect(
+    applyMessageDelta(base, { type: "message.updated", properties: { info } }),
+  ).toBe(base)
+  expect(
+    applyMessageDelta(base, {
+      type: "session.idle",
+      properties: { sessionID: "s1" },
+    }),
+  ).toBeNull()
 })

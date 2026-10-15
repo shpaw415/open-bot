@@ -388,6 +388,35 @@
               }
             }
           }
+        },
+        "mentions": {
+          "type": "array",
+          "maxItems": 4,
+          "description": "Dynamic @mention sections contributed to the chat composer. Users type @<section>/<name>; the page server (dashboard.pages) serves the live entry list as JSON at path (default /mentions): {\"items\":[{\"name\":\"…\",\"description\":\"…\",\"aliases\":[\"…\"],\"hint\":\"…\"}]} — max 100 items, name ≤ 80 chars, description/hint ≤ 200. First enabled plugin claiming a section slug wins.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["section"],
+            "properties": {
+              "section": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                "description": "The section slug typed after @ (e.g. \"stocks\" → @stocks/…). Cannot be a reserved section (personas, cron, skills, projects, reports, plugins and singulars)."
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32,
+                "description": "Menu label in the composer popup and the agent's reference line (default: the section slug)."
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^/(?:[^/].*)?$",
+                "maxLength": 200,
+                "description": "Plugin-server-relative JSON path serving the entry list (default /mentions)."
+              }
+            }
+          }
         }
       }
     },

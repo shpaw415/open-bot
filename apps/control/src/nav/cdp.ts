@@ -414,6 +414,30 @@ export async function captureMarked(
   }
 }
 
+// Evaluates to the element for an obnav id, crossing shadow boundaries. The
+// probe marks controls inside open shadow roots (web-component tiles,
+// embedded players), where document.querySelector cannot reach; walk the
+// open roots as a fallback. `idExpr` is a JSON string literal of the id.
+export function obnavFindExpr(idExpr: string) {
+  return `(() => {
+    const id = ${idExpr}
+    const direct = document.querySelector('[data-obnav="' + id + '"]')
+    if (direct) return direct
+    const walk = (root) => {
+      for (const el of root.querySelectorAll('*')) {
+        const shadow = el.shadowRoot
+        if (!shadow) continue
+        const hit = shadow.querySelector('[data-obnav="' + id + '"]')
+        if (hit) return hit
+        const deep = walk(shadow)
+        if (deep) return deep
+      }
+      return null
+    }
+    return walk(document)
+  })()`
+}
+
 export function actionScript(action: Act) {
   if (action.kind === "wait") return "true"
   if (action.kind === "scroll") {
@@ -421,16 +445,30 @@ export function actionScript(action: Act) {
     return `window.scrollBy(0, window.innerHeight * ${delta})`
   }
   const id = JSON.stringify(action.targetId)
+  const find = obnavFindExpr(id)
   if (action.kind === "click") {
     // elementFromPoint naming an ancestor of the target (delegated-click
     // pages, pointer-events:none buttons) is not occlusion: the synthetic
     // click bubbles to the ancestor handler. Only a sibling overlay refuses.
+    // With shadow DOM the point can also land on the shadow HOST — an
+    // composed-tree ancestor of the target, not a cover — so ancestors along
+    // the host chain keep the click allowed too.
     return `(() => {
-    const el = document.querySelector('[data-obnav="' + ${id} + '"]')
+    const el = ${find}
     if (!el) return false
     const rect = el.getBoundingClientRect()
     const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
-    if (center && center !== el && !el.contains(center) && !center.contains(el)) {
+    const composed = (node) => {
+      const chain = []
+      let current = node
+      while (current) {
+        chain.push(current)
+        const root = current.getRootNode ? current.getRootNode() : document
+        current = root && root.host ? root.host : null
+      }
+      return chain
+    }
+    if (center && center !== el && !el.contains(center) && !center.contains(el) && !composed(el).includes(center)) {
       let name = center.tagName.toLowerCase()
       if (center.id) name += '#' + center.id
       else if (typeof center.className === 'string' && center.className.trim())
@@ -443,11 +481,11 @@ export function actionScript(action: Act) {
   }
   if (action.kind === "type") {
     const text = JSON.stringify(action.text)
-    return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el) return false; el.focus(); if ('value' in el) { el.value = ${text}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } return true })()`
+    return `(() => { const el = ${find}; if (!el) return false; el.focus(); if ('value' in el) { el.value = ${text}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } return true })()`
   }
   if (action.kind === "enter") {
     return `(async () => {
-    const el = document.querySelector('[data-obnav=' + ${JSON.stringify(action.targetId)} + ']')
+    const el = ${find}
     if (!el) return false
     el.focus()
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }))
@@ -496,7 +534,7 @@ export function actionScript(action: Act) {
   })()`
   }
   const label = JSON.stringify(action.label)
-  return `(() => { const el = document.querySelector('[data-obnav="' + ${id} + '"]'); if (!el || el.tagName !== 'SELECT') return false; const option = [...el.options].find((item) => item.label === ${label}); if (!option) return false; el.value = option.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  return `(() => { const el = ${find}; if (!el || el.tagName !== 'SELECT') return false; const option = [...el.options].find((item) => item.label === ${label}); if (!option) return false; el.value = option.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
 }
 
 export const PROBE = `(() => {
@@ -509,46 +547,60 @@ export const PROBE = `(() => {
   const chrome = 'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]'
   const entry = 'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]), [role="textbox"], [role="searchbox"]'
   const tiers = [[], [], [], [], []]
-  for (const el of document.querySelectorAll(selector)) {
-    const rect = el.getBoundingClientRect()
-    if (rect.width < 2 || rect.height < 2) continue
-    if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
-    const style = getComputedStyle(el)
-    if (style.visibility === "hidden" || style.display === "none") continue
-    let id = bag.map.get(el)
-    if (!id) {
-      id = "n" + bag.n
-      bag.n += 1
-      bag.map.set(el, id)
+  // document.querySelectorAll stops at shadow boundaries; sites built from
+  // web components (custom account tiles, embedded players) keep their real
+  // controls inside open shadow roots. Walk the light DOM, then descend into
+  // open roots — capped so a pathological page cannot stall the probe.
+  let scanBudget = 4000
+  const descend = (root) => {
+    for (const el of root.querySelectorAll(selector)) {
+      if (scanBudget-- <= 0) return
+      const rect = el.getBoundingClientRect()
+      if (rect.width < 2 || rect.height < 2) continue
+      if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
+      const style = getComputedStyle(el)
+      if (style.visibility === "hidden" || style.display === "none") continue
+      let id = bag.map.get(el)
+      if (!id) {
+        id = "n" + bag.n
+        bag.n += 1
+        bag.map.set(el, id)
+      }
+      el.setAttribute("data-obnav", id)
+      const label = (el.getAttribute("aria-label") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
+      const item = {
+        target_id: id,
+        role: el.getAttribute("role") || el.tagName.toLowerCase(),
+        label,
+        value: "value" in el ? String(el.value || "").slice(0, 80) : "",
+        editable: el.matches('input, textarea, [contenteditable="true"]') && !el.disabled && !el.readOnly,
+        actionable: true,
+      }
+      const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+      item.actionable = !center || el === center || el.contains(center)
+      if (el.tagName === "SELECT") item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
+      // 0 text-entry targets (composers, chat boxes, form fields), 1 search
+      // controls, 2 body content, 3 same-document anchors (TOC jumps), 4 site
+      // chrome and settings checkboxes. Text entry leads because a window that
+      // floods with content buttons must still offer the field the user is
+      // about to type into (messenger.com conversations keep the composer at
+      // the end of the DOM). Anchors get a bounded reserve so sticky TOCs
+      // cannot crowd article links out of the window, while section jumps
+      // stay offered on content-heavy pages.
+      let tier = 4
+      if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 0
+      else if (el.closest('[role="search"]')) tier = 1
+      else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 3 : 2
+      else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 2
+      tiers[tier].push(item)
     }
-    el.setAttribute("data-obnav", id)
-    const label = (el.getAttribute("aria-label") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
-    const item = {
-      target_id: id,
-      role: el.getAttribute("role") || el.tagName.toLowerCase(),
-      label,
-      value: "value" in el ? String(el.value || "").slice(0, 80) : "",
-      editable: el.matches('input, textarea, [contenteditable="true"]') && !el.disabled && !el.readOnly,
-      actionable: true,
+    if (scanBudget <= 0) return
+    for (const el of root.querySelectorAll("*")) {
+      if (scanBudget-- <= 0) return
+      if (el.shadowRoot) descend(el.shadowRoot)
     }
-    const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
-    item.actionable = !center || el === center || el.contains(center)
-    if (el.tagName === "SELECT") item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
-    // 0 text-entry targets (composers, chat boxes, form fields), 1 search
-    // controls, 2 body content, 3 same-document anchors (TOC jumps), 4 site
-    // chrome and settings checkboxes. Text entry leads because a window that
-    // floods with content buttons must still offer the field the user is
-    // about to type into (messenger.com conversations keep the composer at
-    // the end of the DOM). Anchors get a bounded reserve so sticky TOCs
-    // cannot crowd article links out of the window, while section jumps
-    // stay offered on content-heavy pages.
-    let tier = 4
-    if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 0
-    else if (el.closest('[role="search"]')) tier = 1
-    else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 3 : 2
-    else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 2
-    tiers[tier].push(item)
   }
+  descend(document)
   const out = []
   const remaining = () => max - out.length
   const reserve = Math.min(tiers[3].length, 6)

@@ -1,3 +1,5 @@
+import { trimDashboardEvent } from "./messages-trim"
+
 export type EventsSocketData = { kind: "events"; userId: string }
 
 export type HubSocket = { send(data: string): unknown }
@@ -146,7 +148,9 @@ export class EventHub {
   private deliver(userId: string, event: HubEvent) {
     const pump = this.users.get(userId)
     if (!pump) return
-    this.broadcast(pump, event)
+    // Socket payloads only — observers (plugin hooks, media capture) already
+    // saw the raw event above and keep full content.
+    this.broadcast(pump, trimDashboardEvent(event))
   }
 
   private broadcast(pump: Pump, event: HubEvent) {

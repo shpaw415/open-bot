@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  collectPluginMentionSources,
   detectMention,
   findProjectReferenceTokens,
   findReferenceTokens,
@@ -402,5 +403,81 @@ describe("mention suggestions", () => {
       picker,
     )
     expect(items).toHaveLength(2)
+  })
+
+  test("plugin mention aliases match in the picker and the overlay", () => {
+    const stocks: RefSectionView[] = [
+      {
+        key: "stocks",
+        label: "Stocks",
+        items: [
+          {
+            id: "AAPL",
+            name: "AAPL",
+            description: "Apple Inc.",
+            aliases: ["apple"],
+          },
+        ],
+      },
+    ]
+    const items = mentionSuggestions(
+      { stage: "name", section: "stocks", query: "app", start: 0 },
+      stocks,
+    )
+    expect(items[0]?.complete).toBe("@stocks/AAPL ")
+    const tokens = findReferenceTokens("buy @stocks/apple today", stocks)
+    expect(tokens[0]?.name).toBe("AAPL")
+  })
+})
+
+describe("plugin mention sources", () => {
+  test("first enabled plugin with a page server wins; reserved slugs are dropped", () => {
+    const sources = collectPluginMentionSources([
+      {
+        pluginId: "first",
+        enabled: true,
+        manifest: {
+          dashboard: {
+            pages: { entry: "server.ts" },
+            mentions: [
+              { section: "stocks", label: "Stocks" },
+              { section: "plugins" },
+            ],
+          },
+        },
+      },
+      {
+        pluginId: "second",
+        enabled: true,
+        manifest: {
+          dashboard: {
+            pages: { entry: "server.ts" },
+            mentions: [
+              { section: "stocks", label: "Other" },
+              { section: "bonds", path: "/bonds" },
+            ],
+          },
+        },
+      },
+      {
+        pluginId: "off",
+        enabled: false,
+        manifest: {
+          dashboard: {
+            pages: { entry: "server.ts" },
+            mentions: [{ section: "bonds" }],
+          },
+        },
+      },
+    ])
+    expect(sources).toEqual([
+      {
+        section: "stocks",
+        label: "Stocks",
+        pluginId: "first",
+        path: "/mentions",
+      },
+      { section: "bonds", label: "bonds", pluginId: "second", path: "/bonds" },
+    ])
   })
 })

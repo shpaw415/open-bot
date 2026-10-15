@@ -45,6 +45,7 @@ import { type AppEntry, filterApps } from "./app-launcher"
 import type { CronJobInfo } from "./CronView"
 import {
   ACTIVITY_LABEL,
+  applyMessageDelta,
   type ChatMessage,
   chatImageUrl,
   eventTouchesSession,
@@ -117,6 +118,11 @@ import { MediaVault } from "./MediaVault"
 import { Model3dView } from "./Model3dView"
 import { ModelSelect } from "./ModelSelect"
 import {
+  dropCachedMessages,
+  getCachedMessages,
+  putCachedMessages,
+} from "./message-cache"
+import {
   OPEN_THREAD_EVENT,
   seenThread,
   setNoticeFocus,
@@ -142,8 +148,10 @@ import {
 } from "./project-refs"
 import ReferenceOverlay from "./ReferenceOverlay"
 import {
+  collectPluginMentionSources,
   detectMention,
   mentionSuggestions,
+  type PluginMentionSource,
   type RefItemView,
   type RefSectionView,
   type SkillSummary,
@@ -945,6 +953,20 @@ const ThreadsPanel = memo(function ThreadsPanel({
     }
     return sections
   }, [sessions, dirs, threadDirMap])
+  const groupActivity = useMemo(() => {
+    const counts: Record<string, { unread: number; busy: number }> = {}
+    for (const group of groups) counts[group.key] = { unread: 0, busy: 0 }
+    for (const group of groups) {
+      for (const item of group.items) {
+        const entry = counts[group.key]
+        if (!entry) continue
+        if (unread.has(item.id) && !(item.id === sessionId && !document.hidden))
+          entry.unread += 1
+        if (busyIds.has(item.id)) entry.busy += 1
+      }
+    }
+    return counts
+  }, [groups, unread, busyIds, sessionId])
   const toggleCollapsed = (key: string) => {
     setCollapsed((current) => {
       const next = new Set(current)
@@ -954,6 +976,17 @@ const ThreadsPanel = memo(function ThreadsPanel({
       return next
     })
   }
+  useEffect(() => {
+    if (!sessionId) return
+    setCollapsed((current) => {
+      const dirId = threadDirMap[sessionId] ?? ""
+      if (!current.has(dirId)) return current
+      const next = new Set(current)
+      next.delete(dirId)
+      localStorage.setItem(FOLDERS_COLLAPSED_KEY, JSON.stringify([...next]))
+      return next
+    })
+  }, [sessionId, threadDirMap])
   const dropToGroup = (key: string) => (event: React.DragEvent) => {
     event.preventDefault()
     const id =
@@ -1150,6 +1183,10 @@ const ThreadsPanel = memo(function ThreadsPanel({
             {groups.map((group) => {
               const isCollapsed = collapsed.has(group.key)
               const dir = group.dir
+              const activity = groupActivity[group.key] ?? {
+                unread: 0,
+                busy: 0,
+              }
               return (
                 <Box key={group.key || "unfiled"}>
                   <Stack
@@ -1220,6 +1257,29 @@ const ThreadsPanel = memo(function ThreadsPanel({
                     >
                       {group.label} ({group.items.length})
                     </Typography>
+                    {isCollapsed ? (
+                      <>
+                        {activity.unread > 0 ? (
+                          <>
+                            <span
+                              className="ob-unread-dot"
+                              role="img"
+                              aria-label={`${activity.unread} unread`}
+                            />
+                            <Typography
+                              variant="caption"
+                              color="primary"
+                              sx={{ flexShrink: 0, fontWeight: 600 }}
+                            >
+                              {activity.unread}
+                            </Typography>
+                          </>
+                        ) : null}
+                        {activity.busy > 0 ? (
+                          <CircularProgress size={1.2} sx={{ flexShrink: 0 }} />
+                        ) : null}
+                      </>
+                    ) : null}
                     {dir ? (
                       <>
                         <ToolTip title={`New thread in ${dir.name}`}>
@@ -1338,6 +1398,7 @@ function Composer({
   reports,
   onEnsureReports,
   plugins,
+  pluginMentionSources,
 }: {
   sessionId: string
   running: boolean
@@ -1365,6 +1426,7 @@ function Composer({
   reports: ReportMention[]
   onEnsureReports: () => void
   plugins: PluginMention[]
+  pluginMentionSources: PluginMentionSource[]
 }) {
   const [draft, setDraft] = useState(() => {
     const stored = readDraft(localStorage, sessionId)
@@ -1466,10 +1528,24 @@ function Composer({
   async function startRecording() {
     if (recording || transcribing) return
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      })
       recordStreamRef.current = stream
       recordChunksRef.current = []
-      const recorder = new MediaRecorder(stream)
+      const mimeType = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ].find((type) => MediaRecorder.isTypeSupported(type))
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType, audioBitsPerSecond: 64000 } : undefined,
+      )
       recorderRef.current = recorder
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) recordChunksRef.current.push(event.data)
@@ -1527,6 +1603,68 @@ function Composer({
     api<{ skills?: SkillSummary[] }>("/api/skills")
       .then((body) => setSkillList(body.skills ?? []))
       .catch(() => setSkillList([]))
+  }
+
+  const [pluginMentionItems, setPluginMentionItems] = useState<
+    Record<string, RefItemView[]>
+  >({})
+  const pluginMentionFetchedAt = useRef<Record<string, number>>({})
+  useEffect(() => {
+    for (const source of pluginMentionSources) {
+      delete pluginMentionFetchedAt.current[source.section]
+    }
+    pluginMentionFetchedAt.current = {}
+    setPluginMentionItems({})
+  }, [pluginMentionSources])
+
+  function ensurePluginMentions() {
+    const now = Date.now()
+    for (const source of pluginMentionSources) {
+      const at = pluginMentionFetchedAt.current[source.section] ?? 0
+      if (now - at < 30_000) continue
+      pluginMentionFetchedAt.current[source.section] = now
+      const path = `/api/pages/${encodeURIComponent(source.pluginId)}${source.path}`
+      api<{
+        items?: { name?: unknown; description?: unknown; aliases?: unknown }[]
+      }>(path)
+        .then((body) => {
+          const items = (Array.isArray(body.items) ? body.items : [])
+            .slice(0, 100)
+            .flatMap((entry): RefItemView[] => {
+              if (typeof entry.name !== "string") return []
+              const name = entry.name.replace(/\s+/g, " ").trim().slice(0, 80)
+              if (!name) return []
+              const aliases = (
+                Array.isArray(entry.aliases) ? entry.aliases : []
+              )
+                .filter((alias): alias is string => typeof alias === "string")
+                .map((alias) => alias.replace(/\s+/g, " ").trim().slice(0, 40))
+                .filter(Boolean)
+                .slice(0, 5)
+              return [
+                {
+                  id: name,
+                  name,
+                  description:
+                    typeof entry.description === "string"
+                      ? entry.description
+                          .replace(/\s+/g, " ")
+                          .trim()
+                          .slice(0, 200)
+                      : undefined,
+                  aliases: aliases.length ? aliases : undefined,
+                },
+              ]
+            })
+          setPluginMentionItems((prev) => ({
+            ...prev,
+            [source.section]: items,
+          }))
+        })
+        .catch(() => {
+          pluginMentionFetchedAt.current[source.section] = 0
+        })
+    }
   }
 
   const mentionSections = useMemo<RefSectionView[]>(
@@ -1598,8 +1736,21 @@ function Composer({
             },
           ]
         : []),
+      ...pluginMentionSources.map((source) => ({
+        key: source.section,
+        label: source.label,
+        items: pluginMentionItems[source.section] ?? [],
+      })),
     ],
-    [baseSections, skillList, projects, reports, plugins],
+    [
+      baseSections,
+      skillList,
+      projects,
+      reports,
+      plugins,
+      pluginMentionSources,
+      pluginMentionItems,
+    ],
   )
   const mention = useMemo(
     () => detectMention(draft, caret, mentionSections),
@@ -1667,6 +1818,7 @@ function Composer({
     ensureSkills()
     onEnsureProjects()
     onEnsureReports()
+    ensurePluginMentions()
     rememberDraft(next)
     restoreCaret()
   }
@@ -1906,6 +2058,7 @@ function Composer({
               onFocus={() => {
                 onEnsureProjects()
                 onEnsureReports()
+                ensurePluginMentions()
               }}
               onChange={(event) => {
                 const el = event.currentTarget
@@ -1917,6 +2070,7 @@ function Composer({
                   ensureSkills()
                   onEnsureProjects()
                   onEnsureReports()
+                  ensurePluginMentions()
                 }
                 rememberDraft(el.value)
                 setCaret(el.selectionStart ?? el.value.length)
@@ -2320,10 +2474,15 @@ export function Workspace({ me }: { me: Me }) {
       })),
     [installedPlugins],
   )
+  const pluginMentionSources = useMemo(
+    () => collectPluginMentionSources(installedPlugins),
+    [installedPlugins],
+  )
   const unread = useUnreadThreads()
   const outputRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const messagesJsonRef = useRef("")
+  const messagesRef = useRef<ChatMessage[]>([])
   const menuAnchor = useRef<HTMLElement | null>(null)
   const restoredRef = useRef(false)
   const stoppingRef = useRef(false)
@@ -2855,10 +3014,20 @@ export function Workspace({ me }: { me: Me }) {
     return () => clearInterval(timer)
   }, [running, models.length, modelsLoading, loadModels])
 
-  // event-driven refresh: the socket announces changes, we refetch lazily
+  // event-driven refresh: the socket announces changes, we refetch lazily.
+  // A cached transcript paints instantly; the fetch below still reconciles.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the refs reset when the thread or desktop changes
   useEffect(() => {
-    messagesJsonRef.current = ""
+    const cached = sessionId ? getCachedMessages(sessionId) : undefined
+    if (cached) {
+      messagesJsonRef.current = cached.payload
+      setMessages(cached.messages)
+      setMessagesLoading(false)
+    } else {
+      messagesJsonRef.current = ""
+      setMessages([])
+    }
+    messagesRef.current = cached?.messages ?? []
     stickRef.current = true
     setMediaMap(new Map())
   }, [sessionId, running])
@@ -2903,7 +3072,9 @@ export function Workspace({ me }: { me: Me }) {
       const payload = JSON.stringify(next)
       if (payload !== messagesJsonRef.current) {
         messagesJsonRef.current = payload
+        messagesRef.current = next
         setMessages(next)
+        putCachedMessages(sessionId, payload, next)
       }
     } catch {
       return
@@ -2966,20 +3137,36 @@ export function Workspace({ me }: { me: Me }) {
       }
       if (type === "session.deleted" && eventTouchesSession(event, sessionId)) {
         writeDraft(localStorage, sessionId, "")
+        dropCachedMessages(sessionId)
         setSessionId("")
         setMessages([])
         localStorage.removeItem(THREAD_KEY)
         return
       }
+      // Live deltas replace the per-event full refetch: message/part events
+      // upsert in place, anything uncertain falls back to a full tick.
       if (
-        (type === "message.updated" ||
-          type === "message.removed" ||
-          type === "message.part.updated") &&
+        (type === "message.updated" || type === "message.part.updated") &&
         eventTouchesSession(event, sessionId)
       ) {
+        const next = applyMessageDelta(messagesRef.current, event)
+        if (next && next !== messagesRef.current) {
+          messagesRef.current = next
+          const payload = JSON.stringify(next)
+          messagesJsonRef.current = payload
+          putCachedMessages(sessionId, payload, next)
+          setMessages(next)
+        } else if (!next) {
+          scheduleTick()
+        }
+        return
+      }
+      if (type === "message.removed" && eventTouchesSession(event, sessionId)) {
         scheduleTick()
+        return
       }
       if (type === "session.idle" && eventTouchesSession(event, sessionId)) {
+        scheduleTick()
         scheduleMediaLoad()
       }
     })
@@ -3560,6 +3747,7 @@ export function Workspace({ me }: { me: Me }) {
       await api(`/api/opencode/session/${target.id}`, { method: "DELETE" })
       setDeleteTarget(null)
       writeDraft(localStorage, target.id, "")
+      dropCachedMessages(target.id)
       joinedStore.current.delete(target.id)
       seenThread(target.id)
       if (target.id === sessionId) {
@@ -3588,6 +3776,7 @@ export function Workspace({ me }: { me: Me }) {
       try {
         await api(`/api/opencode/session/${id}`, { method: "DELETE" })
         writeDraft(localStorage, id, "")
+        dropCachedMessages(id)
         joinedStore.current.delete(id)
         seenThread(id)
         if (id === activeId) {
@@ -4244,6 +4433,7 @@ export function Workspace({ me }: { me: Me }) {
                   reports={reportList}
                   onEnsureReports={ensureReports}
                   plugins={pluginMentions}
+                  pluginMentionSources={pluginMentionSources}
                 />
               </Paper>
             </Dock>

@@ -374,6 +374,20 @@ function InstalledTable({
                           {plugin.description || "—"}
                         </Typography>
                       </ToolTip>
+                      {plugin.mentionClashes?.length ? (
+                        <Typography
+                          variant="caption"
+                          color="warning"
+                          sx={{ display: "block", mt: 0.5 }}
+                        >
+                          {plugin.mentionClashes
+                            .map(
+                              (clash) =>
+                                `@${clash.section} already claimed by ${clash.owner}`,
+                            )
+                            .join("; ")}
+                        </Typography>
+                      ) : null}
                       {plugin.init && !plugin.init.ok ? (
                         <ToolTip
                           title={`Setup commands failed at install or boot — click to re-run them (log: ~/.open-bot/plugin-init/${plugin.pluginId}.log)`}

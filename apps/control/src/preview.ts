@@ -94,17 +94,40 @@ export function previewFrameUrl(token: string) {
   return `/api/preview/frame/${token}/`
 }
 
-export function rewritePreviewHtml(html: string, prefix: string): string {
+// Sandboxed plugin frames (capability-token iframes without allow-same-origin)
+// run on an opaque origin, which breaks agent-authored pages in two ways:
+// 1. localStorage/sessionStorage/document.cookie throw a SecurityError on
+//    access — the page dies at the first storage read and never wires its
+//    fetches. Fixed by shadowing each denied surface with an in-memory
+//    fallback (per-load, no persistence — graceful degradation).
+// 2. Every fetch/XHR/EventSource is cross-origin, so cookies are omitted by
+//    default — edge SSO (Cloudflare Access) then answers with a 302 challenge
+//    and the browser reports a CORS error while the page itself rendered fine.
+//    Fixed by defaulting credentials on (the frame proxy echoes the origin
+//    with allow-credentials; its responses carry no secrets the page doesn't
+//    already own — the frame token is the gate).
+// Injected ahead of every page script in frame-rewritten HTML only.
+export const FRAME_STORAGE_SHIM = `<script>(function(){function make(){var d={};return{getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d={}},key:function(i){return Object.keys(d)[i]||null},get length(){return Object.keys(d).length}}}function fix(n){try{window[n].getItem("ob")}catch(e){try{Object.defineProperty(window,n,{value:make(),configurable:true})}catch(e2){}}}fix("localStorage");fix("sessionStorage");try{document.cookie}catch(e){try{Object.defineProperty(document,"cookie",{get:function(){return""},set:function(){},configurable:true})}catch(e2){}}var of=window.fetch;if(of){window.fetch=function(i,n){n=n||{};if(!n.credentials)n.credentials="include";return of.call(this,i,n)}}var os=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(){this.withCredentials=true;return os.apply(this,arguments)};var oe=window.EventSource;if(oe){var WE=function(u,c){c=c||{};if(c.withCredentials===undefined)c.withCredentials=true;return new oe(u,c)};WE.prototype=oe.prototype;window.EventSource=WE}})()</script>`
+
+export function rewritePreviewHtml(
+  html: string,
+  prefix: string,
+  storageShim = false,
+): string {
   const base = prefix.endsWith("/") ? prefix : `${prefix}/`
+  const head = storageShim ? FRAME_STORAGE_SHIM : ""
   const out = html.replace(
     /\b(href|src|action)=(["'])\/(?!\/)/gi,
     `$1=$2${base}`,
   )
-  if (/<base\s/i.test(out)) return out
+  if (/<base\s/i.test(out)) return `${head}${out}`
   if (/<head[^>]*>/i.test(out)) {
-    return out.replace(/<head[^>]*>/i, (tag) => `${tag}<base href="${base}">`)
+    return out.replace(
+      /<head[^>]*>/i,
+      (tag) => `${tag}${head}<base href="${base}">`,
+    )
   }
-  return `<base href="${base}">${out}`
+  return `${head}<base href="${base}">${out}`
 }
 
 export function rewritePreviewCss(css: string, prefix: string): string {

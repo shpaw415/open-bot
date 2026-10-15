@@ -86,6 +86,16 @@ describe("plugin manifest", () => {
     }
   })
 
+  test("rejects reserved plugin ids", () => {
+    const result = validatePluginManifest({ ...valid, id: "frame" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(manifestIssuesText(result.issues)).toContain(
+        'id "frame" is reserved',
+      )
+    }
+  })
+
   test("accepts dev tags and prereleases as versions", () => {
     for (const version of ["beta-1", "staging.2", "1.2.3-beta.1"]) {
       const result = validatePluginManifest({ ...valid, version })
@@ -301,6 +311,73 @@ describe("plugin manifest", () => {
       dashboard: {
         pages: { entry: "server.js" },
         tabs: [{ id: "x", title: "X", kind: "app", path: "/../etc" }],
+      },
+    })
+    expect(badPath.ok).toBe(false)
+  })
+
+  test("mention sections need the page server and fresh slugs", () => {
+    const good = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [],
+        mentions: [{ section: "cities", label: "Cities", path: "/mentions" }],
+      },
+    })
+    expect(good.ok).toBe(true)
+    if (good.ok) {
+      expect(good.manifest.dashboard?.mentions?.[0]?.section).toBe("cities")
+      expect(pluginPermissionSummary(good.manifest)).toContain(
+        "Adds dynamic @mention entries to the chat composer",
+      )
+    }
+    const noPages = validatePluginManifest({
+      ...valid,
+      dashboard: {
+        tabs: [],
+        mentions: [{ section: "cities" }],
+      },
+    })
+    expect(noPages.ok).toBe(false)
+    if (!noPages.ok) {
+      expect(manifestIssuesText(noPages.issues)).toContain(
+        "mentions need dashboard.pages.entry declared",
+      )
+    }
+    const reserved = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [],
+        mentions: [{ section: "plugins" }],
+      },
+    })
+    expect(reserved.ok).toBe(false)
+    if (!reserved.ok) {
+      expect(manifestIssuesText(reserved.issues)).toContain(
+        'mention.section "plugins" is reserved',
+      )
+    }
+    const dupe = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [],
+        mentions: [{ section: "cities" }, { section: "cities" }],
+      },
+    })
+    expect(dupe.ok).toBe(false)
+    const badPath = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [],
+        mentions: [{ section: "cities", path: "/../secret" }],
       },
     })
     expect(badPath.ok).toBe(false)

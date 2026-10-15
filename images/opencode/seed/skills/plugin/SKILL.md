@@ -141,6 +141,25 @@ Bun.serve({
 
 Keep page servers stateless across restarts or persist under `/home/agent/.open-bot/pages-data/<pluginId>/` (the home volume survives updates).
 
+Dashboard pages load in a sandboxed iframe: no session cookies, and `localStorage`/`sessionStorage` throw `SecurityError` on touch (the control plane injects an in-memory fallback, but never rely on storage persisting across reloads). Guard every storage read with `try { … } catch {}` — an unguarded top-level read kills the whole script and every `fetch` on the page with it. Call your API with relative paths (`fetch("api/items")`), never `/api/...`.
+
+## Dynamic @mentions
+
+A plugin with a page server can add live entries to the chat composer's `@` menu. Declare `dashboard.mentions` (max 4; needs `dashboard.pages`):
+
+```json
+{
+  "dashboard": {
+    "pages": { "entry": "server.ts" },
+    "mentions": [{ "section": "stock", "label": "Stock", "path": "/mentions" }]
+  }
+}
+```
+
+`section` is the slug typed after `@` (`@stock/Widget`). It cannot be a reserved section (`personas`, `cron`, `skills`, `projects`, `reports`, `plugins`, or their singulars). `label` (max 32, default the slug) is the menu heading and the word the agent sees in the reference line. `path` (default `/mentions`) is a plugin-server-relative JSON path. First enabled plugin to claim a slug wins; a later plugin's Plugins-tab row warns that the slug is already claimed.
+
+Serve `GET <path>` as `{ "items": [{ "name": "Widget", "description": "12 in stock", "aliases": ["1"], "hint": "how the agent should use this entry" }] }`. Caps: 100 items, name ≤ 80, description and hint ≤ 200, 5 aliases × 40 chars. The composer refetches when the `@` menu opens (about every 30 s); send-time resolution fetches again so the agent gets a "Message references:" line like the built-in sections. If the page server is down the mention degrades to "list is unavailable" — implement `GET /healthz` and keep this handler fast.
+
 Developing a dashboard page (the dev loop):
 
 1. `ob-plugin page <id>` prints the running server's status: `{pluginId, enabled, running, port, pid}` plus a loopback URL hint on stderr. The port is 4740-4759 inside this container — the server runs here next to you.

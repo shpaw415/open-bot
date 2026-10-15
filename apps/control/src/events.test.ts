@@ -160,4 +160,67 @@ describe("event hub", () => {
     expect(parsed(client.frames)).toContainEqual({ type: "opencode.down" })
     hub.detach(client.socket)
   })
+
+  test("trims message payloads on sockets, observers keep raw events", async () => {
+    const bigUrl = `data:image/png;base64,${"y".repeat(4096)}`
+    const frame = `data: ${JSON.stringify({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "prt_1",
+          messageID: "msg_1",
+          type: "tool",
+          state: { attachments: [{ url: bigUrl }] },
+        },
+      },
+    })}\n\n`
+    const upstream = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(frame))
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    })
+    try {
+      const seen: { type?: unknown; properties?: unknown }[] = []
+      const hub = new EventHub(
+        async () => ({ base: upstream.url.origin, auth: "Basic dGVzdDp0ZXN0" }),
+        (_userId, event) => {
+          seen.push(event)
+        },
+      )
+      const client = captureSocket()
+      hub.attach(client.socket, "user-1")
+      await Bun.sleep(120)
+      const event = parsed(client.frames).find(
+        (row) => row.type === "message.part.updated",
+      ) as
+        | {
+            properties?: {
+              part?: { state?: { attachments?: { url: string }[] } }
+            }
+          }
+        | undefined
+      expect(event).toBeTruthy()
+      expect(event?.properties?.part?.state?.attachments?.[0].url).toBe(
+        "data:truncated",
+      )
+      const raw = seen[0] as {
+        properties?: { part?: { state?: { attachments?: { url: string }[] } } }
+      }
+      expect(
+        raw.properties?.part?.state?.attachments?.[0].url.startsWith(
+          "data:image/png;base64,",
+        ),
+      ).toBe(true)
+      hub.detach(client.socket)
+    } finally {
+      upstream.stop(true)
+    }
+  })
 })

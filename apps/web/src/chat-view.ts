@@ -5,6 +5,8 @@ const MODEL3D_EXT = /\.glb$/i
 const DATA_IMAGE = /^data:image\/(png|jpeg|gif|webp);base64,[a-z0-9+/]+={0,2}$/i
 
 export type ChatPart = {
+  id?: string
+  messageID?: string
   type?: string
   text?: string
   synthetic?: boolean
@@ -718,4 +720,59 @@ export function eventTouchesSession(
     record.info?.sessionID,
     record.part?.sessionID,
   ].some((id) => typeof id === "string" && id === sessionId)
+}
+
+function upsertMessageInfo(
+  messages: ChatMessage[],
+  info: NonNullable<ChatMessage["info"]>,
+): ChatMessage[] | null {
+  if (typeof info.id !== "string" || !info.id) return null
+  const index = messages.findIndex((message) => message.info?.id === info.id)
+  if (index === -1) return [...messages, { info }]
+  if (messages[index].info === info) return messages
+  const next = messages.slice()
+  next[index] = { ...messages[index], info }
+  return next
+}
+
+function upsertMessagePart(
+  messages: ChatMessage[],
+  part: ChatPart,
+): ChatMessage[] | null {
+  const partId = part.id
+  const messageId = part.messageID
+  if (!partId || !messageId) return null
+  const index = messages.findIndex((message) => message.info?.id === messageId)
+  if (index === -1) return null
+  const target = messages[index]
+  const parts = target.parts ?? []
+  const nextParts = parts.some((row) => row.id === partId)
+    ? parts.map((row) => (row.id === partId ? part : row))
+    : [...parts, part]
+  const next = messages.slice()
+  next[index] = { ...target, parts: nextParts }
+  return next
+}
+
+/**
+ * Apply one opencode stream event (message.updated / message.part.updated)
+ * to a message list. Returns a new array when the delta applied, the same
+ * array when it was a no-op, or null when the event cannot be applied
+ * confidently and the caller should refetch the whole list.
+ */
+export function applyMessageDelta(
+  messages: ChatMessage[],
+  event: StreamEvent,
+): ChatMessage[] | null {
+  const props = event.properties
+  if (!props || typeof props !== "object") return null
+  const record = props as { info?: unknown; part?: unknown }
+  if (record.info && typeof record.info === "object")
+    return upsertMessageInfo(
+      messages,
+      record.info as NonNullable<ChatMessage["info"]>,
+    )
+  if (record.part && typeof record.part === "object")
+    return upsertMessagePart(messages, record.part as ChatPart)
+  return null
 }

@@ -13,6 +13,7 @@
   ],
   "dashboard": {
     "pages": { "entry": "server.ts" },
+    "mentions": [{ "section": "stock", "label": "Stock", "path": "/mentions" }],
     "tabs": [
       { "id": "stock", "title": "Stock", "icon": "store", "kind": "app" },
       {

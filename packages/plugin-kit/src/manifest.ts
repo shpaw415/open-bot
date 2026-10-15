@@ -1,6 +1,9 @@
 export const MANIFEST_FILE = "open-bot.plugin.json"
 
 export const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/
+// Ids owned by control-plane routes (e.g. POST /api/pages/frame mints
+// app-tab frame tokens); plugins must not shadow them.
+export const RESERVED_PLUGIN_IDS = new Set(["frame"])
 export const SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/
 export const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\dA-Za-z.-]+)?$/
@@ -116,6 +119,22 @@ export const PLUGIN_HOOK_EVENTS = ["session.idle", "thread.created"] as const
 // dashboard.tabs[].icon: a single emoji or a material icon name for the
 // dashboard home-screen app tile. No URLs — never fetched remotely.
 export const TAB_ICON_MAX_LENGTH = 32
+
+// Mention section slugs the platform itself owns; plugin mention sections
+// must not shadow them (singular + plural, matching the reference resolver).
+export const RESERVED_MENTION_SECTIONS = new Set([
+  "persona",
+  "personas",
+  "cron",
+  "skill",
+  "skills",
+  "project",
+  "projects",
+  "report",
+  "reports",
+  "plugin",
+  "plugins",
+])
 
 const hasControlChar = (value: string) => {
   for (const char of value) {
@@ -250,6 +269,22 @@ export type PluginTab = {
   cards?: PluginCard[]
 }
 
+// A dynamic @mention section the plugin contributes to the chat composer.
+// Users type "@<section>/<name>"; the plugin's page server (dashboard.pages)
+// serves the live entry list as JSON at `path` (default "/mentions"):
+// { "items": [{ "name": "...", "description": "...", "aliases": ["..."],
+// "hint": "..." }] }. First enabled plugin claiming a section wins.
+export type PluginMentionSection = {
+  // The section slug typed after @ (e.g. "stocks" → "@stocks/…").
+  section: string
+  // Menu label in the composer popup and the agent's reference line
+  // (default: the section slug).
+  label?: string
+  // Plugin-server-relative JSON path serving the entry list. Default
+  // "/mentions".
+  path?: string
+}
+
 export type PluginTextbox = {
   renderers?: {
     type: string
@@ -307,6 +342,7 @@ export type PluginManifest = {
   dashboard?: {
     pages?: PluginDashboardPages
     tabs?: PluginTab[]
+    mentions?: PluginMentionSection[]
   }
   textbox?: PluginTextbox
   opencode?: {
@@ -393,6 +429,8 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push(
       "Serves a live dashboard page (API + UI) from the desktop to the dashboard",
     )
+  if (manifest.dashboard?.mentions?.length)
+    summary.push("Adds dynamic @mention entries to the chat composer")
   if (manifest.textbox) summary.push("Extends the chat composer")
   const agents = Object.keys(manifest.opencode?.agents ?? {})
   if (agents.length > 0)
@@ -590,6 +628,11 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     issues.push({
       path: "id",
       message: "id must be 2-63 lowercase letters, digits, or hyphens",
+    })
+  } else if (RESERVED_PLUGIN_IDS.has(id)) {
+    issues.push({
+      path: "id",
+      message: `id "${id}" is reserved by the platform`,
     })
   }
   const name = str(input.name)
@@ -1158,6 +1201,81 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
           }
         }
       }
+
+      // Dynamic @mention sections: each one needs the page server (that is
+      // where the entry list function runs) and a fresh non-reserved slug.
+      const mentions = dashboard.mentions ?? []
+      if (!Array.isArray(mentions) || mentions.length > 4) {
+        issues.push({
+          path: "dashboard.mentions",
+          message: "mentions must be a list (max 4)",
+        })
+      } else if (
+        mentions.length > 0 &&
+        !(isRecord(pages) && typeof pages.entry === "string")
+      ) {
+        issues.push({
+          path: "dashboard.mentions",
+          message: "mentions need dashboard.pages.entry declared",
+        })
+      } else {
+        const seenSections = new Set<string>()
+        for (const [index, mention] of mentions.entries()) {
+          const path = `dashboard.mentions[${index}]`
+          const section = str(mention?.section)
+          if (!section || !SLUG_PATTERN.test(section)) {
+            issues.push({
+              path: `${path}.section`,
+              message: "mention.section must be a slug",
+            })
+          } else if (seenSections.has(section)) {
+            issues.push({
+              path: `${path}.section`,
+              message: "mention.section must be unique",
+            })
+          } else if (RESERVED_MENTION_SECTIONS.has(section)) {
+            issues.push({
+              path: `${path}.section`,
+              message: `mention.section "${section}" is reserved by the platform`,
+            })
+          } else {
+            seenSections.add(section)
+          }
+          const label = mention?.label
+          if (label !== undefined) {
+            if (
+              typeof label !== "string" ||
+              !label.trim() ||
+              label.length > 32
+            ) {
+              issues.push({
+                path: `${path}.label`,
+                message: "mention.label must be a non-empty string (max 32)",
+              })
+            } else if (
+              hasControlChar(label) ||
+              label.includes("<") ||
+              label.includes(">")
+            ) {
+              issues.push({
+                path: `${path}.label`,
+                message: "mention.label must be plain text (no markup)",
+              })
+            }
+          }
+          const mentionPath = mention?.path
+          if (
+            mentionPath !== undefined &&
+            (typeof mentionPath !== "string" || !pluginPathOk(mentionPath))
+          ) {
+            issues.push({
+              path: `${path}.path`,
+              message:
+                "mention.path must be a plugin-server-relative path starting with /",
+            })
+          }
+        }
+      }
     }
   }
 
@@ -1340,6 +1458,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
             ? (input.dashboard.pages as PluginDashboardPages)
             : undefined,
           tabs: (input.dashboard.tabs ?? []) as PluginTab[],
+          mentions: (input.dashboard.mentions ?? []) as PluginMentionSection[],
         }
       : undefined,
     textbox: (input.textbox ?? undefined) as PluginTextbox | undefined,

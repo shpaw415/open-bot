@@ -56,13 +56,26 @@ export function pageCheckoutEntry(
 ): string | null {
   if (row.source !== "local" || !row.localPath) return null
   if (row.localPath.includes("'") || row.localPath.includes("\\")) return null
+  if (entry.includes("'") || entry.includes("\\")) return null
+  // Preferred: the entry is also a files[] payload, so the checkout path is
+  // exactly the installed copy's source. Fall back to <checkout>/<entry> so
+  // local installs hot-reload even when the manifest does not duplicate the
+  // page entry under files[] — the caller still test -f's the result before
+  // spawning, and a missing checkout file drops to the frozen bin.
   const source = (manifest.files ?? []).find(
     (file) => file.name === entry,
   )?.source
-  if (!source || source.includes("'")) return null
-  return `${row.localPath}/${source}`
+  if (source && !source.includes("'")) return `${row.localPath}/${source}`
+  return `${row.localPath}/${entry}`
 }
 
+// Absolute paths only: the resolution runs `test -f <path>` without `--`
+// (dash's builtin test rejects `--` and always failed the check, silently
+// pushing every local install onto the frozen bin), so the path must start
+// with `/` to never parse as an operator.
+export function isPageCheckoutPath(path: string | null): path is string {
+  return typeof path === "string" && path.startsWith("/")
+}
 // The exact bun command line the exec'd server ends up with (exec replaces
 // the shell, argv space-joined) — recorded in <id>.cmd so the stop path can
 // pkill an orphan even when its pidfile was clobbered by a failed spawn.
@@ -312,11 +325,11 @@ async function ensurePluginPageServerInner(
   // Local installs run the checkout copy with --hot (live edits) when it is
   // still on disk; anything else runs the installed bin.
   let checkoutEntry = pageCheckoutEntry(row, manifest, entry)
+  if (!isPageCheckoutPath(checkoutEntry)) checkoutEntry = null
   if (checkoutEntry) {
     const exists = await opencodeExecUser(n.opencode, [
       "test",
       "-f",
-      "--",
       checkoutEntry,
     ])
     if (exists.code !== 0) checkoutEntry = null
@@ -632,6 +645,7 @@ function strippedHeaders(headers: Headers, token: string) {
 async function rewritePageBody(
   upstream: Response,
   prefix: string,
+  storageShim = false,
 ): Promise<Response> {
   const type = upstream.headers.get("content-type") ?? ""
   const html = type.includes("text/html")
@@ -641,7 +655,7 @@ async function rewritePageBody(
   if (bytes.byteLength > 2_000_000) return upstream
   const text = new TextDecoder().decode(bytes)
   const body = html
-    ? rewritePreviewHtml(text, prefix)
+    ? rewritePreviewHtml(text, prefix, storageShim)
     : rewritePreviewCss(text, prefix)
   const headers = new Headers(upstream.headers)
   headers.delete("content-length")
@@ -800,14 +814,29 @@ export function touchPageFrameToken(token: string, now = Date.now()) {
   return grant
 }
 
-function pageFrameCors(response: Response) {
+// Credentialed CORS for the frame path. The sandboxed frame is an opaque
+// origin, so its fetches are cross-origin; edge SSO (Cloudflare Access) only
+// passes them when the request carries the SSO cookie and the response echoes
+// the origin with allow-credentials — "*" is rejected in credentialed mode.
+// Reflect is safe: frame endpoints are gated by the 128-bit random frame
+// token, and no other /api/* response carries CORS headers, so a page that
+// knows the token gains nothing by also sending cookies.
+function pageFrameCors(req: Request, response: Response) {
   const headers = new Headers(response.headers)
-  headers.set("access-control-allow-origin", "*")
+  headers.set(
+    "access-control-allow-origin",
+    req.headers.get("origin") ?? "null",
+  )
+  headers.set("access-control-allow-credentials", "true")
   headers.set(
     "access-control-allow-methods",
     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   )
-  headers.set("access-control-allow-headers", "*")
+  const asked = req.headers.get("access-control-request-headers")
+  if (asked) headers.set("access-control-allow-headers", asked)
+  else headers.delete("access-control-allow-headers")
+  headers.append("vary", "Origin")
+  headers.append("vary", "Access-Control-Request-Headers")
   headers.delete("x-frame-options")
   return new Response(response.body, {
     status: response.status,
@@ -827,26 +856,32 @@ export async function proxyPluginPageFrame(
   server: UpgradeServer,
 ): Promise<Response | undefined> {
   const parsed = parsePageFramePath(url.pathname)
-  if (!parsed) return new Response("not found", { status: 404 })
+  if (!parsed) return pageFrameCors(req, new Response("not found", { status: 404 }))
   if (req.method === "OPTIONS") {
-    return pageFrameCors(new Response(null, { status: 204 }))
+    return pageFrameCors(req, new Response(null, { status: 204 }))
   }
   const grant = touchPageFrameToken(parsed.token)
-  if (!grant) return new Response("unauthorized", { status: 401 })
+  if (!grant) return pageFrameCors(req, new Response("unauthorized", { status: 401 }))
   const row = db.installedPlugin(grant.userId, grant.pluginId)
   if (
     !row ||
     !row.enabled ||
     !(row.manifest as PluginManifest).dashboard?.pages
   ) {
-    return new Response("plugin page not found", { status: 404 })
+    return pageFrameCors(
+      req,
+      new Response("plugin page not found", { status: 404 }),
+    )
   }
   let state = pageStateFor(grant.userId, grant.pluginId)
   if (!state || !(await healthy(grant.userId, grant.pluginId, state.port))) {
     await ensurePluginPageServer(grant.userId, row, hub)
     state = pageStateFor(grant.userId, grant.pluginId)
     if (!state) {
-      return new Response("page server is not running", { status: 502 })
+      return pageFrameCors(
+        req,
+        new Response("page server is not running", { status: 502 }),
+      )
     }
   }
   const base = await endpoint(grant.userId, "opencode", state.port)
@@ -863,7 +898,9 @@ export async function proxyPluginPageFrame(
         queue: [],
       },
     })
-    return ok ? undefined : new Response("upgrade failed", { status: 400 })
+    return ok
+      ? undefined
+      : pageFrameCors(req, new Response("upgrade failed", { status: 400 }))
   }
   const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
   const upstream = await fetch(dest, {
@@ -876,6 +913,10 @@ export async function proxyPluginPageFrame(
   const rewritten = await rewritePageBody(
     upstream,
     `/api/pages/_frame/${parsed.token}`,
+    // Sandboxed opaque origin: keep storage-using pages alive and let edge
+    // SSO cookies ride the page's fetches (see FRAME_STORAGE_SHIM). The
+    // direct /api/pages proxy is session-credentialed and needs no shim.
+    true,
   )
-  return pageFrameCors(rewritten)
+  return pageFrameCors(req, rewritten)
 }

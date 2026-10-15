@@ -21,6 +21,15 @@ export const TTS_MAX_CHARS = 4000
 export const STT_MAX_BYTES = 25 * 1024 * 1024
 export const ttsMaxChars = (text: string) => text.slice(0, TTS_MAX_CHARS)
 
+export const WORKERS_AI_STT_DEFAULT_MODEL = "@cf/openai/whisper-large-v3-turbo"
+// Rows saved before the turbo default keep the old model literally; run them
+// on turbo instead (the old model takes no language hint and is much weaker).
+const LEGACY_WORKERS_AI_STT_MODEL = "@cf/openai/whisper"
+// Only whisper turbo accepts the language/vad extras — smaller whisper
+// deployments reject unknown fields.
+const WORKERS_AI_STT_EXTRAS_MODELS = new Set([WORKERS_AI_STT_DEFAULT_MODEL])
+const DEEPGRAM_STT_DEFAULT_MODEL = "@cf/deepgram/nova-3"
+
 export const voiceProviders: VoiceProviderSpec[] = [
   {
     id: "openai-stt",
@@ -54,7 +63,25 @@ export const voiceProviders: VoiceProviderSpec[] = [
     id: "workers-ai-stt",
     label: "Cloudflare Workers AI (Whisper)",
     kind: "stt",
-    defaultModel: "@cf/openai/whisper",
+    defaultModel: WORKERS_AI_STT_DEFAULT_MODEL,
+    modelOptional: false,
+    defaultVoice: "",
+    account: {
+      label: "Account ID",
+      placeholder: "Cloudflare account ID",
+      required: true,
+    },
+    secret: {
+      label: "API token",
+      placeholder: "Cloudflare API token",
+      required: true,
+    },
+  },
+  {
+    id: "deepgram-stt",
+    label: "Cloudflare Workers AI (Deepgram Nova-3)",
+    kind: "stt",
+    defaultModel: DEEPGRAM_STT_DEFAULT_MODEL,
     modelOptional: false,
     defaultVoice: "",
     account: {
@@ -138,6 +165,7 @@ export function voiceProvidersPublic() {
 
 const voiceVaultSlugs: Record<string, string> = {
   "workers-ai-stt": "cloudflare",
+  "deepgram-stt": "cloudflare",
   "workers-ai-tts": "cloudflare",
   "xai-tts": "xai",
   "openai-stt": "openai",
@@ -257,19 +285,29 @@ export type SttInput = {
 export async function runStt(input: SttInput): Promise<string> {
   const fetchImpl = input.fetchImpl ?? fetch
   if (input.providerId === "workers-ai-stt") {
+    const model =
+      !input.model || input.model === LEGACY_WORKERS_AI_STT_MODEL
+        ? WORKERS_AI_STT_DEFAULT_MODEL
+        : input.model
+    const payload: Record<string, unknown> = {
+      // The whisper REST schema wants raw bytes as a JSON number array,
+      // not a base64 string.
+      audio: Array.from(input.audio),
+    }
+    const language = languageCode(input.language)
+    if (WORKERS_AI_STT_EXTRAS_MODELS.has(model)) {
+      if (language) payload.language = language
+      payload.vad_filter = true
+    }
     const response = await fetchImpl(
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(input.model)}`,
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(model)}`,
       {
         method: "POST",
         headers: {
           authorization: `Bearer ${input.apiKey}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          // The whisper REST schema wants raw bytes as a JSON number array,
-          // not a base64 string.
-          audio: Array.from(input.audio),
-        }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(60_000),
       },
     )
@@ -278,10 +316,49 @@ export async function runStt(input: SttInput): Promise<string> {
         await providerError(response, "Cloudflare Workers AI", "stt"),
       )
     const body = (await response.json()) as {
-      result?: { text?: unknown }
+      result?: { text?: unknown; transcription_info?: { text?: unknown } }
       errors?: unknown
     }
-    return typeof body.result?.text === "string" ? body.result.text.trim() : ""
+    const text = body.result?.text ?? body.result?.transcription_info?.text
+    return typeof text === "string" ? text.trim() : ""
+  }
+  if (input.providerId === "deepgram-stt") {
+    const model = input.model || DEEPGRAM_STT_DEFAULT_MODEL
+    const payload: Record<string, unknown> = {
+      audio: Array.from(input.audio),
+      smart_format: true,
+      punctuate: true,
+    }
+    const language = languageCode(input.language)
+    if (language) payload.language = language
+    const response = await fetchImpl(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(model)}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${input.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(60_000),
+      },
+    )
+    if (!response.ok)
+      throw new Error(
+        await providerError(response, "Cloudflare Workers AI", "stt"),
+      )
+    const body = (await response.json()) as {
+      result?: {
+        results?: {
+          channels?: {
+            alternatives?: { transcript?: unknown }[]
+          }[]
+        }
+      }
+    }
+    const transcript =
+      body.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript
+    return typeof transcript === "string" ? transcript.trim() : ""
   }
   const endpoints: Record<string, string> = {
     "openai-stt": "https://api.openai.com/v1/audio/transcriptions",

@@ -213,6 +213,183 @@ describe("viking skills", () => {
     expect(calls[0]?.url).toBe("http://viking:1933/api/v1/skills/search-web")
   })
 
+  test("treats a 404 delete as gone and creates the skill anyway", async () => {
+    const { calls, fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: { name: "search-web", content: skill.body },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl)
+    await skills.save(skill)
+    expect(calls.some((call) => call.init?.method === "POST" && call.url.endsWith("/skills"))).toBe(true)
+  })
+
+  test("update waits out the indexing 409 before posting the replacement", async () => {
+    let deletes = 0
+    const updated = { ...skill, body: `${skill.body}\n\nUpdated.` }
+    const { calls, fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "DELETE") {
+        deletes += 1
+        if (deletes < 3)
+          return Response.json(
+            { status: "error", error: { message: "conflict" } },
+            { status: 409 },
+          )
+        return { status: "ok", result: {} }
+      }
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: { name: "search-web", content: updated.body },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      deleteWaitMs: 5_000,
+      deletePollDelayMs: 1,
+      confirmAttempts: 1,
+    })
+    await skills.save(updated)
+    expect(deletes).toBe(3)
+    const deleteIndex = calls.findIndex((call) => call.init?.method === "DELETE")
+    const postIndex = calls.findIndex(
+      (call) => call.init?.method === "POST" && call.url.endsWith("/skills"),
+    )
+    expect(postIndex).toBeGreaterThan(deleteIndex)
+  })
+
+  test("save fails with a retryable error when the delete 409 never clears", async () => {
+    const { calls, fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "conflict" } },
+          { status: 409 },
+        )
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      deleteWaitMs: 20,
+      deletePollDelayMs: 1,
+    })
+    await expect(skills.save(skill)).rejects.toThrow("still being indexed")
+    expect(calls.some((call) => call.init?.method === "POST" && call.url.endsWith("/skills"))).toBe(false)
+  })
+
+  test("confirm accepts the overview body when content is absent", async () => {
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            overview: skill.body,
+          },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      confirmAttempts: 2,
+      confirmPollDelayMs: 1,
+    })
+    await skills.save(skill)
+  })
+
+  test("confirm compares normalized: a newline-terminated body still matches", async () => {
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            // Frontmatter + the body with its trailing newline; skillBody()
+            // hands back the trimmed body.
+            content: `---\nname: search-web\ndescription: ${skill.description}\n---\n${skill.body}\n`,
+          },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      confirmAttempts: 2,
+      confirmPollDelayMs: 1,
+    })
+    await skills.save({ ...skill, body: `${skill.body}\n` })
+  })
+
+  test("confirm still fails when the stored body genuinely differs", async () => {
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: { name: "search-web", content: "# something else" },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      confirmAttempts: 2,
+      confirmPollDelayMs: 1,
+    })
+    await expect(skills.save(skill)).rejects.toThrow("read-back never matched")
+  })
+
+  test("remove retries the indexing 409 instead of leaving the skill behind", async () => {
+    let deletes = 0
+    const { calls, fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (method === "DELETE") {
+        deletes += 1
+        if (deletes < 3)
+          return Response.json(
+            { status: "error", error: { message: "conflict" } },
+            { status: 409 },
+          )
+        return { status: "ok", result: {} }
+      }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      deleteWaitMs: 5_000,
+      deletePollDelayMs: 1,
+    })
+    await skills.remove("search-web")
+    expect(deletes).toBe(3)
+  })
+
   test("rejects reserved and empty skills locally", () => {
     expect(() => assertSkillInput({ ...skill, name: "desktop" })).toThrow(
       HttpError,

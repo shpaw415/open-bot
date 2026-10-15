@@ -196,6 +196,29 @@ test("probe ranks text entry, search, content, anchors, chrome — in that order
   expect(PROBE).not.toContain("if (out.length >= max) break")
 })
 
+test("probe and actions cross shadow boundaries", async () => {
+  const { PROBE, actionScript, obnavFindExpr } = (await import("./cdp")) as {
+    PROBE: string
+    actionScript: (action: { kind: string; targetId: string }) => string
+    obnavFindExpr: (idExpr: string) => string
+  }
+  // The probe walks open shadow roots (web-component tiles keep their real
+  // controls there) with a bounded scan.
+  expect(PROBE).toContain("descend(el.shadowRoot)")
+  expect(PROBE).toContain("descend(document)")
+  expect(PROBE).toContain("scanBudget-- <= 0")
+  // Every id-targeting action resolves through the shadow-aware lookup.
+  for (const action of [
+    { kind: "click", targetId: "n7" },
+    { kind: "type", targetId: "n2", text: "hi" },
+    { kind: "enter", targetId: "n2" },
+    { kind: "select", targetId: "n2", label: "opt" },
+  ]) {
+    expect(actionScript(action as never)).toContain("walk(shadow)")
+  }
+  expect(obnavFindExpr('"n3"')).toContain("walk(document)")
+})
+
 test("normalize carries scroll position through the snapshot", () => {
   expect(normalize({ scroll_y: 432 }).scrollY).toBe(432)
   expect(normalize({}).scrollY).toBeUndefined()

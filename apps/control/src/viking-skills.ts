@@ -22,6 +22,26 @@ export type SkillDetail = SkillSummary & {
 
 type FetchLike = typeof fetch
 
+// Field data 2026-10-15: OpenViking answers 409 on DELETE/POST while its
+// background semantic indexing still holds a just-written skill, and the
+// window on a loaded server is 6-15s (once seen: 15s+). Writes themselves
+// land instantly (wait:false) — only the delete gate needs patience.
+const DEFAULT_DELETE_WAIT_MS = 40_000
+const DEFAULT_DELETE_POLL_DELAY_MS = 1_000
+const DEFAULT_CONFIRM_ATTEMPTS = 12
+const DEFAULT_CONFIRM_POLL_DELAY_MS = 1_000
+
+export type VikingSkillsOptions = {
+  deleteWaitMs?: number
+  deletePollDelayMs?: number
+  confirmAttempts?: number
+  confirmPollDelayMs?: number
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
@@ -80,7 +100,14 @@ export function createVikingSkills(
   baseUrl: string,
   apiKey: string,
   fetchImpl: FetchLike = fetch,
+  options: VikingSkillsOptions = {},
 ) {
+  const deleteWaitMs = options.deleteWaitMs ?? DEFAULT_DELETE_WAIT_MS
+  const deletePollDelayMs =
+    options.deletePollDelayMs ?? DEFAULT_DELETE_POLL_DELAY_MS
+  const confirmAttempts = options.confirmAttempts ?? DEFAULT_CONFIRM_ATTEMPTS
+  const confirmPollDelayMs =
+    options.confirmPollDelayMs ?? DEFAULT_CONFIRM_POLL_DELAY_MS
   const root = baseUrl.replace(/\/$/, "")
 
   async function call(path: string, init?: RequestInit) {
@@ -137,11 +164,19 @@ export function createVikingSkills(
       isRecord(result) && typeof result.content === "string"
         ? result.content
         : ""
+    // Newer OpenViking builds split the skill into `content` (full SKILL.md,
+    // frontmatter included) and `overview` (the body after the frontmatter).
+    // Prefer the stripped content; fall back to overview when content is
+    // absent so the read-back keeps working across API shapes.
+    const overview =
+      isRecord(result) && typeof result.overview === "string"
+        ? result.overview
+        : ""
     const description =
       isRecord(result) && typeof result.description === "string"
         ? result.description
         : ""
-    return { name, description, body: skillBody(content) }
+    return { name, description, body: skillBody(content) || overview.trim() }
   }
 
   function data(input: SkillDetail) {
@@ -152,25 +187,37 @@ export function createVikingSkills(
     }
   }
 
-  // A skill written seconds ago is still being indexed server-side; its
-  // DELETE answers 409 until that settles. Retry the conflict briefly so a
-  // quick save-after-save (and the rename's old-name delete) gets through.
+  // A skill written seconds ago is still being indexed server-side; DELETE
+  // (and POST-over-existing) answer 409 until that settles — observed for
+  // 6-15s on a loaded OpenViking. Poll the conflict within the delete budget;
+  // 404 counts as gone (fresh create). Giving up here is what made reinstalls
+  // fail their read-back: the swallowed delete left the old skill in place
+  // while POST either 409'd or left the stale body visible to the confirm.
   async function deleteWithRetry(name: string) {
+    const deadline = Date.now() + deleteWaitMs
     for (let attempt = 0; ; attempt++) {
       try {
         return await call(`/api/v1/skills/${encodeURIComponent(name)}`, {
           method: "DELETE",
         })
       } catch (error) {
-        if (
-          !(error instanceof HttpError) ||
-          error.status !== 409 ||
-          attempt >= 5
-        )
-          throw error
-        await new Promise((resolve) => setTimeout(resolve, 700))
+        if (!(error instanceof HttpError)) throw error
+        if (error.status === 404) return null
+        if (error.status !== 409 || Date.now() >= deadline) throw error
+        await sleep(deletePollDelayMs)
       }
     }
+  }
+
+  function indexingError(name: string, error: unknown) {
+    if (error instanceof HttpError && error.status === 409) {
+      return new HttpError(
+        503,
+        `${name} is still being indexed by OpenViking — retry in a minute (the 409 clears once indexing settles)`,
+        "skill_indexing",
+      )
+    }
+    return error
   }
 
   // wait:false returns after the files are written; semantic indexing keeps
@@ -178,13 +225,18 @@ export function createVikingSkills(
   // two minutes (and the Skills editor past its timeout) on a loaded
   // OpenViking — and a client timeout during a sync wait still leaves the
   // write committed, so blind retries created duplicates. Reads see the new
-  // body immediately, which is what this confirm checks.
+  // body immediately (once the delete gate has actually landed), which is
+  // what this confirm checks.
   async function confirmSave(input: SkillDetail) {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500))
+    // skillBody() trims the stored body, while manifest bodies typically end
+    // with a newline — compare normalized or every newline-terminated skill
+    // "fails" the confirm forever (the 2026-10-15 install outage).
+    const want = input.body.trim()
+    for (let attempt = 0; attempt < confirmAttempts; attempt++) {
+      if (attempt > 0) await sleep(confirmPollDelayMs)
       try {
         const saved = await get(input.name)
-        if (saved.body === input.body) return
+        if (saved.body === want) return
       } catch {
         // not visible yet — poll again
       }
@@ -261,8 +313,14 @@ export function createVikingSkills(
       } else {
         // Same-name updates used to go through PUT, which wedges on a loaded
         // OpenViking (no response even at 120 s while POST answers fast).
-        // DELETE + POST is the same replace through the fast paths.
-        await deleteWithRetry(input.name).catch(() => {})
+        // DELETE + POST is the same replace through the fast paths. The
+        // delete must actually land before the POST: swallowing a 409 here
+        // left the old skill serving stale content to the confirm below.
+        try {
+          await deleteWithRetry(input.name)
+        } catch (error) {
+          throw indexingError(input.name, error)
+        }
         await call("/api/v1/skills", { method: "POST", body: payload })
       }
       await confirmSave(input)
@@ -271,9 +329,13 @@ export function createVikingSkills(
     async remove(name: string) {
       const nameError = skillNameError(name)
       if (nameError) throw new HttpError(400, nameError, "skill_name")
-      await call(`/api/v1/skills/${encodeURIComponent(name)}`, {
-        method: "DELETE",
-      })
+      // Uninstalls and install rollbacks go through here; a bare DELETE left
+      // orphan skills behind whenever indexing was still holding the name.
+      try {
+        await deleteWithRetry(name)
+      } catch (error) {
+        throw indexingError(name, error)
+      }
     },
   }
 }

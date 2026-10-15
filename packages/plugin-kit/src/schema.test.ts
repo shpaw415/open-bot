@@ -45,6 +45,9 @@ describe("plugin schema", () => {
     expect(top.tools.items.properties.name.pattern).toBe(slug)
     expect(top.configs.items.properties.key.pattern).toBe(slug)
     expect(top.dashboard.properties.tabs.items.properties.id.pattern).toBe(slug)
+    expect(
+      top.dashboard.properties.mentions.items.properties.section.pattern,
+    ).toBe(slug)
     expect(top.textbox.properties.renderers.items.properties.type.pattern).toBe(
       slug,
     )
@@ -123,6 +126,13 @@ describe("plugin schema", () => {
     expect(
       top.dashboard.properties.tabs.items.properties.pollSeconds.maximum,
     ).toBe(3600)
+    expect(top.dashboard.properties.mentions.maxItems).toBe(4)
+    expect(
+      top.dashboard.properties.mentions.items.properties.label.maxLength,
+    ).toBe(32)
+    expect(
+      top.dashboard.properties.mentions.items.properties.path.maxLength,
+    ).toBe(200)
     expect(top.setup.properties.commands.maxItems).toBe(16)
     expect(top.setup.properties.commands.items.maxLength).toBe(500)
     expect(

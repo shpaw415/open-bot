@@ -60,6 +60,7 @@ export type InstalledPluginInfo = {
   permissions: string[]
   setupCommands?: string[]
   init?: { ranAt: number; ok: boolean; output: string } | null
+  mentionClashes?: { section: string; owner: string }[]
   settings?: Record<string, string>
   updateAvailable?: string | null
   manifest: {
@@ -90,6 +91,11 @@ export type InstalledPluginInfo = {
         dataUrl?: string
         pollSeconds?: number
         cards?: PluginCardSpec[]
+      }[]
+      mentions?: {
+        section: string
+        label?: string
+        path?: string
       }[]
     }
     textbox?: PluginTextboxManifest

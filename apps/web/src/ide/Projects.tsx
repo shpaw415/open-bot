@@ -1,13 +1,16 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
+import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "@shpaw415/mui-lite/Dialog"
+import Divider from "@shpaw415/mui-lite/Divider"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
+import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
@@ -16,10 +19,27 @@ import { type ReactNode, useCallback, useEffect, useState } from "react"
 import { api } from "../api"
 import type { EventStream } from "../hooks"
 import { useMobile } from "../hooks"
-import { AddIcon, DeleteIcon, FolderIcon } from "../icons"
+import {
+  AddIcon,
+  ChevronRightIcon,
+  DeleteIcon,
+  FolderIcon,
+  RefreshIcon,
+} from "../icons"
 import { Ide } from "./Ide"
 import { groupProjects } from "./project-groups"
 import type { ProjectInfo } from "./types"
+
+const EASE = "cubic-bezier(0.2, 0, 0, 1)"
+const SKELETON_ROWS = ["a", "b", "c", "d", "e", "f"]
+const ROW_SHADOW =
+  "0 1px 2px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.08)"
+const BORDER_REST = "rgba(var(--text-main), 0.14)"
+const META = "rgba(var(--text-main), 0.62)"
+const META_FADED = "rgba(var(--text-main), 0.45)"
+
+const NARROW = "@media (max-width: 419.95px)"
+const REDUCED = "@media (prefers-reduced-motion: reduce)"
 
 function slugify(name: string): string {
   return name
@@ -39,79 +59,386 @@ function createdLabel(ms: number): string {
   })
 }
 
+function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return "•"
+  return words
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase()
+}
+
+const tint = {
+  general: {
+    background: "rgba(var(--bg-primary-main), 0.14)",
+    border: "rgba(var(--bg-primary-main), 0.30)",
+    color: "rgb(var(--bg-primary-main))",
+  },
+  plugin: {
+    background: "rgba(var(--bg-secondary-main), 0.16)",
+    border: "rgba(var(--bg-secondary-main), 0.30)",
+    color: "rgb(var(--bg-secondary-main))",
+  },
+} as const
+
 function ProjectCard({
   project,
+  plugin,
   onOpen,
   onRemove,
 }: {
   project: ProjectInfo
+  plugin: boolean
   onOpen: (project: ProjectInfo) => void
   onRemove: (project: ProjectInfo) => void
 }) {
+  const palette = plugin ? tint.plugin : tint.general
+  const narrow = useMobile(419.95)
   return (
-    <Stack
-      direction="row"
-      spacing={1.5}
-      alignItems="center"
+    <Box
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${project.name}`}
+      onClick={() => onOpen(project)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault()
+          onOpen(project)
+        }
+      }}
       sx={{
-        p: 1.25,
-        borderRadius: 2,
-        border: 1,
-        borderColor: "divider",
+        display: "flex",
+        alignItems: "center",
+        gap: 1.5,
+        minHeight: narrow ? 68 : 64,
+        p: narrow ? "10px 12px" : "12px 12px 12px 14px",
+        borderRadius: "16px",
+        borderStyle: "solid",
+        borderWidth: "1px",
+        borderColor: BORDER_REST,
         backgroundColor: "background.paper",
         cursor: "pointer",
-        "&:hover": { borderColor: "primary.main" },
+        transition: `border-color 150ms ${EASE}, background-color 150ms ${EASE}, transform 180ms ${EASE}, box-shadow 180ms ${EASE}`,
+        "&:hover": {
+          borderColor: "rgba(var(--bg-primary-main), 0.55) !important",
+          backgroundColor: "action.hover !important",
+          transform: "translateY(-1px)",
+          boxShadow: ROW_SHADOW,
+          "& .proj-chevron": { opacity: 1 },
+        },
+        "&:active": { transform: "scale(0.99)" },
+        "&:focus-visible": {
+          outline: "2px solid",
+          outlineColor: "primary.main",
+          outlineOffset: "2px",
+          backgroundColor: "action.hover !important",
+        },
+        [REDUCED]: {
+          transition: "none",
+          "&:hover, &:active": { transform: "none", boxShadow: "none" },
+        },
       }}
-      onClick={() => onOpen(project)}
     >
       <Box
         sx={{
-          width: 38,
-          height: 38,
-          borderRadius: 1.5,
+          width: narrow ? 36 : 40,
+          height: narrow ? 36 : 40,
+          borderRadius: narrow ? "10px" : "12px",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          borderColor: palette.border,
+          backgroundColor: palette.background,
+          color: palette.color,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
-          backgroundColor: "action.hover",
-          color: "#c09553",
+          position: "relative",
+          userSelect: "none",
         }}
       >
-        <FolderIcon />
+        <Typography
+          sx={{
+            fontSize: 15,
+            fontWeight: 700,
+            lineHeight: 1,
+            letterSpacing: "0.02em",
+          }}
+        >
+          {initials(project.name)}
+        </Typography>
+        {plugin ? (
+          <Box
+            sx={{
+              position: "absolute",
+              top: -3,
+              right: -3,
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              backgroundColor: tint.plugin.color,
+              border: "2px solid",
+              borderColor: "background.paper",
+              boxSizing: "content-box",
+            }}
+          />
+        ) : null}
       </Box>
-      <Stack sx={{ flex: 1, minWidth: 0 }}>
-        <Typography sx={{ fontWeight: 600 }}>{project.name}</Typography>
+      <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
+        <ToolTip title={project.name}>
+          <Typography
+            sx={{
+              fontSize: 15,
+              fontWeight: 600,
+              lineHeight: "22px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {project.name}
+          </Typography>
+        </ToolTip>
+        <ToolTip title={project.path}>
+          <Typography
+            sx={{
+              fontSize: 12,
+              lineHeight: "18px",
+              color: META,
+              fontFamily:
+                "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {project.path}
+          </Typography>
+        </ToolTip>
+      </Stack>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ flexShrink: 0 }}
+      >
         <Typography
           variant="caption"
           sx={{
-            color: "text.secondary",
-            fontFamily: "monospace",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
+            color: META,
+            fontWeight: 500,
+            fontVariantNumeric: "tabular-nums",
             whiteSpace: "nowrap",
+            userSelect: "none",
           }}
         >
-          {project.path}
+          {createdLabel(project.createdAt)}
         </Typography>
+        <Box
+          className="proj-divider"
+          sx={{
+            width: 1,
+            height: 20,
+            backgroundColor: "divider",
+            [NARROW]: { display: "none" },
+          }}
+        />
+        <Box
+          className="proj-chevron"
+          sx={{
+            display: "flex",
+            color: META_FADED,
+            opacity: 0.7,
+            transition: `opacity 150ms ${EASE}`,
+            [NARROW]: { display: "none" },
+          }}
+        >
+          <ChevronRightIcon width={18} height={18} />
+        </Box>
+        <Box
+          className="proj-del"
+          sx={{
+            display: "flex",
+            "& svg": { color: META },
+            "& button:hover": {
+              backgroundColor: "rgba(var(--bg-error-main), 0.10) !important",
+            },
+            "& button:hover svg": {
+              color: "rgb(var(--bg-error-main))",
+            },
+          }}
+        >
+          <ToolTip title="Remove project link">
+            <IconButton
+              size="small"
+              aria-label={`Remove ${project.name}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                onRemove(project)
+              }}
+            >
+              <DeleteIcon width={18} height={18} />
+            </IconButton>
+          </ToolTip>
+        </Box>
       </Stack>
+    </Box>
+  )
+}
+
+function SectionHeader({
+  label,
+  count,
+  hint,
+  palette,
+}: {
+  label: string
+  count: number
+  hint?: string
+  palette: (typeof tint)["general"] | (typeof tint)["plugin"]
+}) {
+  return (
+    <Stack
+      direction="row"
+      spacing={1}
+      alignItems="center"
+      component="h3"
+      sx={{ m: 0, mt: 2.5, mb: 1, px: 0.25 }}
+    >
       <Typography
         variant="caption"
-        sx={{ color: "text.secondary", flexShrink: 0 }}
+        sx={{
+          color: "text.secondary",
+          fontWeight: 700,
+          fontSize: 11,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          lineHeight: "20px",
+        }}
       >
-        {createdLabel(project.createdAt)}
+        {label}
       </Typography>
-      <ToolTip title="Remove project link">
-        <IconButton
-          size="small"
-          aria-label={`Remove ${project.name}`}
-          onClick={(event) => {
-            event.stopPropagation()
-            onRemove(project)
+      <Chip
+        size="small"
+        sx={{
+          height: 20,
+          borderRadius: "8px",
+          bgcolor: palette.background,
+          color: palette.color,
+          "& .MUI_Chip_Content": {
+            padding: 0,
+            paddingRight: "8px",
+            paddingLeft: "8px",
+            fontSize: 12,
+            fontWeight: 600,
+            lineHeight: "20px",
+          },
+        }}
+      >
+        {count}
+      </Chip>
+      {hint ? (
+        <Typography
+          variant="caption"
+          sx={{
+            color: META_FADED,
+            ml: "auto",
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+            display: { xs: "none", md: "block" },
           }}
         >
-          <DeleteIcon />
-        </IconButton>
-      </ToolTip>
+          {hint}
+        </Typography>
+      ) : null}
+    </Stack>
+  )
+}
+
+function SkeletonRow() {
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 1.5,
+        minHeight: 64,
+        p: "12px 12px 12px 14px",
+        borderRadius: "16px",
+        borderStyle: "solid",
+        borderWidth: "1px",
+        borderColor: BORDER_REST,
+        backgroundColor: "background.paper",
+      }}
+    >
+      <Skeleton variant="rounded" width={40} height={40} />
+      <Stack spacing={1} sx={{ flex: 1 }}>
+        <Skeleton variant="text" width="55%" height={15} />
+        <Skeleton variant="text" width="85%" height={12} />
+      </Stack>
+      <Skeleton variant="rounded" width={48} height={14} />
+    </Box>
+  )
+}
+
+function StatePanel({
+  glyph,
+  title,
+  body,
+  action,
+}: {
+  glyph: ReactNode
+  title: string
+  body: string
+  action?: ReactNode
+}) {
+  return (
+    <Stack
+      alignItems="center"
+      spacing={1.5}
+      sx={{ py: 8, px: 3, maxWidth: 420, mx: "auto", textAlign: "center" }}
+    >
+      <Box
+        sx={{
+          position: "relative",
+          width: 120,
+          height: 120,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          mb: 0.5,
+        }}
+      >
+        <Box
+          sx={{
+            position: "absolute",
+            inset: 0,
+            borderRadius: "50%",
+            border: "1px dashed",
+            borderColor: "divider",
+          }}
+        />
+        <Box
+          sx={{
+            width: 96,
+            height: 96,
+            borderRadius: "50%",
+            backgroundColor: "action.hover",
+            color: "text.secondary",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          {glyph}
+        </Box>
+      </Box>
+      <Typography sx={{ fontSize: 16, fontWeight: 600 }}>{title}</Typography>
+      <Typography variant="body2" sx={{ color: "text.secondary" }}>
+        {body}
+      </Typography>
+      {action}
     </Stack>
   )
 }
@@ -128,6 +455,7 @@ export function Projects({
   const mobile = useMobile()
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
   const [error, setError] = useState("")
+  const [loadError, setLoadError] = useState("")
   const [selected, setSelected] = useState<ProjectInfo | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [name, setName] = useState("")
@@ -137,9 +465,12 @@ export function Projects({
 
   const load = useCallback(() => {
     api<{ projects: ProjectInfo[] }>("/api/projects")
-      .then((body) => setProjects(body.projects ?? []))
+      .then((body) => {
+        setProjects(body.projects ?? [])
+        setLoadError("")
+      })
       .catch((caught) =>
-        setError(caught instanceof Error ? caught.message : "load failed"),
+        setLoadError(caught instanceof Error ? caught.message : "load failed"),
       )
   }, [])
 
@@ -223,90 +554,137 @@ export function Projects({
 
   const slug = slugify(name)
   const grouped = projects ? groupProjects(projects) : null
+  const total = projects?.length ?? 0
+  const loading = projects === null && !loadError
 
   return (
-    <Stack
-      sx={{ height: "100%", minHeight: 0, p: mobile ? 0.75 : 1, gap: 0.75 }}
+    <Box
+      sx={{
+        height: "100%",
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        p: mobile ? 2 : 2.5,
+      }}
     >
-      <Stack direction="row" spacing={1} alignItems="center">
-        <Typography variant="h6" sx={{ flex: 1 }}>
-          Projects
-        </Typography>
-        <Button
-          size="small"
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => setCreateOpen(true)}
-        >
-          New project
-        </Button>
-      </Stack>
-      {error ? (
-        <Alert severity="error" onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
-      {projects === null ? (
-        <Stack alignItems="center" sx={{ py: 6 }}>
-          <CircularProgress />
-        </Stack>
-      ) : projects.length === 0 ? (
+      <Stack
+        sx={{ width: "100%", maxWidth: 880, mx: "auto", minHeight: 0, flex: 1 }}
+      >
         <Stack
-          alignItems="center"
-          spacing={1}
-          sx={{ py: 8, color: "text.secondary" }}
+          direction="row"
+          alignItems="flex-end"
+          spacing={2}
+          sx={{ flexWrap: "wrap", rowGap: 1 }}
         >
-          <FolderIcon width={44} height={44} style={{ opacity: 0.4 }} />
-          <Typography>No projects yet</Typography>
-          <Typography variant="body2" sx={{ color: "text.secondary" }}>
-            A project is a folder in the desktop workspace you can browse here
-            and mention with @projects in chat.
-          </Typography>
+          <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="h6">Projects</Typography>
+            <Typography variant="caption" sx={{ color: META }}>
+              {loading
+                ? "Loading workspaces…"
+                : `${total} workspace${total === 1 ? "" : "s"}`}
+            </Typography>
+          </Stack>
           <Button
-            variant="outlined"
-            startIcon={<AddIcon />}
+            variant="contained"
+            startIcon={<AddIcon width={18} height={18} />}
             onClick={() => setCreateOpen(true)}
           >
             New project
           </Button>
         </Stack>
-      ) : (
-        <Stack spacing={1} sx={{ overflowY: "auto", minHeight: 0, pb: 1 }}>
-          {grouped && grouped.plugins.length > 0 ? (
-            <>
-              <Typography
-                variant="caption"
-                sx={{
-                  color: "text.secondary",
-                  fontWeight: 600,
-                  px: 1.25,
-                  pt: 0.5,
-                  textTransform: "uppercase",
-                  letterSpacing: 0.8,
-                }}
+        {mobile ? null : <Divider sx={{ mt: 2, mb: 0.5 }} />}
+        {error ? (
+          <Alert severity="error" onClose={() => setError("")} sx={{ mt: 1.5 }}>
+            {error}
+          </Alert>
+        ) : null}
+        {loading ? (
+          <Stack
+            spacing={1.25}
+            sx={{ overflowY: "auto", mt: 2 }}
+            aria-busy="true"
+          >
+            {SKELETON_ROWS.map((row) => (
+              <SkeletonRow key={row} />
+            ))}
+          </Stack>
+        ) : loadError ? (
+          <StatePanel
+            glyph={<RefreshIcon width={40} height={40} />}
+            title="Couldn't load projects"
+            body="Check the connection and try again."
+            action={
+              <Button
+                variant="outlined"
+                startIcon={<RefreshIcon width={18} height={18} />}
+                onClick={load}
               >
-                Plugins
-              </Typography>
-              {grouped.plugins.map((project) => (
-                <ProjectCard
-                  key={project.id}
-                  project={project}
-                  onOpen={setSelected}
-                  onRemove={setRemoving}
+                Retry
+              </Button>
+            }
+          />
+        ) : total === 0 ? (
+          <StatePanel
+            glyph={
+              <FolderIcon width={44} height={44} style={{ opacity: 0.7 }} />
+            }
+            title="No projects yet"
+            body="Create a workspace folder to open it in the IDE and mention it with @projects in chat. Plugin workspaces are grouped under Plugins."
+            action={
+              <Button
+                variant="outlined"
+                startIcon={<AddIcon width={18} height={18} />}
+                onClick={() => setCreateOpen(true)}
+              >
+                New project
+              </Button>
+            }
+          />
+        ) : (
+          <Stack
+            spacing={1.25}
+            sx={{ overflowY: "auto", minHeight: 0, mt: 1, pb: 1 }}
+          >
+            {grouped && grouped.plugins.length > 0 ? (
+              <>
+                <SectionHeader
+                  label="Plugins"
+                  count={grouped.plugins.length}
+                  hint="~/plugins-create"
+                  palette={tint.plugin}
                 />
-              ))}
-            </>
-          ) : null}
-          {grouped?.general.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              onOpen={setSelected}
-              onRemove={setRemoving}
-            />
-          ))}
-        </Stack>
-      )}
+                {grouped.plugins.map((project) => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    plugin
+                    onOpen={setSelected}
+                    onRemove={setRemoving}
+                  />
+                ))}
+              </>
+            ) : null}
+            {grouped && grouped.general.length > 0 ? (
+              <>
+                <SectionHeader
+                  label="General"
+                  count={grouped.general.length}
+                  palette={tint.general}
+                />
+                {grouped.general.map((project) => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    plugin={false}
+                    onOpen={setSelected}
+                    onRemove={setRemoving}
+                  />
+                ))}
+              </>
+            ) : null}
+          </Stack>
+        )}
+      </Stack>
 
       <Dialog open={createOpen} onClose={() => !busy && setCreateOpen(false)}>
         <DialogTitle>New project</DialogTitle>
@@ -369,7 +747,7 @@ export function Projects({
         open={removing !== null}
         onClose={() => !busy && setRemoving(null)}
       >
-        <DialogTitle>Remove project link?</DialogTitle>
+        <DialogTitle>Remove “{removing?.name}”?</DialogTitle>
         <DialogContent>
           <Typography>
             {removing?.name} will no longer appear here or in @projects. Files
@@ -390,6 +768,6 @@ export function Projects({
           </Button>
         </DialogActions>
       </Dialog>
-    </Stack>
+    </Box>
   )
 }

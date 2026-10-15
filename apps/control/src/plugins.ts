@@ -368,6 +368,7 @@ function publicInstalled(
     permissions: pluginPermissionSummary(manifest),
     setupCommands,
     init: row.applied?.init ?? null,
+    mentionClashes: row.applied?.mentionClashes ?? [],
     settings,
     updateAvailable:
       row.source !== "local" &&

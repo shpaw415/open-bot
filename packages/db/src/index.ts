@@ -329,6 +329,9 @@ export type PluginAppliedLog = {
   agentsMd?: boolean
   configGuide?: boolean
   init?: { ranAt: number; ok: boolean; output: string }
+  // Mention slugs this plugin declared that another enabled plugin already
+  // owns. First enabled install wins; the loser keeps the warning.
+  mentionClashes?: { section: string; owner: string }[]
 }
 
 export type InstalledPluginSource = "marketplace" | "local"
@@ -1483,6 +1486,11 @@ export function openDatabase(path: string) {
         personaId?: string | null
         runKind?: CronRunKind
         script?: string | null
+        kind?: CronJob["kind"]
+        cronExpr?: string | null
+        everySeconds?: number | null
+        atMs?: number | null
+        deleteAfterRun?: boolean
       },
     ) {
       const job = this.cronJobById(id, userId)
@@ -1505,6 +1513,18 @@ export function openDatabase(path: string) {
             changes.personaId !== undefined ? changes.personaId : job.personaId,
           runKind: changes.runKind ?? job.runKind,
           script: changes.script !== undefined ? changes.script : job.script,
+          kind: changes.kind ?? job.kind,
+          cronExpr:
+            changes.cronExpr !== undefined ? changes.cronExpr : job.cronExpr,
+          everySeconds:
+            changes.everySeconds !== undefined
+              ? changes.everySeconds
+              : job.everySeconds,
+          atMs: changes.atMs !== undefined ? changes.atMs : job.atMs,
+          deleteAfterRun:
+            changes.deleteAfterRun !== undefined
+              ? changes.deleteAfterRun
+              : job.deleteAfterRun,
         })
         .where(eq(cronJobs.id, id))
         .run()

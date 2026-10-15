@@ -596,6 +596,51 @@ describe("cron store", () => {
     expect(db.cronJobs("a")).toHaveLength(1)
   })
 
+  test("updates replace the whole schedule in place", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createCronJob(cron({ id: "s1", userId: "a", everySeconds: 180 }))
+    const toCron = db.updateCronJob("s1", "a", {
+      kind: "cron",
+      cronExpr: "0 * * * *",
+      everySeconds: null,
+      atMs: null,
+      deleteAfterRun: false,
+    })
+    expect(toCron?.kind).toBe("cron")
+    expect(toCron?.cronExpr).toBe("0 * * * *")
+    expect(toCron?.everySeconds).toBeNull()
+    expect(toCron?.atMs).toBeNull()
+    expect(toCron?.deleteAfterRun).toBe(false)
+    const toAt = db.updateCronJob("s1", "a", {
+      kind: "at",
+      atMs: 1_800_000_000_000,
+      cronExpr: null,
+      everySeconds: null,
+      deleteAfterRun: true,
+    })
+    expect(toAt?.kind).toBe("at")
+    expect(toAt?.atMs).toBe(1_800_000_000_000)
+    expect(toAt?.cronExpr).toBeNull()
+    expect(toAt?.deleteAfterRun).toBe(true)
+    const toEvery = db.updateCronJob("s1", "a", {
+      kind: "every",
+      everySeconds: 3600,
+      atMs: null,
+      deleteAfterRun: false,
+    })
+    expect(toEvery?.kind).toBe("every")
+    expect(toEvery?.everySeconds).toBe(3600)
+    expect(toEvery?.atMs).toBeNull()
+    expect(toEvery?.deleteAfterRun).toBe(false)
+    // Unrelated updates keep the schedule.
+    const untouched = db.updateCronJob("s1", "a", { name: "keep" })
+    expect(untouched?.kind).toBe("every")
+    expect(untouched?.everySeconds).toBe(3600)
+  })
+
   test("returns due jobs and records runs, sessions, and next runs", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),

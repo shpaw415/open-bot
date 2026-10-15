@@ -45,16 +45,23 @@ function freshDb() {
 
 describe("voice providers", () => {
   test("catalog has stt and tts entries with public shapes", () => {
-    expect(voiceProviders.filter((item) => item.kind === "stt").length).toBe(3)
+    expect(voiceProviders.filter((item) => item.kind === "stt").length).toBe(4)
     expect(voiceProviders.filter((item) => item.kind === "tts").length).toBe(3)
     const pub = voiceProvidersPublic()
     expect(pub[0]).not.toHaveProperty("secret.required")
     expect(pub.find((item) => item.id === "xai-tts")?.modelOptional).toBe(true)
     expect(voiceProviderById("openai-stt")?.defaultModel).toBe("whisper-1")
+    expect(voiceProviderById("workers-ai-stt")?.defaultModel).toBe(
+      "@cf/openai/whisper-large-v3-turbo",
+    )
+    expect(voiceProviderById("deepgram-stt")?.defaultModel).toBe(
+      "@cf/deepgram/nova-3",
+    )
   })
 
   test("vault slugs reuse existing keys", () => {
     expect(voiceVaultSlug("workers-ai-stt")).toBe("cloudflare")
+    expect(voiceVaultSlug("deepgram-stt")).toBe("cloudflare")
     expect(voiceVaultSlug("workers-ai-tts")).toBe("cloudflare")
     expect(voiceVaultSlug("xai-tts")).toBe("xai")
     expect(voiceVaultSlug("openai-stt")).toBe("openai")
@@ -125,13 +132,13 @@ describe("voice providers", () => {
     expect(resolved.ttsSource).toBe("setup")
   })
 
-  test("runStt posts a byte array to workers ai", async () => {
+  test("runStt posts a byte array plus language and vad to workers ai", async () => {
     let seen: { url: string; init: RequestInit } | null = null
     const text = await runStt({
       providerId: "workers-ai-stt",
       apiKey: "tok",
       accountId: "acc",
-      model: "@cf/openai/whisper",
+      model: "@cf/openai/whisper-large-v3-turbo",
       language: "fr-CA",
       audio: new Uint8Array([1, 2, 3]),
       mime: "audio/webm",
@@ -145,10 +152,114 @@ describe("voice providers", () => {
     expect(text).toBe("bonjour")
     const call = seen as unknown as { url: string; init: RequestInit } | null
     expect(decodeURIComponent(call?.url ?? "")).toContain(
-      "api.cloudflare.com/client/v4/accounts/acc/ai/run/@cf/openai/whisper",
+      "api.cloudflare.com/client/v4/accounts/acc/ai/run/@cf/openai/whisper-large-v3-turbo",
     )
-    const body = JSON.parse(String(call?.init.body)) as { audio: number[] }
+    const body = JSON.parse(String(call?.init.body)) as {
+      audio: number[]
+      language?: string
+      vad_filter?: boolean
+    }
     expect(body.audio).toEqual([1, 2, 3])
+    expect(body.language).toBe("fr")
+    expect(body.vad_filter).toBe(true)
+  })
+
+  test("runStt remaps the legacy whisper model to turbo", async () => {
+    let seen: { url: string; init: RequestInit } | null = null
+    await runStt({
+      providerId: "workers-ai-stt",
+      apiKey: "tok",
+      accountId: "acc",
+      model: "@cf/openai/whisper",
+      language: "fr",
+      audio: new Uint8Array([1]),
+      mime: "audio/webm",
+      fetchImpl: async (url, init) => {
+        seen = { url: String(url), init: init ?? {} }
+        return new Response(JSON.stringify({ result: { text: "salut" } }), {
+          status: 200,
+        })
+      },
+    })
+    const call = seen as unknown as { url: string; init: RequestInit } | null
+    const url = decodeURIComponent(call?.url ?? "")
+    expect(url).toContain("/ai/run/@cf/openai/whisper-large-v3-turbo")
+    expect(url).not.toMatch(/\/ai\/run\/@cf\/openai\/whisper$/)
+    const body = JSON.parse(String(call?.init.body)) as {
+      language?: string
+      vad_filter?: boolean
+    }
+    expect(body.language).toBe("fr")
+    expect(body.vad_filter).toBe(true)
+  })
+
+  test("runStt omits the language hint on auto but keeps vad", async () => {
+    let seen: { url: string; init: RequestInit } | null = null
+    await runStt({
+      providerId: "workers-ai-stt",
+      apiKey: "tok",
+      accountId: "acc",
+      model: "@cf/openai/whisper-large-v3-turbo",
+      language: "auto",
+      audio: new Uint8Array([1]),
+      mime: "audio/webm",
+      fetchImpl: async (url, init) => {
+        seen = { url: String(url), init: init ?? {} }
+        return new Response(JSON.stringify({ result: { text: "hi" } }), {
+          status: 200,
+        })
+      },
+    })
+    const call = seen as unknown as { url: string; init: RequestInit } | null
+    const body = JSON.parse(String(call?.init.body)) as {
+      language?: string
+      vad_filter?: boolean
+    }
+    expect(body.language).toBeUndefined()
+    expect(body.vad_filter).toBe(true)
+  })
+
+  test("runStt parses the deepgram nova-3 transcript shape", async () => {
+    let seen: { url: string; init: RequestInit } | null = null
+    const text = await runStt({
+      providerId: "deepgram-stt",
+      apiKey: "tok",
+      accountId: "acc",
+      model: "@cf/deepgram/nova-3",
+      language: "fr-CA",
+      audio: new Uint8Array([4, 5]),
+      mime: "audio/webm",
+      fetchImpl: async (url, init) => {
+        seen = { url: String(url), init: init ?? {} }
+        return new Response(
+          JSON.stringify({
+            result: {
+              results: {
+                channels: [
+                  { alternatives: [{ transcript: "  Bonjour le monde  " }] },
+                ],
+              },
+            },
+          }),
+          { status: 200 },
+        )
+      },
+    })
+    expect(text).toBe("Bonjour le monde")
+    const call = seen as unknown as { url: string; init: RequestInit } | null
+    expect(decodeURIComponent(call?.url ?? "")).toContain(
+      "api.cloudflare.com/client/v4/accounts/acc/ai/run/@cf/deepgram/nova-3",
+    )
+    const body = JSON.parse(String(call?.init.body)) as {
+      audio: number[]
+      language?: string
+      smart_format?: boolean
+      punctuate?: boolean
+    }
+    expect(body.audio).toEqual([4, 5])
+    expect(body.language).toBe("fr")
+    expect(body.smart_format).toBe(true)
+    expect(body.punctuate).toBe(true)
   })
 
   test("runStt posts multipart to groq with a normalized language", async () => {

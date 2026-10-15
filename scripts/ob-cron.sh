@@ -12,11 +12,11 @@ Usage:
   ob-cron add --name NAME (--message TEXT | --script TEXT | both) (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601) [--run prompt|script|both|auto] [--model PROVIDER/MODEL] [--persona ID]
   ob-cron list
   ob-cron models
-  ob-cron set ID [--run prompt|script|both|auto] [--script TEXT | --clear-script] [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
+  ob-cron set ID [--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601] [--run prompt|script|both|auto] [--script TEXT | --clear-script] [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
   ob-cron remove ID
   ob-cron run ID
 
-Schedules (exactly one on add):
+Schedules (exactly one on add; set replaces the schedule in place):
   --every SECONDS   recurring interval, minimum 60
   --cron "EXPR"     5-field UTC cron expression, e.g. "0 9 * * 1-5"
   --at ISO8601      one-shot run, e.g. 2026-12-01T09:00:00Z
@@ -217,6 +217,9 @@ case "$cmd" in
     run=""
     script=""
     clear_script=0
+    every=""
+    cron=""
+    at=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --run)
@@ -243,6 +246,15 @@ case "$cmd" in
         --message)
           [ $# -ge 2 ] || { usage; exit 2; }
           message="$2"; shift 2 ;;
+        --every)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          every="$2"; shift 2 ;;
+        --cron)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          cron="$2"; shift 2 ;;
+        --at)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          at="$2"; shift 2 ;;
         *)
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
@@ -263,11 +275,39 @@ case "$cmd" in
       echo "ob-cron: --run must be prompt, script, both, or auto" >&2
       exit 2
     fi
-    if [ -z "$model" ] && [ "$clear_model" -eq 0 ] && [ -z "$persona" ] && [ "$clear_persona" -eq 0 ] && [ -z "$name" ] && [ -z "$message" ] && [ -z "$run" ] && [ -z "$script" ] && [ "$clear_script" -eq 0 ]; then
+    schedules=0
+    every_json="null"
+    cron_json="null"
+    at_json="null"
+    kind_json="null"
+    if [ -n "$every" ]; then
+      kind_json='"every"'; every_json="$every"; schedules=$((schedules + 1))
+    fi
+    if [ -n "$cron" ]; then
+      kind_json='"cron"'; cron_json=$(jq -Rn --arg v "$cron" '$v'); schedules=$((schedules + 1))
+    fi
+    if [ -n "$at" ]; then
+      at_s=$(date -u -d "$at" +%s 2>/dev/null) || {
+        echo "ob-cron: invalid --at value (use ISO 8601, e.g. 2026-12-01T09:00:00Z)" >&2
+        exit 2
+      }
+      kind_json='"at"'; at_json=$((at_s * 1000)); schedules=$((schedules + 1))
+    fi
+    [ "$schedules" -le 1 ] || {
+      echo "ob-cron: pass only one of --every, --cron, --at" >&2
+      exit 2
+    }
+    if [ -z "$model" ] && [ "$clear_model" -eq 0 ] && [ -z "$persona" ] && [ "$clear_persona" -eq 0 ] && [ -z "$name" ] && [ -z "$message" ] && [ -z "$run" ] && [ -z "$script" ] && [ "$clear_script" -eq 0 ] && [ "$schedules" -eq 0 ]; then
       usage
       exit 2
     fi
     body='{}'
+    if [ "$schedules" -eq 1 ]; then
+      # The PATCH route replaces the whole schedule together (kind + fields),
+      # so the old interval never survives a switch.
+      body=$(printf '%s' "$body" | jq --arg kind "$kind_json" --argjson every "$every_json" --argjson cron "$cron_json" --argjson at "$at_json" \
+        '. + {kind: ($kind | fromjson), everySeconds: $every, cronExpr: $cron, atMs: $at}')
+    fi
     if [ -n "$name" ]; then
       body=$(printf '%s' "$body" | jq --arg name "$name" '. + {name: $name}')
     fi
@@ -295,7 +335,7 @@ case "$cmd" in
     fi
     out=$(request PATCH "/api/cron/$(urlencode "$id")" "$body")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id, name, runKind, script, providerId, modelId, personaId, enabled}'
+    printf '%s' "$out" | jq '{id, name, kind, runKind, cronExpr, everySeconds, atMs, nextRunAt, script, providerId, modelId, personaId, enabled}'
     ;;
   remove)
     [ $# -eq 1 ] || { usage; exit 2; }

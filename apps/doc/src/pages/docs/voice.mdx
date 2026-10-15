@@ -23,7 +23,9 @@ The Config page's **Voice** tab (`VoiceProvider.tsx`) renders the form. Provider
 | --- | --- | --- |
 | xAI | `POST /v1/tts` for speech; Groq-compatible whisper for STT | ✓ |
 | OpenAI | `/audio/speech` | ✓ |
-| Cloudflare Workers AI | `@cf/openai/whisper` | `@cf/myshell-ai/melotts` |
+| Cloudflare Workers AI | `@cf/openai/whisper-large-v3-turbo` or `@cf/deepgram/nova-3` | `@cf/myshell-ai/melotts` |
+
+The default Workers AI STT model is `@cf/openai/whisper-large-v3-turbo` (upgraded from `@cf/openai/whisper` on 2026-10-15; saved rows on the old model run on turbo automatically). The configured language is sent as a hint (`language` + `vad_filter` for whisper, `language` + `smart_format` for Nova-3), which matters a lot for short hold-to-talk clips — pick a language instead of "auto" when you always speak the same one.
 
 ## Endpoints
 

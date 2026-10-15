@@ -1,22 +1,27 @@
 import { describe, expect, mock, test } from "bun:test"
-import type { InstalledPlugin } from "@open-bot/db"
+import type { InstalledPlugin, User } from "@open-bot/db"
 import * as dockerModule from "./docker"
 import {
   basePluginPagePort,
   clearPluginPageState,
   ensurePluginPageServer,
+  mintPageFrameToken,
   PAGE_PORT_MAX,
   PAGE_PORT_MIN,
   pageCheckoutEntry,
+  isPageCheckoutPath,
   pageServerCommand,
   parsePluginPagePath,
   pendingPluginPageRestartsCount,
   pluginPageBin,
   pluginPagePath,
+  proxyPluginPage,
+  proxyPluginPageFrame,
   removePluginPageLog,
   schedulePluginPageRestart,
   stopPluginPageServer,
 } from "./plugin-pages"
+import { FRAME_STORAGE_SHIM, rewritePreviewHtml } from "./preview"
 import * as shellModule from "./shell"
 
 const shCalls: string[][] = []
@@ -52,9 +57,13 @@ describe("plugin pages", () => {
     expect(parsePluginPagePath("/api/pages/a/../etc")).toBeNull()
     expect(parsePluginPagePath("/api/pages/a/\\etc")).toBeNull()
     expect(parsePluginPagePath("/api/pages/%2e%2e/x")).toBeNull()
-    expect(parsePluginPagePath("/api/pages/stock-pro//evil.example/x")).toBeNull()
+    expect(
+      parsePluginPagePath("/api/pages/stock-pro//evil.example/x"),
+    ).toBeNull()
     expect(parsePluginPagePath("/api/pages/stock-pro/%252e%252e/x")).toBeNull()
-    expect(parsePluginPagePath("/api/pages/stock-pro/%2f%2fevil.example")).toBeNull()
+    expect(
+      parsePluginPagePath("/api/pages/stock-pro/%2f%2fevil.example"),
+    ).toBeNull()
   })
 
   test("ports stay inside the page range and are deterministic", () => {
@@ -104,6 +113,34 @@ describe("plugin pages", () => {
     expect(
       pageCheckoutEntry({ source: "local", localPath: null }, manifest, "x"),
     ).toBeNull()
+  })
+
+  test("checkout entry falls back to <localPath>/<entry> outside files[]", () => {
+    const manifest = {
+      dashboard: { pages: { entry: "server.ts" } },
+    } as never
+    expect(
+      pageCheckoutEntry(
+        { source: "local", localPath: "/home/agent/plugins-create/stock-pro" },
+        manifest,
+        "server.ts",
+      ),
+    ).toBe("/home/agent/plugins-create/stock-pro/server.ts")
+    // A relative localPath would make `test -f <path>` parse the operand as
+    // an operator (dash builtin has no `--`); the caller drops those.
+    expect(
+      isPageCheckoutPath(
+        pageCheckoutEntry(
+          { source: "local", localPath: "relative/checkout" },
+          manifest,
+          "server.ts",
+        ),
+      ),
+    ).toBe(false)
+    expect(isPageCheckoutPath(null)).toBe(false)
+    expect(
+      isPageCheckoutPath("/home/agent/plugins-create/stock-pro/server.ts"),
+    ).toBe(true)
   })
 
   test("spawn command records pid, token, port, and the exact command line", () => {
@@ -227,9 +264,7 @@ describe("plugin pages", () => {
         ensurePluginPageServer("u1", row),
       ])
       expect(a).toBe(b)
-      expect(
-        shCalls.filter((args) => args.includes("-d")).length,
-      ).toBe(1)
+      expect(shCalls.filter((args) => args.includes("-d")).length).toBe(1)
     } finally {
       globalThis.fetch = originalFetch
       clearPluginPageState()
@@ -249,6 +284,119 @@ describe("plugin pages", () => {
     expect(script).toContain(".pid'")
     expect(script).toContain(".token'")
     expect(script).toContain(".port'")
+  })
+
+  test("frame html carries the storage shim ahead of page scripts", () => {
+    const page =
+      `<!doctype html><html><head><title>T</title></head>` +
+      `<body><script>const v = localStorage.getItem("k")</script></body></html>`
+    const framed = rewritePreviewHtml(page, "/api/pages/_frame/tok", true)
+    expect(framed).toContain(FRAME_STORAGE_SHIM)
+    expect(framed.indexOf("Object.defineProperty")).toBeLessThan(
+      framed.indexOf("localStorage.getItem"),
+    )
+    expect(framed).toContain(`<base href="/api/pages/_frame/tok/">`)
+    // Direct proxy responses stay byte-faithful (session-credentialed origin).
+    expect(rewritePreviewHtml(page, "/api/pages/stock-pro")).not.toContain(
+      "Object.defineProperty",
+    )
+    // Headless documents still get the shim first.
+    const bare = rewritePreviewHtml("<p>hi</p>", "/api/pages/_frame/tok", true)
+    expect(bare.startsWith("<script>")).toBe(true)
+    expect(bare).toContain("<base")
+    // A page with its own <base> keeps it (root-relative href rewritten to the
+    // frame prefix) and still gets the shim on top.
+    const owned = rewritePreviewHtml(
+      `<html><head><base href="/x/"></head></html>`,
+      "/api/pages/_frame/tok",
+      true,
+    )
+    expect(owned.startsWith(`<script>`)).toBe(true)
+    expect(owned).toContain(`<base href="/api/pages/_frame/tok/x/">`)
+  })
+
+  test("frame proxy injects the shim, direct proxy does not", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    const html = async () =>
+      new Response(
+        `<!doctype html><html><head><title>S</title></head>` +
+          `<body><h1>S</h1></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      )
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      String(input).endsWith("/healthz")
+        ? new Response("ok")
+        : await html()) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      const db = {
+        installedPlugin: (_userId: string, pluginId: string) =>
+          pluginId === "stock-pro" ? row : null,
+      } as never
+      const hub = { emit() {} } as never
+      const server = { upgrade: () => false } as never
+      const token = mintPageFrameToken("u1", "stock-pro").token
+
+      const framed = await proxyPluginPageFrame(
+        new Request(`http://x/api/pages/_frame/${token}/`, {
+          headers: { origin: "null" },
+        }),
+        new URL(`http://x/api/pages/_frame/${token}/`),
+        db,
+        hub,
+        server,
+      )
+      expect(framed?.status).toBe(200)
+      // Credentialed CORS: echo the opaque origin, never "*", so edge SSO
+      // cookies ride the frame page's fetches.
+      expect(framed?.headers.get("access-control-allow-origin")).toBe("null")
+      expect(framed?.headers.get("access-control-allow-credentials")).toBe(
+        "true",
+      )
+      const framedBody = await framed?.text()
+      expect(framedBody).toContain(FRAME_STORAGE_SHIM)
+      expect(framedBody).toContain('credentials="include"')
+      expect(framedBody).toContain("withCredentials=true")
+      expect(framedBody).toContain(`<base href="/api/pages/_frame/${token}/">`)
+
+      // Even auth failures carry CORS so a dead frame token shows up as a
+      // 401 in the page instead of an opaque CORS error.
+      const dead = "A".repeat(43)
+      const denied = await proxyPluginPageFrame(
+        new Request(`http://x/api/pages/_frame/${dead}/api/items`, {
+          headers: { origin: "null" },
+        }),
+        new URL(`http://x/api/pages/_frame/${dead}/api/items`),
+        db,
+        hub,
+        server,
+      )
+      expect(denied?.status).toBe(401)
+      expect(denied?.headers.get("access-control-allow-origin")).toBe("null")
+      expect(denied?.headers.get("access-control-allow-credentials")).toBe(
+        "true",
+      )
+
+      const direct = await proxyPluginPage(
+        new Request("http://x/api/pages/stock-pro/"),
+        new URL("http://x/api/pages/stock-pro/"),
+        db,
+        { id: "u1" } as unknown as User,
+        hub,
+        server,
+      )
+      expect(direct?.status).toBe(200)
+      expect(await direct?.text()).not.toContain("Object.defineProperty")
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
   })
 
   test("start stops a stale server before spawning so the pidfile stays truthful", async () => {

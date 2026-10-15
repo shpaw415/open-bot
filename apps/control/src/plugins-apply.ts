@@ -36,6 +36,7 @@ import {
   removePluginPageLog,
   stopPluginPageServer,
 } from "./plugin-pages"
+import { refreshMentionClashes } from "./references"
 import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
@@ -131,10 +132,16 @@ export function pluginConfigPayload(
   settings: Record<string, string>,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = { settings }
-  const vaultRead = manifest.permissions?.vaultRead ?? []
-  if (vaultRead.length > 0) {
+  // Both access levels reach the desktop config: a vaultCreate-only plugin
+  // (the common case — the agent fills its own keys) reads the same
+  // vault.<slug> section the skill docs promise, not just vaultRead plugins.
+  const slugs = new Set([
+    ...(manifest.permissions?.vaultCreate ?? []),
+    ...(manifest.permissions?.vaultRead ?? []),
+  ])
+  if (slugs.size > 0) {
     const vault: Record<string, unknown> = {}
-    for (const slug of vaultRead) {
+    for (const slug of slugs) {
       const key = db.getUserKey(userId, slug)
       if (key?.apiKey) {
         vault[slug] = {
@@ -556,6 +563,7 @@ export async function applyPluginInstall(
       }
     }
   }
+  refreshMentionClashes(db, user.id)
   const row = db.installedPlugin(user.id, manifest.id)
   if (!row) throw new Error("plugin row disappeared after install")
   return { ...row, page }
@@ -671,6 +679,7 @@ export async function applyPluginUninstall(
   // versions before CONFIG.md, partially failed installs).
   await syncPluginConfigGuide(user.id, row.pluginId, null).catch(() => {})
   db.deleteInstalledPlugin(user.id, row.pluginId)
+  refreshMentionClashes(db, user.id)
   return { leftoverSkills }
 }
 
@@ -879,7 +888,8 @@ export async function setPluginEnabled(
     await restartOpencode(user.id, { db }).catch(() => {})
   }
 
-  return updated ?? db.installedPlugin(user.id, pluginId) ?? row
+  refreshMentionClashes(db, user.id)
+  return db.installedPlugin(user.id, pluginId) ?? updated ?? row
 }
 
 export async function reapplyPluginConfig(
