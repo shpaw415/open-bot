@@ -1,11 +1,4 @@
-import {
-  Card,
-  Code,
-  CommandBlock,
-  Icon,
-  SectionHeading,
-  icons,
-} from "../components/ui"
+import { Card, Code, CommandBlock, Icon, SectionHeading, icons } from "../components/ui"
 
 const CAPABILITIES = [
   {
@@ -73,30 +66,30 @@ const RULES = [
 export default function PublishDocs() {
   return (
     <div className="mx-auto max-w-[1120px] px-5 py-10 sm:px-8 sm:py-14">
-      <div className="grid gap-10 lg:grid-cols-[1fr_220px]">
+      <div className="grid gap-10 lg:grid-cols-[1fr_200px] lg:gap-10">
         <div className="min-w-0 max-w-[860px]">
-          <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#C8FF2E]">
-            Publish
-          </p>
-          <h1 className="mt-2 text-[30px] font-extrabold tracking-[-0.02em] text-[#EDF2F7] sm:text-[36px] sm:leading-[38px]">
+          <h1 className="text-[26px] font-bold tracking-[-0.015em] text-[#1A2333] sm:text-[30px]">
             Publish a plugin
           </h1>
-          <p className="mt-3 max-w-[60ch] text-[15px] leading-6 text-[#8B9CB8]">
+          <p className="mt-3 max-w-[60ch] text-[15px] leading-6 text-[#3E4A5F]">
             Ship skills, personas, automation and UI to every open-bot desktop
             in one review pass. Everything a plugin ships lives in one
             manifest: <Code>open-bot.plugin.json</Code>.
           </p>
 
           <section id="capabilities" className="mt-12 scroll-mt-24">
-            <SectionHeading label="What a plugin can do" />
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <SectionHeading
+              label="What a plugin can do"
+              sub="One manifest, nine surfaces."
+            />
+            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {CAPABILITIES.map((cap) => (
                 <Card key={cap.title} className="p-4">
-                  <Icon path={cap.icon} className="size-5 text-[#C8FF2E]" />
-                  <p className="mt-2.5 text-[14px] font-semibold text-[#EDF2F7]">
+                  <Icon path={cap.icon} className="size-5 text-[#2B3DE8]" />
+                  <p className="mt-2.5 text-[14px] font-semibold text-[#1A2333]">
                     {cap.title}
                   </p>
-                  <p className="mt-1 text-[13px] leading-5 text-[#8B9CB8]">
+                  <p className="mt-1 text-[13px] leading-5 text-[#3E4A5F]">
                     {cap.desc}
                   </p>
                 </Card>
@@ -113,17 +106,17 @@ export default function PublishDocs() {
                 "Publish — it lands here and a guard cron takes over",
               ].map((step, index) => (
                 <li key={step} className="flex items-baseline gap-3">
-                  <span className="shrink-0 font-mono text-[12px] font-bold text-[#C8FF2E]">
+                  <span className="shrink-0 font-mono text-[12px] font-bold text-[#2B3DE8]">
                     {String(index + 1).padStart(2, "0")}
                   </span>
-                  <span className="text-[14px] text-[#8B9CB8]">{step}</span>
+                  <span className="text-[14px] text-[#3E4A5F]">{step}</span>
                 </li>
               ))}
             </ol>
             <CommandBlock className="mt-4" command={FLOW_COMMAND} />
-            <p className="mt-3 text-sm leading-6 text-[#8B9CB8]">
+            <p className="mt-3 text-sm leading-6 text-[#3E4A5F]">
               <Code>ob-plugin publish</Code> validates the manifest, registers
-              it here, and creates a daily <b className="text-[#EDF2F7]">guard
+              it here, and creates a daily <b className="text-[#1A2333]">guard
               cron</b> on the publishing desktop. The guard checks the repo's
               issues and pull requests and this site's discussion every day,
               merges satisfying changes, and ships new releases.
@@ -132,22 +125,22 @@ export default function PublishDocs() {
 
           <section id="review" className="mt-12 scroll-mt-24">
             <SectionHeading label="Review" />
-            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
               {REVIEW_STEPS.map((step) => (
                 <Card key={step.step} className="p-4">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#C8FF2E]">
-                    step {step.step}
+                  <span className="font-mono text-[12px] font-bold text-[#2B3DE8]">
+                    {step.step}
                   </span>
-                  <p className="mt-1.5 text-[14px] font-semibold text-[#EDF2F7]">
+                  <p className="mt-1.5 text-[14px] font-semibold text-[#1A2333]">
                     {step.title}
                   </p>
-                  <p className="mt-1 text-[13px] leading-5 text-[#8B9CB8]">
+                  <p className="mt-1 text-[13px] leading-5 text-[#3E4A5F]">
                     {step.desc}
                   </p>
                 </Card>
               ))}
             </div>
-            <p className="mt-3 text-sm text-[#8B9CB8]">
+            <p className="mt-3 text-sm text-[#3E4A5F]">
               Instances in <Code>auto</Code> install policy may install pending
               plugins without waiting.
             </p>
@@ -155,13 +148,13 @@ export default function PublishDocs() {
 
           <section id="rules" className="mt-12 scroll-mt-24">
             <SectionHeading label="Rules" />
-            <div className="mt-4 divide-y divide-[#1D2735] rounded-[12px] border border-[#1D2735] bg-[#080C12]">
+            <div className="mt-4 divide-y divide-[#E7E2D6] rounded-[12px] border border-[#E7E2D6] bg-white shadow-[0_1px_2px_rgba(26,35,51,0.05)]">
               {RULES.map((rule, index) => (
                 <p
                   key={rule}
-                  className="flex items-start gap-3 px-4 py-3 text-[14px] leading-6 text-[#8B9CB8]"
+                  className="flex items-start gap-3 px-4 py-3 text-[14px] leading-6 text-[#3E4A5F]"
                 >
-                  <span className="mt-[2px] shrink-0 font-mono text-[12px] font-bold text-[#C8FF2E]">
+                  <span className="mt-[2px] shrink-0 font-mono text-[12px] font-bold text-[#2B3DE8]">
                     R{index + 1}
                   </span>
                   {rule}
@@ -173,9 +166,9 @@ export default function PublishDocs() {
 
         <nav
           aria-label="On this page"
-          className="hidden self-start space-y-1 sticky top-24 lg:block"
+          className="sticky top-24 hidden self-start space-y-1 lg:block"
         >
-          <p className="px-3 pb-1 font-mono text-[11px] uppercase tracking-[0.14em] text-[#5B6B84]">
+          <p className="px-3 pb-1 text-[12.5px] font-medium text-[#8A94A6]">
             On this page
           </p>
           {[
@@ -187,7 +180,7 @@ export default function PublishDocs() {
             <a
               key={href}
               href={href}
-              className="block h-8 rounded-[7px] px-3 text-[13px] leading-8 text-[#8B9CB8] transition-colors duration-150 hover:bg-[#141B26] hover:text-[#EDF2F7]"
+              className="block rounded-[8px] px-3 py-1.5 text-[13px] text-[#5F6B80] transition-colors duration-150 hover:bg-[#F1EFE8] hover:text-[#1A2333]"
             >
               {label}
             </a>

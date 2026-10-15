@@ -20,13 +20,16 @@ import { useCallback, useEffect, useState } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { api, type Me } from "./api"
+import { PluginBadge } from "./ConfigList"
 import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
+  AddIcon,
   ChatIcon,
   DeleteIcon,
   EditIcon,
   PlayArrowIcon,
   RefreshIcon,
+  ScheduleIcon,
 } from "./icons"
 import { ModelSelect } from "./ModelSelect"
 import type { PersonaInfo } from "./Personalities"
@@ -348,6 +351,14 @@ export function CronView({ me }: { me: Me }) {
             Prompt runs the agent. Script posts command output. Script then
             prompt gives that output to the agent.
           </Typography>
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => openForm()}
+          >
+            Add job
+          </Button>
           <ToolTip title="Reload jobs">
             <IconButton
               size="small"
@@ -366,23 +377,21 @@ export function CronView({ me }: { me: Me }) {
               sx={{ minHeight: 160, textAlign: "center" }}
               spacing={1}
             >
+              <ScheduleIcon width={40} height={40} style={{ opacity: 0.5 }} />
               <Typography variant="subtitle1">No scheduled jobs</Typography>
               <Typography variant="body2" color="textSecondary">
-                Add one here, or ask the agent to schedule work with ob-cron.
+                Add one with the button above, or ask the agent to schedule
+                work with ob-cron.
               </Typography>
             </Stack>
           ) : (
             jobs.map((job) => (
               <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  sx={{ flexWrap: "wrap", rowGap: 1 }}
-                >
+                <Stack direction="row" spacing={1} alignItems="center">
                   <Typography
                     variant="subtitle2"
                     sx={{
+                      flex: 1,
                       minWidth: 0,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
@@ -391,35 +400,6 @@ export function CronView({ me }: { me: Me }) {
                   >
                     {cronDisplayName(job)}
                   </Typography>
-                  {job.plugin ? (
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={`plugin: ${job.plugin.name}`}
-                    />
-                  ) : null}
-                  <Chip size="small" label={cronSchedule(job)} />
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={cronRunLabel(job.runKind)}
-                  />
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={cronModelLabel(job, models)}
-                  />
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={personaName(job.personaId ?? undefined)}
-                  />
-                  {notices.some(
-                    (notice) => notice.jobId === job.id && !notice.viewedAt,
-                  ) ? (
-                    <Chip size="small" color="primary" label="new result" />
-                  ) : null}
-                  <Box sx={{ flex: 1 }} />
                   {busyId === job.id ? (
                     <CircularProgress size={1.2} />
                   ) : (
@@ -430,6 +410,29 @@ export function CronView({ me }: { me: Me }) {
                       onChange={() => void toggleJob(job)}
                     />
                   )}
+                </Stack>
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  alignItems="center"
+                  sx={{ mt: 0.75, flexWrap: "wrap", rowGap: 0.75 }}
+                >
+                  {job.plugin ? (
+                    <PluginBadge plugin={job.plugin} maxWidth={120} />
+                  ) : null}
+                  {notices.some(
+                    (notice) => notice.jobId === job.id && !notice.viewedAt,
+                  ) ? (
+                    <Chip size="small" color="primary">
+                      new result
+                    </Chip>
+                  ) : null}
+                  <Chip size="small" variant="outlined">
+                    {cronSchedule(job)}
+                  </Chip>
+                  <Chip size="small" variant="outlined">
+                    {cronRunLabel(job.runKind)}
+                  </Chip>
                 </Stack>
                 <Typography
                   variant="body2"
@@ -446,21 +449,37 @@ export function CronView({ me }: { me: Me }) {
                     ? job.script
                     : job.message}
                 </Typography>
+                <Typography
+                  variant="caption"
+                  color="textSecondary"
+                  sx={{
+                    mt: 0.5,
+                    overflow: "hidden",
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                  }}
+                >
+                  {job.enabled
+                    ? `Next run ${formatWhen(job.nextRunAt)}`
+                    : "Paused"}{" "}
+                  • {cronModelLabel(job, models)} •{" "}
+                  {personaName(job.personaId ?? undefined)}
+                </Typography>
                 <Stack
                   direction="row"
                   spacing={1}
                   alignItems="center"
-                  sx={{ mt: 1, flexWrap: "wrap", rowGap: 1 }}
+                  sx={{
+                    mt: 1,
+                    flexWrap: "wrap",
+                    rowGap: 1,
+                    "@media (max-width:400px)": {
+                      flexWrap: "nowrap",
+                      overflowX: "auto",
+                    },
+                  }}
                 >
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    label={
-                      job.enabled
-                        ? `next ${formatWhen(job.nextRunAt)}`
-                        : "paused"
-                    }
-                  />
                   <Chip
                     size="small"
                     variant="outlined"
@@ -471,14 +490,13 @@ export function CronView({ me }: { me: Me }) {
                           ? "success"
                           : undefined
                     }
-                    label={
-                      job.lastError
-                        ? "error"
-                        : job.lastRunAt
-                          ? `ran ${formatAgo(job.lastRunAt)}`
-                          : "never ran"
-                    }
-                  />
+                  >
+                    {job.lastError
+                      ? "error"
+                      : job.lastRunAt
+                        ? `ran ${formatAgo(job.lastRunAt)}`
+                        : "never ran"}
+                  </Chip>
                   <Box sx={{ flex: 1 }} />
                   <Button
                     size="small"

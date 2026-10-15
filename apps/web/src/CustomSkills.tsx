@@ -1,19 +1,24 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "@shpaw415/mui-lite/Dialog"
-import Divider from "@shpaw415/mui-lite/Divider"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
+import {
+  ConfigItemCard,
+  EmptyState,
+  GhostCards,
+  ItemAvatar,
+  PluginBadge,
+} from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
-import { ExtensionIcon } from "./icons"
+import { ExtensionIcon, PsychologyIcon } from "./icons"
 
 type SkillSummary = {
   name: string
@@ -161,67 +166,61 @@ export function CustomSkills() {
         {error && !draft ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
         {loading && skills.length === 0 ? (
-          <Typography variant="body2" color="textSecondary">
-            Loading skills — this starts your desktop if it was asleep…
-          </Typography>
+          <>
+            <Alert severity="info">
+              Loading skills — this starts your desktop if it was asleep…
+            </Alert>
+            <GhostCards />
+          </>
+        ) : skills.length === 0 ? (
+          <EmptyState
+            icon={<PsychologyIcon width={24} height={24} />}
+            title="No skills yet"
+            subtext="Add one below, or ask the agent to create one. Plugins can install their own."
+          />
         ) : (
-          skills.map((skill, index) => (
-            <Stack key={skill.name} spacing={1.5}>
-              {index > 0 ? <Divider /> : null}
-              <Stack direction="row" spacing={1} alignItems="center">
-                <Stack sx={{ flex: 1, minWidth: 0 }}>
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    alignItems="center"
-                    sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+          skills.map((skill) => (
+            <ConfigItemCard
+              key={skill.name}
+              avatar={
+                <ItemAvatar tone={skill.plugin ? "secondary" : "primary"}>
+                  <PsychologyIcon width={20} height={20} />
+                </ItemAvatar>
+              }
+              title={skill.name}
+              badge={skill.plugin ? <PluginBadge plugin={skill.plugin} /> : undefined}
+              description={skill.description}
+              pluginOwned={Boolean(skill.plugin)}
+              actions={
+                <>
+                  <Button
+                    size="small"
+                    variant="text"
+                    disabled={busy}
+                    onClick={() => void openEdit(skill.name)}
                   >
-                    <Typography variant="subtitle2">{skill.name}</Typography>
-                    {skill.plugin ? (
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={`plugin: ${skill.plugin.name}`}
-                      />
-                    ) : null}
-                  </Stack>
-                  <Typography
-                    variant="body2"
-                    color="textSecondary"
-                    sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                    Edit
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="text"
+                    color="error"
+                    disabled={busy}
+                    onClick={() => {
+                      if (confirmName === skill.name) {
+                        void remove(skill.name)
+                        return
+                      }
+                      setConfirmName(skill.name)
+                    }}
                   >
-                    {skill.description}
-                  </Typography>
-                </Stack>
-                <Button
-                  variant="text"
-                  disabled={busy}
-                  onClick={() => void openEdit(skill.name)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="text"
-                  disabled={busy}
-                  onClick={() => {
-                    if (confirmName === skill.name) {
-                      void remove(skill.name)
-                      return
-                    }
-                    setConfirmName(skill.name)
-                  }}
-                >
-                  {confirmName === skill.name ? "Confirm delete" : "Delete"}
-                </Button>
-              </Stack>
-            </Stack>
+                    {confirmName === skill.name ? "Confirm delete" : "Delete"}
+                  </Button>
+                </>
+              }
+            />
           ))
         )}
-        {!loading && skills.length === 0 ? (
-          <Typography variant="body2" color="textSecondary">
-            No custom skills yet.
-          </Typography>
-        ) : null}
         {draft ? (
           <Dialog
             open
@@ -236,7 +235,7 @@ export function CustomSkills() {
               {draft.previousName ? "Edit skill" : "New skill"}
             </DialogTitle>
             <DialogContent>
-              <Stack spacing={1.5}>
+              <Stack spacing={2} sx={{ mt: 1 }}>
                 {error ? <Alert severity="error">{error}</Alert> : null}
                 <TextField
                   label="Name"

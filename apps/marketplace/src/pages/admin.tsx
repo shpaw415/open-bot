@@ -6,6 +6,7 @@ import {
   Card,
   EmptyState,
   Icon,
+  IconTile,
   Input,
   SectionHeading,
   icons,
@@ -57,36 +58,32 @@ export default function Admin() {
     void load(token)
   }
 
+  const pending = plugins.filter((p) => p.status === "pending").length
+
   return (
     <div className="mx-auto max-w-[860px] px-5 py-10 sm:px-8 sm:py-14">
-      <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#C8FF2E]">
-        Admin
-      </p>
-      <h1 className="mt-2 text-[30px] font-extrabold tracking-[-0.02em] text-[#EDF2F7]">
+      <h1 className="text-[26px] font-bold tracking-[-0.015em] text-[#1A2333]">
         Review queue
       </h1>
-      <p className="mt-2 max-w-[60ch] text-[14px] leading-6 text-[#8B9CB8]">
+      <p className="mt-2 max-w-[60ch] text-[14px] leading-6 text-[#5F6B80]">
         Instance administrators approve or reject plugins. The admin token is
         the marketplace's ADMIN_TOKEN secret.
       </p>
 
       {error ? (
-        <p className="mt-6 rounded-[10px] border border-[rgba(255,92,92,0.32)] bg-[rgba(255,92,92,0.08)] p-4 text-sm text-[#FF8A8A]">
+        <p className="mt-6 rounded-[10px] border border-[#F0C2BE] bg-[#FDEEEC] p-4 text-sm text-[#B4232B]">
           {error}
         </p>
       ) : null}
 
       {!loaded ? (
         <Card className="mt-8 p-6 text-center">
-          <Icon
-            path={icons.lock}
-            className="mx-auto size-6 text-[#FFB224]"
-          />
-          <h2 className="mt-3 text-[16px] font-bold text-[#EDF2F7]">
+          <Icon path={icons.lock} className="mx-auto size-6 text-[#825F00]" />
+          <h2 className="mt-3 text-[16px] font-bold text-[#1A2333]">
             Review queue is locked
           </h2>
-          <p className="mt-1 text-[14px] text-[#8B9CB8]">
-            Enter ADMIN_TOKEN to unlock.
+          <p className="mt-1 text-[14px] text-[#5F6B80]">
+            Enter your admin token to unlock.
           </p>
           <div className="mx-auto mt-4 flex max-w-[440px] flex-col gap-3 sm:flex-row">
             <Input
@@ -110,34 +107,35 @@ export default function Admin() {
       ) : (
         <div className="mt-8">
           <SectionHeading
-            label="Queue"
+            label={pending > 0 ? `Review queue — ${pending} pending` : "Review queue"}
             className="mb-4"
             right={
-              <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-[#8B9CB8]">
+              <span className="text-[13px] text-[#5F6B80]">
                 {plugins.length} registered
               </span>
             }
           />
-          <div className="space-y-3">
+          <div className="space-y-4">
             {plugins.map((plugin) => (
-              <Card key={plugin.id} spine className="p-5">
-                <div className="min-w-0 pl-4">
+              <Card key={plugin.id} className="flex gap-4 p-5">
+                <IconTile seed={plugin.id} name={plugin.name} />
+                <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <a
                       href={`/plugins/${encodeURIComponent(plugin.id)}`}
-                      className="text-[15px] font-bold text-[#EDF2F7] transition-colors duration-150 hover:text-[#C8FF2E]"
+                      className="text-[15px] font-semibold text-[#1A2333] hover:text-[#2B3DE8]"
                     >
                       {plugin.name}
                     </a>
-                    <span className="font-mono text-[12px] text-[#8B9CB8]">
+                    <span className="font-mono text-[12px] text-[#5F6B80]">
                       v{plugin.version}
                     </span>
                     <Badge status={plugin.status} />
                     {plugin.securityStatus ? (
-                      <Badge status={plugin.securityStatus} className="shrink-0 sm:ml-auto" />
+                      <Badge status={plugin.securityStatus} />
                     ) : null}
                   </div>
-                  <p className="mt-1 truncate text-[14px] text-[#8B9CB8]">
+                  <p className="mt-1 line-clamp-2 text-[14px] leading-6 text-[#3E4A5F]">
                     {plugin.description}
                   </p>
                   <div className="mt-4 flex flex-col gap-2 sm:flex-row">

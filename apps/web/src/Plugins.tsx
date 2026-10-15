@@ -85,7 +85,7 @@ function PluginHeader({
       </Typography>
       {isDevVersion(plugin.version) ? (
         <ToolTip title="Development build — reinstall the same version to pick up republished fixes">
-          <Chip size="small" color="warning" variant="outlined" label="dev" />
+          <Chip size="small" color="warning" variant="outlined">dev</Chip>
         </ToolTip>
       ) : null}
     </Stack>
@@ -538,7 +538,7 @@ function VaultKeyRow({
           <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
             {status.slug}
           </Typography>
-          <Chip size="small" variant="outlined" label="shared provider key" />
+          <Chip size="small" variant="outlined">shared provider key</Chip>
           <Chip
             size="small"
             variant="outlined"
@@ -1255,7 +1255,7 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
               }
             />
           ) : (
-            <Chip size="small" variant="outlined" label="not configured" />
+            <Chip size="small" variant="outlined">not configured</Chip>
           )}
         </Stack>
         <Typography variant="body2" color="textSecondary">
@@ -1561,7 +1561,7 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   return (
     <Stack spacing={2} sx={{ width: "100%" }}>
       <Stack direction="row" spacing={1} alignItems="center">
-        <Chip label={`policy: ${policy}`} size="small" variant="outlined" />
+        <Chip size="small" variant="outlined">{`policy: ${policy}`}</Chip>
         {isAdmin ? (
           <ToolTip title="Automatically install newer approved stable versions of installed plugins">
             <Chip

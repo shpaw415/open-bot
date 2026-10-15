@@ -406,7 +406,7 @@ async function startDesktopInner(
       "--label",
       `open-bot-user=${n.key}`,
       "--memory",
-      "1g",
+      "1.5g",
       "--cpus",
       "1",
       "-e",

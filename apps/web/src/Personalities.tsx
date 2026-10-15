@@ -1,19 +1,24 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
 import Dialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "@shpaw415/mui-lite/Dialog"
-import Divider from "@shpaw415/mui-lite/Divider"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
-import Typography from "@shpaw415/mui-lite/Typography"
+import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
+import {
+  ConfigItemCard,
+  EmptyState,
+  GhostCards,
+  ItemAvatar,
+  PluginBadge,
+} from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
-import { PersonIcon } from "./icons"
+import { FaceIcon, LockIcon, PersonIcon } from "./icons"
 
 export type PersonaInfo = {
   id: string
@@ -27,6 +32,10 @@ type Draft = {
   id: string
   name: string
   instruction: string
+}
+
+function initial(name: string): string {
+  return (name.trim()[0] ?? "?").toUpperCase()
 }
 
 export function Personalities() {
@@ -129,7 +138,7 @@ export function Personalities() {
     <ConfigSection
       icon={<PersonIcon />}
       title="Personalities"
-      description="A name and how the bot should behave. Pick one when starting a thread. It stays for that thread. Built-ins cannot be edited. The bot can add the same customs."
+      description="A name and how the bot should behave. Pick one when starting a thread. It stays for that thread. The bot can add the same customs."
       status={
         personas.length > 0
           ? {
@@ -138,49 +147,57 @@ export function Personalities() {
           : null
       }
     >
-      <Stack spacing={1.5}>
+      <Stack spacing={1.5} sx={{ position: "relative" }}>
         {error && !draft ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
         {loading && personas.length === 0 ? (
-          <Typography variant="body2" color="textSecondary">
-            Loading personalities…
-          </Typography>
+          <GhostCards />
+        ) : personas.length === 0 ? (
+          <EmptyState
+            icon={<FaceIcon width={24} height={24} />}
+            title="No personalities yet"
+            subtext="Add one below, or ask the bot to create one. Plugins can install their own."
+          />
         ) : (
-          personas.map((persona, index) => (
-            <Stack key={persona.id} spacing={1.5}>
-              {index > 0 ? <Divider /> : null}
-              <Stack direction="row" spacing={1} alignItems="center">
-                <Stack sx={{ flex: 1, minWidth: 0 }}>
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    alignItems="center"
-                    sx={{ flexWrap: "wrap", rowGap: 0.5 }}
-                  >
-                    <Typography variant="subtitle2">
-                      {persona.name}
-                      {persona.builtin ? " · built-in" : ""}
-                    </Typography>
-                    {persona.plugin ? (
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={`plugin: ${persona.plugin.name}`}
-                      />
-                    ) : null}
-                  </Stack>
-                  <Typography
-                    variant="body2"
-                    color="textSecondary"
-                    sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
-                  >
-                    {persona.instruction ||
-                      "Default voice. No extra instructions."}
-                  </Typography>
-                </Stack>
-                {persona.builtin ? null : (
+          personas.map((persona) => (
+            <ConfigItemCard
+              key={persona.id}
+              avatar={
+                persona.builtin ? (
+                  <ToolTip title="Built-in — cannot edit or delete">
+                    <ItemAvatar tone="muted">
+                      <LockIcon width={20} height={20} />
+                    </ItemAvatar>
+                  </ToolTip>
+                ) : (
+                  <ItemAvatar tone={persona.plugin ? "secondary" : "primary"}>
+                    {initial(persona.name)}
+                  </ItemAvatar>
+                )
+              }
+              title={persona.name}
+              badge={
+                persona.plugin ? (
+                  <PluginBadge plugin={persona.plugin} />
+                ) : persona.builtin ? (
+                  <ToolTip title="Built-in — cannot edit or delete">
+                    <LockIcon
+                      width={16}
+                      height={16}
+                      style={{ color: "rgba(var(--text-main), 0.6)", flexShrink: 0 }}
+                    />
+                  </ToolTip>
+                ) : undefined
+              }
+              description={
+                persona.instruction || "Default voice. No extra instructions."
+              }
+              pluginOwned={Boolean(persona.plugin)}
+              actions={
+                persona.builtin ? undefined : (
                   <>
                     <Button
+                      size="small"
                       variant="text"
                       disabled={busy}
                       onClick={() => openEdit(persona)}
@@ -188,7 +205,9 @@ export function Personalities() {
                       Edit
                     </Button>
                     <Button
+                      size="small"
                       variant="text"
+                      color="error"
                       disabled={busy}
                       onClick={() => {
                         if (confirmId === persona.id) {
@@ -201,9 +220,9 @@ export function Personalities() {
                       {confirmId === persona.id ? "Confirm delete" : "Delete"}
                     </Button>
                   </>
-                )}
-              </Stack>
-            </Stack>
+                )
+              }
+            />
           ))
         )}
         {draft ? (
@@ -220,7 +239,7 @@ export function Personalities() {
               {draft.id ? "Edit personality" : "New personality"}
             </DialogTitle>
             <DialogContent>
-              <Stack spacing={1.5}>
+              <Stack spacing={2} sx={{ mt: 1 }}>
                 {error ? <Alert severity="error">{error}</Alert> : null}
                 <TextField
                   label="Name"

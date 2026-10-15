@@ -29,26 +29,21 @@ export default function Login() {
   }, [])
 
   return (
-    <div className="grid min-h-screen place-items-center bg-[#05070A] px-5 text-[#EDF2F7] antialiased">
-      <div className="w-full max-w-[380px] rounded-[14px] border border-[#1D2735] bg-[#0F141D] p-8 text-center shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),0_8px_30px_-12px_rgba(0,0,0,0.7)]">
+    <div className="grid min-h-screen place-items-center bg-[#FAFAF7] px-5 text-[#1A2333] antialiased">
+      <div className="w-full max-w-[360px] rounded-[16px] border border-[#E7E2D6] bg-white p-8 text-center shadow-[0_1px_2px_rgba(26,35,51,0.05),0_8px_24px_-12px_rgba(26,35,51,0.12)]">
         <Spinner size="size-8" />
-        <p className="mt-4 font-mono text-[11px] uppercase tracking-[0.14em] text-[#8B9CB8]">
-          {state === "signed-in"
-            ? "Signing you in…"
-            : "Redirecting to sign-in…"}
-        </p>
-        <h1 className="mt-2 text-[18px] font-bold tracking-[-0.01em] text-[#EDF2F7]">
-          Contacting identity
+        <h1 className="mt-4 text-[18px] font-bold tracking-[-0.01em] text-[#1A2333]">
+          Signing you in
         </h1>
+        <p className="mt-1 text-[13.5px] text-[#5F6B80]">
+          You'll be redirected back automatically.
+        </p>
         <Button size="lg" className="mt-5 w-full" onClick={() => window.location.assign("/api/auth/login")}>
           Sign in
         </Button>
-        <p className="mt-3 text-[13px] text-[#5B6B84]">
-          You'll be redirected back automatically.
-        </p>
         <a
           href="/"
-          className="mt-4 inline-block text-[14px] font-semibold text-[#C8FF2E] underline-offset-4 decoration-[#C8FF2E]/40 hover:underline"
+          className="mt-4 inline-block text-[14px] font-semibold text-[#2B3DE8] underline-offset-4 hover:underline"
         >
           Browse plugins
         </a>

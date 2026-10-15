@@ -174,7 +174,7 @@ export function KeyVault() {
         {vaultUsers.length > 0 ? (
           <Stack direction="row" spacing={0.5} flexWrap="wrap">
             {vaultUsers.map(([kind]) => (
-              <Chip key={kind} size="small" label={`${kind}: vault key`} />
+              <Chip key={kind} size="small">{`${kind}: vault key`}</Chip>
             ))}
           </Stack>
         ) : null}
@@ -195,11 +195,11 @@ export function KeyVault() {
                 >
                   <Typography variant="subtitle2">{spec.label}</Typography>
                   {entry?.hasKey ? (
-                    <Chip size="small" color="success" label="Key saved" />
+                    <Chip size="small" color="success">Key saved</Chip>
                   ) : anySaved ? (
-                    <Chip size="small" color="warning" label="Partial" />
+                    <Chip size="small" color="warning">Partial</Chip>
                   ) : (
-                    <Chip size="small" label="Not set" />
+                    <Chip size="small">Not set</Chip>
                   )}
                 </Stack>
                 <Typography variant="body2" color="textSecondary">

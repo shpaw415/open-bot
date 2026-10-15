@@ -1,18 +1,9 @@
 @import "tailwindcss";
 
-@keyframes beaconSweep {
-  from {
-    transform: translateX(-120px);
-  }
-  to {
-    transform: translateX(calc(100vw + 120px));
-  }
-}
-
 @keyframes fadeUp {
   from {
     opacity: 0;
-    translate: 0 6px;
+    translate: 0 4px;
   }
   to {
     opacity: 1;
@@ -21,8 +12,8 @@
 }
 
 ::selection {
-  background: #c8ff2e;
-  color: #1a2000;
+  background: #2b3de8;
+  color: #fff;
 }
 
 ::-webkit-scrollbar {
@@ -33,17 +24,17 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1d2735;
+  background: #d9d3c2;
   border-radius: 8px;
-  border: 2px solid #05070a;
+  border: 2px solid #fafaf7;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #2c3a4f;
+  background: #c4bda8;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #1d2735 transparent;
+  scrollbar-color: #d9d3c2 transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -52,8 +43,5 @@
   *::after {
     animation: none !important;
     transition: none !important;
-  }
-  .beacon-sweep {
-    display: none !important;
   }
 }

@@ -25,7 +25,7 @@ Each desktop's OpenViking instance (the memory server on port 1933) needs an **e
 | API key | your Workers AI token |
 | Embed model | `@cf/qwen/qwen3-embedding-0.6b` |
 | Embed dimension | `1024` |
-| VLM model | `@cf/zai-org/glm-5.3-flash` |
+| VLM model | `@cf/mistralai/mistral-small-3.1-24b-instruct` |
 
 4. **Save OpenViking models** — a blank API key keeps the already-saved key.
 
@@ -40,7 +40,9 @@ Sleep the desktop, then start it again — desktop start recreates the per-user 
 The Admin form sends no extra fields, so it cannot set:
 
 - `cf-aig-gateway-id` — the host `~/.openviking/ov.conf` can route embeddings through an AI Gateway (named `embeddings`) for caching and logs. Without it, requests go straight to Workers AI and still work.
-- `reasoning_effort: low` for the VLM — GLM-5.3-Flash answers without it.
+- `reasoning_effort: low` for the VLM — Mistral Small answers without it.
+
+Avoid `@cf/meta/llama-3.3-70b-instruct-fp8-fast` as the VLM: Workers AI caps it at a 24k-token context window, and OpenViking sends whole documents for abstracting, so large adds fail with HTTP 413.
 
 ## Verify
 

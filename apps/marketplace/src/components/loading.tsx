@@ -2,8 +2,8 @@ import { Spinner } from "./ui"
 
 export default function Loading() {
   return (
-    <div className="grid min-h-[40vh] place-items-center bg-[#05070A] py-20 text-[#EDF2F7]">
-      <Spinner size="size-8" label="Loading marketplace…" />
+    <div className="grid min-h-[40vh] place-items-center bg-[#FAFAF7] py-20 text-[#1A2333]">
+      <Spinner size="size-8" label="Loading plugins…" />
     </div>
   )
 }

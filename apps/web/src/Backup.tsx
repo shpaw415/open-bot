@@ -694,9 +694,9 @@ export function Backup({ me }: { me: Me }) {
                         <Typography variant="body2" className="ob-mono">
                           {backup.id}
                         </Typography>
-                        <Chip size="small" label={backup.trigger} />
+                        <Chip size="small">{backup.trigger}</Chip>
                         {backup.hasControlDb ? (
-                          <Chip size="small" label="+control db" />
+                          <Chip size="small">+control db</Chip>
                         ) : null}
                       </Stack>
                       <Typography variant="caption" color="textSecondary">

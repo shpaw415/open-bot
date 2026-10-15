@@ -606,6 +606,19 @@ body.ob-preview-dragging iframe {
   }
 }
 
+/* mui-lite hardcodes the MUI-dark toast surface (#323232) on
+   .MUI_Snackbar_Inner; make light mode follow the theme instead.
+   Dark mode already matches, so only light needs an override. */
+html[data-theme="light"] .MUI_Snackbar_Inner {
+  background-color: rgb(var(--bg-surface, 255, 255, 255));
+  color: rgba(var(--text-main, 0, 0, 0), 0.87);
+}
+
+html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_text,
+html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
+  color: rgb(var(--text-primary, 25, 118, 210));
+}
+
 .ob-thread-primary {
   display: flex;
   min-width: 0;
