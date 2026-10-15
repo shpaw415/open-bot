@@ -1,10 +1,15 @@
 "no action"
 
+import { marketplaceWriteAuth } from "../../../../lib/auth"
 import { getPluginRow } from "../../../../lib/db"
 
 export async function onRequestPost(context: EventContext<Env, "id", never>) {
-  const header = context.request.headers.get("authorization") ?? ""
-  if (!/^Bearer\s+/i.test(header)) {
+  const writer = await marketplaceWriteAuth(
+    context.env.DB,
+    context.request,
+    context.env.MARKETPLACE_TOKEN,
+  )
+  if (!writer) {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
   const id = decodeURIComponent(context.params.id as string)

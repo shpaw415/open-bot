@@ -52,6 +52,9 @@ describe("plugin pages", () => {
     expect(parsePluginPagePath("/api/pages/a/../etc")).toBeNull()
     expect(parsePluginPagePath("/api/pages/a/\\etc")).toBeNull()
     expect(parsePluginPagePath("/api/pages/%2e%2e/x")).toBeNull()
+    expect(parsePluginPagePath("/api/pages/stock-pro//evil.example/x")).toBeNull()
+    expect(parsePluginPagePath("/api/pages/stock-pro/%252e%252e/x")).toBeNull()
+    expect(parsePluginPagePath("/api/pages/stock-pro/%2f%2fevil.example")).toBeNull()
   })
 
   test("ports stay inside the page range and are deterministic", () => {

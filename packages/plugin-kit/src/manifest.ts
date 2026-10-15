@@ -637,11 +637,12 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       message: "permissions must be an object",
     })
   }
+  const vaultSlugOk = (slug: string) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(slug)
   const vaultRead =
     isRecord(permissions) && permissions.vaultRead !== undefined
       ? strArray(permissions.vaultRead, 32)
       : []
-  if (!vaultRead) {
+  if (!vaultRead || vaultRead.some((slug) => !vaultSlugOk(slug))) {
     issues.push({
       path: "permissions.vaultRead",
       message: "must be a slug list",
@@ -651,7 +652,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     isRecord(permissions) && permissions.vaultCreate !== undefined
       ? strArray(permissions.vaultCreate, 32)
       : []
-  if (!vaultCreate) {
+  if (!vaultCreate || vaultCreate.some((slug) => !vaultSlugOk(slug))) {
     issues.push({
       path: "permissions.vaultCreate",
       message: "must be a slug list",
@@ -1024,6 +1025,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       // dataUrl): root-relative, no traversal, capped length.
       const pluginPathOk = (value: string) =>
         value.startsWith("/") &&
+        !value.startsWith("//") &&
         value.length <= 200 &&
         !value.includes("\0") &&
         !value.includes("\\") &&

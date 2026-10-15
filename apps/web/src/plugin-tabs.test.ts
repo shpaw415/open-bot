@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { filterTabs, pluginTabs } from "./plugin-tabs"
+import { appTabSandbox, filterTabs, pluginTabs } from "./plugin-tabs"
 import type { InstalledPluginInfo } from "./plugin-ui"
 
 function plugin(
@@ -109,5 +109,10 @@ describe("filterTabs", () => {
 
   test("no match returns an empty list", () => {
     expect(filterTabs(tabs, "zzz")).toEqual([])
+  })
+
+  test("same-host app frames do not keep the dashboard origin", () => {
+    expect(appTabSandbox(false)).not.toContain("allow-same-origin")
+    expect(appTabSandbox(true)).toContain("allow-same-origin")
   })
 })

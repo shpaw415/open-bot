@@ -37,6 +37,24 @@ export function publicOrigin() {
   return (process.env.OPEN_BOT_PUBLIC_URL ?? "").replace(/\/+$/, "")
 }
 
+// Dedicated origin for plugin app iframes. When set, frames load from this
+// host (same control plane, different site) so plugin JS cannot inherit the
+// dashboard session. Empty falls back to a sandboxed same-host frame.
+export function pagesOrigin() {
+  const raw = (process.env.OPEN_BOT_PAGES_ORIGIN ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+  if (!raw) return ""
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== "https:" && url.protocol !== "http:") return ""
+    if (url.username || url.password || url.pathname !== "/") return ""
+    return url.origin
+  } catch {
+    return ""
+  }
+}
+
 export function userKey(userId: string) {
   return userId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 32)
 }

@@ -123,6 +123,12 @@ describe("plugin webhooks", () => {
     expect(parseWebhookPath(`/hooks/${USER_ID}/../etc`)).toBeNull()
     expect(parseWebhookPath(`/hooks/${USER_ID}/stock-pro/../..`)).toBeNull()
     expect(parseWebhookPath(`/hooks/${USER_ID}/stock-pro/%2e%2e/x`)).toBeNull()
+    expect(parseWebhookPath("/hooks/stock-pro//evil.example/x")).toBeNull()
+    expect(
+      parseWebhookPath(`/hooks/${USER_ID}/stock-pro//evil.example/x`),
+    ).toBeNull()
+    expect(parseWebhookPath("/hooks/stock-pro/%252e%252e/x")).toBeNull()
+    expect(parseWebhookPath("/hooks/stock-pro/%2f%2fevil.example")).toBeNull()
   })
 
   test("secrets come from the header or the query", () => {

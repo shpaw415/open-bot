@@ -1,5 +1,6 @@
 import type { CronJob, Db, PluginAppliedLog, User } from "@open-bot/db"
 import {
+  configIsSecret,
   manifestIssuesText,
   PLUGIN_VERSION_PATTERN,
   type PluginManifest,
@@ -311,6 +312,21 @@ type MarketDetail = {
   versions: { version: string; createdAt: number; notes: string | null }[]
 }
 
+function publicPluginSettings(
+  manifest: PluginManifest,
+  rows: { key: string; value: string }[],
+) {
+  const secret = new Set(
+    (manifest.configs ?? []).filter(configIsSecret).map((config) => config.key),
+  )
+  const settings: Record<string, string> = {}
+  for (const setting of rows) {
+    if (secret.has(setting.key)) continue
+    settings[setting.key] = setting.value
+  }
+  return settings
+}
+
 function publicInstalled(
   db: Db,
   row: {
@@ -335,10 +351,10 @@ function publicInstalled(
   const setupCommands = Array.isArray(manifest.setup?.commands)
     ? manifest.setup.commands
     : []
-  const settings: Record<string, string> = {}
-  for (const setting of db.pluginSettings(row.userId, row.pluginId)) {
-    settings[setting.key] = setting.value
-  }
+  const settings = publicPluginSettings(
+    manifest,
+    db.pluginSettings(row.userId, row.pluginId),
+  )
   return {
     id: row.id,
     pluginId: row.pluginId,
@@ -1003,6 +1019,9 @@ export function handlePlugins(
         )
     }
     if (what === "setup") {
+      if (agent) {
+        return json({ error: "setup retry requires the dashboard" }, 403)
+      }
       return retryPluginSetup(db, user, row)
         .then((init) => {
           hub.emit(user.id, { type: "plugins.changed" })
@@ -1103,6 +1122,7 @@ export function handlePlugins(
           if (!result.ok) {
             return json({ error: `${config.key}: ${result.error}` }, 400)
           }
+          if (configIsSecret(config) && result.value === "") continue
           db.setPluginSetting(user.id, pluginId, key, result.value)
         }
         let deferred = false
@@ -1121,7 +1141,10 @@ export function handlePlugins(
         }
         return json({
           ok: true,
-          settings: db.pluginSettings(user.id, pluginId),
+          settings: publicPluginSettings(
+            manifest,
+            db.pluginSettings(user.id, pluginId),
+          ),
           ...(deferred
             ? {
                 configSync:
@@ -1181,7 +1204,7 @@ export function handlePlugins(
       .json()
       .then(async (body: Record<string, unknown>) => {
         const slug = typeof body.slug === "string" ? body.slug.trim() : ""
-        if (!agent && keyVaultSpecById(slug)) {
+        if (keyVaultSpecById(slug)) {
           return json(
             {
               error: `${slug} is a shared provider key — manage it on the Config page Keys tab`,

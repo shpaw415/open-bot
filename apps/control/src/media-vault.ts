@@ -107,7 +107,8 @@ export function vaultSourcePath(raw: string): string | null {
   const segments = rest.split("/")
   if (segments.some((seg) => seg === "" || seg === "." || seg === ".."))
     return null
-  if (segments.includes(".ssh")) return null
+  if (segments.includes(".ssh") || segments.includes(".open-bot")) return null
+  if (segments.includes(".openviking")) return null
   if (segments[0] === ".config" && segments[1] === "open-bot") return null
   const base = segments[segments.length - 1] ?? ""
   if (!base || base === "auth.json" || base.endsWith("-auth.json")) return null
@@ -206,7 +207,8 @@ function deletableSourcePath(path: string): string | null {
   const segments = rest.split("/")
   if (segments.some((seg) => seg === "" || seg === "." || seg === ".."))
     return null
-  if (segments.includes(".ssh")) return null
+  if (segments.includes(".ssh") || segments.includes(".open-bot")) return null
+  if (segments.includes(".openviking")) return null
   if (segments[0] === ".config" && segments[1] === "open-bot") return null
   const base = segments[segments.length - 1] ?? ""
   if (!base || base === "auth.json" || base.endsWith("-auth.json")) return null

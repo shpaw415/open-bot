@@ -7,7 +7,7 @@ import {
 import { marketplaceWriteAuth, touchApiKey } from "../../lib/auth"
 import { getPluginRow, getVersionRow, pluginFromRow } from "../../lib/db"
 import { revalidatePluginPage } from "../../lib/page-cache"
-import { shouldQueueReview } from "../../lib/review-state"
+import { publishOwnerAllowed, shouldQueueReview } from "../../lib/review-state"
 import {
   applySecurityReview,
   enqueueSecurityReview,
@@ -49,6 +49,19 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     )
   }
   const manifest: PluginManifest = result.manifest
+  const existing = await getPluginRow(DB, manifest.id)
+  if (
+    !publishOwnerAllowed(
+      Boolean(existing),
+      existing?.owner_user_id,
+      writer.userId,
+    )
+  ) {
+    return Response.json(
+      { error: "not the plugin owner", code: "plugin_owner" },
+      { status: 403 },
+    )
+  }
   const notes =
     typeof body.notes === "string" ? body.notes.slice(0, 4000) : null
   const readme = await fetchReadme(
@@ -61,6 +74,7 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     manifest,
     readme,
     notes,
+    existing ? null : writer.userId,
   )
   const queue = shouldQueueReview(
     Boolean(context.env.SECURITY_REVIEW),

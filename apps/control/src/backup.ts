@@ -397,6 +397,10 @@ export async function pruneRemoteBackups(
   return removed
 }
 
+export function backupIdOk(id: string) {
+  return /^\d{8}T\d{6}Z-[a-z0-9]{4}$/.test(id)
+}
+
 function backupId(at = Date.now()) {
   const stamp = new Date(at)
     .toISOString()
@@ -527,7 +531,7 @@ export async function restoreVolumeFromFile(volume: string, filePath: string) {
       "sh",
       opencodeImage,
       "-c",
-      "find /dst -mindepth 1 -delete; tar -xzf - -C /dst",
+      "find /dst -mindepth 1 -delete; tar -xzf - -C /dst --no-absolute-names",
     ],
     filePath,
   )

@@ -227,8 +227,8 @@ export function Login({ onLogin }: { onLogin: (me: Me) => void }) {
         </Button>
         {mode === "login" ? (
           <Typography variant="caption" color="textSecondary">
-            Default first login is admin@localhost / changeme — you will be
-            asked to change it.
+            First-run admin is admin@localhost. The password is printed in the
+            control-plane log and must be changed before anything else works.
           </Typography>
         ) : (
           <Typography variant="caption" color="textSecondary">
