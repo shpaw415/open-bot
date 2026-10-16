@@ -11,7 +11,7 @@ Publishing a plugin makes every file public: the GitHub repository, the release 
 
 Manifest fields (description, skills[].body, personas[].instruction, cron message/script, tools[].content, files[] payloads, configs), README, CONFIG.md, examples, help text, and test fixtures must not contain the real user's:
 
-- name — not their first name, not their full name ("confirm with Justin", "the desktop of Justin" are leaks),
+- name — not their first name, not their full name ("confirm with Alex", "the desktop of Alex" are leaks),
 - contacts — email, phone, chat handles,
 - address — civic numbers, streets, postal codes,
 - government identifiers — SIN/NAS, RAMQ, driver's licence, passport,
@@ -19,7 +19,7 @@ Manifest fields (description, skills[].body, personas[].instruction, cron messag
 - payment cards, bank details, or credentials,
 - private-life facts — birth dates, their real calendar entries, family details, home routines.
 
-The same rule applies to data you pulled from memory, other plugins (e.g. a profile plugin), or earlier conversation: never paste it into plugin source.
+The same rule applies to data you pulled from memory, other plugins, or earlier conversation: never paste it into plugin source.
 
 ## What to do instead
 

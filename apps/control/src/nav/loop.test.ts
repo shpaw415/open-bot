@@ -298,7 +298,7 @@ test("a blank page with a url opens it before a decision", async () => {
       },
       async navigate(url) {
         opened.push(url)
-        current = { ...page, url, text: "M2Tech" }
+        current = { ...page, url, text: "Example Corp" }
       },
       async act() {},
     },
