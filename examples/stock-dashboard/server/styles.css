@@ -1,0 +1,62 @@
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0;
+  padding: 24px;
+  background: #111;
+  color: #eee;
+}
+
+h1 {
+  font-size: 20px;
+  margin: 0 0 16px;
+}
+
+form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+input {
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #1c1c1c;
+  color: #eee;
+}
+
+input[name="name"] {
+  flex: 1;
+  min-width: 120px;
+}
+
+input[name="qty"] {
+  width: 90px;
+}
+
+button {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 0;
+  background: #4a6cf7;
+  color: white;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+td button {
+  background: #7a2f2f;
+  padding: 4px 10px;
+}

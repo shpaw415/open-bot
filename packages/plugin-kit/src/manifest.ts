@@ -120,6 +120,29 @@ export const PLUGIN_HOOK_EVENTS = ["session.idle", "thread.created"] as const
 // dashboard home-screen app tile. No URLs — never fetched remotely.
 export const TAB_ICON_MAX_LENGTH = 32
 
+// Paid plugins: a manifest `pricing` block makes the plugin a premium listing.
+// One-time purchase (Stripe Checkout on the marketplace), lifetime license
+// incl. future updates. amount is integer USD cents, $0.99–$500.
+export const PLUGIN_PRICING_MODELS = ["one-time"] as const
+export type PluginPricingModel = (typeof PLUGIN_PRICING_MODELS)[number]
+export const PRICE_MIN_CENTS = 99
+export const PRICE_MAX_CENTS = 50_000
+
+export type PluginPricing = {
+  model: PluginPricingModel
+  amount: number
+}
+
+export function isPaidManifest(
+  manifest: Pick<PluginManifest, "pricing">,
+): boolean {
+  return (
+    manifest.pricing?.model === "one-time" &&
+    typeof manifest.pricing.amount === "number" &&
+    manifest.pricing.amount > 0
+  )
+}
+
 // Mention section slugs the platform itself owns; plugin mention sections
 // must not shadow them (singular + plural, matching the reference resolver).
 export const RESERVED_MENTION_SECTIONS = new Set([
@@ -250,6 +273,13 @@ export function validateConfigValue(
 export type PluginDashboardPages = {
   entry: string
   public?: boolean
+  // Optional frontend entry (a files[] source path ending in .html, e.g.
+  // "server/index.html"): the control plane bundles it with `bun build
+  // --compile --target=browser` into one self-contained HTML at install and
+  // serves it to the page server through OPEN_BOT_PAGE_UI. Local installs
+  // skip the build — the checkout server imports the HTML live (Bun HTML
+  // imports) under bun --hot.
+  ui?: string
 }
 
 export type PluginTab = {
@@ -330,6 +360,8 @@ export type PluginManifest = {
   repo: string
   category: string
   tags: string[]
+  // Declares a paid plugin (one-time purchase, lifetime license). Absent = free.
+  pricing?: PluginPricing
   permissions?: PluginPermissions
   skills?: PluginSkill[]
   personas?: PluginPersona[]
@@ -671,6 +703,45 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       path: "tags",
       message: "tags must be a list of strings (max 8)",
     })
+  }
+
+  // Paid listing declaration: absent/0 stays free, anything present must be a
+  // supported model with an integer USD-cent amount inside the bounds.
+  let pricing: PluginPricing | undefined
+  if (input.pricing !== undefined) {
+    const raw = input.pricing
+    if (!isRecord(raw)) {
+      issues.push({ path: "pricing", message: "pricing must be an object" })
+    } else {
+      const model = str(raw.model)
+      if (!model || !PLUGIN_PRICING_MODELS.includes(model as never)) {
+        issues.push({
+          path: "pricing.model",
+          message: `pricing.model must be one of ${PLUGIN_PRICING_MODELS.join(", ")}`,
+        })
+      }
+      const amount = raw.amount
+      if (
+        typeof amount !== "number" ||
+        !Number.isInteger(amount) ||
+        amount < PRICE_MIN_CENTS ||
+        amount > PRICE_MAX_CENTS
+      ) {
+        issues.push({
+          path: "pricing.amount",
+          message: `pricing.amount must be an integer USD-cent price (${PRICE_MIN_CENTS}-${PRICE_MAX_CENTS})`,
+        })
+      }
+      if (
+        PLUGIN_PRICING_MODELS.includes(model as never) &&
+        typeof amount === "number" &&
+        Number.isInteger(amount) &&
+        amount >= PRICE_MIN_CENTS &&
+        amount <= PRICE_MAX_CENTS
+      ) {
+        pricing = { model: model as PluginPricingModel, amount }
+      }
+    }
   }
 
   const permissions = input.permissions ?? {}
@@ -1061,6 +1132,29 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
               message: "dashboard.pages.public must be a boolean",
             })
           }
+          if (pages.ui !== undefined) {
+            const ui = str(pages.ui)
+            if (!ui || !isValidFileSource(ui) || !ui.endsWith(".html")) {
+              issues.push({
+                path: "dashboard.pages.ui",
+                message:
+                  "dashboard.pages.ui must be a files[] source path ending in .html (repo-relative, no ..)",
+              })
+            } else {
+              const fileSources = new Set(
+                (Array.isArray(files) ? files : [])
+                  .map((file) => str(file?.source))
+                  .filter((source): source is string => Boolean(source)),
+              )
+              if (!fileSources.has(ui)) {
+                issues.push({
+                  path: "dashboard.pages.ui",
+                  message:
+                    "dashboard.pages.ui must be a declared files[] source",
+                })
+              }
+            }
+          }
         }
       }
 
@@ -1431,6 +1525,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
     repo,
     category,
     tags: tags ?? [],
+    pricing,
     permissions: {
       vaultRead: vaultRead ?? [],
       vaultCreate: vaultCreate ?? [],

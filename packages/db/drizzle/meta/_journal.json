@@ -78,6 +78,20 @@
       "when": 1792025856195,
       "tag": "0010_smart_slipstream",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792111836657,
+      "tag": "0011_shocking_komodo",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792112974287,
+      "tag": "0012_special_power_pack",
+      "breakpoints": true
     }
   ]
 }

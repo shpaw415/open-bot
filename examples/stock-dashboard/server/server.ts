@@ -4,9 +4,17 @@
 //   OPEN_BOT_PAGE_PORT  port to listen on
 //   OPEN_BOT_PAGE_TOKEN shared secret (arrives as x-open-bot-page-token)
 //   OPEN_BOT_PLUGIN_ID  this plugin's id
+//   OPEN_BOT_PAGE_UI    frozen installs: absolute path to the control plane's
+//                       standalone bundle of index.html (all assets inlined)
 // Settings and vault keys live in ~/.config/open-bot/plugin-<id>.json.
 //
-// Written in TypeScript: Bun runs .ts natively on the desktop, no build step.
+// The dashboard UI is real files next to this script — index.html + app.ts +
+// styles.css — never template strings. Two ways it reaches the browser:
+// - Frozen installs (marketplace): the control plane bundles index.html with
+//   `bun build --compile --target=browser` at install and passes the single
+//   self-contained file through OPEN_BOT_PAGE_UI.
+// - Local installs and previews: the checkout runs with `bun --hot` and the
+//   HTML import below bundles live — edit app.ts and reload, no build step.
 
 type StockItem = { id: number; name: string; qty: number }
 
@@ -37,8 +45,23 @@ function summary() {
   }
 }
 
+// The "/" route. Frozen installs serve the control plane's standalone bundle
+// file (a plain Response); local checkouts import index.html live — Bun
+// bundles app.ts and styles.css into it and hot-reloads on edits. The HTML
+// import only works as a static routes value, so the table branches on the
+// mode before the server starts.
+const routes = process.env.OPEN_BOT_PAGE_UI
+  ? {
+      "/": () =>
+        new Response(Bun.file(process.env.OPEN_BOT_PAGE_UI as string), {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    }
+  : { "/": await import("./index.html").then((m) => m.default) }
+
 const server = Bun.serve({
   port,
+  routes,
   async fetch(req) {
     const url = new URL(req.url)
 
@@ -117,12 +140,6 @@ const server = Bun.serve({
       })
     }
 
-    if (url.pathname === "/") {
-      return new Response(page(), {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      })
-    }
-
     return new Response("not found", { status: 404 })
   },
   websocket: {
@@ -137,62 +154,4 @@ const server = Bun.serve({
   },
 })
 
-function page() {
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Stock</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; background: #111; color: #eee; }
-  h1 { font-size: 20px; margin: 0 0 16px; }
-  form { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-  input { padding: 8px; border-radius: 6px; border: 1px solid #444; background: #1c1c1c; color: #eee; }
-  input[name=name] { flex: 1; min-width: 120px; }
-  button { padding: 8px 14px; border-radius: 6px; border: 0; background: #4a6cf7; color: white; cursor: pointer; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #2a2a2a; }
-  td button { background: #7a2f2f; padding: 4px 10px; }
-</style>
-</head>
-<body>
-<h1>Stock</h1>
-<form id="add">
-  <input name="name" placeholder="Item name" required>
-  <input name="qty" type="number" min="0" placeholder="Qty" required style="width:90px">
-  <button>Add</button>
-</form>
-<table>
-  <thead><tr><th>Item</th><th>Qty</th><th></th></tr></thead>
-  <tbody id="rows"></tbody>
-</table>
-<script>
-  const rows = document.getElementById("rows")
-  function render(items) {
-    rows.innerHTML = items.map((item) =>
-      "<tr><td>" + item.name.replace(/[&<>\\"']/g, "") + "</td><td>" + item.qty + "</td>" +
-      '<td><button data-id="' + item.id + '">remove</button></td></tr>'
-    ).join("")
-  }
-  async function refresh() {
-    render((await (await fetch("api/items")).json()).items)
-  }
-  document.getElementById("add").addEventListener("submit", async (event) => {
-    event.preventDefault()
-    const data = new FormData(event.target)
-    await fetch("api/items", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: data.get("name"), qty: Number(data.get("qty")) }) })
-    event.target.reset()
-  })
-  rows.addEventListener("click", async (event) => {
-    const id = event.target?.dataset?.id
-    if (id) { await fetch("api/items/" + id, { method: "DELETE" }) }
-  })
-  const live = new EventSource("api/live")
-  live.onmessage = (event) => { render(JSON.parse(event.data).items) }
-  refresh()
-</script>
-</body>
-</html>`
-}
+export { server }

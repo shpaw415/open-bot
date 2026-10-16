@@ -116,9 +116,7 @@ function verdictRequest(
   }
 }
 
-export function glmReviewRequest(
-  userContent: string,
-): Record<string, unknown> {
+export function glmReviewRequest(userContent: string): Record<string, unknown> {
   return verdictRequest(SYSTEM_PROMPT, "security_verdict", userContent)
 }
 
@@ -507,8 +505,7 @@ export function mergeReviewVerdicts(
   const privacyBlocking =
     privacyVerdict.verdict === "concern" &&
     privacyVerdict.findings.some((finding) => finding.severity !== "low")
-  const concern =
-    securityVerdict.verdict === "concern" || privacyBlocking
+  const concern = securityVerdict.verdict === "concern" || privacyBlocking
   return { status: concern ? "concern" : "pass", findings, error: null }
 }
 

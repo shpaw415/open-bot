@@ -23,6 +23,25 @@ esac
 run_dir=/run/open-bot/screens/$session
 mkdir -p "$run_dir" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
+
+audit() {
+  # One line per start/stop/heal so a "who took the screen" question has an
+  # answer. Never fatal.
+  local file=/home/agent/.open-bot/screens.log
+  (touch "$file" && chmod 0666 "$file") 2>/dev/null || true
+  printf '%s %s %s %s\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$session" "${2:-$display}" \
+    >>"$file" 2>/dev/null || true
+}
+
+# Per-display claim: a prompt-time ensure (control plane) and a CLI-side heal
+# recover different sessions onto the same display without sharing the
+# per-session lock below; serialize every claim on the display itself so one
+# session's teardown never pkills the other's Xvfb mid-start.
+mkdir -p /run/open-bot/screens
+exec 8>"/run/open-bot/screens/.display-$display.lock"
+flock -w 60 8 || true
+
 # Prompt-time ensure (control plane) and CLI-side screen-heal.sh can both get
 # here at once; serialize so a full restart never tears down the other's Xvfb.
 # A bounded wait keeps CLI calls from blocking past the agent's step budget.
@@ -60,7 +79,7 @@ start_group() {
     HOME=/home/agent \
     DISPLAY=":$display" \
     XDG_RUNTIME_DIR="/tmp/open-bot-runtime-$display" \
-    "$@" >/tmp/open-bot-$name-$display.log 2>&1 9>&- &
+    "$@" >/tmp/open-bot-$name-$display.log 2>&1 8>&- 9>&- &
   echo $! >"$run_dir/$name.pid"
 }
 
@@ -114,10 +133,28 @@ if [ -f "$run_dir/display" ] && [ "$(cat "$run_dir/display")" = "$display" ]; th
       fix_prefs
       start_chromium
     fi
+    touch "$run_dir/last-active" 2>/dev/null || true
+    audit up relaunch
     echo "ok $display"
     exit 0
   fi
 fi
+
+# Ownership check: another live session may already run on this display (it
+# would not have been listed while its screen-up was starting). Refuse instead
+# of tearing its Xvfb down — the caller reports "display in use" and the next
+# prompt picks a free display.
+for claim in /run/open-bot/screens/*/display; do
+  [ -f "$claim" ] || continue
+  owner=$(basename "$(dirname "$claim")")
+  [ "$owner" = "$session" ] && continue
+  if [ "$(cat "$claim" 2>/dev/null)" = "$display" ] \
+    && [ -S "/tmp/.X11-unix/X$display" ]; then
+    audit refused "owner:$owner"
+    echo "display $display is in use by another session" >&2
+    exit 1
+  fi
+done
 
 for name in xvfb openbox chromium; do
   if [ -f "$run_dir/$name.pid" ]; then
@@ -161,4 +198,6 @@ chmod 777 "/tmp/.X11-unix/X$display" || true
 start_group openbox openbox
 start_chromium
 echo "$display" >"$run_dir/display"
+touch "$run_dir/last-active" 2>/dev/null || true
+audit up start
 echo "ok $display"

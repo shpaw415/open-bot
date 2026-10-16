@@ -47,6 +47,7 @@ import {
   syncModel3dAuth,
   syncSystem1,
   syncVideoAuth,
+  syncWatchdogConfig,
   writeAgentUpload,
   writeProjectFile,
 } from "./docker"
@@ -87,6 +88,7 @@ import {
   videoVaultSlug,
 } from "./key-vault"
 import { handleLlm } from "./llm"
+import { handleMcp } from "./mcp"
 import { handleMedia, isMediaRequest } from "./media-vault"
 import { trimDashboardMessages } from "./messages-trim"
 import {
@@ -184,6 +186,15 @@ import {
   voiceReady,
   voiceVaultSlug,
 } from "./voice-providers"
+import {
+  findingPublic,
+  ingestFinding,
+  resolveWatchdogConfig,
+  watchdogConfigError,
+  watchdogContainerPayload,
+  watchdogProviderById,
+  watchdogProviders,
+} from "./watchdog"
 import {
   IMAGE_REPLY,
   workspaceImagePath,
@@ -656,6 +667,22 @@ async function applyVaultChange(
       }
     }
   }
+  const watchdog = resolveWatchdogConfig(db, user.id)
+  const watchdogSpec = watchdogProviderById(watchdog.value.provider)
+  if (watchdogSpec && watchdogSpec.vaultSlug === changed.slug) {
+    try {
+      // Full payload even when the vault emptied: the toggles must survive.
+      applied.watchdog = await syncWatchdogConfig(
+        user.id,
+        watchdogContainerPayload(watchdog.value),
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing watchdog setup")) {
+        applied.watchdogError = message
+      }
+    }
+  }
   if (keyVaultSpecById(changed.slug)?.chatProvider) {
     const desktop = db.desktop(user.id)
     if (desktop) {
@@ -1108,6 +1135,21 @@ async function api(
     if (!agent) return json({ error: "unauthorized" }, 401)
     return handleImprovementPost(req, db, agent)
   }
+  if (url.pathname === "/api/watchdog" && req.method === "POST") {
+    const agent = userFromLlmToken(req, db)
+    if (!agent) return json({ error: "unauthorized" }, 401)
+    const config = db.getWatchdogConfig(agent.id)
+    if (!config.enabled) return json({ ok: true, ignored: true })
+    const body = (await readJson(req)) as Record<string, unknown>
+    const result = await ingestFinding(db, hub, agent.id, body)
+    if (!result) return json({ error: "invalid finding" }, 400)
+    return json({
+      ok: true,
+      duplicate: result.duplicate,
+      action: result.action,
+      stopped: result.stopped,
+    })
+  }
   if (url.pathname === "/api/agent-config" && req.method === "PUT") {
     const agent = userFromLlmToken(req, db)
     if (!agent) return json({ error: "unauthorized" }, 401)
@@ -1272,6 +1314,11 @@ async function api(
   }
   if (isPluginPath) {
     const handled = handlePlugins(req, url, db, user, hub, holdOpen, false)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
+  if (url.pathname === "/api/mcp" || url.pathname.startsWith("/api/mcp/")) {
+    const handled = await handleMcp(req, url, db, user, hub, ensure)
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
@@ -1842,6 +1889,112 @@ async function api(
   if (url.pathname === "/api/voice" && req.method === "DELETE") {
     db.clearVoiceConfig(user.id)
     return json({ ok: true })
+  }
+  if (url.pathname === "/api/watchdog" && req.method === "GET") {
+    const saved = db.getWatchdogConfig(user.id)
+    const resolved = resolveWatchdogConfig(db, user.id)
+    const spec = watchdogProviderById(saved.provider)
+    const findings = db.watchdogFindings(user.id, { limit: 200 })
+    return json({
+      providers: watchdogProviders.map((item) => ({
+        id: item.id,
+        label: item.label,
+        defaultModel: item.defaultModel,
+        accountRequired: item.accountRequired,
+        needsBaseUrl: item.baseUrl === null,
+      })),
+      config: {
+        enabled: saved.enabled,
+        stopOnHigh: saved.stopOnHigh,
+        provider: saved.provider,
+        accountId:
+          resolved.keySource === "vault"
+            ? resolved.value.accountId
+            : saved.accountId,
+        model: saved.model || spec?.defaultModel || "",
+        baseUrl: saved.baseUrl,
+        hasKey: Boolean(saved.apiKey),
+        keySource: saved.provider ? resolved.keySource : null,
+      },
+      findings: findings.map(findingPublic),
+      unread: findings.filter((row) => row.status === "new").length,
+    })
+  }
+  if (url.pathname === "/api/watchdog/config" && req.method === "PUT") {
+    const body = (await readJson(req)) as Record<string, unknown>
+    const providerId = String(body.provider ?? "").trim()
+    const spec = watchdogProviderById(providerId)
+    if (providerId && !spec) {
+      return json({ error: "unsupported watchdog provider" }, 400)
+    }
+    const current = db.getWatchdogConfig(user.id)
+    const next = {
+      enabled:
+        body.enabled === undefined ? current.enabled : body.enabled === true,
+      stopOnHigh:
+        body.stopOnHigh === undefined
+          ? current.stopOnHigh
+          : body.stopOnHigh === true,
+      provider: spec?.id ?? "",
+      accountId: String(body.accountId ?? "").trim(),
+      apiKey:
+        String(body.apiKey ?? "").trim() ||
+        (current.provider === (spec?.id ?? "") ? current.apiKey : ""),
+      model: String(body.model ?? "").trim() || spec?.defaultModel || "",
+      baseUrl: String(body.baseUrl ?? "").trim(),
+    }
+    const configError = watchdogConfigError(next)
+    if (configError) return json({ error: configError }, 400)
+    const vault = db.getUserKey(user.id, spec?.vaultSlug ?? "")
+    const filled = {
+      ...next,
+      apiKey: next.apiKey || vault?.apiKey || "",
+      accountId: next.accountId || vault?.accountId || "",
+    }
+    db.setWatchdogConfig(user.id, filled)
+    let syncError: string | null = null
+    try {
+      // Always push the full payload: an empty provider means rules-only,
+      // and the daemon must still learn the current toggles.
+      await syncWatchdogConfig(user.id, watchdogContainerPayload(filled))
+    } catch (error) {
+      syncError = error instanceof Error ? error.message : "sync failed"
+    }
+    return json({ ok: true, ...(syncError ? { syncError } : {}) })
+  }
+  if (url.pathname === "/api/watchdog/config" && req.method === "DELETE") {
+    const current = db.getWatchdogConfig(user.id)
+    db.clearWatchdogProvider(user.id)
+    try {
+      await syncWatchdogConfig(
+        user.id,
+        watchdogContainerPayload({
+          ...current,
+          provider: "",
+          accountId: "",
+          apiKey: "",
+          model: "",
+          baseUrl: "",
+        }),
+      )
+    } catch {
+      // the boot re-sync rewrites the file on the next start
+    }
+    return json({ ok: true })
+  }
+  if (
+    url.pathname.startsWith("/api/watchdog/findings/") &&
+    req.method === "POST"
+  ) {
+    const id = url.pathname.slice("/api/watchdog/findings/".length)
+    const body = (await readJson(req)) as Record<string, unknown>
+    const status = String(body.status ?? "")
+    if (status !== "reviewed" && status !== "dismissed" && status !== "new") {
+      return json({ error: "status must be new, reviewed, or dismissed" }, 400)
+    }
+    const updated = db.setWatchdogFindingStatus(id, user.id, status)
+    if (!updated) return json({ error: "not found" }, 404)
+    return json({ ok: true, finding: findingPublic(updated) })
   }
   if (url.pathname === "/api/stt" && req.method === "POST") {
     const resolved = resolveVoiceConfig(db, user.id)
@@ -2888,8 +3041,7 @@ async function handleCron(
         )
           return json(
             {
-              error:
-                "everySeconds must be an integer between 60 and 31536000",
+              error: "everySeconds must be an integer between 60 and 31536000",
             },
             400,
           )

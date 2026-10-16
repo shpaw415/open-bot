@@ -29,16 +29,28 @@ function marketToken(db: Db): string {
   return db.getSetting(MARKET_KEY_SETTING) || marketplaceToken
 }
 
+// The auth token for one artifact fetch: the installing user's marketplace
+// API key when they set one (paid-plugin licenses belong to their account),
+// falling back to the instance-wide key.
+function artifactToken(db: Db, userId?: string): string {
+  const userKey = userId
+    ? (db.userById(userId)?.marketplaceApiKey ?? null)
+    : null
+  return userKey || marketToken(db)
+}
+
 // Downloads the security-reviewed release tarball for one plugin version from
 // the marketplace (R2-backed), verifies it against the sha256 recorded at
 // review time, and caches it in the control container so desktop boots do not
-// re-download it.
+// re-download it. Paid plugins 402 unless the resolved token's user holds a
+// purchase — `userId` selects whose marketplace key rides along.
 export async function fetchPluginArtifact(
   db: Db,
   pluginId: string,
   version: string,
+  userId?: string,
 ): Promise<{ tarballPath: string; sha256: string }> {
-  const token = marketToken(db)
+  const token = artifactToken(db, userId)
   if (marketplaceUrl === "" || token === "") {
     throw new HttpError(
       503,
@@ -79,15 +91,21 @@ export async function fetchPluginArtifact(
     const text = await response.text().catch(() => "")
     let message = text.slice(0, 300)
     try {
-      const parsed = JSON.parse(text) as { error?: string }
+      const parsed = JSON.parse(text) as {
+        error?: string
+        code?: string
+        priceCents?: number
+      }
       if (parsed.error) message = parsed.error
     } catch {
       // keep raw text
     }
+    // 402 = unlicensed paid plugin: surfaced to the dashboard so it can offer
+    // the marketplace purchase flow.
     throw new HttpError(
-      response.status === 404 ? 404 : 502,
+      response.status === 404 ? 404 : response.status === 402 ? 402 : 502,
       message || `artifact request failed (${response.status})`,
-      "marketplace_error",
+      response.status === 402 ? "purchase_required" : "marketplace_error",
     )
   }
   const buffer = await response.arrayBuffer()
@@ -117,14 +135,28 @@ export type PluginArtifactFile = {
   exec: boolean
 }
 
+// The installed name of the built dashboard UI (manifest dashboard.pages.ui):
+// one self-contained HTML file the frozen page server serves via
+// OPEN_BOT_PAGE_UI. Local installs never build it — the checkout imports the
+// HTML live under bun --hot.
+export const PLUGIN_UI_FILE_NAME = "ui.html"
+
+const MAX_UI_BUNDLE_BYTES = 8 * 1024 * 1024
+const UI_BUILD_TIMEOUT_MS = 60_000
+
 // Extracts the manifest-declared files from the unpacked release tarball.
 // The tarball has a single GitHub root directory; sources are repo-relative
 // below it. Payload files must be text (scripts, configs, small assets).
+// With `uiSource` (manifest dashboard.pages.ui), the same unpack also runs
+// `bun build --compile --target=browser` on the frontend entry and appends
+// the single-file HTML bundle as PLUGIN_UI_FILE_NAME — the frozen install
+// then needs no relative file structure at all.
 export function extractPluginFiles(
   tarballPath: string,
   files: PluginFile[],
+  uiSource?: string | null,
 ): PluginArtifactFile[] {
-  if (files.length === 0) return []
+  if (files.length === 0 && !uiSource) return []
   const dir = mkdtempSync(join(tmpdir(), "ob-artifact-"))
   try {
     const tar = Bun.spawnSync(["tar", "-xzf", tarballPath, "-C", dir])
@@ -152,7 +184,7 @@ export function extractPluginFiles(
         "artifact_layout",
       )
     }
-    return files.map((file) => {
+    const resolved = files.map((file) => {
       const source = join(root, file.source)
       if (
         !source.startsWith(`${root}/`) ||
@@ -172,7 +204,80 @@ export function extractPluginFiles(
         exec: file.exec !== false,
       }
     })
+    if (uiSource) resolved.push(buildPluginUi(root, uiSource))
+    return resolved
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// Bundles one frontend entry (inside the unpacked artifact root) into a
+// single self-contained HTML file. Bun inlines every script/stylesheet/asset
+// the entry references by relative path; external URLs stay untouched. The
+// build is static (no code runs), so untrusted frontend sources are safe to
+// bundle — the same property the security review relies on reading them.
+function buildPluginUi(root: string, uiSource: string): PluginArtifactFile {
+  const entry = join(root, uiSource)
+  if (
+    !entry.startsWith(`${root}/`) ||
+    !existsSync(entry) ||
+    !statSync(entry).isFile()
+  ) {
+    throw new HttpError(
+      404,
+      `file ${uiSource} is not in the plugin artifact`,
+      "artifact_file",
+    )
+  }
+  const out = mkdtempSync(join(tmpdir(), "ob-ui-build-"))
+  try {
+    // process.execPath is the control container's own bun — no PATH lookup.
+    const build = Bun.spawnSync(
+      [
+        process.execPath,
+        "build",
+        "--compile",
+        "--target=browser",
+        entry,
+        "--outdir",
+        out,
+      ],
+      { timeout: UI_BUILD_TIMEOUT_MS },
+    )
+    if (build.exitCode !== 0) {
+      const detail =
+        build.stderr.toString().trim() || build.stdout.toString().trim()
+      throw new HttpError(
+        400,
+        `could not build the dashboard UI (${uiSource}): ${detail.slice(0, 400)}`,
+        "ui_build_failed",
+      )
+    }
+    const produced = readdirSync(out).filter((name) => name.endsWith(".html"))
+    if (produced.length !== 1) {
+      throw new HttpError(
+        502,
+        `the dashboard UI build produced ${produced.length} HTML files`,
+        "ui_build_failed",
+      )
+    }
+    const content = readFileSync(join(out, produced[0]), "utf8")
+    if (content.length === 0) {
+      throw new HttpError(
+        502,
+        "the dashboard UI build produced an empty file",
+        "ui_build_failed",
+      )
+    }
+    if (Buffer.byteLength(content) > MAX_UI_BUNDLE_BYTES) {
+      throw new HttpError(
+        400,
+        `the dashboard UI bundle is larger than ${MAX_UI_BUNDLE_BYTES} bytes — inline fewer or smaller assets`,
+        "ui_build_size",
+      )
+    }
+    return { name: PLUGIN_UI_FILE_NAME, content, exec: false }
+  } finally {
+    rmSync(out, { recursive: true, force: true })
   }
 }

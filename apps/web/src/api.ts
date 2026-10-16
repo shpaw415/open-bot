@@ -22,6 +22,22 @@ export function clientId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+// HTTP error carrying the parsed JSON body (402 needsPurchase for paid
+// plugins, 409 needsConfirm, …) so callers can react to structured fields.
+export class ApiHttpError extends Error {
+  status: number
+  body: Record<string, unknown>
+  constructor(
+    message: string,
+    status: number,
+    body: Record<string, unknown> = {},
+  ) {
+    super(message)
+    this.status = status
+    this.body = body
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -33,7 +49,12 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const body = (await response.json().catch(() => ({}))) as T & {
     error?: string
   }
-  if (!response.ok) throw new Error(body.error ?? response.statusText)
+  if (!response.ok)
+    throw new ApiHttpError(
+      body.error ?? response.statusText,
+      response.status,
+      body,
+    )
   return body
 }
 

@@ -4,6 +4,7 @@ import { desktopPhase, endpoint } from "./docker"
 import { names, pagesOrigin } from "./env"
 import { HttpError } from "./http-error"
 import { randomToken } from "./passwords"
+import { PLUGIN_UI_FILE_NAME } from "./plugin-artifact"
 import {
   rewritePreviewCss,
   rewritePreviewHtml,
@@ -26,6 +27,11 @@ export const PAGE_PORT_MAX = 4759
 const PAGE_HEALTH_TTL_MS = 5_000
 const PAGE_START_THROTTLE_MS = 5_000
 const PAGE_START_TIMEOUT_MS = 15_000
+// Idle lifecycle: servers exist only while they are being used. Any request
+// (dashboard proxy, app frame, webhook, @mention lookup) resets the window;
+// the sweeper stops whatever overstays it.
+const PAGE_IDLE_STOP_MS = 5 * 60 * 1000
+const PAGE_IDLE_SWEEP_MS = 30_000
 
 // Surfaced with the install/update responses so harnesses see the page
 // server's port and health instead of polling blind.
@@ -42,6 +48,22 @@ export function pluginPagePath(pluginId: string) {
 
 export function pluginPageBin(pluginId: string, entry: string) {
   return `/usr/local/bin/ob-plugin-${pluginId}-${entry}`
+}
+
+// The bundled dashboard UI (manifest dashboard.pages.ui) is installed as
+// PLUGIN_UI_FILE_NAME next to the tools. Only frozen installs get the env —
+// local checkouts import the HTML live under bun --hot and ship no ui.html.
+export function pageUiEnv(
+  pluginId: string,
+  manifest: PluginManifest,
+  checkoutEntry: string | null,
+): string[] {
+  if (checkoutEntry) return []
+  if (!manifest.dashboard?.pages?.ui) return []
+  return [
+    "-e",
+    `OPEN_BOT_PAGE_UI=${pluginPageBin(pluginId, PLUGIN_UI_FILE_NAME)}`,
+  ]
 }
 
 // Local installs run the page server straight from the checkout so edits show
@@ -183,6 +205,7 @@ type PageState = { port: number; token: string; startedAt: number }
 
 const states = new Map<string, PageState>()
 const lastStart = new Map<string, number>()
+const lastActivity = new Map<string, number>()
 const healthCache = new Map<string, { ok: boolean; at: number }>()
 
 const PAGE_FRAME_TTL_MS = 10 * 60 * 1000
@@ -200,6 +223,20 @@ function stateKey(userId: string, pluginId: string) {
 
 export function pageStateFor(userId: string, pluginId: string) {
   return states.get(stateKey(userId, pluginId)) ?? null
+}
+
+// Most recent hub seen — the proxy and frame paths always pass one — so the
+// idle sweeper can announce stops to the dashboard even though it runs
+// outside any request.
+let pageHub: PageHub | null = null
+
+// Any request that reaches a running page server resets its idle window.
+// No-op while the server is down (starting one stamps fresh activity).
+export function touchPluginPageActivity(userId: string, pluginId: string) {
+  const key = stateKey(userId, pluginId)
+  if (!states.has(key)) return
+  lastActivity.set(key, Date.now())
+  ensureIdleSweeper()
 }
 
 async function pickPort(userId: string, pluginId: string) {
@@ -288,6 +325,7 @@ async function ensurePluginPageServerInner(
   const key = stateKey(userId, pluginId)
   const state = states.get(key)
   if (state && (await healthy(userId, pluginId, state.port))) {
+    touchPluginPageActivity(userId, pluginId)
     return state.port
   }
   // A just-waking desktop can report "sleeping" mid-restart (docker ps races
@@ -387,6 +425,7 @@ async function ensurePluginPageServerInner(
       `OPEN_BOT_PAGE_TOKEN=${token}`,
       "-e",
       `OPEN_BOT_PLUGIN_ID=${pluginId}`,
+      ...pageUiEnv(pluginId, manifest, checkoutEntry),
       n.opencode,
       "sh",
       "-c",
@@ -408,7 +447,11 @@ async function ensurePluginPageServerInner(
     await new Promise((resolve) => setTimeout(resolve, 250))
     if (await healthy(userId, pluginId, port)) {
       states.set(key, { port, token, startedAt: Date.now() })
-      if (hub) emitChanged(hub, userId)
+      touchPluginPageActivity(userId, pluginId)
+      if (hub) {
+        pageHub = hub
+        emitChanged(hub, userId)
+      }
       return port
     }
   }
@@ -471,6 +514,7 @@ export async function stopPluginPageServer(
   states.delete(key)
   healthCache.delete(key)
   lastStart.delete(key)
+  lastActivity.delete(key)
   const n = names(userId)
   await opencodeExecUser(n.opencode, [
     "sh",
@@ -488,6 +532,37 @@ export async function removePluginPageLog(userId: string, pluginId: string) {
   await opencodeExecUser(n.opencode, ["rm", "-f", `${pidFile}.log`]).catch(
     () => {},
   )
+}
+
+let idleSweeper: ReturnType<typeof setInterval> | null = null
+
+function ensureIdleSweeper() {
+  if (idleSweeper) return
+  idleSweeper = setInterval(() => {
+    void sweepIdlePluginPageServers().catch(() => {})
+  }, PAGE_IDLE_SWEEP_MS)
+  idleSweeper.unref?.()
+}
+
+// Stops every page server whose last request is older than the idle window.
+// Runs on a lazy interval (first start arms it) and is exported for tests.
+// The page token is kept so the next visit restarts transparently — no frame
+// remint, and direct clients survive. A stop against an asleep desktop fails
+// harmlessly: the state entry is already gone, and the next request respawns.
+export async function sweepIdlePluginPageServers(hub?: PageHub) {
+  const now = Date.now()
+  for (const [key, state] of [...states]) {
+    if (inFlightEnsures.has(key)) continue
+    const last = lastActivity.get(key) ?? state.startedAt
+    if (now - last < PAGE_IDLE_STOP_MS) continue
+    const [userId, pluginId] = key.split("\0")
+    await stopPluginPageServer(
+      userId,
+      pluginId,
+      hub ?? pageHub ?? undefined,
+      true,
+    ).catch(() => {})
+  }
 }
 
 // On-demand runtime status for the agent (`ob-plugin page <id>`): the port
@@ -535,7 +610,9 @@ const pendingRestarts = new Map<string, ReturnType<typeof setTimeout>>()
 // Settings and vault saves ride on the page server itself (the page POSTs,
 // the server forwards to the control plane, the control plane restarts the
 // server). Restarting inline kills the request that triggered the save, so
-// defer past the response and coalesce bursts into one restart.
+// defer past the response and coalesce bursts into one restart. Lazy
+// lifecycle: only a server that is actually up bounces — a stopped one reads
+// the rewritten plugin config file on its next start.
 export function schedulePluginPageRestart(
   db: Db,
   userId: string,
@@ -545,12 +622,14 @@ export function schedulePluginPageRestart(
   const key = stateKey(userId, row.pluginId)
   const existing = pendingRestarts.get(key)
   if (existing) clearTimeout(existing)
-  const timer = setTimeout(() => {
+  const timer = setTimeout(async () => {
     pendingRestarts.delete(key)
     // The plugin may have been uninstalled or disabled while the restart
     // waited — never resurrect a removed server.
     const current = db.installedPlugin(userId, row.pluginId)
     if (!current || !current.enabled) return
+    const state = states.get(key)
+    if (!state || !(await healthy(userId, row.pluginId, state.port))) return
     void restartPluginPageServer(userId, current, hub).catch(() => {})
   }, PAGE_RESTART_DELAY_MS)
   timer.unref?.()
@@ -564,9 +643,14 @@ export function pendingPluginPageRestartsCount() {
 export function clearPluginPageState() {
   for (const timer of pendingRestarts.values()) clearTimeout(timer)
   pendingRestarts.clear()
+  if (idleSweeper) {
+    clearInterval(idleSweeper)
+    idleSweeper = null
+  }
   states.clear()
   healthCache.clear()
   lastStart.clear()
+  lastActivity.clear()
   pageFrameGrants.clear()
 }
 
@@ -652,7 +736,10 @@ async function rewritePageBody(
   const css = type.includes("text/css")
   if (!html && !css) return upstream
   const bytes = await upstream.arrayBuffer()
-  if (bytes.byteLength > 2_000_000) return upstream
+  // 8 MB: standalone UI bundles (bun build --compile --target=browser) inline
+  // every asset as base64, so text/html can legitimately be large; skipping
+  // the rewrite would drop the base prefix and storage shim silently.
+  if (bytes.byteLength > 8_000_000) return upstream
   const text = new TextDecoder().decode(bytes)
   const body = html
     ? rewritePreviewHtml(text, prefix, storageShim)
@@ -698,6 +785,7 @@ export async function proxyPluginPage(
       return new Response("page server is not running", { status: 502 })
     }
   }
+  touchPluginPageActivity(user.id, parsed.pluginId)
   const base = await endpoint(user.id, "opencode", state.port)
   if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
     const wsBase = base.replace(/^http/, "ws")
@@ -743,6 +831,7 @@ export async function pluginPageJson<T>(
       throw new HttpError(502, "page server is not running", "plugin_page_down")
     }
   }
+  touchPluginPageActivity(userId, row.pluginId)
   const base = await endpoint(userId, "opencode", state.port)
   const res = await fetch(new URL(path, base), {
     headers: strippedHeaders(new Headers(), state.token),
@@ -856,12 +945,14 @@ export async function proxyPluginPageFrame(
   server: UpgradeServer,
 ): Promise<Response | undefined> {
   const parsed = parsePageFramePath(url.pathname)
-  if (!parsed) return pageFrameCors(req, new Response("not found", { status: 404 }))
+  if (!parsed)
+    return pageFrameCors(req, new Response("not found", { status: 404 }))
   if (req.method === "OPTIONS") {
     return pageFrameCors(req, new Response(null, { status: 204 }))
   }
   const grant = touchPageFrameToken(parsed.token)
-  if (!grant) return pageFrameCors(req, new Response("unauthorized", { status: 401 }))
+  if (!grant)
+    return pageFrameCors(req, new Response("unauthorized", { status: 401 }))
   const row = db.installedPlugin(grant.userId, grant.pluginId)
   if (
     !row ||
@@ -884,6 +975,7 @@ export async function proxyPluginPageFrame(
       )
     }
   }
+  touchPluginPageActivity(grant.userId, grant.pluginId)
   const base = await endpoint(grant.userId, "opencode", state.port)
   if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
     const ok = server.upgrade(req, {

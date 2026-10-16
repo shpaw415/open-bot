@@ -1191,6 +1191,51 @@ export async function syncSystem1(
   return true
 }
 
+export type WatchdogContainerConfig = {
+  enabled: boolean
+  stopOnHigh: boolean
+  provider: string
+  accountId: string
+  apiKey: string
+  model: string
+  baseUrl: string
+}
+
+// Push the watchdog daemon config into the desktop. `null` keeps only the
+// toggles (rules-only mode); the daemon re-reads the file on mtime.
+export async function syncWatchdogConfig(
+  userId: string,
+  value: WatchdogContainerConfig | null,
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-watchdog.sh",
+    ],
+    JSON.stringify(value ?? { enabled: true, stopOnHigh: true }),
+    120_000,
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing watchdog setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write watchdog config")
+  }
+  return true
+}
+
 export type ChatKeyEntry = { slug: string; key: string }
 
 export async function syncChatAuth(

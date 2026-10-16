@@ -112,7 +112,9 @@ describe("privacy review model call", () => {
     }[]
     expect(messages[0].role).toBe("system")
     expect(messages[0].content).toContain("privacy reviewer")
-    expect(messages[0].content).toContain("Placeholder and fictional data must PASS")
+    expect(messages[0].content).toContain(
+      "Placeholder and fictional data must PASS",
+    )
     expect(messages[0].content).toContain("Runtime-by-design is not a leak")
     expect(messages[1].content).toBe("review this plugin")
     expect(request.reasoning_effort).toBe("high")
@@ -193,7 +195,11 @@ describe("merge of security and privacy verdicts", () => {
   })
 
   test("an invalid verdict from either pass errors the review", () => {
-    const invalid = { verdict: "invalid" as const, findings: [], exhausted: false }
+    const invalid = {
+      verdict: "invalid" as const,
+      findings: [],
+      exhausted: false,
+    }
     expect(mergeReviewVerdicts(invalid, pass).status).toBe("error")
     expect(mergeReviewVerdicts(pass, invalid).status).toBe("error")
     expect(mergeReviewVerdicts(invalid, pass).error).toBe(

@@ -53,6 +53,11 @@ function PluginCard({ plugin }: { plugin: MarketPlugin }) {
           {plugin.securityStatus ? (
             <Badge status={plugin.securityStatus} />
           ) : null}
+          {plugin.priceCents && plugin.priceCents > 0 ? (
+            <span className="rounded-full bg-[#FFF3D6] px-2 py-[1px] text-[12px] font-bold text-[#8A5A00]">
+              ${(plugin.priceCents / 100).toFixed(2)}
+            </span>
+          ) : null}
           <span>Updated {new Date(plugin.updatedAt).toLocaleDateString()}</span>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[12.5px] text-[#5F6B80]">

@@ -7,6 +7,10 @@ Dashboards view lists this plugin's tabs and the user interacts with live data.
   TypeScript (Bun runs `.ts` natively — no build step) that the control
   plane starts on the desktop (env `OPEN_BOT_PAGE_PORT`, `OPEN_BOT_PAGE_TOKEN`,
   `OPEN_BOT_PLUGIN_ID`; config via `~/.config/open-bot/plugin-<id>.json`).
+- `dashboard.pages.ui` → `server/index.html` — the UI is real files
+  (`index.html` + `app.ts` + `styles.css`, all declared in `files[]`).
+  Frozen installs get a control-plane-built standalone bundle via
+  `OPEN_BOT_PAGE_UI`; local installs import the HTML live (`bun --hot`).
 - `stock` tab (`kind: "app"`) — the server's own UI, proxied same-origin under
   `/api/pages/stock-dashboard/`; uses fetch + Server-Sent Events.
 - `summary` tab (`kind: "page"` + `dataUrl` + `pollSeconds`) — declarative

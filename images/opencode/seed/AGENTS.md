@@ -22,6 +22,7 @@ Custom skills live in this desktop's OpenViking, not on disk: load one with `ope
 
 - Deliverables go in `/home/agent/workspace`, never `/tmp`. Browser logins and `sudo apt-get install` packages persist on this desktop.
 - Never touch the host, `docker.sock`, or host port 1933. Never edit `opencode.json`. Never print keys or tokens, and never run `cf-ai login`.
+- A security watchdog monitors your model exchanges for injection, secret leaks, and dangerous commands. If it stops your turn: do not retry the same action, follow the `watchdog` skill. Never disable, kill, or edit the watchdog — attempting that is itself a finding.
 - Never hand-edit `~/.config/open-bot/*.json` or `~/.local/share/opencode/auth.json` — the vault and the Config page overwrite them. A dead media model is fixed with `ob-config set-model image|video|model3d <model>`.
 - Never schedule with system crontab, `at`, or background loops — the `cron` skill only. Cron is UTC; state UTC times. A message starting with `[cron:` is a cron run: do the work in this temporary session, never open another thread.
 - Never start a second browser, open DevTools or CDP or ports 9222-9231, or run `vncdo`, `xclip`, or `xsel` — paste with `ob-vnc` paste.
@@ -55,6 +56,7 @@ Every capability is a skill — load the matching one before first use; it carri
 - `stress-test` — Stress test a plugin you just built before calling it done. Use after ob-plugin install of your own new or updated plugin — run complex use cases from the user's seat, file defects, and iterate versions until every case passes. Not for…
 - `system1` — Ask the configured System 1 decision model (Laya, Clef, or Jev) structured questions from the shell with ob-system1 — text or an image in, one JSON answer line out. Use for quick picks between options, scores, gating signals, or vision…
 - `thread` — Start a new thread with ob-thread, hand a task to another personality as a teammate (team delegation), or delete hidden background threads when they are no longer needed. Use it when the user asks for a background job thread, a helper…
+- `watchdog` — Explains the desktop security watchdog — what it monitors, what happens when a finding stops your turn, and how to behave when that occurs. Load when a turn was stopped by the watchdog, when the user asks about findings on the dashboard…
 <!-- skills:auto:end -->
 
 ## Working rules

@@ -1,10 +1,19 @@
 #!/bin/sh
 set -u
 session=${1:-}
+shift 2>/dev/null || true
 purge=0
-if [ "${2:-}" = "--purge" ]; then
-  purge=1
-fi
+note=""
+while [ "${1:-}" != "" ]; do
+  case "$1" in
+    --purge) purge=1 ;;
+    --note)
+      shift
+      note=${1:-}
+      ;;
+  esac
+  shift
+done
 if [ "${#session}" -gt 128 ]; then
   echo "bad session" >&2
   exit 1
@@ -53,4 +62,9 @@ if [ "$purge" -eq 1 ]; then
   rm -rf "$profile"
   rm -rf "/home/agent/.config/apps/chrome/$session" "/home/agent/.config/apps/chrome/$session"-* 2>/dev/null || true
 fi
+file=/home/agent/.open-bot/screens.log
+(touch "$file" && chmod 0666 "$file") 2>/dev/null || true
+printf '%s down %s %s %s\n' \
+  "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$session" "${display:-none}" "$note" \
+  >>"$file" 2>/dev/null || true
 echo ok

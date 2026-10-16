@@ -24,7 +24,7 @@ import TextField from "@shpaw415/mui-lite/TextField"
 import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { api } from "./api"
+import { ApiHttpError, api } from "./api"
 import { useMobile } from "./hooks"
 import { DeleteIcon, RefreshIcon } from "./icons"
 import {
@@ -44,6 +44,8 @@ type MarketPlugin = {
   tags: string[]
   status: "pending" | "approved" | "rejected"
   downloads: number
+  // Paid premium listing: USD cents (absent/null = free).
+  priceCents?: number | null
 }
 
 type MarketComment = {
@@ -106,6 +108,10 @@ function InstallDialog({
     permissions: string[]
     setupCommands: string[]
     versions: VersionOption[]
+    // Paid premium listing: USD cents (absent/null = free).
+    priceCents?: number | null
+    // Marketplace page to buy at, set when an install already came back 402.
+    purchaseUrl?: string | null
   }
   onClose: () => void
   onInstalled: () => void
@@ -116,7 +122,40 @@ function InstallDialog({
   const [checking, setChecking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  // Paid listings: null = checking, true = the user must buy first.
+  const [needsPurchase, setNeedsPurchase] = useState<boolean | null>(
+    (target.priceCents ?? 0) > 0 ? (target.purchaseUrl ? true : null) : false,
+  )
+  const [checkoutUrl, setCheckoutUrl] = useState(target.purchaseUrl ?? "")
   const dev = isDevVersion(version)
+
+  // Paid listings: check the requesting user's marketplace license so the
+  // dialog can offer the purchase flow before hitting the install gate.
+  useEffect(() => {
+    if ((target.priceCents ?? 0) <= 0) return
+    let alive = true
+    api<{
+      paid?: boolean
+      licensed?: boolean
+      priceCents?: number | null
+      checkoutUrl?: string
+      hasMarketplaceKey?: boolean
+      error?: string
+    }>(`/api/plugins/market/${encodeURIComponent(target.id)}/license`)
+      .then((license) => {
+        if (!alive) return
+        setCheckoutUrl(license.checkoutUrl ?? target.purchaseUrl ?? "")
+        setNeedsPurchase(!license.licensed)
+      })
+      .catch(() => {
+        // License check failure: let the install attempt surface the real
+        // error instead of blocking here.
+        if (alive) setNeedsPurchase(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [target.id, target.priceCents, target.purchaseUrl])
 
   useEffect(() => {
     if (version === target.version) return
@@ -155,7 +194,16 @@ function InstallDialog({
       onInstalled()
       onClose()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "install failed")
+      if (
+        caught instanceof ApiHttpError &&
+        caught.status === 402 &&
+        caught.body.needsPurchase
+      ) {
+        setNeedsPurchase(true)
+        setCheckoutUrl(String(caught.body.checkoutUrl ?? checkoutUrl))
+      } else {
+        setError(caught instanceof Error ? caught.message : "install failed")
+      }
     } finally {
       setBusy(false)
     }
@@ -200,6 +248,35 @@ function InstallDialog({
           </Alert>
         ) : null}
         <PluginBadges permissions={permissions} />
+        {needsPurchase ? (
+          <Alert severity="warning">
+            <Stack spacing={1}>
+              <Typography variant="body2">
+                {target.name} is a premium plugin — $
+                {((target.priceCents ?? 0) / 100).toFixed(2)} one-time on the
+                marketplace (lifetime license, updates included). Buy it with
+                your marketplace account, then install here.
+              </Typography>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Button
+                  variant="contained"
+                  onClick={() =>
+                    checkoutUrl
+                      ? window.open(checkoutUrl, "_blank", "noopener")
+                      : undefined
+                  }
+                  disabled={!checkoutUrl}
+                >
+                  Buy on the marketplace
+                </Button>
+                <Typography variant="caption" color="textSecondary">
+                  Paid installs use your personal marketplace key — set it below
+                  the policy row if installs still fail after buying.
+                </Typography>
+              </Stack>
+            </Stack>
+          </Alert>
+        ) : null}
         {setupCommands.length > 0 ? (
           <>
             <Typography variant="caption" color="textSecondary">
@@ -238,15 +315,21 @@ function InstallDialog({
       </Stack>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>
-          Cancel
+          Close
         </Button>
         <Button
           variant="contained"
-          disabled={busy}
+          disabled={busy || needsPurchase === true}
           startIcon={busy ? <CircularProgress size={1} /> : undefined}
           onClick={() => void install()}
         >
-          {busy ? "Installing…" : "Install"}
+          {needsPurchase === null
+            ? "Checking license…"
+            : busy
+              ? "Installing…"
+              : (target.priceCents ?? 0) > 0 && needsPurchase === false
+                ? "Install (licensed)"
+                : "Install"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -1026,7 +1109,31 @@ function MarketTable({
                 return (
                   <TableRow key={plugin.id} hover>
                     <TableCell>
-                      <Typography variant="subtitle2">{plugin.name}</Typography>
+                      <Stack
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        sx={{ flexWrap: "wrap" }}
+                      >
+                        <Typography variant="subtitle2">
+                          {plugin.name}
+                        </Typography>
+                        {(plugin.priceCents ?? 0) > 0 ? (
+                          <Chip
+                            label={`$${((plugin.priceCents ?? 0) / 100).toFixed(2)}`}
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                          />
+                        ) : (
+                          <Chip
+                            label="free"
+                            size="small"
+                            variant="outlined"
+                            sx={{ color: "text.secondary" }}
+                          />
+                        )}
+                      </Stack>
                       <Typography variant="caption" color="textSecondary">
                         {plugin.id} · v{plugin.version}
                       </Typography>
@@ -1203,18 +1310,29 @@ type MarketKeyInfo = {
   source: "account" | "instance"
 }
 
+type UserKeyInfo = { set: boolean; hint: string | null }
+
 function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
   const [info, setInfo] = useState<MarketKeyInfo | null>(null)
   const [value, setValue] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
+  const [userKey, setUserKey] = useState<UserKeyInfo | null>(null)
+  const [userValue, setUserValue] = useState("")
+  const [userBusy, setUserBusy] = useState(false)
+  const [userError, setUserError] = useState("")
 
   const load = useCallback(async () => {
     try {
       setInfo(await api<MarketKeyInfo>("/api/plugins/marketplace/key"))
     } catch {
       setInfo(null)
+    }
+    try {
+      setUserKey(await api<UserKeyInfo>("/api/plugins/marketplace/user-key"))
+    } catch {
+      setUserKey(null)
     }
   }, [])
 
@@ -1256,6 +1374,41 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  async function saveUserKey() {
+    setUserBusy(true)
+    setUserError("")
+    setNotice("")
+    try {
+      await api("/api/plugins/marketplace/user-key", {
+        method: "PUT",
+        body: JSON.stringify({ key: userValue.trim() }),
+      })
+      setUserValue("")
+      setNotice("your marketplace key is saved — paid installs will use it")
+      await load()
+    } catch (caught) {
+      setUserError(caught instanceof Error ? caught.message : "failed to save")
+    } finally {
+      setUserBusy(false)
+    }
+  }
+
+  async function removeUserKey() {
+    setUserBusy(true)
+    setUserError("")
+    try {
+      await api("/api/plugins/marketplace/user-key", { method: "DELETE" })
+      setNotice("your marketplace key was removed")
+      await load()
+    } catch (caught) {
+      setUserError(
+        caught instanceof Error ? caught.message : "failed to remove",
+      )
+    } finally {
+      setUserBusy(false)
+    }
+  }
+
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack spacing={1}>
@@ -1288,40 +1441,97 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
           >
             market.open-bot.app
           </a>{" "}
-          and create an API key under Account, then paste it here to publish
-          plugins under your own marketplace account.
+          and create an API key under Account. Paste it below as{" "}
+          <strong>your</strong> key — paid plugin installs ride your license,
+          and agent publishes attribute to your account.
         </Typography>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {notice ? <Alert severity="success">{notice}</Alert> : null}
-        {isAdmin ? (
-          <Stack direction="row" spacing={1} alignItems="center">
-            <TextField
-              label="API key (obm_…)"
-              type="password"
-              value={value}
-              onChange={(event) => setValue(event.currentTarget.value)}
-              sx={{ flex: 1 }}
-            />
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{ flexWrap: "wrap" }}
+        >
+          <Chip
+            size="small"
+            variant="outlined"
+            label={
+              userKey?.set
+                ? `your key …${userKey.hint ?? ""}`
+                : "no personal key"
+            }
+            color={userKey?.set ? "success" : "secondary"}
+          />
+          <Typography variant="caption" color="textSecondary" sx={{ flex: 1 }}>
+            Required for premium plugin installs.
+          </Typography>
+        </Stack>
+        {userError ? <Alert severity="error">{userError}</Alert> : null}
+        <Stack direction="row" spacing={1} alignItems="center">
+          <TextField
+            label="Your marketplace key (obm_…)"
+            type="password"
+            value={userValue}
+            onChange={(event) => setUserValue(event.currentTarget.value)}
+            sx={{ flex: 1 }}
+          />
+          <Button
+            size="small"
+            variant="contained"
+            disabled={userBusy || !userValue.trim()}
+            startIcon={userBusy ? <CircularProgress size={1} /> : undefined}
+            onClick={() => void saveUserKey()}
+          >
+            Save
+          </Button>
+          {userKey?.set ? (
             <Button
               size="small"
-              variant="contained"
-              disabled={busy || !value.trim()}
-              startIcon={busy ? <CircularProgress size={1} /> : undefined}
-              onClick={() => void save()}
+              variant="text"
+              disabled={userBusy}
+              onClick={() => void removeUserKey()}
             >
-              Save
+              Remove
             </Button>
-            {info?.source === "account" ? (
+          ) : null}
+        </Stack>
+        {isAdmin ? (
+          <>
+            <Divider />
+            <Typography variant="caption" color="textSecondary">
+              Instance fallback key (admin) — used for free-plugin installs when
+              a user has no personal key.
+            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <TextField
+                label="Instance API key (obm_…)"
+                type="password"
+                value={value}
+                onChange={(event) => setValue(event.currentTarget.value)}
+                sx={{ flex: 1 }}
+              />
               <Button
                 size="small"
-                variant="text"
-                disabled={busy}
-                onClick={() => void remove()}
+                variant="contained"
+                disabled={busy || !value.trim()}
+                startIcon={busy ? <CircularProgress size={1} /> : undefined}
+                onClick={() => void save()}
               >
-                Remove
+                Save
               </Button>
-            ) : null}
-          </Stack>
+              {info?.source === "account" ? (
+                <Button
+                  size="small"
+                  variant="text"
+                  disabled={busy}
+                  onClick={() => void remove()}
+                >
+                  Remove
+                </Button>
+              ) : null}
+            </Stack>
+          </>
         ) : null}
       </Stack>
     </Paper>
@@ -1348,6 +1558,8 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     permissions: string[]
     setupCommands: string[]
     versions: VersionOption[]
+    priceCents?: number | null
+    purchaseUrl?: string | null
   } | null>(null)
   const [settingsFor, setSettingsFor] = useState<InstalledPluginInfo | null>(
     null,
@@ -1562,6 +1774,7 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           permissions: probe.permissions ?? [],
           setupCommands: probe.setupCommands ?? [],
           versions,
+          priceCents: target.priceCents ?? null,
         })
         return
       }
@@ -1570,6 +1783,28 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
       setNotice(message)
       setToast(message)
     } catch (caught) {
+      // Paid gate (auto-install policy skips the confirm probe): open the
+      // dialog so the purchase flow renders instead of a bare error toast.
+      if (
+        caught instanceof ApiHttpError &&
+        caught.status === 402 &&
+        caught.body.needsPurchase
+      ) {
+        setInstallTarget({
+          id: target.id,
+          name: target.name,
+          version: target.version,
+          permissions: [],
+          setupCommands: [],
+          versions: [{ version: target.version, stability: "stable" }],
+          priceCents:
+            typeof caught.body.priceCents === "number"
+              ? caught.body.priceCents
+              : (target.priceCents ?? null),
+          purchaseUrl: String(caught.body.checkoutUrl ?? ""),
+        })
+        return
+      }
       const message =
         caught instanceof Error ? caught.message : "install failed"
       setError(message)

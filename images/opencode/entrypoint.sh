@@ -94,6 +94,15 @@ rm -f /home/agent/.open-bot/apt-restore.done
 run() {
   su -s /bin/sh agent -c "export HOME=/home/agent; $1"
 }
+# Security watchdog: tails the local opencode event stream, triages model
+# exchanges for injection/exfiltration patterns, reports findings to the
+# control plane. No-ops while disabled in ~/.config/open-bot/watchdog.json.
+(
+  while true; do
+    run "bun /opt/open-bot/watchdog-daemon.ts" >>/home/agent/.open-bot/watchdog-daemon.log 2>&1 || true
+    sleep 5
+  done
+) &
 # Heal tool parts frozen in "running" by a previous kill before the server
 # starts; at boot every running tool part is a corpse. Best effort.
 run "bun /opt/open-bot/heal-stale-tools.ts" || true

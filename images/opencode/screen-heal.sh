@@ -8,12 +8,22 @@ session=${1:-}
 case "$session" in
   *[!A-Za-z0-9_-]* | "") exit 1 ;;
 esac
+audit() {
+  # Recovery/refusal events only — the healthy fast path runs on every CLI
+  # call and must stay cheap and quiet.
+  file=/home/agent/.open-bot/screens.log
+  (touch "$file" && chmod 0666 "$file") 2>/dev/null || true
+  printf '%s heal %s %s %s\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$session" "${1:-}" "${2:-}" \
+    >>"$file" 2>/dev/null || true
+}
 list=/opt/open-bot/screen-list.sh
 chromium() {
   pgrep -f "user-data-dir=/home/agent/.config/chromium-threads/$session" >/dev/null 2>&1
 }
 # Fast path: one pid check, one socket test, one pgrep — the common healthy
-# case skips the whole-desktop screen-list sweep on every CLI call.
+# case skips the whole-desktop screen-list sweep on every CLI call. The touch
+# keeps a CLI-active screen fresh for the LRU pick (see ensureInner).
 run_dir=/run/open-bot/screens/$session
 display_now=$(cat "$run_dir/display" 2>/dev/null || true)
 pid_now=$(cat "$run_dir/xvfb.pid" 2>/dev/null || true)
@@ -21,6 +31,7 @@ if [ -n "$display_now" ] && [ -n "$pid_now" ] \
   && kill -0 "$pid_now" 2>/dev/null \
   && [ -S "/tmp/.X11-unix/X$display_now" ] \
   && chromium; then
+  touch "$run_dir/last-active" 2>/dev/null || true
   exit 0
 fi
 if "$list" 2>/dev/null | grep -q "^$session " && chromium; then
@@ -38,6 +49,7 @@ case "$port" in
 esac
 display=$((port - 9222))
 if "$list" 2>/dev/null | awk '{print $2}' | grep -qx "$display"; then
+  audit refused "display:$display"
   echo "the screen for $session is gone and display $display is taken by another session. It returns on the next prompt." >&2
   exit 1
 fi
@@ -53,10 +65,14 @@ while [ "$i" -lt 45 ]; do
     cdp=$(cat "$portfile")
     j=0
     while [ "$j" -lt 15 ]; do
-      curl -s -m 1 -o /dev/null "http://127.0.0.1:$cdp/json/version" && exit 0
+      curl -s -m 1 -o /dev/null "http://127.0.0.1:$cdp/json/version" && {
+        audit ok "display:$display"
+        exit 0
+      }
       j=$((j + 1))
       sleep 1
     done
+    audit ok "display:$display"
     exit 0
   fi
   i=$((i + 1))

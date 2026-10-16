@@ -2,10 +2,13 @@
 
 import { apiKeyAuth, touchApiKey } from "../../../../lib/auth"
 import { getPluginRow, getVersions } from "../../../../lib/db"
+import { hasLicense } from "../../../../lib/purchases"
 
 // Streams the security-reviewed release tarball stored in R2 at publish time
 // to open-bot instances, which extract the manifest's declared payload files
 // from it at install. Auth: instance token or a marketplace user API key.
+// Paid plugins additionally require the API key's user to hold an active
+// (paid, non-refunded) purchase — a lifetime license incl. updates.
 export async function onRequestGet(context: EventContext<Env, "id", never>) {
   const { DB, MARKETPLACE_TOKEN, RELEASES } = context.env
   const apiKey = await apiKeyAuth(DB, context.request)
@@ -20,6 +23,20 @@ export async function onRequestGet(context: EventContext<Env, "id", never>) {
   const id = decodeURIComponent(context.params.id as string)
   const row = await getPluginRow(DB, id)
   if (!row) return Response.json({ error: "plugin not found" }, { status: 404 })
+  const priceCents = row.price_cents ?? 0
+  if (priceCents > 0) {
+    if (!apiKey || !(await hasLicense(DB, apiKey.userId, id))) {
+      return Response.json(
+        {
+          error:
+            "this plugin requires a purchase — buy it on the marketplace with your account, then install",
+          code: "purchase_required",
+          priceCents,
+        },
+        { status: 402 },
+      )
+    }
+  }
   const url = new URL(context.request.url)
   const version = url.searchParams.get("version") ?? row.latest_version
   const versions = await getVersions(DB, id)

@@ -232,7 +232,11 @@ describe("viking skills", () => {
     })
     const skills = createVikingSkills("http://viking:1933", "k", fetchImpl)
     await skills.save(skill)
-    expect(calls.some((call) => call.init?.method === "POST" && call.url.endsWith("/skills"))).toBe(true)
+    expect(
+      calls.some(
+        (call) => call.init?.method === "POST" && call.url.endsWith("/skills"),
+      ),
+    ).toBe(true)
   })
 
   test("update waits out the indexing 409 before posting the replacement", async () => {
@@ -265,7 +269,9 @@ describe("viking skills", () => {
     })
     await skills.save(updated)
     expect(deletes).toBe(3)
-    const deleteIndex = calls.findIndex((call) => call.init?.method === "DELETE")
+    const deleteIndex = calls.findIndex(
+      (call) => call.init?.method === "DELETE",
+    )
     const postIndex = calls.findIndex(
       (call) => call.init?.method === "POST" && call.url.endsWith("/skills"),
     )
@@ -289,7 +295,11 @@ describe("viking skills", () => {
       deletePollDelayMs: 1,
     })
     await expect(skills.save(skill)).rejects.toThrow("still being indexed")
-    expect(calls.some((call) => call.init?.method === "POST" && call.url.endsWith("/skills"))).toBe(false)
+    expect(
+      calls.some(
+        (call) => call.init?.method === "POST" && call.url.endsWith("/skills"),
+      ),
+    ).toBe(false)
   })
 
   test("confirm accepts the overview body when content is absent", async () => {

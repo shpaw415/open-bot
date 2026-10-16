@@ -17,6 +17,7 @@ import {
   sleptRecently,
   startDesktop,
   stopDesktop,
+  syncWatchdogConfig,
 } from "./docker"
 import {
   aiConfigPath,
@@ -37,6 +38,7 @@ import { flushPendingPluginConfigs, reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStatsSampler } from "./stats"
 import { startStuckWatch } from "./stuck"
+import { resolveWatchdogConfig, watchdogContainerPayload } from "./watchdog"
 import { onUpstreamEvent } from "./workspace-snapshots"
 
 applyPendingRestore()
@@ -92,8 +94,23 @@ onDesktopReady((userId) => {
   })
 })
 // Config syncs deferred while the desktop slept (vault keys, plugin settings)
-// land the moment it is running again — create or wake.
-onDesktopUp((userId) => flushPendingPluginConfigs(db, userId))
+// land the moment it is running again — create or wake. The watchdog config
+// rides along: every wake recreates the container, and the daemon picks the
+// refreshed file up on its next mtime poll.
+onDesktopUp(async (userId) => {
+  await flushPendingPluginConfigs(db, userId)
+  const resolved = resolveWatchdogConfig(db, userId)
+  await syncWatchdogConfig(
+    userId,
+    watchdogContainerPayload(resolved.value),
+  ).catch((error: unknown) => {
+    console.error(
+      `watchdog config sync failed for ${userId}: ${
+        error instanceof Error ? error.message : error
+      }`,
+    )
+  })
+})
 // Background pumps for already-running desktops so plugin hooks, media
 // capture, and other event observers work with no dashboard attached.
 for (const row of db.activeDesktops(0)) hub.ensurePump(row.userId)

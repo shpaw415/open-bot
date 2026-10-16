@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `marketplace_api_key` text;

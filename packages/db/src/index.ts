@@ -43,6 +43,7 @@ import {
   userKeys,
   users,
   vikingProvider,
+  watchdogFindings,
   workspaceMedia,
 } from "./schema"
 
@@ -56,6 +57,9 @@ export type User = {
   createdAt: number
   mustChangePassword: boolean
   disabled: boolean
+  // Marketplace API key (obm_…) for paid plugin installs and publish
+  // identity; null/undefined falls back to the instance-wide marketplace key.
+  marketplaceApiKey?: string | null
 }
 
 export type UsageKind = "chat" | "small" | "embed" | "vlm"
@@ -146,6 +150,44 @@ export type VoiceConfig = {
   ttsModel: string
   ttsVoice: string
   language: string
+}
+
+export type WatchdogConfig = {
+  enabled: boolean
+  stopOnHigh: boolean
+  provider: string
+  accountId: string
+  apiKey: string
+  model: string
+  baseUrl: string
+}
+
+export type WatchdogSeverity = "info" | "low" | "medium" | "high"
+
+export type WatchdogFindingStatus = "new" | "reviewed" | "dismissed"
+
+export type WatchdogFinding = {
+  id: string
+  userId: string
+  sessionId: string | null
+  source: "prompt" | "response" | "tool_input" | "tool_output"
+  category:
+    | "prompt_injection"
+    | "secret_exfiltration"
+    | "dangerous_command"
+    | "credential_access"
+    | "malicious_content"
+    | "other"
+  severity: WatchdogSeverity
+  title: string
+  detail: string
+  fingerprint: string
+  hits: number
+  status: WatchdogFindingStatus
+  verdict: string | null
+  action: "none" | "alerted" | "stopped"
+  createdAt: number
+  lastSeenAt: number
 }
 
 export type VikingProvider = {
@@ -475,6 +517,7 @@ function mapUser(row: typeof users.$inferSelect | undefined): User | null {
     createdAt: row.createdAt,
     mustChangePassword: row.mustChangePassword,
     disabled: row.disabled,
+    marketplaceApiKey: row.marketplaceApiKey ?? null,
   }
 }
 
@@ -605,6 +648,7 @@ export function openDatabase(path: string) {
       dashboardLayouts,
       appSettings,
       workspaceMedia,
+      watchdogFindings,
     },
   })
 
@@ -619,6 +663,13 @@ export function openDatabase(path: string) {
     },
     userById(id: string) {
       return mapUser(orm.select().from(users).where(eq(users.id, id)).get())
+    },
+    setMarketplaceKey(userId: string, key: string | null) {
+      orm
+        .update(users)
+        .set({ marketplaceApiKey: key })
+        .where(eq(users.id, userId))
+        .run()
     },
     setCredentials(userId: string, email: string, passwordHash: string) {
       orm
@@ -1050,6 +1101,156 @@ export function openDatabase(path: string) {
         })
         .where(eq(desktops.userId, userId))
         .run()
+    },
+    getWatchdogConfig(userId: string): WatchdogConfig {
+      const row = orm
+        .select({
+          enabled: desktops.watchdogEnabled,
+          stopOnHigh: desktops.watchdogStopOnHigh,
+          provider: desktops.watchdogProvider,
+          accountId: desktops.watchdogAccountId,
+          apiKey: desktops.watchdogApiKey,
+          model: desktops.watchdogModel,
+          baseUrl: desktops.watchdogBaseUrl,
+        })
+        .from(desktops)
+        .where(eq(desktops.userId, userId))
+        .get()
+      return {
+        enabled: row?.enabled ?? true,
+        stopOnHigh: row?.stopOnHigh ?? true,
+        provider: row?.provider ?? "",
+        accountId: row?.accountId ?? "",
+        apiKey: row?.apiKey ?? "",
+        model: row?.model ?? "",
+        baseUrl: row?.baseUrl ?? "",
+      }
+    },
+    setWatchdogConfig(userId: string, value: WatchdogConfig) {
+      orm
+        .update(desktops)
+        .set({
+          watchdogEnabled: value.enabled,
+          watchdogStopOnHigh: value.stopOnHigh,
+          watchdogProvider: value.provider || null,
+          watchdogAccountId: value.accountId || null,
+          watchdogApiKey: value.apiKey || null,
+          watchdogModel: value.model || null,
+          watchdogBaseUrl: value.baseUrl || null,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    clearWatchdogProvider(userId: string) {
+      orm
+        .update(desktops)
+        .set({
+          watchdogProvider: null,
+          watchdogAccountId: null,
+          watchdogApiKey: null,
+          watchdogModel: null,
+          watchdogBaseUrl: null,
+        })
+        .where(eq(desktops.userId, userId))
+        .run()
+    },
+    recentWatchdogFinding(
+      userId: string,
+      fingerprint: string,
+      since: number,
+    ): WatchdogFinding | null {
+      const row = orm
+        .select()
+        .from(watchdogFindings)
+        .where(
+          and(
+            eq(watchdogFindings.userId, userId),
+            eq(watchdogFindings.fingerprint, fingerprint),
+            gte(watchdogFindings.lastSeenAt, since),
+          ),
+        )
+        .get()
+      return row ?? null
+    },
+    insertWatchdogFinding(row: WatchdogFinding) {
+      orm.insert(watchdogFindings).values(row).run()
+    },
+    bumpWatchdogFinding(
+      id: string,
+      patch: { hits: number; lastSeenAt: number; severity?: WatchdogSeverity },
+    ) {
+      orm
+        .update(watchdogFindings)
+        .set({
+          hits: patch.hits,
+          lastSeenAt: patch.lastSeenAt,
+          ...(patch.severity ? { severity: patch.severity } : {}),
+        })
+        .where(eq(watchdogFindings.id, id))
+        .run()
+    },
+    setWatchdogFindingAction(id: string, action: WatchdogFinding["action"]) {
+      orm
+        .update(watchdogFindings)
+        .set({ action })
+        .where(eq(watchdogFindings.id, id))
+        .run()
+    },
+    watchdogFindingById(id: string, userId: string): WatchdogFinding | null {
+      const row = orm
+        .select()
+        .from(watchdogFindings)
+        .where(
+          and(eq(watchdogFindings.id, id), eq(watchdogFindings.userId, userId)),
+        )
+        .get()
+      return row ?? null
+    },
+    watchdogFindings(
+      userId: string,
+      opts: { status?: WatchdogFindingStatus; limit?: number } = {},
+    ): WatchdogFinding[] {
+      return orm
+        .select()
+        .from(watchdogFindings)
+        .where(
+          and(
+            eq(watchdogFindings.userId, userId),
+            opts.status ? eq(watchdogFindings.status, opts.status) : sql`1 = 1`,
+          ),
+        )
+        .orderBy(desc(watchdogFindings.lastSeenAt))
+        .limit(opts.limit ?? 100)
+        .all()
+    },
+    setWatchdogFindingStatus(
+      id: string,
+      userId: string,
+      status: WatchdogFindingStatus,
+    ): WatchdogFinding | null {
+      if (!this.watchdogFindingById(id, userId)) return null
+      orm
+        .update(watchdogFindings)
+        .set({ status })
+        .where(
+          and(eq(watchdogFindings.id, id), eq(watchdogFindings.userId, userId)),
+        )
+        .run()
+      return this.watchdogFindingById(id, userId)
+    },
+    pruneWatchdogFindings(userId: string, keep: number) {
+      const rows = orm
+        .select({ id: watchdogFindings.id })
+        .from(watchdogFindings)
+        .where(eq(watchdogFindings.userId, userId))
+        .orderBy(desc(watchdogFindings.lastSeenAt), desc(watchdogFindings.id))
+        .all()
+      for (const row of rows.slice(keep)) {
+        orm
+          .delete(watchdogFindings)
+          .where(eq(watchdogFindings.id, row.id))
+          .run()
+      }
     },
     desktopUserIds() {
       return orm
@@ -2293,6 +2494,9 @@ export function openDatabase(path: string) {
         tx.delete(mediaItems).where(eq(mediaItems.userId, userId)).run()
         tx.delete(mediaAlbums).where(eq(mediaAlbums.userId, userId)).run()
         tx.delete(workspaceMedia).where(eq(workspaceMedia.userId, userId)).run()
+        tx.delete(watchdogFindings)
+          .where(eq(watchdogFindings.userId, userId))
+          .run()
         tx.delete(users).where(eq(users.id, userId)).run()
       })
     },

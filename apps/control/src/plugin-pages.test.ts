@@ -1,16 +1,18 @@
-import { describe, expect, mock, test } from "bun:test"
+import { describe, expect, mock, setSystemTime, test } from "bun:test"
 import type { InstalledPlugin, User } from "@open-bot/db"
 import * as dockerModule from "./docker"
 import {
   basePluginPagePort,
   clearPluginPageState,
   ensurePluginPageServer,
+  isPageCheckoutPath,
   mintPageFrameToken,
   PAGE_PORT_MAX,
   PAGE_PORT_MIN,
   pageCheckoutEntry,
-  isPageCheckoutPath,
   pageServerCommand,
+  pageStateFor,
+  pageUiEnv,
   parsePluginPagePath,
   pendingPluginPageRestartsCount,
   pluginPageBin,
@@ -20,6 +22,8 @@ import {
   removePluginPageLog,
   schedulePluginPageRestart,
   stopPluginPageServer,
+  sweepIdlePluginPageServers,
+  touchPluginPageActivity,
 } from "./plugin-pages"
 import { FRAME_STORAGE_SHIM, rewritePreviewHtml } from "./preview"
 import * as shellModule from "./shell"
@@ -171,6 +175,51 @@ describe("plugin pages", () => {
     expect(hot).toContain("exec bun --hot run '/checkout/server.ts'")
     expect(hot).toContain("'bun --hot run /checkout/server.ts'")
     expect(hot).not.toContain("ob-plugin-stock-pro-server.ts'")
+  })
+
+  test("bundled UI env only rides frozen installs that declare a ui entry", () => {
+    const withUi = {
+      dashboard: { pages: { entry: "server.ts", ui: "server/index.html" } },
+    } as never
+    const withoutUi = {
+      dashboard: { pages: { entry: "server.ts" } },
+    } as never
+    expect(pageUiEnv("stock-pro", withUi, null)).toEqual([
+      "-e",
+      "OPEN_BOT_PAGE_UI=/usr/local/bin/ob-plugin-stock-pro-ui.html",
+    ])
+    // Local checkouts import the HTML live — no built copy, no env.
+    expect(
+      pageUiEnv("stock-pro", withUi, "/checkout/server/server.ts"),
+    ).toEqual([])
+    expect(pageUiEnv("stock-pro", withoutUi, null)).toEqual([])
+  })
+
+  test("frozen starts pass the bundled UI path through the environment", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: {
+          dashboard: {
+            pages: { entry: "server.ts", ui: "server/index.html" },
+          },
+        },
+      } as unknown as InstalledPlugin
+      await ensurePluginPageServer("u1", row)
+      const spawn = shCalls.find((args) => args.includes("-d"))
+      expect(spawn).toContain(
+        "OPEN_BOT_PAGE_UI=/usr/local/bin/ob-plugin-stock-pro-ui.html",
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
   })
 
   test("scheduled restarts coalesce per user+plugin and are clearable", () => {
@@ -435,5 +484,69 @@ describe("plugin pages", () => {
     await removePluginPageLog("u1", "stock-pro")
     const args = shCalls.at(-1) ?? []
     expect(args).toContain("/home/agent/.open-bot/pages/stock-pro.log")
+  })
+
+  test("idle sweep stops stale servers; activity extends the window", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    const realNow = Date.now()
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      await ensurePluginPageServer("u1", row)
+      expect(pageStateFor("u1", "stock-pro")).not.toBeNull()
+
+      // Four quiet minutes: still inside the window.
+      setSystemTime(realNow + 4 * 60 * 1000)
+      await sweepIdlePluginPageServers()
+      expect(pageStateFor("u1", "stock-pro")).not.toBeNull()
+
+      // A request resets the window: eight minutes after the start but four
+      // after the touch, the server stays up.
+      touchPluginPageActivity("u1", "stock-pro")
+      setSystemTime(realNow + 8 * 60 * 1000)
+      await sweepIdlePluginPageServers()
+      expect(pageStateFor("u1", "stock-pro")).not.toBeNull()
+
+      // Past the window the sweeper stops the server and keeps the page
+      // token, so the next visit restarts transparently.
+      setSystemTime(realNow + 14 * 60 * 1000)
+      await sweepIdlePluginPageServers()
+      expect(pageStateFor("u1", "stock-pro")).toBeNull()
+      const stop = shCalls.find((args) =>
+        (args.at(-1) ?? "").includes("pkill -KILL -x -f"),
+      )
+      expect(stop).toBeDefined()
+      expect(stop?.at(-1)).not.toContain(".token'")
+    } finally {
+      setSystemTime()
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
+  })
+
+  test("a settings save never boots a stopped page server", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      const db = { installedPlugin: () => null } as never
+      schedulePluginPageRestart(db, "u1", row)
+      await new Promise((resolve) => setTimeout(resolve, 2_300))
+      // No state entry → the deferred restart is a no-op, no docker exec.
+      expect(shCalls).toHaveLength(0)
+    } finally {
+      clearPluginPageState()
+    }
   })
 })

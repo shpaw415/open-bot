@@ -39,6 +39,7 @@ ob-plugin install NAME
 - `publish` registers the manifest on the marketplace and automatically creates a daily guard cron named `plugin:NAME:guard`. Keep that job; it is your maintenance duty. It survives uninstalling the plugin.
 - Bump `version` (semver) for every change, commit, create a matching `v<version>` release, and publish again so the marketplace serves the new version.
 - Never put secrets in a manifest. Request vault slugs with `permissions.vaultCreate`. The user can fill any declared slug on the dashboard (Plugins tab → Settings → Vault keys), and you can fill vaultCreate slugs yourself with `ob-plugin vault ID SLUG=value` (write-only; values are stored in the key vault and survive disable/enable/reinstall). Slugs under `permissions.vaultRead` are the user's own keys only they fill: shared provider slugs live on the Config page Keys tab, plugin-specific ones in the same Vault keys section. Tools and page servers receive declared vault values in `~/.config/open-bot/plugin-<id>.json` (`vault.<slug>` = `{apiKey, accountId, baseUrl}`); when the user rotates a shared key on the Keys tab, the control plane re-syncs that file on its own — read it fresh instead of caching secrets.
+- Premium plugins: a manifest `pricing: {model: "one-time", amount: <USD cents>}` ($0.99–$500) makes the listing paid — the user buys once on the marketplace (Stripe) and owns it forever, updates included. Installing or updating a premium plugin fails while the signed-in user has not bought it: the CLI prints the marketplace page to buy at — relay that to the user and stop; buying is a human step, never attempt to purchase. Paid installs ride the user's personal marketplace API key (dashboard Config → Plugins → Marketplace account); if installs still fail after the purchase, ask them to set that key. Declaring pricing is allowed whenever the user asks for a paid listing; the price ships with each version like any manifest change.
 - Never put the user's personal information in any plugin file — published source is public and the marketplace's AI privacy review rejects publishes that leak it. Load the `plugin-privacy` skill when creating or updating a plugin and follow it: placeholders in examples, personalization through settings/vault/runtime data, and a doctor privacy check before publishing.
 
 ## Staging a release (dev tags)
@@ -103,18 +104,38 @@ Install respects the instance policy: `manual` asks the user to confirm the perm
 
 A plugin can ship a dashboard: a view in the workspace drawer's Dashboards list where the user sees live data and can act on it (stock lists, trackers, admin panels). Two building blocks in the manifest:
 
-- `dashboard.pages: { "entry": "server.ts" }` — declares a page server: `server.ts` must be a `files[]` payload (a Bun HTTP server, written in TypeScript — Bun runs `.ts` natively). The control plane installs it next to tools and runs it with Bun at install, at enable, and after every desktop restart, on a port it manages. Env: `OPEN_BOT_PAGE_PORT` (listen port), `OPEN_BOT_PAGE_TOKEN` (shared secret; check `x-open-bot-page-token` on requests if you want), `OPEN_BOT_PLUGIN_ID`. Settings and vault keys arrive through the same `~/.config/open-bot/plugin-<id>.json` config file tools get; the file is regenerated from the control plane, so persist vault changes with `ob-plugin vault` (or `POST /api/plugins/installed/<id>/vault`), never by editing the file. Implement `GET /healthz` (any response counts as healthy).
+- `dashboard.pages: { "entry": "server.ts", "ui": "server/index.html" }` — declares a page server: `entry` is a `files[]` payload (a Bun HTTP server, written in TypeScript — Bun runs `.ts` natively). The control plane installs it next to tools and runs it with Bun lazily: on the first dashboard request, webhook hit, or @mention lookup — never at install or boot — and it stops after five quiet minutes, so keep startup fast and stateless. Env: `OPEN_BOT_PAGE_PORT` (listen port), `OPEN_BOT_PAGE_TOKEN` (shared secret; check `x-open-bot-page-token` on requests if you want), `OPEN_BOT_PLUGIN_ID`, and `OPEN_BOT_PAGE_UI` (see the UI bullet). Settings and vault keys arrive through the same `~/.config/open-bot/plugin-<id>.json` config file tools get; the file is regenerated from the control plane, so persist vault changes with `ob-plugin vault` (or `POST /api/plugins/installed/<id>/vault`), never by editing the file. Implement `GET /healthz` (any response counts as healthy).
+- `dashboard.pages.ui` — the frontend, written as real files (`server/index.html` + `app.ts` + `styles.css`), never HTML-in-a-template-string. Set `ui` to the index.html `files[]` source and declare every frontend file in `files[]` (`exec: false`): the control plane bundles the entry with `bun build --compile --target=browser` into one self-contained HTML at install (TS/JSX transpiled, CSS and assets inlined) and serves it to your server through `OPEN_BOT_PAGE_UI`. `ob-plugin validate` runs the same build locally so errors surface before a release. Serve it like this:
+
+  ```ts
+  // The HTML import only works as a static routes value — branch on the mode
+  // before Bun.serve. Frozen installs get OPEN_BOT_PAGE_UI; local checkouts
+  // and previews import the file live (bun --hot reloads edits).
+  const routes = process.env.OPEN_BOT_PAGE_UI
+    ? { "/": () => new Response(Bun.file(process.env.OPEN_BOT_PAGE_UI as string),
+        { headers: { "content-type": "text/html; charset=utf-8" } }) }
+    : { "/": await import("./index.html").then((m) => m.default) }
+  Bun.serve({ port: Number(process.env.OPEN_BOT_PAGE_PORT ?? 4740), routes, fetch })
+  ```
+
+  Page rules: fetch with relative paths only (`fetch("api/items")` — a leading `/` escapes the dashboard proxy and 404s); never touch `localStorage`/`sessionStorage` without a try/catch (the sandboxed frame throws); keep referenced assets small — the bundle has an 8 MB cap.
 - `dashboard.pages.public: true` — opt in to a public HTTP endpoint: `/hooks/<userId>/<pluginId>/<path>` (the dashboard shows the full URL; the short legacy `/hooks/<pluginId>/` form still works) behaves like a normal web server in front of your server — any method, pages and assets, streaming responses, even WebSocket upgrades. The user manages it on the web Config page's Endpoints tab (copy the URL, fire a test request, see whether the server is running, set an optional secret that makes callers authenticate with `X-Open-Bot-Webhook-Secret` or `?secret=`); the Plugins tab → Settings dialog shows the same per-plugin. A hit wakes a sleeping desktop, boots your server if needed, and forwards the request (method, headers minus cookies, body up to 25 MB); your response goes back to the caller verbatim, and the ~30 s deadline only covers reaching your server — streams keep flowing after. Append `?ob_async=1` to the URL to accept 202 and process in the background (cold wake can exceed strict sender timeouts like GitHub's 10 s). The endpoint is public — treat requests as unauthenticated input, validate payloads, and never trust headers. You manage it from the shell too: `ob-plugin endpoint <id>` reports `{enabled, secured, url, secret}` (raw secret — agent-only), `ob-plugin endpoint <id> url` prints the shareable URL (public origin when the instance sets `OPEN_BOT_PUBLIC_URL`, else the internal control URL), `ob-plugin endpoint <id> secret VALUE` / `secret --generate` set the secret, `clear` removes it; test a secured endpoint with `curl -s -H "X-Open-Bot-Webhook-Secret: $(ob-plugin endpoint <id> secret)" "$(ob-plugin endpoint <id> url)"`.
 - `dashboard.tabs[]` — what the user sees in the Dashboards view:
-  - `kind: "app"` — your server's full UI, proxied same-origin by the control plane under `/api/pages/<pluginId>/` (so `fetch("api/items")` from your page hits your server; relative paths without a leading slash just work — a leading `/` escapes the proxy to the dashboard root and 404s). Streaming (SSE) and WebSockets pass through. Optional `path` (default `/`).
+  - `kind: "app"` — your server's full UI, proxied same-origin by the control plane under `/api/pages/<pluginId>/`. Streaming (SSE) and WebSockets pass through. Optional `path` (default `/`).
   - `kind: "page"` with `dataUrl` + `pollSeconds` — the dashboard polls your server for JSON and feeds it to declarative `cards` (stat/table/list/markdown with `$.path` bindings). No HTML needed for read-only views.
 
-Minimal stock-list example:
+Minimal stock-list example (the working version lives in the `ob-plugin new` scaffold):
 
 ```json
 {
+  "files": [
+    { "name": "server.ts", "source": "server/server.ts", "exec": true },
+    { "name": "index.html", "source": "server/index.html", "exec": false },
+    { "name": "app.ts", "source": "server/app.ts", "exec": false },
+    { "name": "styles.css", "source": "server/styles.css", "exec": false }
+  ],
   "dashboard": {
-    "pages": { "entry": "server.ts" },
+    "pages": { "entry": "server.ts", "ui": "server/index.html" },
     "tabs": [
       { "id": "stock", "title": "Stock", "kind": "app" },
       { "id": "summary", "title": "Summary", "kind": "page", "dataUrl": "/api/summary", "pollSeconds": 15,
@@ -125,24 +146,27 @@ Minimal stock-list example:
 ```
 
 ```ts
-// files: [{ "name": "server.ts", "source": "server/server.ts", "exec": true }]
-const items = [{ name: "Widget", qty: 12 }]
-Bun.serve({
-  port: Number(process.env.OPEN_BOT_PAGE_PORT ?? 4740),
-  fetch(req) {
-    const url = new URL(req.url)
-    if (url.pathname === "/healthz") return new Response("ok")
-    if (url.pathname === "/api/summary")
-      return Response.json({ rows: items.map((i) => [i.name, String(i.qty)]) })
-    if (url.pathname === "/") return new Response(indexHtml(), { headers: { "content-type": "text/html" } })
-    return new Response("not found", { status: 404 })
-  },
-})
+// server/server.ts — API routes + the ui route above; no HTML strings.
+Bun.serve({ port, routes, async fetch(req) {
+  const url = new URL(req.url)
+  if (url.pathname === "/healthz") return new Response("ok")
+  if (url.pathname === "/api/summary")
+    return Response.json({ rows: items.map((i) => [i.name, String(i.qty)]) })
+  return new Response("not found", { status: 404 })
+} })
+```
+
+```html
+<!-- server/index.html — real markup; app.ts and styles.css ride along -->
+<body>
+  <h1>Stock</h1>
+  <script type="module" src="./app.ts"></script>
+</body>
 ```
 
 Keep page servers stateless across restarts or persist under `/home/agent/.open-bot/pages-data/<pluginId>/` (the home volume survives updates).
 
-Dashboard pages load in a sandboxed iframe: no session cookies, and `localStorage`/`sessionStorage` throw `SecurityError` on touch (the control plane injects an in-memory fallback, but never rely on storage persisting across reloads). Guard every storage read with `try { … } catch {}` — an unguarded top-level read kills the whole script and every `fetch` on the page with it. Call your API with relative paths (`fetch("api/items")`), never `/api/...`.
+Dashboard pages load in a sandboxed iframe: no session cookies, and `localStorage`/`sessionStorage` throw `SecurityError` on touch (the control plane injects an in-memory fallback, but never rely on storage persisting across reloads) — an unguarded top-level read kills the whole script and every `fetch` on the page with it.
 
 ## Dynamic @mentions
 
@@ -165,7 +189,7 @@ Developing a dashboard page (the dev loop):
 
 1. `ob-plugin page <id>` prints the running server's status: `{pluginId, enabled, running, port, pid}` plus a loopback URL hint on stderr. The port is 4740-4759 inside this container — the server runs here next to you.
 2. Click-test the real page: `ob-chrome navigate http://127.0.0.1:<port>/` opens it on this thread's screen (the managed browser shares the server's container, so loopback works; the dashboard itself at port 4096 stays unreachable — the proxied copy lives in the user's browser). Use `ob-page` to read and interact. Plain `curl` and a headless bun DOM (happy-dom) remain the fallback for JSON and scripted assertions.
-3. Local installs run the checkout copy with `bun --hot` — edit `~/plugins-create/<slug>/...` and the running server picks it up, no restart. Marketplace installs serve the frozen payload copy: changes land on the next `ob-plugin install` (which restarts the server). To bounce a server that is wedged or failed to boot (the install response warns), `ob-plugin restart <id>`.
+3. Local installs run the checkout copy with `bun --hot` — edit `~/plugins-create/<slug>/...` and the running server picks it up, no restart. Marketplace installs serve the frozen payload copy: changes land on the next `ob-plugin install` (which restarts the server when it is running) or on the next start after an idle stop. To bounce a server that is wedged or failed to boot (the install response warns), `ob-plugin restart <id>` — note the server may simply be idle-stopped; any dashboard visit restarts it.
 4. Show the user the page in-thread: `ob-preview up --entry ~/plugins-create/<slug>/server/server.ts` and end with the `![title](open-bot://preview)` line. The preview runtime exports the same env a production start does (`OPEN_BOT_PAGE_PORT` is the preview port), so the server code runs unchanged and hot-reloads between edits. One difference: requests relayed through the preview embed carry no `x-open-bot-page-token` header, and the dev token is the fixed value `dev-preview` — skip the token check in dev or accept that value; production surfaces (dashboard proxy, public `/hooks`) always inject the real token.
 
 Save the working harness (ports, commands, assertions) as a `shortcut` skill so the next stress-test reuses it.
@@ -174,6 +198,7 @@ Save the working harness (ports, commands, assertions) as a `shortcut` skill so 
 
 - Plugin projects live in `~/plugins-create/<slug>/`. Do not scatter plugin files elsewhere.
 - Write plugin code in TypeScript, not JavaScript. Every code file — `tools[]` script content (with a `#!/usr/bin/env bun` shebang), `files[]` payloads, and the dashboard page server — is a `.ts` file: Bun on the desktop runs `.ts` natively, so `server.ts` needs no build step. Reach for plain JavaScript only for shell scripts or when a non-Bun runtime forces it.
+- Dashboard UIs are real files, never strings: write `index.html` + `app.ts` + `styles.css` and let Bun bundle them (`dashboard.pages.ui`) — do not build HTML with template literals inside `server.ts`.
 - Only publish manifests you validated. Never publish another creator's plugin under your name.
 - Do not edit installed plugin payloads by hand (skills, cron jobs named `plugin:<id>:...`, `/usr/local/bin/ob-plugin-<id>-*` tools, `~/.config/open-bot/plugin-<id>.json`, `~/.open-bot/plugin-init/<id>.log` setup logs). Uninstall, reinstall from `--path`, or republish instead.
 - Do not touch the guard cron of a plugin you did not publish.

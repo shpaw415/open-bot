@@ -5,6 +5,7 @@ import {
   createPageConfig,
   type PluginEventContext,
 } from "frame-master-plugin-cloudflare-pages-dynamic-ssr/server"
+import { useEffect, useState } from "react"
 import {
   Badge,
   Button,
@@ -84,6 +85,136 @@ function CliHint({ id }: { id: string }) {
   )
 }
 
+export function priceText(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+// Purchase surface for paid listings: price, Buy button (Stripe Checkout),
+// owned state, and the published refund policy. Free listings never render it.
+function PurchaseCard({
+  pluginId,
+  priceCents,
+}: {
+  pluginId: string
+  priceCents: number
+}) {
+  const [owned, setOwned] = useState(false)
+  const [checked, setChecked] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const [banner, setBanner] = useState<"success" | "cancelled" | null>(null)
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const state = params.get("purchase")
+    if (state === "success") setBanner("success")
+    else if (state === "cancelled") setBanner("cancelled")
+    fetch("/api/purchases")
+      .then(
+        (
+          res,
+        ): Promise<{
+          purchases?: { pluginId: string; status: string }[]
+        } | null> => (res.ok ? res.json() : Promise.resolve(null)),
+      )
+      .then((body) => {
+        const purchases = body?.purchases
+        if (
+          purchases?.some((p) => p.pluginId === pluginId && p.status === "paid")
+        ) {
+          setOwned(true)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setChecked(true))
+  }, [pluginId])
+
+  async function buy() {
+    setBusy(true)
+    setError("")
+    try {
+      const res = await fetch(
+        `/api/plugins/${encodeURIComponent(pluginId)}/checkout`,
+        { method: "POST" },
+      )
+      if (res.status === 401) {
+        window.location.assign("/api/auth/login")
+        return
+      }
+      const body = (await res.json()) as {
+        checkoutUrl?: string
+        alreadyOwned?: boolean
+        error?: string
+      }
+      if (body.alreadyOwned) {
+        setOwned(true)
+        return
+      }
+      if (!res.ok || !body.checkoutUrl) {
+        throw new Error(body.error ?? "could not start checkout")
+      }
+      window.location.assign(body.checkoutUrl)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "checkout failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card className="p-5">
+      <SectionHeading label="Purchase" />
+      {banner === "success" ? (
+        <p className="mt-3 rounded-[10px] border border-[#BEE0D0] bg-[#E7F4ED] p-3 text-[13px] leading-5 text-[#157A55]">
+          Purchase complete — install the plugin on your open-bot desktop with
+          the command below.
+        </p>
+      ) : null}
+      {banner === "cancelled" ? (
+        <p className="mt-3 rounded-[10px] border border-[#E7D294] bg-[#FFF8E1] p-3 text-[13px] leading-5 text-[#5F4A00]">
+          Checkout cancelled — nothing was charged.
+        </p>
+      ) : null}
+      {owned ? (
+        <p className="mt-3 rounded-[10px] border border-[#BEE0D0] bg-[#E7F4ED] p-3 text-[13.5px] leading-5 text-[#157A55]">
+          You own a lifetime license for this plugin, including future updates.
+          Install it on any desktop signed in with your marketplace key.
+        </p>
+      ) : checked ? (
+        <>
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-[20px] font-bold text-[#1A2333]">
+              {priceText(priceCents)}
+            </span>
+            <span className="text-[12.5px] text-[#5F6B80]">
+              one-time · lifetime updates
+            </span>
+          </div>
+          <Button
+            className="mt-3 w-full"
+            onClick={() => void buy()}
+            disabled={busy}
+          >
+            {busy ? "Opening checkout…" : "Buy on the marketplace"}
+          </Button>
+          <p className="mt-2 text-[12.5px] leading-5 text-[#5F6B80]">
+            Paid plugins install with your personal marketplace API key. Refunds
+            within 14 days if it doesn't work as described — just ask the
+            operator.
+          </p>
+        </>
+      ) : (
+        <Spinner className="py-2" label="Checking license…" />
+      )}
+      {error ? (
+        <p className="mt-3 rounded-[10px] border border-[#F0C2BE] bg-[#FDEEEC] p-3 text-[13px] leading-5 text-[#B4232B]">
+          {error}
+        </p>
+      ) : null}
+    </Card>
+  )
+}
+
 export default function PluginDetail() {
   const data = useLoader<PluginPageData>(loader_plugin)
 
@@ -152,6 +283,15 @@ export default function PluginDetail() {
               <Icon path={icons.download} className="size-4" />
               {plugin.downloads} installs
             </span>
+            {plugin.priceCents && plugin.priceCents > 0 ? (
+              <span className="rounded-full bg-[#FFF3D6] px-2.5 py-[3px] text-[12.5px] font-bold text-[#8A5A00]">
+                {priceText(plugin.priceCents)}
+              </span>
+            ) : (
+              <span className="rounded-full bg-[#E7F4ED] px-2.5 py-[3px] text-[12.5px] font-semibold text-[#157A55]">
+                Free
+              </span>
+            )}
             <span className="text-[13.5px] text-[#5F6B80]">
               by {plugin.author}
             </span>
@@ -174,6 +314,9 @@ export default function PluginDetail() {
       </Card>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_340px]">
+        {plugin.priceCents && plugin.priceCents > 0 ? (
+          <PurchaseCard pluginId={plugin.id} priceCents={plugin.priceCents} />
+        ) : null}
         <Card className="p-5">
           <SectionHeading label="Install" />
           <CommandBlock

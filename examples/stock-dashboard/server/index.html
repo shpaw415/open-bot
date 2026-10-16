@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stock</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <h1>Stock</h1>
+    <form id="add">
+      <input name="name" placeholder="Item name" required />
+      <input name="qty" type="number" min="0" placeholder="Qty" required />
+      <button>Add</button>
+    </form>
+    <table>
+      <thead>
+        <tr><th>Item</th><th>Qty</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>

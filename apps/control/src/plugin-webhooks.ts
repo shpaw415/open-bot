@@ -9,6 +9,7 @@ import {
   pageStateFor,
   pluginUpstreamUrl,
   sanitizePluginRest,
+  touchPluginPageActivity,
 } from "./plugin-pages"
 import type { UpgradeServer } from "./preview"
 
@@ -298,6 +299,9 @@ export async function handlePluginWebhook(
   }
   await wakeDesktop(db, row.userId)
   await ensurePluginPageServer(row.userId, row)
+  // Public traffic counts as activity: an actively-called endpoint stays up,
+  // and the idle sweeper stops it five minutes after the last hit.
+  touchPluginPageActivity(row.userId, row.pluginId)
   const state = pageStateFor(row.userId, row.pluginId)
   if (!state) {
     throw new HttpError(

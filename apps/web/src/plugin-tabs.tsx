@@ -132,9 +132,11 @@ export function appTabSandbox(isolated: boolean) {
 // Frame tokens live 10 minutes, sliding only on requests, and die with every
 // control restart (in-memory grants). A tab parked open — or across a deploy —
 // would otherwise show the frame's plain "unauthorized" body forever. While
-// mounted, a periodic HEAD slides the token; a 401 remints and reloads the
-// frame. 502 (desktop asleep / server down) is skipped so a cold desktop does
-// not loop remints.
+// the view is mounted, a periodic HEAD slides the token; a 401 remints and
+// reloads the frame. 502 (desktop asleep / server down) is skipped so a cold
+// desktop does not loop remints. Hidden tabs (background browser tab) skip
+// the HEAD so the plugin's page server can idle out; coming back to the tab
+// fires an immediate HEAD that revives the frame (and the server) at once.
 const APP_TAB_KEEPALIVE_MS = 4 * 60 * 1000
 
 function AppTab({ tab }: { tab: PluginTab }) {
@@ -154,8 +156,8 @@ function AppTab({ tab }: { tab: PluginTab }) {
         setIsolated(Boolean(body.isolated))
       })
     mint().catch(() => {})
-    const timer = setInterval(() => {
-      if (!current) return
+    const check = () => {
+      if (!current || document.visibilityState !== "visible") return
       fetch(current, {
         method: "HEAD",
         cache: "no-store",
@@ -166,10 +168,16 @@ function AppTab({ tab }: { tab: PluginTab }) {
           return mint().catch(() => {})
         })
         .catch(() => {})
-    }, APP_TAB_KEEPALIVE_MS)
+    }
+    const timer = setInterval(check, APP_TAB_KEEPALIVE_MS)
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") check()
+    }
+    document.addEventListener("visibilitychange", onVisibility)
     return () => {
       alive = false
       clearInterval(timer)
+      document.removeEventListener("visibilitychange", onVisibility)
     }
   }, [tab.pluginId, tab.path])
   if (!src) return null

@@ -136,6 +136,22 @@ page_warn() {
   fi
 }
 
+# Paid premium plugins: the install/update 402 carries the buy pointer.
+# Agents cannot buy — stop with clear instructions instead of retrying.
+purchase_gate() {
+  if printf '%s' "$1" | jq -e '.needsPurchase == true' >/dev/null 2>&1; then
+    price=$(printf '%s' "$1" | jq -r '.priceCents // empty' | awk '{printf "$%.2f", $1 / 100}')
+    url=$(printf '%s' "$1" | jq -r '.checkoutUrl // "https://market.open-bot.app"')
+    haskey=$(printf '%s' "$1" | jq -r '.hasMarketplaceKey // false')
+    echo "ob-plugin: this is a premium plugin ($price one-time, lifetime license incl. updates)" >&2
+    echo "  buying is a human step: purchase it at $url (sign in, Buy), then run this install again" >&2
+    if [ "$haskey" != "true" ]; then
+      echo "  installs of paid plugins also need the buyer's marketplace API key — ask them to paste it on the dashboard (Config → Plugins → Marketplace account → your key)" >&2
+    fi
+    exit 1
+  fi
+}
+
 urlencode() {
   printf '%s' "$1" | jq -sRr @uri
 }
@@ -175,8 +191,86 @@ case "$cmd" in
             description: "When to load this skill",
             body: ("# " + $id + "\n\nInstructions for the agent.\n")
           }
-        ]
+        ],
+        files: [
+          { name: "server.ts", source: "server/server.ts", exec: true },
+          { name: "index.html", source: "server/index.html", exec: false },
+          { name: "app.ts", source: "server/app.ts", exec: false },
+          { name: "styles.css", source: "server/styles.css", exec: false }
+        ],
+        dashboard: {
+          pages: { entry: "server.ts", ui: "server/index.html" },
+          tabs: [
+            { id: $id, title: $id, icon: "dashboard", kind: "app" }
+          ]
+        }
       }' > "$stage/$MANIFEST_FILE"
+    mkdir -p "$stage/server"
+    cat > "$stage/server/server.ts" <<EOF
+// Page server entry (Bun runs .ts natively, no build step).
+// Env: OPEN_BOT_PAGE_PORT, OPEN_BOT_PAGE_TOKEN, OPEN_BOT_PLUGIN_ID, and
+// OPEN_BOT_PAGE_UI on frozen installs (the control plane bundles index.html
+// into one self-contained file at install). Local installs and previews run
+// this checkout with bun --hot and import index.html live instead.
+
+const port = Number(process.env.OPEN_BOT_PAGE_PORT ?? 4740)
+
+// The "/" route branches on the mode: the HTML import is only valid as a
+// static routes value, so pick the table before the server starts.
+const routes = process.env.OPEN_BOT_PAGE_UI
+  ? {
+      "/": () =>
+        new Response(Bun.file(process.env.OPEN_BOT_PAGE_UI as string), {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    }
+  : { "/": await import("./index.html").then((m) => m.default) }
+
+const server = Bun.serve({
+  port,
+  routes,
+  fetch(req) {
+    const url = new URL(req.url)
+    if (url.pathname === "/healthz") return new Response("ok")
+    if (url.pathname === "/api/ping") return Response.json({ pong: Date.now() })
+    return new Response("not found", { status: 404 })
+  },
+})
+EOF
+    cat > "$stage/server/index.html" <<EOF
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>$name</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <h1>$name</h1>
+    <p id="status">connecting&hellip;</p>
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>
+EOF
+    cat > "$stage/server/app.ts" <<EOF
+// Browser code: Bun bundles and transpiles this for both the live import and
+// the standalone build. Relative fetch paths only ("api/ping", never
+// "/api/...") — the dashboard proxies this page under /api/pages/<pluginId>/.
+const status = document.getElementById("status") as HTMLElement | null
+const res = await fetch("api/ping")
+const data = (await res.json()) as { pong: number }
+if (status) status.textContent = "pong " + data.pong
+EOF
+    cat > "$stage/server/styles.css" <<EOF
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0;
+  padding: 24px;
+  background: #111;
+  color: #eee;
+}
+EOF
     cat > "$stage/README.md" <<EOF
 # $name
 
@@ -208,7 +302,8 @@ Manifest quick reference:
 - personas[]: {name, instruction} — personalities the thread picker can choose
 - cron[]: {name, message, everySeconds | cronExpr} — scheduled jobs
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
-- files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools
+- files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools; every frontend file the page server references (index.html, app.ts, styles.css) must be declared here
+- dashboard.pages: {entry, ui} — entry is the page server files[] name; ui is the files[] source of the frontend entry (index.html) — the control plane bundles it with bun build into one self-contained HTML for frozen installs, local installs import it live
 - Write plugin code in TypeScript, not JavaScript: tool scripts (with a "#!/usr/bin/env bun" shebang), files[] payloads, and dashboard page servers are all .ts files — Bun runs .ts natively, no build step
 - configs[]: {key, label, def} — settings shown on the Plugins page
 - setup: {commands: [...], uninstall: [...]} — shell commands run as root in the desktop at install and on every desktop start (commands must be idempotent, e.g. "apt-get install -y figlet"); uninstall runs at uninstall; the user sees them in the consent prompt, log at ~/.open-bot/plugin-init/<id>.log
@@ -309,7 +404,32 @@ EOF
     out=$(request POST /api/plugins/validate "$body")
     fail_on_error "$out"
     printf '%s' "$out" | jq -r 'if .ok then "valid\n" + (.permissions[]? | " - " + .) else "invalid\n" + ([.issues[]? | " - \(.path // "manifest"): \(.message)"] | join("\n")) end'
-    [ "$(printf '%s' "$out" | jq -r '.ok')" = "true" ]
+    [ "$(printf '%s' "$out" | jq -r '.ok')" = "true" ] || exit 1
+    # Local pre-check: bundle the declared dashboard frontend so build errors
+    # surface before a release is cut (frozen installs get this same build
+    # from the control plane at install). Skipped when bun is missing.
+    ui_entry=$(jq -r '.dashboard.pages.ui // empty' "$file")
+    if [ -n "$ui_entry" ]; then
+      if ! command -v bun >/dev/null 2>&1; then
+        echo "note: bun not found — skipping the dashboard UI build check"
+      elif [ ! -f "$dir/$ui_entry" ]; then
+        echo "invalid" >&2
+        echo " - dashboard.pages.ui: $ui_entry is not in the plugin directory" >&2
+        exit 1
+      else
+        build_dir=$(mktemp -d)
+        if bun build --compile --target=browser "$dir/$ui_entry" --outdir "$build_dir" >"$build_dir/build.log" 2>&1; then
+          echo "ui build: ok"
+        else
+          echo "invalid" >&2
+          echo " - dashboard.pages.ui: bun build failed — fix the frontend before publishing:" >&2
+          sed 's/^/   /' "$build_dir/build.log" | tail -10 >&2
+          rm -rf "$build_dir"
+          exit 1
+        fi
+        rm -rf "$build_dir"
+      fi
+    fi
     ;;
   publish)
     dir=""
@@ -521,6 +641,29 @@ EOF
       echo "warning: prefer TypeScript over JavaScript for plugin code (Bun runs .ts natively); JavaScript found in:"
       printf '%s\n' "$js_files" | sed 's/^/  - /'
     fi
+    # Soft advisory: frontend files the page server references must be
+    # declared in files[] or they never ship — frozen installs cannot load
+    # them and the dashboard renders nothing.
+    html_missing=0
+    for rel in $(find "$dir" -name '*.html' -not -path '*/.git/*' -not -path '*/node_modules/*' 2>/dev/null | sed "s|^$dir/||" | sort); do
+      if ! jq -e --arg s "$rel" '[(.files // [])[] | .source] | index($s)' "$file" >/dev/null 2>&1; then
+        echo "warning: $rel is not declared in files[] — it will not ship in the release (declare it or the frozen install cannot load it)"
+        html_missing=1
+      fi
+    done
+    [ "$html_missing" -eq 1 ] && problems=1
+    # Pre-run the standalone UI build so bundle errors surface pre-publish.
+    ui_entry=$(jq -r '.dashboard.pages.ui // empty' "$file")
+    if [ -n "$ui_entry" ] && command -v bun >/dev/null 2>&1; then
+      build_dir=$(mktemp -d)
+      if bun build --compile --target=browser "$dir/$ui_entry" --outdir "$build_dir" >/dev/null 2>&1; then
+        echo "ui build: ok ($ui_entry)"
+      else
+        echo "ui build: FAILED for $ui_entry — run: bun build --compile --target=browser $dir/$ui_entry --outdir /tmp/ui-check"
+        problems=1
+      fi
+      rm -rf "$build_dir"
+    fi
     # Soft advisory: plugin source ships publicly (GitHub repo + marketplace),
     # so personal information must never be hard-coded in it. The marketplace
     # privacy review rejects publishes that leak it — fix before publishing.
@@ -547,13 +690,13 @@ EOF
       out=$(request GET /api/plugins/market)
     fi
     fail_on_error "$out"
-    printf '%s' "$out" | jq -r '.plugins[]? | "- \(.id) v\(.version) [\(.status)] \(.name) — \(.description)\(if .downloads then " (\(.downloads) installs)" else "" end)"'
+    printf '%s' "$out" | jq -r '.plugins[]? | "- \(.id) v\(.version) [\(.status)] \(.name) — \(.description)\(if .downloads then " (\(.downloads) installs)" else "" end)\(if (.priceCents // 0) > 0 then " [premium $\(.priceCents / 100 | floor).\(.priceCents % 100 | tostring | if length < 2 then "0" + . else . end)]" else "" end)"'
     ;;
   info)
     [ $# -eq 1 ] || { usage; exit 2; }
     out=$(request GET "/api/plugins/market/$(urlencode "$1")")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id: .plugin.id, name: .plugin.name, version: .plugin.version, status: .plugin.status, description: .plugin.description, author: .plugin.author, repo: .plugin.repo, category: .plugin.category, tags: .plugin.tags, downloads: .plugin.downloads, versions: [.versions[].version | . + (if test("^[0-9]+\\.[0-9]+\\.[0-9]+$") then "" else " (dev)" end)]}'
+    printf '%s' "$out" | jq '{id: .plugin.id, name: .plugin.name, version: .plugin.version, status: .plugin.status, description: .plugin.description, author: .plugin.author, repo: .plugin.repo, category: .plugin.category, tags: .plugin.tags, downloads: .plugin.downloads, priceCents: .plugin.priceCents, versions: [.versions[].version | . + (if test("^[0-9]+\\.[0-9]+\\.[0-9]+$") then "" else " (dev)" end)]}'
     ;;
   install)
     path=""
@@ -599,6 +742,7 @@ EOF
     fi
     echo "installing (skill indexing on OpenViking can take up to ~2 min)..." >&2
     out=$(request POST /api/plugins/install "$body")
+    purchase_gate "$out"
     fail_on_error "$out"
     if printf '%s' "$out" | jq -e '.needsConfirm == true' >/dev/null 2>&1; then
       echo "this plugin needs confirmation (policy: manual):"
@@ -622,6 +766,7 @@ EOF
           fi
           echo "installing (skill indexing on OpenViking can take up to ~2 min)..." >&2
           out=$(request POST /api/plugins/install "$body")
+          purchase_gate "$out"
           fail_on_error "$out"
           ;;
         *) echo "cancelled"; exit 1 ;;
@@ -661,6 +806,7 @@ EOF
     body=$(jq -n --arg id "$plugin_id" --arg v "$target" '{pluginId: $id, version: $v, confirm: true}')
     echo "installing v$target (skill indexing on OpenViking can take up to ~2 min)..." >&2
     out=$(request POST /api/plugins/install "$body")
+    purchase_gate "$out"
     fail_on_error "$out"
     page_warn "$out"
     printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, page: (.plugin.page // null)}'

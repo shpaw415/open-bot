@@ -19,6 +19,11 @@ export const users = sqliteTable("users", {
     .notNull()
     .default(true),
   disabled: integer("disabled", { mode: "boolean" }).notNull().default(false),
+  // This user's marketplace API key (obm_…) — used to install paid plugins
+  // (the purchase/license belongs to their marketplace account) and to fetch
+  // their own publish identity. Falls back to the instance-wide
+  // app_settings.marketplace_api_key when unset.
+  marketplaceApiKey: text("marketplace_api_key"),
 })
 
 export const sessions = sqliteTable("sessions", {
@@ -78,6 +83,17 @@ export const desktops = sqliteTable("desktops", {
   ttsModel: text("tts_model"),
   ttsVoice: text("tts_voice"),
   voiceLanguage: text("voice_language"),
+  watchdogEnabled: integer("watchdog_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  watchdogStopOnHigh: integer("watchdog_stop_on_high", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  watchdogProvider: text("watchdog_provider"),
+  watchdogAccountId: text("watchdog_account_id"),
+  watchdogApiKey: text("watchdog_api_key"),
+  watchdogModel: text("watchdog_model"),
+  watchdogBaseUrl: text("watchdog_base_url"),
   thinkingEffort: text("thinking_effort"),
 })
 
@@ -363,6 +379,48 @@ export const workspaceMedia = sqliteTable(
     uniqueIndex("workspace_media_message_path").on(table.messageId, table.path),
     index("workspace_media_session").on(table.userId, table.sessionId),
     index("workspace_media_created").on(table.createdAt),
+  ],
+)
+
+export const watchdogFindings = sqliteTable(
+  "watchdog_findings",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id"),
+    source: text("source", {
+      enum: ["prompt", "response", "tool_input", "tool_output"],
+    }).notNull(),
+    category: text("category", {
+      enum: [
+        "prompt_injection",
+        "secret_exfiltration",
+        "dangerous_command",
+        "credential_access",
+        "malicious_content",
+        "other",
+      ],
+    }).notNull(),
+    severity: text("severity", {
+      enum: ["info", "low", "medium", "high"],
+    }).notNull(),
+    title: text("title").notNull(),
+    detail: text("detail").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    hits: integer("hits").notNull().default(1),
+    status: text("status", { enum: ["new", "reviewed", "dismissed"] })
+      .notNull()
+      .default("new"),
+    verdict: text("verdict"),
+    action: text("action", { enum: ["none", "alerted", "stopped"] })
+      .notNull()
+      .default("alerted"),
+    createdAt: integer("created_at").notNull(),
+    lastSeenAt: integer("last_seen_at").notNull(),
+  },
+  (table) => [
+    index("watchdog_findings_user_time").on(table.userId, table.createdAt),
+    index("watchdog_findings_fingerprint").on(table.userId, table.fingerprint),
   ],
 )
 

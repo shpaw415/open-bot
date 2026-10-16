@@ -24,6 +24,7 @@ import {
   ChatIcon,
   ComputerIcon,
   ExtensionIcon,
+  HubIcon,
   ImageIcon,
   KeyIcon,
   MemoryIcon,
@@ -33,9 +34,11 @@ import {
   PsychologyIcon,
   PublicIcon,
   ScheduleIcon,
+  SecurityIcon,
   VpnKeyIcon,
 } from "./icons"
 import { KeyVault } from "./KeyVault"
+import { McpView } from "./McpView"
 import { Model3dProvider } from "./Model3dProvider"
 import { ModelSelect } from "./ModelSelect"
 import { Personalities } from "./Personalities"
@@ -46,6 +49,7 @@ import { System1 } from "./System1"
 import { VideoProvider } from "./VideoProvider"
 import { VikingModels } from "./VikingModels"
 import { VoiceProvider } from "./VoiceProvider"
+import { Watchdog } from "./Watchdog"
 
 type Model = {
   providerID: string
@@ -67,9 +71,11 @@ type ConfigTab =
   | "cron"
   | "backup"
   | "plugins"
+  | "mcp"
   | "endpoints"
   | "hardware"
   | "reports"
+  | "security"
 
 const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
   { value: "providers", label: "Providers", icon: <VpnKeyIcon /> },
@@ -84,9 +90,11 @@ const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
   { value: "cron", label: "Cron", icon: <ScheduleIcon /> },
   { value: "backup", label: "Backup", icon: <BackupIcon /> },
   { value: "plugins", label: "Plugins", icon: <ExtensionIcon /> },
+  { value: "mcp", label: "MCP", icon: <HubIcon /> },
   { value: "endpoints", label: "Endpoints", icon: <PublicIcon /> },
   { value: "hardware", label: "Hardware", icon: <ComputerIcon /> },
   { value: "reports", label: "Reports", icon: <BugReportIcon /> },
+  { value: "security", label: "Watchdog", icon: <SecurityIcon /> },
 ]
 
 function DefaultModelSection({
@@ -388,8 +396,9 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
       <Typography variant="h6">Configuration</Typography>
       <Typography variant="body2" color="textSecondary">
         Chat model providers, shared keys, chat defaults, memory, System 1,
-        media, voice, personas, skills, cron jobs, plugins, public endpoints,
-        hardware, and plugin reports for this desktop.
+        media, voice, personas, skills, cron jobs, plugins, MCP servers, public
+        endpoints, hardware, plugin reports, and the security watchdog for this
+        desktop.
       </Typography>
     </Stack>
   )
@@ -415,9 +424,11 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
       {tab === "cron" ? <CronView me={me} /> : null}
       {tab === "backup" ? <Backup me={me} /> : null}
       {tab === "plugins" ? <Plugins isAdmin={me.role === "admin"} /> : null}
+      {tab === "mcp" ? <McpView /> : null}
       {tab === "endpoints" ? <Endpoints /> : null}
       {tab === "hardware" ? <Hardware /> : null}
       {tab === "reports" ? <Reports /> : null}
+      {tab === "security" ? <Watchdog /> : null}
     </>
   )
 

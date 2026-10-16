@@ -6,6 +6,7 @@ import {
   type PluginRow,
   type VersionRow,
 } from "./db"
+import { syncListingPrice } from "./purchases"
 import {
   emptyReview,
   highestSeverity,
@@ -108,13 +109,20 @@ async function upsertQueuedVersion(
   notes: string | null,
   enqueuedAt: number,
 ) {
+  // Price snapshot from the manifest (null = free listing).
+  const priceCents =
+    manifest.pricing?.model === "one-time" &&
+    typeof manifest.pricing.amount === "number"
+      ? manifest.pricing.amount
+      : null
   await db
     .prepare(
-      `INSERT INTO plugin_versions (plugin_id, version, manifest, notes, security_status, security_findings, artifact_key, artifact_sha256, analyzed_at, review_enqueued_at, security_error, issue_url, created_at)
-       VALUES (?1, ?2, ?3, ?4, 'queued', '[]', NULL, NULL, NULL, ?5, NULL, NULL, ?6)
+      `INSERT INTO plugin_versions (plugin_id, version, manifest, notes, price_cents, security_status, security_findings, artifact_key, artifact_sha256, analyzed_at, review_enqueued_at, security_error, issue_url, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'queued', '[]', NULL, NULL, NULL, ?6, NULL, NULL, ?7)
        ON CONFLICT (plugin_id, version) DO UPDATE SET
          manifest = excluded.manifest,
          notes = excluded.notes,
+         price_cents = excluded.price_cents,
          security_status = 'queued',
          security_findings = '[]',
          artifact_key = NULL,
@@ -129,6 +137,7 @@ async function upsertQueuedVersion(
       manifest.version,
       JSON.stringify(manifest),
       notes,
+      priceCents,
       enqueuedAt,
       enqueuedAt,
     )
@@ -145,11 +154,16 @@ async function writeListing(
   ownerUserId: string | null = null,
 ) {
   const tags = JSON.stringify(manifest.tags ?? [])
+  const priceCents =
+    manifest.pricing?.model === "one-time" &&
+    typeof manifest.pricing.amount === "number"
+      ? manifest.pricing.amount
+      : null
   if (!existing) {
     await db
       .prepare(
-        `INSERT INTO plugins (id, name, description, author, repo, category, tags, latest_version, status, security_status, downloads, readme, created_at, updated_at, owner_user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14)`,
+        `INSERT INTO plugins (id, name, description, author, repo, category, tags, latest_version, status, security_status, downloads, readme, created_at, updated_at, owner_user_id, price_cents)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14, ?15)`,
       )
       .bind(
         manifest.id,
@@ -166,6 +180,7 @@ async function writeListing(
         now,
         now,
         ownerUserId,
+        priceCents,
       )
       .run()
     return
@@ -228,6 +243,7 @@ export async function enqueueSecurityReview(
       .run()
   }
   await upsertQueuedVersion(db, manifest, notes, enqueuedAt)
+  await syncListingPrice(db, manifest.id).catch(() => undefined)
   const plugin = await getPluginRow(db, manifest.id)
   return {
     enqueuedAt,
@@ -285,6 +301,7 @@ export async function applySecurityReview(
   )
   if (decision.touchListing) {
     await writeListing(db, manifest, decision.listing, readme, now, plugin)
+    await syncListingPrice(db, manifest.id).catch(() => undefined)
   }
   if (review.status === "concern" && review.findings.length > 0) {
     const body = findingsComment(review.findings)

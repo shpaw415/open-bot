@@ -16,6 +16,8 @@ export type PluginRow = {
   created_at: number
   updated_at: number
   owner_user_id?: string | null
+  // Listing price (USD cents) of the current version; null = free.
+  price_cents?: number | null
 }
 
 export type VersionRow = {
@@ -32,6 +34,8 @@ export type VersionRow = {
   security_error: string | null
   issue_url: string | null
   created_at: number
+  // Price snapshot (USD cents) from the version manifest; null = free.
+  price_cents?: number | null
 }
 
 export type CommentRow = {
@@ -68,6 +72,8 @@ export type MarketPlugin = {
   status: PluginRow["status"]
   securityStatus: string | null
   downloads: number
+  // Listing price (USD cents); null/undefined = free.
+  priceCents: number | null
   createdAt: number
   updatedAt: number
 }
@@ -116,6 +122,7 @@ export function pluginFromRow(row: PluginRow): MarketPlugin {
     status: row.status,
     securityStatus: row.security_status,
     downloads: row.downloads,
+    priceCents: typeof row.price_cents === "number" ? row.price_cents : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

@@ -879,13 +879,19 @@ export async function fireCronJob(
         if (!persona) throw new Error("personality not found")
         personaLine = personaSystem(persona)
       }
+      // The run session is a child of the delivery thread; children share the
+      // parent's screen (same convention as the chat prompt path). Ensuring
+      // the parent id — not the per-fire child — reuses one screen across
+      // fires instead of allocating a fresh display (and an LRU victim) per
+      // run, which could evict a thread the user is actively watching.
+      const rootSessionId = await ensureThread()
       const runSessionId = await createSession(
         base,
         headers,
         `${CRON_RUN_TITLE} ${job.name}`,
-        await ensureThread(),
+        rootSessionId,
       )
-      const screen = await ensureThreadScreen(db, job.userId, runSessionId)
+      const screen = await ensureThreadScreen(db, job.userId, rootSessionId)
       const runBody = cronRunBody({
         name: job.name,
         message: job.message,

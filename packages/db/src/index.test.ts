@@ -13,6 +13,7 @@ function user(
     createdAt: 1,
     mustChangePassword: false,
     disabled: false,
+    marketplaceApiKey: null,
     ...partial,
   }
 }

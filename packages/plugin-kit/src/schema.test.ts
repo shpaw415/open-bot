@@ -9,7 +9,10 @@ import {
   PLUGIN_CONFIG_TYPES,
   PLUGIN_HOOK_EVENTS,
   PLUGIN_ID_PATTERN,
+  PLUGIN_PRICING_MODELS,
   PLUGIN_VERSION_PATTERN,
+  PRICE_MAX_CENTS,
+  PRICE_MIN_CENTS,
   SLUG_PATTERN,
   TAB_ICON_MAX_LENGTH,
   TOOL_GLOB_PATTERN,
@@ -87,6 +90,9 @@ describe("plugin schema", () => {
     expect(top.author.maxLength).toBe(64)
     expect(top.category.maxLength).toBe(32)
     expect(top.tags.maxItems).toBe(8)
+    expect(top.pricing.properties.model.enum).toEqual(PLUGIN_PRICING_MODELS)
+    expect(top.pricing.properties.amount.minimum).toBe(PRICE_MIN_CENTS)
+    expect(top.pricing.properties.amount.maximum).toBe(PRICE_MAX_CENTS)
     expect(top.skills.items.properties.description.maxLength).toBe(1024)
     expect(top.skills.items.properties.body.maxLength).toBe(65536)
     expect(top.personas.items.properties.instruction.maxLength).toBe(2000)

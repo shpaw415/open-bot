@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { openDatabase } from "@open-bot/db"
 import {
   capturePath,
+  evictionPlan,
   holdFile,
   holdSystemLine,
   parseScreenList,
@@ -65,6 +66,16 @@ describe("thread screens", () => {
     ])
   })
 
+  test("list parser reads the last-active stamp", () => {
+    expect(
+      parseScreenList("ses_a 2 1760000000\nses_b 3 0\nses_c 4 junk\n"),
+    ).toEqual([
+      { sessionId: "ses_a", display: 2, lastActive: 1760000000 },
+      { sessionId: "ses_b", display: 3 },
+      { sessionId: "ses_c", display: 4 },
+    ])
+  })
+
   test("lru stops the oldest until one slot is free", () => {
     const alive = [
       { sessionId: "c", lastActiveAt: 30 },
@@ -82,6 +93,18 @@ describe("thread screens", () => {
         1,
       ),
     ).toEqual(["a", "b"])
+  })
+
+  test("eviction fails closed when the busy check is unavailable", () => {
+    const alive = [
+      { sessionId: "c", lastActiveAt: 30 },
+      { sessionId: "a", lastActiveAt: 10 },
+    ]
+    expect(evictionPlan(alive, 2, null)).toEqual([])
+    expect(evictionPlan(alive, 2, ["c"])).toEqual(["a"])
+    expect(evictionPlan(alive, 2, ["a", "c"])).toEqual([])
+    expect(evictionPlan(alive, 1, null)).toEqual([])
+    expect(evictionPlan(alive, 1, ["a"])).toEqual(["c"])
   })
 
   test("display pick reuses a free preferred number", () => {

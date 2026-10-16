@@ -12,24 +12,53 @@ import {
 } from "../components/ui"
 import type { MarketPlugin } from "../lib/db"
 
+type PurchaseRow = {
+  id: string
+  pluginId: string
+  pluginName: string
+  amountCents: number
+  feeCents: number
+  earningsCents: number
+  status: "pending" | "paid" | "refunded"
+  createdAt: number
+  paidAt: number | null
+}
+
+function priceText(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
+}
+
 export default function Admin() {
   const [token, setToken] = useState("")
   const [plugins, setPlugins] = useState<MarketPlugin[]>([])
+  const [purchases, setPurchases] = useState<PurchaseRow[]>([])
   const [error, setError] = useState("")
   const [loaded, setLoaded] = useState(false)
+  const [refunding, setRefunding] = useState("")
 
   const load = useCallback(async (value: string) => {
     setError("")
     try {
-      const res = await fetch("/api/admin/plugins", {
-        headers: { authorization: `Bearer ${value}` },
-      })
-      const body = (await res.json()) as {
+      const [pluginsRes, purchasesRes] = await Promise.all([
+        fetch("/api/admin/plugins", {
+          headers: { authorization: `Bearer ${value}` },
+        }),
+        fetch("/api/admin/purchases", {
+          headers: { authorization: `Bearer ${value}` },
+        }),
+      ])
+      const body = (await pluginsRes.json()) as {
         plugins?: MarketPlugin[]
         error?: string
       }
-      if (!res.ok) throw new Error(body.error ?? "unauthorized")
+      if (!pluginsRes.ok) throw new Error(body.error ?? "unauthorized")
       setPlugins(body.plugins ?? [])
+      if (purchasesRes.ok) {
+        const purchasesBody = (await purchasesRes.json()) as {
+          purchases?: PurchaseRow[]
+        }
+        setPurchases(purchasesBody.purchases ?? [])
+      }
       setLoaded(true)
       sessionStorage.setItem("ob-market-admin", value)
     } catch (caught) {
@@ -56,6 +85,38 @@ export default function Admin() {
       body: JSON.stringify({ id, status }),
     })
     void load(token)
+  }
+
+  async function refund(purchaseId: string) {
+    if (
+      !window.confirm(
+        "Refund this purchase? The buyer's license is revoked and the author's earnings are pulled back via Stripe.",
+      )
+    ) {
+      return
+    }
+    setRefunding(purchaseId)
+    setError("")
+    try {
+      const res = await fetch(
+        `/api/purchases/${encodeURIComponent(purchaseId)}/refund`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reason: "admin refund (admin page)" }),
+        },
+      )
+      const body = (await res.json()) as { error?: string }
+      if (!res.ok) throw new Error(body.error ?? "refund failed")
+      await load(token)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "refund failed")
+    } finally {
+      setRefunding("")
+    }
   }
 
   const pending = plugins.filter((p) => p.status === "pending").length
@@ -166,6 +227,81 @@ export default function Admin() {
               </EmptyState>
             ) : null}
           </div>
+
+          <SectionHeading label="Purchases" className="mb-4 mt-10" />
+          <p className="mb-4 max-w-[70ch] text-[13px] leading-5 text-[#5F6B80]">
+            Paid-plugin purchases. Refund a purchase to return the buyer's money
+            (Stripe pulls the author's earnings back) and revoke the plugin
+            license — the installed copy keeps running, but reinstall and
+            updates are blocked.
+          </p>
+          <Card className="overflow-x-auto p-0">
+            <table className="w-full min-w-[640px] text-left text-[13.5px]">
+              <thead>
+                <tr className="border-b border-[#E7E2D6] text-[12px] uppercase tracking-wide text-[#5F6B80]">
+                  <th className="px-4 py-3 font-semibold">Plugin</th>
+                  <th className="px-4 py-3 font-semibold">Amount</th>
+                  <th className="px-4 py-3 font-semibold">Status</th>
+                  <th className="px-4 py-3 font-semibold">Date</th>
+                  <th className="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E7E2D6]">
+                {purchases.map((purchase) => (
+                  <tr key={purchase.id}>
+                    <td className="px-4 py-3">
+                      <a
+                        href={`/plugins/${encodeURIComponent(purchase.pluginId)}`}
+                        className="font-semibold text-[#2B3DE8] underline-offset-4 hover:underline"
+                      >
+                        {purchase.pluginName}
+                      </a>
+                    </td>
+                    <td className="px-4 py-3 font-mono">
+                      {priceText(purchase.amountCents)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`rounded-full px-2 py-[2px] text-[11.5px] font-semibold ${
+                          purchase.status === "paid"
+                            ? "bg-[#E7F4ED] text-[#157A55]"
+                            : purchase.status === "refunded"
+                              ? "bg-[#FDEEEC] text-[#B4232B]"
+                              : "bg-[#FFF8E1] text-[#5F4A00]"
+                        }`}
+                      >
+                        {purchase.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[12px] text-[#5F6B80]">
+                      {new Date(purchase.createdAt).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {purchase.status === "paid" ? (
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={() => void refund(purchase.id)}
+                          disabled={refunding === purchase.id}
+                        >
+                          {refunding === purchase.id
+                            ? "Refunding…"
+                            : `Refund ${priceText(purchase.amountCents)}`}
+                        </Button>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+                {purchases.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-4 text-[#5F6B80]">
+                      No purchases yet.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </Card>
         </div>
       )}
     </div>

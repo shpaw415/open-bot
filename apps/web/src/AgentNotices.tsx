@@ -10,6 +10,8 @@ import {
   NotificationsIcon,
   NotificationsNoneIcon,
   NotificationsOffIcon,
+  VolumeOffIcon,
+  VolumeUpIcon,
 } from "./icons"
 import {
   armsSession,
@@ -22,6 +24,11 @@ import {
   readNativePermission,
   shouldNotify,
 } from "./notify"
+import {
+  playNotifySound,
+  readNotifySound,
+  writeNotifySound,
+} from "./notify-sound"
 
 type Toast = {
   id: string
@@ -82,6 +89,7 @@ async function deliverReply(
   if (!reply || watching(sessionId)) return
   noteThreadUnread(sessionId)
   if (!claimNotice(localStorage, reply.id)) return
+  playNotifySound()
   const title = sessionTitle(sessionBody)
   push({ id: reply.id, title, body: reply.text, sessionId })
   showNative(title, reply.text, sessionId, onOpen)
@@ -102,6 +110,30 @@ export function AgentNotices({
 
   useEffect(() => {
     return subscribe((event) => {
+      if (event.type === "security.notice") {
+        const props = event.properties as
+          | {
+              findingId?: unknown
+              severity?: unknown
+              title?: unknown
+              sessionId?: unknown
+              action?: unknown
+            }
+          | undefined
+        const severity =
+          typeof props?.severity === "string" ? props.severity : "finding"
+        const title =
+          typeof props?.title === "string" && props.title.trim()
+            ? props.title.trim().slice(0, 160)
+            : "suspicious activity detected"
+        const stopped = props?.action === "stopped"
+        const heading = `Watchdog (${severity})${stopped ? " — turn stopped" : ""}`
+        const id = `security-notice-${String(props?.findingId ?? "x")}-${Date.now()}`
+        setToast({ id, title: heading, body: title, sessionId: "" })
+        playNotifySound()
+        showNative(heading, title, "watchdog", () => {})
+        return
+      }
       if (event.type === "plugin.notice") {
         const props = event.properties as
           | {
@@ -133,6 +165,7 @@ export function AgentNotices({
           sessionId: "",
         }
         setToast(toast)
+        playNotifySound()
         showNative(
           `${name}: ${heading}`,
           detail,
@@ -193,6 +226,27 @@ export function AgentNotices({
         ) : undefined
       }
     />
+  )
+}
+
+export function SoundBell() {
+  const [on, setOn] = useState(() => readNotifySound())
+  const label = on ? "Reply sound on" : "Reply sound off"
+  return (
+    <ToolTip title={label}>
+      <IconButton
+        size="small"
+        aria-label={label}
+        onClick={() => {
+          const next = !on
+          writeNotifySound(next)
+          setOn(next)
+          if (next) playNotifySound()
+        }}
+      >
+        {on ? <VolumeUpIcon /> : <VolumeOffIcon />}
+      </IconButton>
+    </ToolTip>
   )
 }
 

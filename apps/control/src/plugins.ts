@@ -232,6 +232,12 @@ function marketToken(db: Db): string {
   return db.getSetting(MARKET_KEY_SETTING) || marketplaceToken
 }
 
+// The installing user's own marketplace API key (paid-plugin licenses and
+// publish identity live on their marketplace account), or null.
+function userMarketKey(db: Db, userId: string): string | null {
+  return db.userById(userId)?.marketplaceApiKey ?? null
+}
+
 function marketplaceConfigured(db: Db) {
   return marketplaceUrl !== "" && marketToken(db) !== ""
 }
@@ -240,8 +246,11 @@ async function marketplace(
   db: Db,
   path: string,
   init: RequestInit & { json?: unknown } = {},
+  // Ride the given user's key instead of the instance token (license checks
+  // and paid artifact fetches).
+  keyOverride?: string | null,
 ): Promise<Response> {
-  const token = marketToken(db)
+  const token = keyOverride || marketToken(db)
   if (marketplaceUrl === "" || token === "") {
     throw new HttpError(
       503,
@@ -312,6 +321,8 @@ type MarketPlugin = {
   tags: string[]
   status: "pending" | "approved" | "rejected"
   downloads: number
+  // Listing price (USD cents) when the plugin is a paid premium listing.
+  priceCents?: number | null
   createdAt: number
   updatedAt: number
 }
@@ -412,6 +423,34 @@ async function fetchDetail(
     throw new HttpError(404, "plugin not found", "plugin_not_found")
   }
   return body
+}
+
+// Paid-plugin entitlement: asks the marketplace whether the requesting user
+// (via their own marketplace key) holds an active purchase. The instance
+// token alone never licenses anything.
+async function licenseFor(
+  db: Db,
+  pluginId: string,
+  userId: string,
+): Promise<{ paid: boolean; licensed: boolean; priceCents: number | null }> {
+  const response = await marketplace(
+    db,
+    `/api/plugins/${encodeURIComponent(pluginId)}/license`,
+    {},
+    userMarketKey(db, userId) ?? undefined,
+  )
+  if (!response.ok) {
+    throw new HttpError(
+      502,
+      "marketplace license check failed",
+      "marketplace_error",
+    )
+  }
+  return (await response.json()) as {
+    paid: boolean
+    licensed: boolean
+    priceCents: number | null
+  }
 }
 
 export function guardMessage(manifest: PluginManifest): string {
@@ -805,6 +844,36 @@ export function handlePlugins(
     return json({ ok: true })
   }
 
+  // Per-user marketplace key: required to install paid plugins (the purchase
+  // belongs to the user's marketplace account); also used for their own
+  // publish identity. The raw key never leaves the control plane.
+  if (path === "/api/plugins/marketplace/user-key" && req.method === "GET") {
+    const key = userMarketKey(db, user.id)
+    return json({ set: key !== null, hint: key ? key.slice(-4) : null })
+  }
+
+  if (path === "/api/plugins/marketplace/user-key" && req.method === "PUT") {
+    return req
+      .json()
+      .then((body: Record<string, unknown>) => {
+        const key = String(body.key ?? "").trim()
+        if (!/^obm_[A-Za-z0-9_-]{24,120}$/.test(key)) {
+          return json(
+            { error: "that does not look like a marketplace API key" },
+            400,
+          )
+        }
+        db.setMarketplaceKey(user.id, key)
+        return json({ ok: true, hint: key.slice(-4) })
+      })
+      .catch(() => json({ error: "invalid json" }, 400))
+  }
+
+  if (path === "/api/plugins/marketplace/user-key" && req.method === "DELETE") {
+    db.setMarketplaceKey(user.id, null)
+    return json({ ok: true })
+  }
+
   if (path === "/api/plugins/market" && req.method === "GET") {
     const query = new URLSearchParams()
     const q = url.searchParams.get("q")?.trim()
@@ -831,6 +900,35 @@ export function handlePlugins(
           headers: { "content-type": "application/json" },
         }),
     )
+  }
+
+  // Paid-plugin entitlement for the dashboard: does the requesting user's
+  // marketplace account hold a license? Includes the buy URL when not.
+  const marketLicense = path.match(/^\/api\/plugins\/market\/([^/]+)\/license$/)
+  if (marketLicense && req.method === "GET") {
+    const id = decodeURIComponent(marketLicense[1] ?? "")
+    return marketplace(
+      db,
+      `/api/plugins/${encodeURIComponent(id)}/license`,
+      {},
+      userMarketKey(db, user.id) ?? undefined,
+    )
+      .then(async (response) => {
+        const body = (await response.json()) as {
+          paid?: boolean
+          licensed?: boolean
+          priceCents?: number | null
+        }
+        return Response.json(
+          {
+            ...body,
+            checkoutUrl: `${marketplaceUrl}/plugins/${encodeURIComponent(id)}`,
+            hasMarketplaceKey: userMarketKey(db, user.id) !== null,
+          },
+          { status: response.status },
+        )
+      })
+      .catch(() => json({ error: "license check failed" }, 502))
   }
 
   const comments = path.match(/^\/api\/plugins\/market\/([^/]+)\/comments$/)
@@ -953,6 +1051,28 @@ export function handlePlugins(
             { error: "this plugin has not been approved on the marketplace" },
             403,
           )
+        }
+        // Paid premium plugins need a purchase on the requesting user's
+        // marketplace account (lifetime license, updates included). The 402
+        // carries the marketplace page so the dashboard can offer the Buy
+        // flow; agents get the same pointer in the error text.
+        if ((detail.plugin.priceCents ?? 0) > 0) {
+          const license = await licenseFor(db, pluginId, user.id).catch(
+            () => null,
+          )
+          if (!license?.licensed) {
+            return json(
+              {
+                error:
+                  "this premium plugin requires a one-time purchase — buy it on the marketplace page, then install again",
+                needsPurchase: true,
+                priceCents: detail.plugin.priceCents ?? null,
+                checkoutUrl: `${marketplaceUrl}/plugins/${encodeURIComponent(pluginId)}`,
+                hasMarketplaceKey: userMarketKey(db, user.id) !== null,
+              },
+              402,
+            )
+          }
         }
         const row = await applyPluginInstall(
           db,

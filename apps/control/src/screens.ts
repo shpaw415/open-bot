@@ -21,6 +21,7 @@ export type ThreadScreenView = {
 export type AliveScreen = {
   sessionId: string
   display: number
+  lastActive?: number
 }
 
 export function screenSessionId(id: string): string | null {
@@ -84,7 +85,7 @@ export function parseScreenList(text: string): AliveScreen[] {
   for (const line of text.split("\n")) {
     const trimmed = line.trim()
     if (!trimmed) continue
-    const [sessionId, displayRaw] = trimmed.split(/\s+/)
+    const [sessionId, displayRaw, stampRaw] = trimmed.split(/\s+/)
     const display = Number(displayRaw)
     if (!sessionId || !screenSessionId(sessionId)) continue
     if (
@@ -94,7 +95,14 @@ export function parseScreenList(text: string): AliveScreen[] {
     ) {
       continue
     }
-    out.push({ sessionId, display })
+    const stamp = Number(stampRaw)
+    out.push({
+      sessionId,
+      display,
+      ...(Number.isFinite(stamp) && stamp > 0
+        ? { lastActive: stamp }
+        : undefined),
+    })
   }
   return out
 }
@@ -109,6 +117,17 @@ export function screensToStop(
       a.lastActiveAt - b.lastActiveAt || a.sessionId.localeCompare(b.sessionId),
   )
   return sorted.slice(0, alive.length - cap + 1).map((row) => row.sessionId)
+}
+
+// busy === null means the opencode status check failed: fail closed and evict
+// nothing — a 429 on the next ensure beats killing a screen that is mid-task.
+export function evictionPlan(
+  alive: { sessionId: string; lastActiveAt: number }[],
+  cap: number,
+  busy: string[] | null,
+): string[] {
+  if (busy === null) return []
+  return screensToStop(alive, cap).filter((id) => !busy.includes(id))
 }
 
 export function pickDisplay(
@@ -141,8 +160,9 @@ function view(sessionId: string, display: number): ThreadScreenView {
   }
 }
 
-// Session ids with a turn in flight on this desktop's opencode server.
-async function busySessions(userId: string, db: Db): Promise<string[]> {
+// Session ids with a turn in flight on this desktop's opencode server, or
+// null when the check itself failed (the caller must then fail closed).
+async function busySessions(userId: string, db: Db): Promise<string[] | null> {
   try {
     const desktop = db.desktop(userId)
     if (!desktop) return []
@@ -153,13 +173,13 @@ async function busySessions(userId: string, db: Db): Promise<string[]> {
       },
       signal: AbortSignal.timeout(10_000),
     })
-    if (!response.ok) return []
+    if (!response.ok) return null
     const status = (await response.json()) as Record<string, { type?: string }>
     return Object.entries(status)
       .filter(([, row]) => row?.type && row.type !== "idle")
       .map(([id]) => id)
   } catch {
-    return []
+    return null
   }
 }
 
@@ -205,9 +225,12 @@ async function stopProcesses(
   userId: string,
   sessionId: string,
   purge: boolean,
+  note = "",
 ) {
-  const downArgs = purge ? [sessionId, "--purge"] : [sessionId]
-  await runScript(userId, "opencode", "/opt/open-bot/screen-down.sh", downArgs)
+  const args = [sessionId]
+  if (purge) args.push("--purge")
+  if (note) args.push("--note", note.replace(/\s+/g, "-"))
+  await runScript(userId, "opencode", "/opt/open-bot/screen-down.sh", args)
   await runScript(userId, "computer", "/opt/open-bot/vnc-down.sh", [sessionId])
 }
 
@@ -243,22 +266,24 @@ async function ensureInner(
   }
 
   const stored = db.threadScreens(userId)
+  // CLI tools drive screens without bumping lastActiveAt in the DB; the
+  // desktop keeps a fresh stamp (screen-up/screen-heal touch last-active) so
+  // a screen mid-task is never the least-recently-used victim.
   const alive = listed.map((item) => ({
     sessionId: item.sessionId,
-    lastActiveAt:
+    lastActiveAt: Math.max(
       stored.find((saved) => saved.sessionId === item.sessionId)
         ?.lastActiveAt ?? 0,
+      (item.lastActive ?? 0) * 1000,
+    ),
   }))
-  let victims = screensToStop(alive, threadScreenCap())
-  if (victims.length > 0) {
-    // The CLI tools drive screens without bumping lastActiveAt, so a session
-    // mid-turn can look like the least-recently-used one; never stop a screen
-    // whose thread is busy, or the agent dies mid-task with "no screen".
-    const busy = await busySessions(userId, db)
-    victims = victims.filter((victim) => !busy.includes(victim))
-  }
+  const victims = evictionPlan(
+    alive,
+    threadScreenCap(),
+    await busySessions(userId, db),
+  )
   for (const victim of victims) {
-    await stopProcesses(userId, victim, false)
+    await stopProcesses(userId, victim, false, "lru")
   }
   const busyDisplays = listed
     .filter((item) => !victims.includes(item.sessionId))

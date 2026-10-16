@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   isDevVersion,
+  isPaidManifest,
   manifestIssuesText,
   parsePluginManifest,
   pluginPermissionSummary,
@@ -294,6 +295,56 @@ describe("plugin manifest", () => {
     }
   })
 
+  test("page server ui must be a declared files[] .html source", () => {
+    const good = validatePluginManifest({
+      ...valid,
+      files: [
+        { name: "server.ts", source: "server/server.ts", exec: true },
+        { name: "index.html", source: "server/index.html" },
+      ],
+      dashboard: {
+        pages: { entry: "server.ts", ui: "server/index.html" },
+        tabs: [],
+      },
+    })
+    expect(good.ok).toBe(true)
+    if (good.ok) {
+      expect(good.manifest.dashboard?.pages?.ui).toBe("server/index.html")
+    }
+    const notDeclared = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.ts", source: "server/server.ts", exec: true }],
+      dashboard: {
+        pages: { entry: "server.ts", ui: "server/index.html" },
+        tabs: [],
+      },
+    })
+    expect(notDeclared.ok).toBe(false)
+    if (!notDeclared.ok) {
+      expect(manifestIssuesText(notDeclared.issues)).toContain(
+        "dashboard.pages.ui",
+      )
+    }
+    const notHtml = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.ts", source: "server/server.ts", exec: true }],
+      dashboard: {
+        pages: { entry: "server.ts", ui: "server/app.ts" },
+        tabs: [],
+      },
+    })
+    expect(notHtml.ok).toBe(false)
+    const traversal = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.ts", source: "server/server.ts", exec: true }],
+      dashboard: {
+        pages: { entry: "server.ts", ui: "../index.html" },
+        tabs: [],
+      },
+    })
+    expect(traversal.ok).toBe(false)
+  })
+
   test("app tabs require the page server and sane paths", () => {
     const noPages = validatePluginManifest({
       ...valid,
@@ -526,6 +577,41 @@ describe("plugin manifest", () => {
     const result = parsePluginManifest(JSON.stringify(valid))
     expect(result.ok).toBe(true)
     expect(parsePluginManifest("{").ok).toBe(false)
+  })
+
+  test("validates pricing and defaults to free", () => {
+    const free = validatePluginManifest(valid)
+    expect(free.ok).toBe(true)
+    if (free.ok) expect(free.manifest.pricing).toBeUndefined()
+    expect(isPaidManifest({ pricing: undefined })).toBe(false)
+
+    const paid = validatePluginManifest({
+      ...valid,
+      pricing: { model: "one-time", amount: 499 },
+    })
+    expect(paid.ok).toBe(true)
+    if (paid.ok) {
+      expect(paid.manifest.pricing).toEqual({
+        model: "one-time",
+        amount: 499,
+      })
+    }
+    expect(
+      isPaidManifest({ pricing: { model: "one-time", amount: 499 } }),
+    ).toBe(true)
+
+    for (const bad of [
+      { model: "subscription", amount: 499 },
+      { model: "one-time", amount: 98 },
+      { model: "one-time", amount: 50001 },
+      { model: "one-time", amount: 9.99 },
+      { model: "one-time", amount: "499" },
+      { model: "one-time" },
+      "one-time",
+    ]) {
+      const result = validatePluginManifest({ ...valid, pricing: bad })
+      expect(result.ok).toBe(false)
+    }
   })
 
   test("fills vault permissions", () => {

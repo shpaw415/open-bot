@@ -25,15 +25,20 @@ import {
 } from "./docker"
 import { HttpError } from "./http-error"
 import { keyVaultSpecById } from "./key-vault"
-import { extractPluginFiles, fetchPluginArtifact } from "./plugin-artifact"
+import {
+  extractPluginFiles,
+  fetchPluginArtifact,
+  PLUGIN_UI_FILE_NAME,
+} from "./plugin-artifact"
 import {
   readLocalPluginConfigGuide,
   readLocalPluginFiles,
 } from "./plugin-local"
 import {
-  ensurePluginPageServer,
   type PluginPageStartStatus,
+  pluginPageRuntime,
   removePluginPageLog,
+  restartPluginPageServer,
   stopPluginPageServer,
 } from "./plugin-pages"
 import { refreshMentionClashes } from "./references"
@@ -157,17 +162,23 @@ export function pluginConfigPayload(
 }
 
 // Resolves the manifest's payload files into installable binaries by pulling
-// the reviewed release tarball from the marketplace.
+// the reviewed release tarball from the marketplace. `userId` selects whose
+// marketplace key the fetch rides (paid-plugin licenses). A manifest with
+// dashboard.pages.ui additionally gets the bundled standalone HTML appended
+// (PLUGIN_UI_FILE_NAME) — the frozen install then serves one self-contained
+// file instead of needing relative frontend structure.
 async function resolvePluginFiles(
   db: Db,
+  userId: string,
   pluginId: string,
   version: string,
   manifest: PluginManifest,
 ): Promise<PluginToolFile[]> {
   const declared = manifest.files ?? []
-  if (declared.length === 0) return []
-  const artifact = await fetchPluginArtifact(db, pluginId, version)
-  return extractPluginFiles(artifact.tarballPath, declared)
+  const ui = manifest.dashboard?.pages?.ui ?? null
+  if (declared.length === 0 && !ui) return []
+  const artifact = await fetchPluginArtifact(db, pluginId, version, userId)
+  return extractPluginFiles(artifact.tarballPath, declared, ui)
 }
 
 // Resolves the plugin's optional repo-root CONFIG.md (the agent-facing
@@ -186,7 +197,7 @@ async function resolveConfigGuide(
     return localPath ? readLocalPluginConfigGuide(userId, localPath) : null
   }
   try {
-    const artifact = await fetchPluginArtifact(db, pluginId, version)
+    const artifact = await fetchPluginArtifact(db, pluginId, version, userId)
     const [extracted] = extractPluginFiles(artifact.tarballPath, [
       { name: "CONFIG.md", source: "CONFIG.md", exec: false },
     ])
@@ -397,7 +408,13 @@ export async function applyPluginInstall(
     const payloadFiles =
       options.files !== undefined
         ? options.files
-        : await resolvePluginFiles(db, manifest.id, entry.version, manifest)
+        : await resolvePluginFiles(
+            db,
+            user.id,
+            manifest.id,
+            entry.version,
+            manifest,
+          )
     const toolFiles: PluginToolFile[] = [
       ...inlineToolFiles(manifest),
       ...payloadFiles,
@@ -543,9 +560,10 @@ export async function applyPluginInstall(
     })
   }
   db.setInstalledPluginApplied(user.id, manifest.id, applied)
-  // Fresh installs with a page server boot it right away when the desktop is
-  // up. The outcome rides on the response (port + health) so install output
-  // is diagnosable; the proxy still lazily restarts on the first request.
+  // Lazy lifecycle: installs never boot the page server — the first
+  // dashboard/webhook request does. Only an already-running server restarts
+  // here so an upgrade picks up its new code; the outcome still rides on the
+  // response (port + health) so upgrade output stays diagnosable.
   let page: PluginPageStartStatus = {
     attempted: false,
     running: false,
@@ -554,12 +572,17 @@ export async function applyPluginInstall(
   if (manifest.dashboard?.pages) {
     const row = db.installedPlugin(user.id, manifest.id)
     if (row?.enabled) {
-      page = { attempted: true, running: false, port: null }
-      try {
-        page.port = await ensurePluginPageServer(user.id, row)
-        page.running = true
-      } catch (error) {
-        page.error = error instanceof Error ? error.message : String(error)
+      const runtime = await pluginPageRuntime(user.id, manifest.id).catch(
+        () => null,
+      )
+      if (runtime?.running) {
+        page = { attempted: true, running: false, port: null }
+        try {
+          page.port = await restartPluginPageServer(user.id, row)
+          page.running = true
+        } catch (error) {
+          page.error = error instanceof Error ? error.message : String(error)
+        }
       }
     }
   }
@@ -807,11 +830,8 @@ export async function setPluginEnabled(
         )
       }
     }
-    if (manifest.dashboard?.pages) {
-      await ensurePluginPageServer(user.id, updated ?? row).catch(() => {
-        // The proxy lazily restarts on the first request.
-      })
-    }
+    // Lazy lifecycle: enabling never boots the page server — the first
+    // dashboard/webhook request does (the proxy ensures on demand).
   } else {
     await stopPluginPageServer(user.id, pluginId).catch(() => {})
     await syncPluginAuth(user.id, pluginId, null).catch((error) => {
@@ -1112,7 +1132,13 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
         const files =
           row.source === "local" && row.localPath
             ? await readLocalPluginFiles(userId, row.localPath, manifest)
-            : await resolvePluginFiles(db, row.pluginId, row.version, manifest)
+            : await resolvePluginFiles(
+                db,
+                userId,
+                row.pluginId,
+                row.version,
+                manifest,
+              )
         await syncPluginTools(userId, row.pluginId, files)
       } catch (error) {
         console.error(
@@ -1126,6 +1152,12 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
       await prunePluginTools(userId, row.pluginId, [
         ...inlineToolFiles(manifest).map((file) => file.name),
         ...(manifest.files ?? []).map((file) => file.name),
+        // The built dashboard UI is synced above for marketplace installs;
+        // local checkouts import the HTML live and sync no ui.html (keeping
+        // the name would be harmless, but pruning it is cleaner on flip).
+        ...(row.source !== "local" && manifest.dashboard?.pages?.ui
+          ? [PLUGIN_UI_FILE_NAME]
+          : []),
       ])
     } catch (error) {
       console.error(
@@ -1174,17 +1206,9 @@ export async function reapplyPluginSetup(db: Db, userId: string) {
         )
       }
     }
-    if (manifest.dashboard?.pages) {
-      // The desktop just (re)started; bring the page server back. Lazy proxy
-      // restarts cover anything missed here.
-      await ensurePluginPageServer(userId, row).catch((error) => {
-        console.error(
-          `plugin ${row.pluginId} boot page server failed: ${
-            error instanceof Error ? error.message : error
-          }`,
-        )
-      })
-    }
+    // Lazy lifecycle: boot never pre-starts page servers. Servers idle out
+    // after five quiet minutes; the first dashboard/webhook request after a
+    // desktop restart boots them again on demand.
     const agentsMd = manifest.opencode?.agentsMd
     if (agentsMd) {
       try {

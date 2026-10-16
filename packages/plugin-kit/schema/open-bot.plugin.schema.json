@@ -59,6 +59,25 @@
       "maxItems": 8,
       "items": { "type": "string" }
     },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "amount"],
+      "description": "Declares a paid plugin: one-time purchase on the marketplace (Stripe Checkout), lifetime license including future updates. Absent = free.",
+      "properties": {
+        "model": {
+          "type": "string",
+          "enum": ["one-time"],
+          "description": "One-time purchase. The single supported pricing model."
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 99,
+          "maximum": 50000,
+          "description": "Price in integer USD cents ($0.99–$500). Change by shipping a new version."
+        }
+      }
+    },
     "permissions": {
       "type": "object",
       "additionalProperties": false,
@@ -334,6 +353,12 @@
             "public": {
               "type": "boolean",
               "description": "Expose a public HTTP endpoint (/hooks/<userId>/<pluginId>/) that wakes the desktop and forwards external requests to this page server like a normal web server."
+            },
+            "ui": {
+              "type": "string",
+              "pattern": "^[^/][^\\\\]*\\.html$",
+              "maxLength": 200,
+              "description": "Frontend entry (a declared files[] source path ending in .html, e.g. server/index.html). The control plane bundles it with `bun build --compile --target=browser` into one self-contained HTML at install and serves it to the page server via OPEN_BOT_PAGE_UI; local installs import the HTML live instead."
             }
           }
         },

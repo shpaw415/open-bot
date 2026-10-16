@@ -15,7 +15,7 @@ import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { Admin } from "./Admin"
-import { AgentNotices, NoticeBell } from "./AgentNotices"
+import { AgentNotices, NoticeBell, SoundBell } from "./AgentNotices"
 import { api, type Me } from "./api"
 import { Config } from "./Config"
 import { useMobile } from "./hooks"
@@ -179,6 +179,7 @@ export function App() {
             >
               {me.email}
             </Typography>
+            <SoundBell />
             <NoticeBell />
             <ToolTip title={mode === "dark" ? "Light mode" : "Dark mode"}>
               <IconButton
