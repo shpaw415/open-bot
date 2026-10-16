@@ -221,6 +221,13 @@ Manifest quick reference:
 CONFIG.md (created alongside this file) is the configuration guide the
 installing agent reads to configure the plugin with the user — fill it in
 whenever the plugin declares configs[] or vault keys.
+
+Privacy: publishing makes this folder public (GitHub repo + marketplace).
+Never hard-code the user's personal information — real names, contacts,
+addresses, government or business numbers, cards, real schedule entries — in
+any file. Use placeholders (Acme Corp, Alex, example.com, <city>) and let
+settings, vault keys, or runtime data personalize the plugin. The marketplace
+runs an AI privacy review and rejects publishes that leak personal data.
 EOF
     cat > "$stage/CONFIG.md" <<EOF
 # Configuring $name with the user
@@ -230,6 +237,9 @@ EOF
 You are configuring the \`$name\` open-bot plugin on this desktop for the user.
 Walk them through it step by step. Never print or echo secret values; fill
 them with the write-only commands shown here.
+
+This file ships publicly with the plugin: placeholders only, never the
+current user's personal information.
 
 ## What this plugin needs
 
@@ -510,6 +520,19 @@ EOF
     if [ -n "$js_files" ]; then
       echo "warning: prefer TypeScript over JavaScript for plugin code (Bun runs .ts natively); JavaScript found in:"
       printf '%s\n' "$js_files" | sed 's/^/  - /'
+    fi
+    # Soft advisory: plugin source ships publicly (GitHub repo + marketplace),
+    # so personal information must never be hard-coded in it. The marketplace
+    # privacy review rejects publishes that leak it — fix before publishing.
+    privacy_hits=$(grep -rInE \
+      '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+|([0-9]{3}[-. ][0-9]{3}[-. ][0-9]{4})|([0-9]{3}[- ][0-9]{3}[- ][0-9]{3})' \
+      "$dir" \
+      --exclude-dir=node_modules --exclude-dir=.git 2>/dev/null \
+      | grep -viE '@(example|sample|test|acme)\.|@(example|sample|test|acme)(\.|,| |$)|example\.(com|org|net|ca)|acme\.|jane\.doe|john\.doe' \
+      | head -20 || true)
+    if [ -n "$privacy_hits" ]; then
+      echo "warning: possible personal information in plugin files — published source is public; use placeholders (example.com, Acme Corp, Alex) and personalize through settings/vault/runtime data instead (see the plugin-privacy skill):"
+      printf '%s\n' "$privacy_hits" | sed 's/^/  - /'
     fi
     if [ "$problems" -ne 0 ]; then
       exit 1

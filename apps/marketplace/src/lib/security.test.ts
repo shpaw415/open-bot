@@ -4,6 +4,8 @@ import {
   extractPayloadSources,
   GLM_REVIEW_MAX_TOKENS,
   glmReviewRequest,
+  mergeReviewVerdicts,
+  privacyReviewRequest,
   verdictFromModelResult,
 } from "./security"
 
@@ -98,6 +100,113 @@ describe("security review model call", () => {
     })
     expect(parsed.verdict).toBe("pass")
     expect(parsed.exhausted).toBe(false)
+  })
+})
+
+describe("privacy review model call", () => {
+  test("uses its own prompt and schema over the same verdict shape", () => {
+    const request = privacyReviewRequest("review this plugin")
+    const messages = request.messages as {
+      role: string
+      content: string
+    }[]
+    expect(messages[0].role).toBe("system")
+    expect(messages[0].content).toContain("privacy reviewer")
+    expect(messages[0].content).toContain("Placeholder and fictional data must PASS")
+    expect(messages[0].content).toContain("Runtime-by-design is not a leak")
+    expect(messages[1].content).toBe("review this plugin")
+    expect(request.reasoning_effort).toBe("high")
+    expect(request.max_completion_tokens).toBe(GLM_REVIEW_MAX_TOKENS)
+    const format = request.response_format as {
+      type: string
+      json_schema: { name: string; schema: { required: string[] } }
+    }
+    expect(format.type).toBe("json_schema")
+    expect(format.json_schema.name).toBe("privacy_verdict")
+    expect(format.json_schema.schema.required).toContain("verdict")
+  })
+})
+
+describe("merge of security and privacy verdicts", () => {
+  const pass = { verdict: "pass" as const, findings: [], exhausted: false }
+  const finding = (severity: "low" | "medium" | "high", title = "leak") => ({
+    title,
+    severity,
+    detail: "d",
+    path: null,
+  })
+
+  test("both pass merges to pass", () => {
+    const merged = mergeReviewVerdicts(pass, pass)
+    expect(merged.status).toBe("pass")
+    expect(merged.findings).toHaveLength(0)
+    expect(merged.error).toBeNull()
+  })
+
+  test("security concern blocks even when privacy passes", () => {
+    const security = {
+      verdict: "concern" as const,
+      findings: [finding("high", "curl|bash")],
+      exhausted: false,
+    }
+    const merged = mergeReviewVerdicts(security, pass)
+    expect(merged.status).toBe("concern")
+    expect(merged.findings).toHaveLength(1)
+  })
+
+  test("privacy concern with a medium finding blocks", () => {
+    const privacy = {
+      verdict: "concern" as const,
+      findings: [finding("medium", "real first name in persona")],
+      exhausted: false,
+    }
+    const merged = mergeReviewVerdicts(pass, privacy)
+    expect(merged.status).toBe("concern")
+    expect(merged.findings[0].title).toBe("real first name in persona")
+  })
+
+  test("privacy concern with only low findings stays informational", () => {
+    const privacy = {
+      verdict: "concern" as const,
+      findings: [finding("low", "borderline")],
+      exhausted: false,
+    }
+    const merged = mergeReviewVerdicts(pass, privacy)
+    expect(merged.status).toBe("pass")
+    expect(merged.findings).toHaveLength(1)
+  })
+
+  test("findings from both passes are merged", () => {
+    const security = {
+      verdict: "concern" as const,
+      findings: [finding("high", "exfil")],
+      exhausted: false,
+    }
+    const privacy = {
+      verdict: "concern" as const,
+      findings: [finding("medium", "address")],
+      exhausted: false,
+    }
+    const merged = mergeReviewVerdicts(security, privacy)
+    expect(merged.status).toBe("concern")
+    expect(merged.findings.map((f) => f.title)).toEqual(["exfil", "address"])
+  })
+
+  test("an invalid verdict from either pass errors the review", () => {
+    const invalid = { verdict: "invalid" as const, findings: [], exhausted: false }
+    expect(mergeReviewVerdicts(invalid, pass).status).toBe("error")
+    expect(mergeReviewVerdicts(pass, invalid).status).toBe("error")
+    expect(mergeReviewVerdicts(invalid, pass).error).toBe(
+      "review returned no usable verdict",
+    )
+    const exhausted = {
+      verdict: "invalid" as const,
+      findings: [],
+      exhausted: true,
+    }
+    expect(mergeReviewVerdicts(pass, exhausted).error).toBe(
+      "model exhausted token budget before a verdict",
+    )
   })
 })
 
