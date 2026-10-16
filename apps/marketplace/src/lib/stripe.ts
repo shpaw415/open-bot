@@ -45,7 +45,7 @@ function formEncode(params: StripeParams): string {
   return form.toString()
 }
 
-class StripeError extends Error {
+export class StripeError extends Error {
   status: number
   constructor(message: string, status: number) {
     super(message)

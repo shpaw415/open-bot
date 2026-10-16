@@ -3,7 +3,30 @@
 import { getSessionUser } from "../../../lib/auth"
 import { ensurePayoutAccount, refreshPayoutAccount } from "../../../lib/payouts"
 import { getOwnerSales } from "../../../lib/purchases"
-import { createAccountLink, stripeConfigured } from "../../../lib/stripe"
+import {
+  createAccountLink,
+  StripeError,
+  stripeConfigured,
+} from "../../../lib/stripe"
+
+// Stripe/edge quirk: the CF edge replaces 5xx JSON bodies with its branded
+// HTML error page on the custom domain, so client-class Stripe errors are
+// forwarded as 4xx (which passes through verbatim) and every failure is
+// logged for `wrangler pages deployment tail`.
+function payoutErrorResponse(scope: string, error: unknown): Response {
+  console.error(
+    `[payout] ${scope} failed:`,
+    error instanceof Error ? error.message : error,
+  )
+  const status = error instanceof StripeError ? error.status : 502
+  return Response.json(
+    {
+      error:
+        error instanceof Error ? error.message : "stripe request failed",
+    },
+    { status: status >= 400 && status < 500 ? status : 502 },
+  )
+}
 
 // Author payout surface: Connect Express account status + sales summary (GET),
 // onboarding link creation (POST). Browser session auth.
@@ -49,13 +72,7 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
   try {
     account = await ensurePayoutAccount(context.env, DB, user)
   } catch (error) {
-    return Response.json(
-      {
-        error:
-          error instanceof Error ? error.message : "could not create account",
-      },
-      { status: 502 },
-    )
+    return payoutErrorResponse("create express account", error)
   }
   try {
     const link = await createAccountLink(
@@ -66,11 +83,6 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     if (!link.url) throw new Error("stripe did not return an onboarding link")
     return Response.json({ ok: true, onboardingUrl: link.url })
   } catch (error) {
-    return Response.json(
-      {
-        error: error instanceof Error ? error.message : "could not create link",
-      },
-      { status: 502 },
-    )
+    return payoutErrorResponse("create onboarding link", error)
   }
 }
