@@ -46,6 +46,8 @@ import { Plugins } from "./Plugins"
 import { Providers } from "./Providers"
 import { Reports } from "./Reports"
 import { System1 } from "./System1"
+import { useTeamMode } from "./team"
+import { QuotaMeter } from "./team-quota"
 import { VideoProvider } from "./VideoProvider"
 import { VikingModels } from "./VikingModels"
 import { VoiceProvider } from "./VoiceProvider"
@@ -100,9 +102,11 @@ const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
 function DefaultModelSection({
   me,
   onChanged,
+  locked,
 }: {
   me: Me
   onChanged: () => void
+  locked: boolean
 }) {
   const [models, setModels] = useState<Model[]>([])
   const [loading, setLoading] = useState(true)
@@ -168,13 +172,19 @@ function DefaultModelSection({
     <ConfigSection
       icon={<ChatIcon />}
       title="Default chat model"
-      description="Preselected for new chat threads and saved as your desktop's default model."
+      description={
+        locked
+          ? "Set by your admin — the host's team mode picks this model for everyone."
+          : "Preselected for new chat threads and saved as your desktop's default model."
+      }
       status={
-        selected
-          ? { label: shortLabel, color: "primary" }
-          : models.length > 0
-            ? { label: "Not set" }
-            : null
+        locked
+          ? { label: "Locked", color: "warning" }
+          : selected
+            ? { label: shortLabel, color: "primary" }
+            : models.length > 0
+              ? { label: "Not set" }
+              : null
       }
     >
       <Stack spacing={1.5}>
@@ -194,7 +204,7 @@ function DefaultModelSection({
             label="Default model"
             models={models}
             value={selected}
-            disabled={models.length === 0}
+            disabled={models.length === 0 || locked}
             userId={me.id}
             onSelect={(value) => {
               setSelected(value)
@@ -202,22 +212,29 @@ function DefaultModelSection({
             }}
           />
         )}
-        <Stack direction="row" spacing={1}>
-          <Button
-            variant="contained"
-            disabled={saving || !selected}
-            onClick={() => void save()}
-          >
-            Save default model
-          </Button>
-          <Button
-            variant="text"
-            disabled={loading}
-            onClick={() => void loadModels()}
-          >
-            Reload list
-          </Button>
-        </Stack>
+        {locked ? (
+          <Typography variant="caption" color="textSecondary">
+            Set by your admin — the team's shared chat model applies to
+            everyone.
+          </Typography>
+        ) : (
+          <Stack direction="row" spacing={1}>
+            <Button
+              variant="contained"
+              disabled={saving || !selected}
+              onClick={() => void save()}
+            >
+              Save default model
+            </Button>
+            <Button
+              variant="text"
+              disabled={loading}
+              onClick={() => void loadModels()}
+            >
+              Reload list
+            </Button>
+          </Stack>
+        )}
         {!selected && models.length > 0 ? (
           <Typography variant="caption" color="textSecondary">
             No default picked yet — new threads start with an empty model
@@ -390,6 +407,8 @@ function ThinkingEffortSection({
 export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
   const [tab, setTab] = useState<ConfigTab>("chat")
   const mobile = useMobile()
+  const team = useTeamMode()
+  const readOnly = team.mode === "team" && me.role !== "admin"
 
   const header = (
     <Stack spacing={0.25}>
@@ -406,18 +425,27 @@ export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
   const sections = (
     <>
       {tab === "providers" ? <Providers /> : null}
-      {tab === "keys" ? <KeyVault /> : null}
+      {tab === "keys" ? (
+        <>
+          <QuotaMeter />
+          <KeyVault isAdmin={me.role === "admin"} />
+        </>
+      ) : null}
       {tab === "chat" ? (
         <>
-          <DefaultModelSection me={me} onChanged={onChanged} />
+          <DefaultModelSection
+            me={me}
+            onChanged={onChanged}
+            locked={team.lockModelPicker}
+          />
           <ThinkingEffortSection me={me} onChanged={onChanged} />
         </>
       ) : null}
       {tab === "memory" ? <VikingModels endpoint="/api/viking" /> : null}
       {tab === "nav" ? <System1 /> : null}
-      {tab === "media" ? <ImageProvider /> : null}
-      {tab === "media" ? <VideoProvider /> : null}
-      {tab === "media" ? <Model3dProvider /> : null}
+      {tab === "media" ? <ImageProvider readOnly={readOnly} /> : null}
+      {tab === "media" ? <VideoProvider readOnly={readOnly} /> : null}
+      {tab === "media" ? <Model3dProvider readOnly={readOnly} /> : null}
       {tab === "voice" ? <VoiceProvider /> : null}
       {tab === "personas" ? <Personalities /> : null}
       {tab === "skills" ? <CustomSkills /> : null}

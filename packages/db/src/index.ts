@@ -34,6 +34,7 @@ import {
   pluginSettings,
   projects,
   sessions,
+  teamKeys,
   threadDirAssignments,
   threadDirs,
   threadPersonas,
@@ -41,6 +42,7 @@ import {
   threadTitles,
   usageEvents,
   userKeys,
+  userQuotas,
   users,
   vikingProvider,
   watchdogFindings,
@@ -207,6 +209,23 @@ export type UserKey = {
   gatewayToken: string
   gatewaySlug: string
   baseUrl: string
+  updatedAt: number
+}
+
+export type TeamKey = {
+  slug: string
+  apiKey: string
+  accountId: string
+  gatewayId: string
+  gatewayToken: string
+  gatewaySlug: string
+  baseUrl: string
+  updatedAt: number
+}
+
+export type UserQuota = {
+  userId: string
+  weeklyTokens: number | null
   updatedAt: number
 }
 
@@ -584,6 +603,19 @@ export type UserKeyFields = {
 function rowFromUserKeys(row: typeof userKeys.$inferSelect): UserKey {
   return {
     userId: row.userId,
+    slug: row.slug,
+    apiKey: row.apiKey ?? "",
+    accountId: row.accountId ?? "",
+    gatewayId: row.gatewayId ?? "",
+    gatewayToken: row.gatewayToken ?? "",
+    gatewaySlug: row.gatewaySlug ?? "",
+    baseUrl: row.baseUrl ?? "",
+    updatedAt: row.updatedAt,
+  }
+}
+
+function rowFromTeamKeys(row: typeof teamKeys.$inferSelect): TeamKey {
+  return {
     slug: row.slug,
     apiKey: row.apiKey ?? "",
     accountId: row.accountId ?? "",
@@ -1294,6 +1326,55 @@ export function openDatabase(path: string) {
     },
     clearUserKeys(userId: string) {
       orm.delete(userKeys).where(eq(userKeys.userId, userId)).run()
+    },
+    getTeamKey(slug: string): TeamKey | null {
+      const row = orm
+        .select()
+        .from(teamKeys)
+        .where(eq(teamKeys.slug, slug))
+        .get()
+      return row ? rowFromTeamKeys(row) : null
+    },
+    getTeamKeys(): TeamKey[] {
+      return orm
+        .select()
+        .from(teamKeys)
+        .orderBy(asc(teamKeys.slug))
+        .all()
+        .map(rowFromTeamKeys)
+    },
+    setTeamKey(slug: string, value: UserKeyFields) {
+      const updatedAt = Date.now()
+      orm
+        .insert(teamKeys)
+        .values({ slug, ...value, updatedAt })
+        .onConflictDoUpdate({
+          target: teamKeys.slug,
+          set: { ...value, updatedAt },
+        })
+        .run()
+    },
+    getUserQuota(userId: string): UserQuota | null {
+      const row = orm
+        .select()
+        .from(userQuotas)
+        .where(eq(userQuotas.userId, userId))
+        .get()
+      return row ?? null
+    },
+    getUserQuotas(): UserQuota[] {
+      return orm.select().from(userQuotas).orderBy(asc(userQuotas.userId)).all()
+    },
+    setUserQuota(userId: string, weeklyTokens: number | null) {
+      const updatedAt = Date.now()
+      orm
+        .insert(userQuotas)
+        .values({ userId, weeklyTokens, updatedAt })
+        .onConflictDoUpdate({
+          target: userQuotas.userId,
+          set: { weeklyTokens, updatedAt },
+        })
+        .run()
     },
     touchDesktop(userId: string) {
       orm
@@ -2535,6 +2616,19 @@ export function openDatabase(path: string) {
         totalTokens: Number(row.totalTokens),
         calls: Number(row.calls),
       })) satisfies UsageGroup[]
+    },
+    usageSumSince(userId: string, sinceTs: number): number {
+      const row = orm
+        .select({ total: sum(usageEvents.totalTokens) })
+        .from(usageEvents)
+        .where(
+          and(
+            eq(usageEvents.userId, userId),
+            gte(usageEvents.createdAt, sinceTs),
+          ),
+        )
+        .get()
+      return Number(row?.total ?? 0)
     },
     listInvites() {
       return orm

@@ -331,7 +331,14 @@ type MarketDetail = {
   plugin: MarketPlugin
   manifest: PluginManifest
   readme: string | null
-  versions: { version: string; createdAt: number; notes: string | null }[]
+  // Review verdict for the chosen version row (the manifest actually served).
+  security?: { status: string | null; analyzedAt?: number | null }
+  versions: {
+    version: string
+    createdAt: number
+    notes: string | null
+    securityStatus?: string | null
+  }[]
 }
 
 function publicPluginSettings(
@@ -1029,7 +1036,14 @@ export function handlePlugins(
           )
         }
         const detail = await fetchDetail(db, pluginId, version || undefined)
-        if (version && detail.plugin.version !== version) {
+        // Compare against the marketplace's returned version list, not
+        // plugin.version: that is the listing's latest_version, which dev
+        // publishes never move — a pinned `--version beta-N` install would
+        // 404 forever even though the marketplace resolved the exact row.
+        if (
+          version &&
+          !detail.versions.some((item) => item.version === version)
+        ) {
           return json({ error: `version ${version} does not exist` }, 404)
         }
         const currentPolicy = policy(db)
@@ -1041,7 +1055,7 @@ export function handlePlugins(
               permissions: pluginPermissionSummary(detail.manifest),
               setupCommands: detail.manifest.setup?.commands ?? [],
               name: detail.plugin.name,
-              version: detail.plugin.version,
+              version: detail.manifest.version,
             },
             409,
           )
@@ -1049,6 +1063,24 @@ export function handlePlugins(
         if (detail.plugin.status !== "approved" && currentPolicy !== "auto") {
           return json(
             { error: "this plugin has not been approved on the marketplace" },
+            403,
+          )
+        }
+        // Gate on the chosen version row's own review status, not just the
+        // listing: a pinned queued/erroring/rejected version must never
+        // install — including under install policy "auto". The marketplace
+        // detail reports the chosen row's verdict.
+        const chosenSecurity =
+          detail.security?.status ??
+          detail.versions.find(
+            (item) => item.version === detail.manifest.version,
+          )?.securityStatus ??
+          null
+        if (chosenSecurity !== "pass") {
+          return json(
+            {
+              error: `version ${detail.manifest.version} has not passed the marketplace security review (status: ${chosenSecurity ?? "unreviewed"})`,
+            },
             403,
           )
         }
@@ -1079,7 +1111,10 @@ export function handlePlugins(
           user,
           {
             id: detail.plugin.id,
-            version: detail.plugin.version,
+            // A pinned `--version` install must record and fetch that exact
+            // version — detail.plugin.version is the listing pointer, which
+            // dev publishes never move.
+            version: version || detail.plugin.version,
             status: detail.plugin.status,
             manifest: detail.manifest,
             readme: detail.readme,
@@ -1216,7 +1251,7 @@ export function handlePlugins(
     }
     if (!row.enabled) return json({ error: "plugin is disabled" }, 400)
     return restartPluginPageServer(user.id, row, hub)
-      .then((port) => json({ ok: true, port }))
+      .then((port) => json({ ok: true, port, source: row.source }))
       .catch((error: unknown) =>
         json(
           {
@@ -1241,10 +1276,21 @@ export function handlePlugins(
           body.settings && typeof body.settings === "object"
             ? (body.settings as Record<string, unknown>)
             : {}
+        // `clear` removes saved values outright (`ob-plugin settings ID KEY=`).
+        // The empty-string-in-settings keep rule stays: the dashboard dialog
+        // resends every key on each save, so "" there must mean "unchanged".
+        const clears = Array.isArray(body.clear)
+          ? body.clear.filter((key): key is string => typeof key === "string")
+          : []
         const manifest = row.manifest as PluginManifest
         const configs = new Map(
           (manifest.configs ?? []).map((config) => [config.key, config]),
         )
+        for (const key of clears) {
+          if (!configs.has(key)) {
+            return json({ error: `unknown config key: ${key}` }, 400)
+          }
+        }
         for (const [key, value] of Object.entries(values)) {
           const config = configs.get(key)
           if (!config) {
@@ -1256,6 +1302,9 @@ export function handlePlugins(
           }
           if (configIsSecret(config) && result.value === "") continue
           db.setPluginSetting(user.id, pluginId, key, result.value)
+        }
+        for (const key of clears) {
+          db.deletePluginSetting(user.id, pluginId, key)
         }
         let deferred = false
         try {
@@ -1488,10 +1537,20 @@ export function handlePlugins(
       .json()
       .then(async (body: Record<string, unknown>) => {
         const manifest = parsePublishBody(body)
-        const response = await marketplace(db, "/api/publish", {
-          method: "POST",
-          json: { manifest },
-        })
+        // Ride the publishing user's marketplace account key when one is
+        // stored: the marketplace stamps listing ownership on first publish,
+        // so instance-token publishes used to create ownerless plugins no
+        // account could ever claim (blocking paid listings + account
+        // republishes). Falls back to the instance token as before.
+        const response = await marketplace(
+          db,
+          "/api/publish",
+          {
+            method: "POST",
+            json: { manifest },
+          },
+          userMarketKey(db, user.id),
+        )
         const payload = (await response.json().catch(() => ({}))) as Record<
           string,
           unknown

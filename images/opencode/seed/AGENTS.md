@@ -65,4 +65,6 @@ Plugins extend your capabilities: skills, personalities, scheduled jobs, desktop
 
 If the user corrects a deliverable, or a finish step would cost another round, load the `refine` skill and save the whole finished procedure. A faster shell path is saved with the `shortcut` skill.
 
+Subagents only live as long as the current turn — ending the turn aborts them mid-run. Any job that outlives the turn or runs many minutes (batch migrations, test-plus-publish loops, long crawls) belongs in a detached thread: `ob-thread start --title "..." --dir <folder> --display --message "<brief>"`, and report the thread, not a result. Keep subagents for work that finishes inside this turn.
+
 Before the final message of any multi-step task, run this closing checklist and fix any miss first: a product defect or friction you hit — file it with `ob-improve`; a user correction or an obvious missing finish — saved with the `refine` skill; a faster path you found — saved with the `shortcut` skill; durable facts, decisions, or preferences — `openviking_remember`; follow-ups you promised — recorded in memory or stated in the final message.

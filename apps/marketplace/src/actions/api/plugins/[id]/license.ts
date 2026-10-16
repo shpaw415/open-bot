@@ -33,10 +33,16 @@ export async function onRequestGet(context: EventContext<Env, "id", never>) {
     return Response.json({ error: "plugin not found" }, { status: 404 })
   const priceCents = plugin.price_cents ?? 0
   const paid = priceCents > 0
-  const licensed = paid && userId ? await hasLicense(DB, userId, id) : false
+  // The author self-grant: the owner_user_id check publish enforces doubles
+  // as a free lifetime license for post-publish verification installs —
+  // buying your own plugin is not a step anyone should have to take.
+  const author = paid && userId !== null && plugin.owner_user_id === userId
+  const licensed =
+    paid && userId ? author || (await hasLicense(DB, userId, id)) : false
   return Response.json({
     paid,
     licensed,
+    author,
     priceCents: paid ? priceCents : null,
     status: plugin.status,
   })

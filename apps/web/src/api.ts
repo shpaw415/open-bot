@@ -58,6 +58,191 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body
 }
 
+export function isTeamLockedError(caught: unknown): boolean {
+  return caught instanceof ApiHttpError && caught.body.error === "team_locked"
+}
+
+export type TeamMode = "personal" | "team"
+
+export type TeamInfo = {
+  mode: TeamMode
+  lockModelPicker: boolean
+  lockWatchdog: boolean
+}
+
+export type QuotaState = {
+  limitTokens: number | null
+  used: number
+  over: boolean
+  behavior: "block" | "warn"
+}
+
+export type TeamProviderOverlay = {
+  chat?: { provider?: string | null; model?: string | null }
+  image?: {
+    provider?: string | null
+    accountId?: string | null
+    apiKey?: string | null
+    model?: string | null
+  }
+  video?: {
+    provider?: string | null
+    accountId?: string | null
+    apiKey?: string | null
+    model?: string | null
+  }
+  model3d?: {
+    provider?: string | null
+    accountId?: string | null
+    apiKey?: string | null
+    model?: string | null
+  }
+  system1?: {
+    provider?: string | null
+    endpoint?: string | null
+    apiKey?: string | null
+    gatewayToken?: string | null
+    model?: string | null
+    accountId?: string | null
+    gatewayId?: string | null
+    slug?: string | null
+  }
+  voice?: {
+    sttProvider?: string | null
+    sttAccountId?: string | null
+    sttApiKey?: string | null
+    sttModel?: string | null
+    ttsProvider?: string | null
+    ttsAccountId?: string | null
+    ttsApiKey?: string | null
+    ttsModel?: string | null
+  }
+  watchdog?: {
+    provider?: string | null
+    accountId?: string | null
+    apiKey?: string | null
+    model?: string | null
+    baseUrl?: string | null
+  }
+}
+
+export type TeamAdminConfig = {
+  mode: TeamMode
+  lockModelPicker: boolean
+  lockWatchdog: boolean
+  quotaDefaultTokens: number | null
+  quotaBehavior: "block" | "warn"
+  providers: TeamProviderOverlay
+}
+
+export type TeamConfigPatch = {
+  mode?: TeamMode
+  lockModelPicker?: boolean
+  lockWatchdog?: boolean
+  quotaDefaultTokens?: number | null
+  quotaBehavior?: "block" | "warn"
+  providers?: TeamProviderOverlay
+}
+
+export type TeamCatalogField = {
+  id: string
+  label: string
+  placeholder: string
+  required: boolean
+}
+
+export type TeamCatalogEntry = {
+  id: string
+  label: string
+  description: string
+  chatProvider: boolean
+  fields: TeamCatalogField[]
+  usedBy: string[]
+}
+
+export type TeamKeyState = { slug: string; hasKey: boolean }
+
+export type TeamSecretMarkers = Record<
+  string,
+  { hasKey: boolean; hasGatewayToken?: boolean }
+>
+
+export type TeamQuotaUser = {
+  userId: string
+  email: string
+  weeklyTokens: number | null
+  used: number
+  limitTokens: number | null
+}
+
+export type TeamAdminBody = {
+  config: TeamAdminConfig
+  secrets: TeamSecretMarkers
+  catalog: TeamCatalogEntry[]
+  keys: TeamKeyState[]
+}
+
+export type TeamQuotasBody = {
+  default: number | null
+  behavior: "block" | "warn"
+  users: TeamQuotaUser[]
+}
+
+export function fetchQuota(): Promise<QuotaState> {
+  return api<QuotaState>("/api/quota")
+}
+
+export function fetchTeamAdmin(): Promise<TeamAdminBody> {
+  return api<TeamAdminBody>("/api/admin/team")
+}
+
+export function saveTeamAdminConfig(
+  patch: TeamConfigPatch,
+): Promise<{ config: TeamAdminConfig; secrets: TeamSecretMarkers }> {
+  return api<{ config: TeamAdminConfig; secrets: TeamSecretMarkers }>(
+    "/api/admin/team",
+    {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    },
+  )
+}
+
+export function saveTeamAdminKey(
+  payload: Record<string, string>,
+): Promise<{ keys: TeamKeyState[] }> {
+  return api<{ keys: TeamKeyState[] }>("/api/admin/team/keys", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function importTeamAdmin(): Promise<{
+  config: TeamAdminConfig
+  secrets: TeamSecretMarkers
+  keys: TeamKeyState[]
+}> {
+  return api<{
+    config: TeamAdminConfig
+    secrets: TeamSecretMarkers
+    keys: TeamKeyState[]
+  }>("/api/admin/team/import", { method: "POST" })
+}
+
+export function fetchTeamQuotas(): Promise<TeamQuotasBody> {
+  return api<TeamQuotasBody>("/api/admin/team/quotas")
+}
+
+export function saveTeamUserQuota(
+  userId: string,
+  weeklyTokens: number | null,
+): Promise<unknown> {
+  return api("/api/admin/team/quota", {
+    method: "PUT",
+    body: JSON.stringify({ userId, weeklyTokens }),
+  })
+}
+
 export type DesktopStatus = {
   phase: "starting" | "running" | "sleeping"
   error?: string

@@ -468,3 +468,20 @@ export const mediaItems = sqliteTable(
     index("media_items_created").on(table.createdAt),
   ],
 )
+
+export const teamKeys = sqliteTable("team_keys", {
+  slug: text("slug").primaryKey(),
+  apiKey: text("api_key"),
+  accountId: text("account_id"),
+  gatewayId: text("gateway_id"),
+  gatewayToken: text("gateway_token"),
+  gatewaySlug: text("gateway_slug"),
+  baseUrl: text("base_url"),
+  updatedAt: integer("updated_at").notNull(),
+})
+
+export const userQuotas = sqliteTable("user_quotas", {
+  userId: text("user_id").primaryKey(),
+  weeklyTokens: integer("weekly_tokens"),
+  updatedAt: integer("updated_at").notNull(),
+})

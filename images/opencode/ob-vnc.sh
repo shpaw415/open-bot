@@ -44,6 +44,77 @@ port=${host##*::}
 display=$((port - 5900))
 cdp=$((9222 + display))
 state=/home/agent/.open-bot/capture-$cdp.json
+
+# The VNC server lives on the computer container (vnc-up.sh) and can die while
+# the local X display — and capture, which prefers X11/CDP — stays up. Refused
+# input falls back to xdotool on the local display so the ladder keeps a
+# working input channel; xdotool speaks the same screen coordinate space.
+xkey() {
+  case "$1" in
+    enter) printf 'Return' ;;
+    esc) printf 'Escape' ;;
+    bsp) printf 'BackSpace' ;;
+    pgup) printf 'Page_Up' ;;
+    pgdn) printf 'Page_Down' ;;
+    ins) printf 'Insert' ;;
+    del) printf 'Delete' ;;
+    tab) printf 'Tab' ;;
+    home) printf 'Home' ;;
+    end) printf 'End' ;;
+    up) printf 'Up' ;;
+    down) printf 'Down' ;;
+    left) printf 'Left' ;;
+    right) printf 'Right' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+xdotool_input() {
+  cmd=$1
+  shift
+  case "$cmd" in
+    move)
+      DISPLAY=:$display xdotool mousemove "$1" "$2"
+      shift 2
+      ;;
+    click)
+      DISPLAY=:$display xdotool click "$1"
+      shift
+      ;;
+    key | keyup)
+      DISPLAY=:$display xdotool "$cmd" "$(xkey "$1")"
+      shift
+      ;;
+    type)
+      DISPLAY=:$display xdotool type --delay 8 -- "$1"
+      shift
+      ;;
+    *)
+      echo "ob-vnc: no local input fallback for '$cmd'" >&2
+      return 1
+      ;;
+  esac
+  [ "$#" -gt 0 ] && xdotool_input "$@"
+  return 0
+}
+
+vnc_input() {
+  status=0
+  err=$(vncdo -s "$host" "$@" 2>&1) || status=$?
+  [ "$status" -eq 0 ] && return 0
+  case "$err" in
+    *refused* | *Refused* | *ECONNREFUSED* | *timed\ out*)
+      echo "ob-vnc: vnc input unavailable on $host — using the local X display" >&2
+      xdotool_input "$@"
+      return $?
+      ;;
+    *)
+      printf '%s\n' "$err" >&2
+      return "$status"
+      ;;
+  esac
+}
+
 if [ "${1:-}" = "map" ] || [ "${1:-}" = "hit-image" ]; then
   cmd=$1
   shift
@@ -84,7 +155,7 @@ if [ "${1:-}" = "recover" ]; then
     echo "usage: ob-vnc --session SESSION recover" >&2
     exit 1
   fi
-  vncdo -s "$host" keyup ctrl keyup rctrl keyup shift keyup rshift \
+  vnc_input keyup ctrl keyup rctrl keyup shift keyup rshift \
     keyup alt keyup ralt keyup meta keyup rmeta keyup super keyup rsuper
   echo "released stuck modifiers. Retry the action once; if the page still does not change, stop input and hand the screen to the user."
   exit 0
@@ -100,12 +171,13 @@ if [ "${1:-}" = "paste" ]; then
     pkill -x xclip >/dev/null 2>&1 || true
     printf '%s' "$text" | DISPLAY=:$display xclip -selection clipboard >/dev/null 2>&1 &
     sleep 0.2
-    vncdo -s "$host" key ctrl-v
+    vnc_input key ctrl-v
     sleep 0.15
     pkill -x xclip >/dev/null 2>&1 || true
     exit 0
   fi
-  exec vncdo -s "$host" type "$text"
+  vnc_input type "$text"
+  exit 0
 fi
 if [ "${1:-}" = "capture" ]; then
   shift
@@ -155,4 +227,5 @@ if printf '%s\n' "$@" | grep -qx -e key -e keyup; then
   done <"$args"
   rm -f "$args"
 fi
-exec vncdo -s "$host" "$@"
+
+vnc_input "$@"

@@ -157,6 +157,7 @@ import {
   type SkillSummary,
   type Suggestion,
 } from "./references"
+import { expandFolder, parseCollapsedFolders } from "./thread-folders"
 
 // the IDE keeps its own state; memo keeps workspace renders (streaming ticks,
 // status polls) from re-rendering its whole tree
@@ -889,6 +890,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
   selectedIds,
   dirs,
   threadDirMap,
+  notifyFocus,
   actions,
 }: {
   sessions: SessionInfo[]
@@ -904,6 +906,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
   selectedIds: ReadonlySet<string>
   dirs: ThreadDirInfo[]
   threadDirMap: Record<string, string>
+  notifyFocus: { sessionId: string; seq: number }
   actions: {
     select: (id: string) => void
     menu: (item: SessionInfo, anchor: HTMLElement) => void
@@ -919,20 +922,9 @@ const ThreadsPanel = memo(function ThreadsPanel({
   }
 }) {
   const allSelected = sessions.length > 0 && selectedIds.size >= sessions.length
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => {
-    try {
-      const raw = JSON.parse(
-        localStorage.getItem(FOLDERS_COLLAPSED_KEY) ?? "[]",
-      ) as unknown
-      return new Set(
-        Array.isArray(raw)
-          ? raw.filter((item) => typeof item === "string")
-          : [],
-      )
-    } catch {
-      return new Set()
-    }
-  })
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() =>
+    parseCollapsedFolders(localStorage.getItem(FOLDERS_COLLAPSED_KEY)),
+  )
   const [dragOver, setDragOver] = useState<string | null>(null)
   const groups = useMemo(() => {
     const sections: {
@@ -976,17 +968,21 @@ const ThreadsPanel = memo(function ThreadsPanel({
       return next
     })
   }
+  // Only notification navigation reopens a collapsed folder (the notified
+  // thread may sit inside one); collapsing the active thread's folder by hand
+  // sticks across refreshes and thread switches. `seq` re-triggers per notice.
+  const appliedFocusRef = useRef(0)
   useEffect(() => {
-    if (!sessionId) return
+    if (!notifyFocus.seq || notifyFocus.seq === appliedFocusRef.current) return
+    appliedFocusRef.current = notifyFocus.seq
     setCollapsed((current) => {
-      const dirId = threadDirMap[sessionId] ?? ""
-      if (!current.has(dirId)) return current
-      const next = new Set(current)
-      next.delete(dirId)
+      const dirId = threadDirMap[notifyFocus.sessionId] ?? ""
+      const next = expandFolder(current, dirId)
+      if (next === current) return current
       localStorage.setItem(FOLDERS_COLLAPSED_KEY, JSON.stringify([...next]))
       return next
     })
-  }, [sessionId, threadDirMap])
+  }, [notifyFocus, threadDirMap])
   const dropToGroup = (key: string) => (event: React.DragEvent) => {
     event.preventDefault()
     const id =
@@ -2336,6 +2332,12 @@ export function Workspace({ me }: { me: Me }) {
   const [menuThread, setMenuThread] = useState<SessionInfo | null>(null)
   const [dirs, setDirs] = useState<ThreadDirInfo[]>([])
   const [threadDirMap, setThreadDirMap] = useState<Record<string, string>>({})
+  // set when a notice (bell or native) opens a thread; `seq` distinguishes
+  // repeat notices for the same thread so the panel re-expands its folder
+  const [notifyFocus, setNotifyFocus] = useState<{
+    sessionId: string
+    seq: number
+  }>({ sessionId: "", seq: 0 })
   const [folderDialog, setFolderDialog] = useState<{
     mode: "create" | "rename"
     dir?: ThreadDirInfo
@@ -3248,6 +3250,7 @@ export function Workspace({ me }: { me: Me }) {
       setSessionId(id)
       setMessages([])
       setMessagesLoading(true)
+      setNotifyFocus((current) => ({ sessionId: id, seq: current.seq + 1 }))
       setTab("chat")
       if (mobile) setThreadsOpen(false)
     }
@@ -3484,6 +3487,23 @@ export function Workspace({ me }: { me: Me }) {
     if (!el) return
     el.scrollTop = el.scrollHeight
   }, [shown, tab])
+
+  // Keep the jump honest: images, media, the screen/preview iframes, and
+  // content-visibility layout estimates all change the transcript height
+  // after the scroll above ran. While the reader stays at the bottom, re-pin.
+  const logObserverRef = useRef<ResizeObserver | null>(null)
+  const attachLogInner = useCallback((node: HTMLDivElement | null) => {
+    logObserverRef.current?.disconnect()
+    logObserverRef.current = null
+    const el = outputRef.current
+    if (!node || !el || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(() => {
+      if (!stickRef.current) return
+      el.scrollTop = el.scrollHeight
+    })
+    observer.observe(node)
+    logObserverRef.current = observer
+  }, [])
 
   function rememberJoined(next: JoinedFile[]) {
     joinedRef.current = next
@@ -4126,6 +4146,7 @@ export function Workspace({ me }: { me: Me }) {
                 selectedIds={selectedThreads}
                 dirs={dirs}
                 threadDirMap={threadDirMap}
+                notifyFocus={notifyFocus}
                 actions={threadActions}
               />
             ) : null}
@@ -4313,40 +4334,42 @@ export function Workspace({ me }: { me: Me }) {
                       </Typography>
                     </Stack>
                   ) : (
-                    shown.map((entry, index) => (
-                      <MessageBubble
-                        key={bubbleKeys[index]}
-                        entry={entry}
-                        index={index}
-                        bubbleKey={bubbleKeys[index] ?? ""}
-                        speechKey={speakingKey}
-                        speechLoading={speechLoadingKey}
-                        lastHandoff={lastHandoff}
-                        held={held}
-                        dismissedHandoff={dismissedHandoff}
-                        screenLive={screenLive}
-                        screenPath={screen?.path ?? ""}
-                        screenError={screenError}
-                        running={running}
-                        sending={sending}
-                        stopping={stopping}
-                        controlBusy={controlBusy}
-                        renderers={pluginRenderers}
-                        onTakeControl={bubbleActions.takeControl}
-                        onScreenDone={bubbleActions.screenDone}
-                        onScreenClose={bubbleActions.screenClose}
-                        onOpenPreview={bubbleActions.openPreview}
-                        previewLive={showLivePreview({
-                          preview: Boolean(entry.message.preview),
-                          isLast: index === lastPreview,
-                        })}
-                        previewOpened={previewMode !== "closed"}
-                        previewSrc={previewSrc}
-                        previewError={previewError}
-                        onSpeak={speakText}
-                        onStopSpeak={stopSpeaking}
-                      />
-                    ))
+                    <div className="ob-chat-log-inner" ref={attachLogInner}>
+                      {shown.map((entry, index) => (
+                        <MessageBubble
+                          key={bubbleKeys[index]}
+                          entry={entry}
+                          index={index}
+                          bubbleKey={bubbleKeys[index] ?? ""}
+                          speechKey={speakingKey}
+                          speechLoading={speechLoadingKey}
+                          lastHandoff={lastHandoff}
+                          held={held}
+                          dismissedHandoff={dismissedHandoff}
+                          screenLive={screenLive}
+                          screenPath={screen?.path ?? ""}
+                          screenError={screenError}
+                          running={running}
+                          sending={sending}
+                          stopping={stopping}
+                          controlBusy={controlBusy}
+                          renderers={pluginRenderers}
+                          onTakeControl={bubbleActions.takeControl}
+                          onScreenDone={bubbleActions.screenDone}
+                          onScreenClose={bubbleActions.screenClose}
+                          onOpenPreview={bubbleActions.openPreview}
+                          previewLive={showLivePreview({
+                            preview: Boolean(entry.message.preview),
+                            isLast: index === lastPreview,
+                          })}
+                          previewOpened={previewMode !== "closed"}
+                          previewSrc={previewSrc}
+                          previewError={previewError}
+                          onSpeak={speakText}
+                          onStopSpeak={stopSpeaking}
+                        />
+                      ))}
+                    </div>
                   )}
                 </Box>
                 {visibleTurnIssue && (tab === "chat" || chatDocked) ? (

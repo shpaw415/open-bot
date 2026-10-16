@@ -78,6 +78,22 @@ it by hand.
 - Deploy command: `bunx wrangler deploy`
 - The `name` in `apps/workers/review-worker/wrangler.jsonc` must stay `open-bot-marketplace-review`
 
+## Deploy order (the 0005 lesson)
+
+Schema changes deploy in three units that move independently: D1 migrations
+are a **manual** step, while Pages and the review worker deploy on git push.
+A schema-dependent deploy that lands before the migrate reproduces the
+2026-10-15 outage where every publish 502'd. Always:
+
+```sh
+bun run deploy:marketplace   # remote migrate -> build, prints push reminders
+git push                     # Pages + review worker deploy via Workers Builds
+```
+
+Publish and review routes run a cached schema self-check and answer
+`503 {code:"migration_missing"}` instead of a raw D1 500 if the order is ever
+violated — check that error before wrangler-dashboard spelunking.
+
 ## Setup
 
 ```sh

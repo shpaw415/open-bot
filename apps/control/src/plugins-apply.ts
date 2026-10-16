@@ -244,8 +244,16 @@ export async function applyPluginInstall(
     throw new Error("local install is missing a path")
   }
   // A running page server would keep serving the previous release's code
-  // after an upgrade — stop it; the proxy lazily restarts the new binary.
-  await stopPluginPageServer(user.id, manifest.id).catch(() => {})
+  // after an upgrade — stop it, then restart below. The was-running sample
+  // must come first: the stop deletes the pid/port files the runtime probe
+  // reads, so checking after the fact always sees "not running" and the
+  // upgrade silently left the tab dead until a manual restart.
+  const wasPageRunning = manifest.dashboard?.pages
+    ? await pluginPageRuntime(user.id, manifest.id).catch(() => null)
+    : null
+  await stopPluginPageServer(user.id, manifest.id, undefined, true).catch(
+    () => {},
+  )
   const applied: PluginAppliedLog = {
     personaIds: [],
     cronJobIds: [],
@@ -256,6 +264,20 @@ export async function applyPluginInstall(
   }
 
   try {
+    // Verify the release artifact BEFORE any state mutation: a failed or
+    // tampered payload fetch must leave no personas/cron/skills behind (an
+    // upgrade used to keep the rejected content while the row stayed stale).
+    const payloadFiles =
+      options.files !== undefined
+        ? options.files
+        : await resolvePluginFiles(
+            db,
+            user.id,
+            manifest.id,
+            entry.version,
+            manifest,
+          )
+
     // Saved settings survive an upgrade/reinstall: request-provided values
     // win, then everything the user configured keeps its value.
     const savedSettings: Record<string, string> = {}
@@ -380,6 +402,18 @@ export async function applyPluginInstall(
           s.description,
         ]),
       )
+      // A same-named skill nobody else declares is ours to replace: an
+      // install aborted before the row landed, a workaround that installed
+      // the skill by hand, or a description rewrite between versions would
+      // all hard-fail forever otherwise (remove cannot reclaim a skill the
+      // install record never owned).
+      const otherDeclared = new Set<string>()
+      for (const other of db.installedPlugins(user.id)) {
+        if (other.pluginId === manifest.id) continue
+        const otherManifest = other.manifest as PluginManifest
+        for (const otherSkill of otherManifest.skills ?? [])
+          otherDeclared.add(otherSkill.name)
+      }
       for (const skill of manifest.skills ?? []) {
         const existingDescription = existing.get(skill.name)
         // Adopt a skill this plugin left behind (an install aborted before
@@ -387,10 +421,19 @@ export async function applyPluginInstall(
         // declares the exact description, so a match means the orphan is
         // ours to replace.
         const ours =
-          owned.has(skill.name) || existingDescription === skill.description
+          owned.has(skill.name) ||
+          existingDescription === skill.description ||
+          !otherDeclared.has(skill.name)
         if (existingDescription !== undefined && !ours) {
+          const owner = db
+            .installedPlugins(user.id)
+            .find((other) =>
+              ((other.manifest as PluginManifest).skills ?? []).some(
+                (otherSkill) => otherSkill.name === skill.name,
+              ),
+            )
           throw new Error(
-            `a skill named ${skill.name} already exists and was not created by this install — clear it with DELETE /api/v1/skills/${skill.name} on the desktop OpenViking (or uninstall the plugin that owns it), then retry`,
+            `a skill named ${skill.name} is already owned by the installed plugin ${owner?.pluginId ?? "another plugin"} — uninstall that plugin first, or rename the skill in this manifest, then retry`,
           )
         }
         await withVikingRetries(() =>
@@ -405,16 +448,6 @@ export async function applyPluginInstall(
       }
     }
 
-    const payloadFiles =
-      options.files !== undefined
-        ? options.files
-        : await resolvePluginFiles(
-            db,
-            user.id,
-            manifest.id,
-            entry.version,
-            manifest,
-          )
     const toolFiles: PluginToolFile[] = [
       ...inlineToolFiles(manifest),
       ...payloadFiles,
@@ -561,28 +594,24 @@ export async function applyPluginInstall(
   }
   db.setInstalledPluginApplied(user.id, manifest.id, applied)
   // Lazy lifecycle: installs never boot the page server — the first
-  // dashboard/webhook request does. Only an already-running server restarts
-  // here so an upgrade picks up its new code; the outcome still rides on the
-  // response (port + health) so upgrade output stays diagnosable.
+  // dashboard/webhook request does. Only a server that was already running
+  // (sampled before the stop above) restarts here so an upgrade picks up its
+  // new code; the outcome still rides on the response (port + health) so
+  // upgrade output stays diagnosable.
   let page: PluginPageStartStatus = {
     attempted: false,
     running: false,
     port: null,
   }
-  if (manifest.dashboard?.pages) {
+  if (manifest.dashboard?.pages && wasPageRunning?.running) {
     const row = db.installedPlugin(user.id, manifest.id)
     if (row?.enabled) {
-      const runtime = await pluginPageRuntime(user.id, manifest.id).catch(
-        () => null,
-      )
-      if (runtime?.running) {
-        page = { attempted: true, running: false, port: null }
-        try {
-          page.port = await restartPluginPageServer(user.id, row)
-          page.running = true
-        } catch (error) {
-          page.error = error instanceof Error ? error.message : String(error)
-        }
+      page = { attempted: true, running: false, port: null }
+      try {
+        page.port = await restartPluginPageServer(user.id, row)
+        page.running = true
+      } catch (error) {
+        page.error = error instanceof Error ? error.message : String(error)
       }
     }
   }

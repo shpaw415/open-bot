@@ -25,9 +25,22 @@ export type PageState = {
 export function normalizeTarget(raw: string): string | null {
   const value = raw.trim()
   if (!value) return null
-  if (/^https?:\/\//i.test(value)) return value
+  // file:// is allowed — Chromium renders local HTML and ob-page can read
+  // and interact with it like any page.
+  if (/^(https?|file):\/\//i.test(value)) return value
   if (/^[\w-]+(\.[\w-]+)+/.test(value)) return `https://${value}`
   return null
+}
+
+// Navigating a URL the normalizer rejects should explain why, not print the
+// bare usage line (the raw usage hides the failure when stderr is dropped).
+export function schemeError(raw: string): string | null {
+  const value = raw.trim()
+  const match = value.match(/^([a-z][a-z0-9+.-]*):/i)
+  if (!match) return null
+  const scheme = match[1].toLowerCase()
+  if (scheme === "http" || scheme === "https" || scheme === "file") return null
+  return `unsupported URL scheme '${scheme}:' — use http(s):// or file:// (serve local files over HTTP for full page interactions)`
 }
 
 // url, title, heading and the page body text ride back together so "navigate
@@ -149,7 +162,7 @@ async function newTab(
   raw: string,
 ): Promise<PageState> {
   const url = raw.trim() ? normalizeTarget(raw) : "about:blank"
-  if (!url) throw new Error(USAGE)
+  if (!url) throw new Error(schemeError(raw) ?? USAGE)
   const made = await jsonNew(port, url)
   let id = ""
   let wsUrl = ""
@@ -267,7 +280,7 @@ async function navigate(
   raw: string,
 ): Promise<PageState> {
   const url = normalizeTarget(raw)
-  if (!url) throw new Error(USAGE)
+  if (!url) throw new Error(schemeError(raw) ?? USAGE)
   try {
     const { target, socket } = await resolvePage(port, session)
     try {

@@ -2,6 +2,7 @@
 
 import {
   type PluginManifest,
+  REVIEW_MANIFEST_CHARS,
   validatePluginManifest,
 } from "@open-bot/plugin-kit"
 import { marketplaceWriteAuth, touchApiKey } from "../../lib/auth"
@@ -13,6 +14,7 @@ import {
   enqueueSecurityReview,
   queuedPublishBody,
   reviewViewFromRow,
+  schemaSelfCheck,
 } from "../../lib/review-store"
 import { fetchReadme, reviewPublish } from "../../lib/security"
 
@@ -34,6 +36,16 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     MARKETPLACE_TOKEN,
   )
   if (!writer) return Response.json({ error: "unauthorized" }, { status: 401 })
+  // Migration guard (the 0005 lesson): a Pages deploy that lands before the
+  // remote D1 migrate must fail with a diagnosable error instead of a raw
+  // D1 500 on every publish.
+  const schema = await schemaSelfCheck(DB)
+  if (!schema.ok) {
+    return Response.json(
+      { error: schema.error, code: "migration_missing" },
+      { status: 503 },
+    )
+  }
   if (writer.keyId) void touchApiKey(DB, writer.keyId).catch(() => undefined)
   let body: { manifest?: unknown; notes?: unknown }
   try {
@@ -49,6 +61,18 @@ export async function onRequestPost(context: EventContext<Env, never, never>) {
     )
   }
   const manifest: PluginManifest = result.manifest
+  // The reviewer reads at most REVIEW_MANIFEST_CHARS of manifest JSON
+  // (security-relevant fields first) — a manifest past that window would
+  // ship content no reviewer ever saw. (Payload bytes are enforced per-file
+  // and in total at review time, against the real tarball.)
+  if (JSON.stringify(manifest).length > REVIEW_MANIFEST_CHARS) {
+    return Response.json(
+      {
+        error: `manifest is ${JSON.stringify(manifest).length} chars; the security review window is ${REVIEW_MANIFEST_CHARS} — trim skills, personas, tools, or cron content`,
+      },
+      { status: 400 },
+    )
+  }
   const existing = await getPluginRow(DB, manifest.id)
   if (
     !publishOwnerAllowed(

@@ -71,6 +71,25 @@ export function webhookSecret(req: Request, url: URL) {
   return query || null
 }
 
+// Query-string secrets leak into access logs, proxy logs, browser history,
+// and Referer headers. The header is the canonical form; query-param secrets
+// still work but every response announces the deprecation so callers migrate
+// before header-only enforcement lands.
+export function secretCameFromQuery(req: Request, url: URL) {
+  if (req.headers.get(SECRET_HEADER)?.trim()) return false
+  return Boolean(url.searchParams.get("secret")?.trim())
+}
+
+export function withSecretDeprecation(response: Response): Response {
+  const out = new Response(response.body, response)
+  out.headers.set("deprecation", "true")
+  out.headers.set(
+    "warning",
+    "299 open-bot - The secret query parameter is deprecated; send X-Open-Bot-Webhook-Secret as a header instead. Query secrets will stop being accepted.",
+  )
+  return out
+}
+
 function secretMatches(candidate: string | null, provided: string) {
   if (!candidate) return false
   const left = createHash("sha256").update(candidate).digest()
@@ -220,6 +239,10 @@ async function forwardToPlugin(
   const base = await endpoint(row.userId, "opencode", state.port)
   const query = new URLSearchParams(url.searchParams)
   query.delete(ASYNC_PARAM)
+  // On secured installs the platform consumed ?secret= as the webhook
+  // credential — never forward it upstream, where it would land in the
+  // plugin's own logs.
+  if (row.webhookToken) query.delete("secret")
   const dest = pluginUpstreamUrl(base, parsed.rest, query.toString())
   // The deadline covers reaching the plugin (headers), not the body —
   // long-lived responses (SSE, downloads) keep streaming after that.
@@ -269,6 +292,8 @@ export async function handlePluginWebhook(
   const parsed = parseWebhookPath(url.pathname)
   if (!parsed) return new Response("not found", { status: 404 })
   const secret = webhookSecret(req, url)
+  const deprecate = (res: Response) =>
+    secretCameFromQuery(req, url) ? withSecretDeprecation(res) : res
   const target =
     parsed.kind === "user"
       ? resolveUserWebhookTarget(db, parsed.userId, parsed.pluginId, secret)
@@ -331,7 +356,9 @@ export async function handlePluginWebhook(
   const body = await readWebhookBody(req)
   if (url.searchParams.get(ASYNC_PARAM) === "1") {
     void forwardToPlugin(req, url, row, parsed, state, body).catch(() => {})
-    return Response.json({ ok: true, accepted: true }, { status: 202 })
+    return deprecate(
+      Response.json({ ok: true, accepted: true }, { status: 202 }),
+    )
   }
-  return forwardToPlugin(req, url, row, parsed, state, body)
+  return deprecate(await forwardToPlugin(req, url, row, parsed, state, body))
 }

@@ -13,6 +13,9 @@ import {
   PLUGIN_VERSION_PATTERN,
   PRICE_MAX_CENTS,
   PRICE_MIN_CENTS,
+  REVIEW_PAYLOAD_FILE_CHARS,
+  REVIEW_PAYLOAD_TOTAL_CHARS,
+  REVIEW_TAR_PATH_MAX,
   SLUG_PATTERN,
   TAB_ICON_MAX_LENGTH,
   TOOL_GLOB_PATTERN,
@@ -159,5 +162,22 @@ describe("plugin schema", () => {
   test("rejects unknown top-level keys", () => {
     expect(schema.additionalProperties).toBe(false)
     expect(top.$schema).toBeDefined()
+  })
+
+  test("files[] docs tell the review-caps and exec truth", () => {
+    // The schema is author-facing documentation: the exec flag must not claim
+    // a default the installers don't implement, and the source description
+    // must state the security-review window instead of a storage limit.
+    const sourceDesc = (
+      top.files.items.properties.source.description as string
+    ).replace(/,/g, "")
+    expect(sourceDesc).toContain(String(REVIEW_PAYLOAD_FILE_CHARS))
+    expect(sourceDesc).toContain(String(REVIEW_PAYLOAD_TOTAL_CHARS))
+    expect(sourceDesc).toContain(String(REVIEW_TAR_PATH_MAX))
+    expect(sourceDesc).not.toContain("10 MB")
+    expect(top.files.items.properties.exec.description).toContain("executable")
+    expect(top.files.items.properties.exec.default).toBe(false)
+    // Tools stay default-executable (they are installed as bin scripts).
+    expect(top.tools.items.properties.exec.default).toBe(true)
   })
 })

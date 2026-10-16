@@ -8,7 +8,13 @@
 //
 // This process only observes: blocking decisions (abort + wrap-up) stay with
 // the control plane so policy lives in one place.
-import { appendFileSync, mkdirSync, readFileSync, statSync, truncateSync } from "node:fs"
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  truncateSync,
+} from "node:fs"
 import {
   maxSeverity,
   type RuleMatch,

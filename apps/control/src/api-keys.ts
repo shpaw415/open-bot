@@ -1,6 +1,7 @@
 import type { Db, User } from "@open-bot/db"
 import { keyVaultPublic, keyVaultSpecById } from "./key-vault"
 import { pluginVaultKeys } from "./plugins-apply"
+import { effectiveUserKey } from "./team"
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -34,7 +35,7 @@ export function handleKeys(url: URL, db: Db, user: User): Response | null {
           slug: spec.id,
           label: spec.label,
           chatProvider: spec.chatProvider,
-          hasKey: (db.getUserKey(user.id, spec.id)?.apiKey ?? "") !== "",
+          hasKey: (effectiveUserKey(db, user.id, spec.id)?.apiKey ?? "") !== "",
         })),
         ...pluginKeys.map((key) => ({
           slug: key.slug,
@@ -66,7 +67,9 @@ export function handleKeys(url: URL, db: Db, user: User): Response | null {
       400,
     )
   }
-  const key = db.getUserKey(user.id, slug)
+  const key = spec
+    ? effectiveUserKey(db, user.id, slug)
+    : db.getUserKey(user.id, slug)
   if (!key || key.apiKey === "") {
     return json({ error: `no ${slug} key set` }, 404)
   }

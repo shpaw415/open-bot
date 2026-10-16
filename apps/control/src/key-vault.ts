@@ -7,6 +7,60 @@ import type {
   VideoProvider,
 } from "@open-bot/db"
 import { system1FieldError } from "./system1"
+import { effectiveUserKey, getTeamConfig } from "./team"
+
+type VaultFill = Pick<
+  UserKey,
+  "apiKey" | "accountId" | "gatewayId" | "gatewayToken" | "gatewaySlug"
+>
+
+// Team mode: the overlay is authoritative. The effective shared fields come
+// from the overlay section alone (null → unset); a missing section leaves the
+// surface unconfigured. Personal mode keeps the raw per-user row.
+function overlayValue(
+  overlay: Record<string, string | null> | undefined,
+  fields: readonly string[],
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const field of fields) out[field] = overlay?.[field] ?? ""
+  return out
+}
+
+const MEDIA_FIELDS = ["provider", "accountId", "apiKey", "model"] as const
+
+function resolveMedia<
+  T extends {
+    provider: string
+    accountId: string
+    apiKey: string
+    model: string
+  },
+>(
+  db: Db,
+  userId: string,
+  section: "image" | "video" | "model3d",
+  raw: T | null,
+  vaultSlug: (providerId: string) => string,
+  fill: (value: T, vault: VaultFill | null) => T,
+): Resolved<T> | null {
+  const config = getTeamConfig(db)
+  if (config.mode === "team") {
+    const overlay = config.providers[section]
+    if (!overlay) return null
+    const base = overlayValue(
+      overlay as Record<string, string | null>,
+      MEDIA_FIELDS,
+    ) as unknown as T
+    const vault = effectiveUserKey(db, userId, vaultSlug(base.provider))
+    return {
+      value: fill(base, vault),
+      keySource: keySourceOf(base.apiKey, vault),
+    }
+  }
+  if (!raw) return null
+  const vault = effectiveUserKey(db, userId, vaultSlug(raw.provider))
+  return { value: fill(raw, vault), keySource: keySourceOf(raw.apiKey, vault) }
+}
 
 export type KeyVaultFieldId =
   | "apiKey"
@@ -257,7 +311,7 @@ export function chatVaultSlugs() {
 
 export function fillImageFromVault(
   value: ImageProvider,
-  vault: UserKey | null,
+  vault: VaultFill | null,
 ): ImageProvider {
   return {
     ...value,
@@ -268,7 +322,7 @@ export function fillImageFromVault(
 
 export function fillVideoFromVault(
   value: VideoProvider,
-  vault: UserKey | null,
+  vault: VaultFill | null,
 ): VideoProvider {
   return {
     ...value,
@@ -279,7 +333,7 @@ export function fillVideoFromVault(
 
 export function fillModel3dFromVault(
   value: Model3dProvider,
-  vault: UserKey | null,
+  vault: VaultFill | null,
 ): Model3dProvider {
   return {
     ...value,
@@ -290,7 +344,7 @@ export function fillModel3dFromVault(
 
 export function fillSystem1FromVault(
   value: System1Provider,
-  vault: UserKey | null,
+  vault: VaultFill | null,
 ): System1Provider {
   return {
     ...value,
@@ -305,7 +359,7 @@ export function fillSystem1FromVault(
 export type KeySource = "setup" | "vault" | null
 export type Resolved<T> = { value: T; keySource: KeySource }
 
-function keySourceOf(setupKey: string, vault: UserKey | null): KeySource {
+function keySourceOf(setupKey: string, vault: VaultFill | null): KeySource {
   if (setupKey) return "setup"
   return vault?.apiKey ? "vault" : null
 }
@@ -314,52 +368,80 @@ export function resolveImageProvider(
   db: Db,
   userId: string,
 ): Resolved<ImageProvider> | null {
-  const raw = db.getRawImageProvider(userId)
-  if (!raw) return null
-  const vault = db.getUserKey(userId, imageVaultSlug(raw.provider))
-  return {
-    value: fillImageFromVault(raw, vault),
-    keySource: keySourceOf(raw.apiKey, vault),
-  }
+  return resolveMedia(
+    db,
+    userId,
+    "image",
+    db.getRawImageProvider(userId),
+    imageVaultSlug,
+    fillImageFromVault,
+  )
 }
 
 export function resolveVideoProvider(
   db: Db,
   userId: string,
 ): Resolved<VideoProvider> | null {
-  const raw = db.getRawVideoProvider(userId)
-  if (!raw) return null
-  const vault = db.getUserKey(userId, videoVaultSlug(raw.provider))
-  return {
-    value: fillVideoFromVault(raw, vault),
-    keySource: keySourceOf(raw.apiKey, vault),
-  }
+  return resolveMedia(
+    db,
+    userId,
+    "video",
+    db.getRawVideoProvider(userId),
+    videoVaultSlug,
+    fillVideoFromVault,
+  )
 }
 
 export function resolveModel3dProvider(
   db: Db,
   userId: string,
 ): Resolved<Model3dProvider> | null {
-  const raw = db.getRawModel3dProvider(userId)
-  if (!raw) return null
-  const vault = db.getUserKey(userId, model3dVaultSlug(raw.provider))
-  return {
-    value: fillModel3dFromVault(raw, vault),
-    keySource: keySourceOf(raw.apiKey, vault),
-  }
+  return resolveMedia(
+    db,
+    userId,
+    "model3d",
+    db.getRawModel3dProvider(userId),
+    model3dVaultSlug,
+    fillModel3dFromVault,
+  )
 }
+
+const SYSTEM1_FIELDS = [
+  "provider",
+  "endpoint",
+  "apiKey",
+  "gatewayToken",
+  "model",
+  "accountId",
+  "gatewayId",
+  "slug",
+] as const
 
 export function resolveSystem1(
   db: Db,
   userId: string,
 ): Resolved<System1Provider> | null {
+  const config = getTeamConfig(db)
+  if (config.mode === "team") {
+    const overlay = config.providers.system1
+    if (!overlay) return null
+    const base = overlayValue(
+      overlay as Record<string, string | null>,
+      SYSTEM1_FIELDS,
+    ) as unknown as System1Provider
+    const vault = effectiveUserKey(db, userId, system1VaultSlug(base.provider))
+    const hasOwn = Boolean(base.apiKey)
+    return {
+      value: fillSystem1FromVault(base, vault),
+      keySource: hasOwn ? "setup" : vault?.apiKey ? "vault" : null,
+    }
+  }
   const raw = db.getSystem1(userId)
   if (!raw) return null
-  const vault = db.getUserKey(userId, system1VaultSlug(raw.provider))
+  const vault = effectiveUserKey(db, userId, system1VaultSlug(raw.provider))
   const hasOwn = Boolean(raw.apiKey)
-  const filled = fillSystem1FromVault(raw, vault)
   return {
-    value: filled,
+    value: fillSystem1FromVault(raw, vault),
     keySource: hasOwn ? "setup" : vault?.apiKey ? "vault" : null,
   }
 }
@@ -369,7 +451,10 @@ export function resolveChatKeys(
   userId: string,
 ): { slug: string; key: string }[] {
   return chatVaultSlugs()
-    .map((slug) => ({ slug, key: db.getUserKey(userId, slug)?.apiKey ?? "" }))
+    .map((slug) => ({
+      slug,
+      key: effectiveUserKey(db, userId, slug)?.apiKey ?? "",
+    }))
     .filter((item) => item.key !== "")
 }
 

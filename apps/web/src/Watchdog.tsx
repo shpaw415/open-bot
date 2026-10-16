@@ -9,10 +9,11 @@ import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
-import { api } from "./api"
+import { api, isTeamLockedError } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { useEventStream } from "./hooks"
 import { SecurityIcon } from "./icons"
+import { useTeamMode } from "./team"
 import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
 
 type Severity = "info" | "low" | "medium" | "high"
@@ -113,6 +114,9 @@ function WatchdogConfigSection({
   const [saved, setSaved] = useState("")
   const [busy, setBusy] = useState(false)
   const vault = useVaultOverride(config.keySource)
+  const team = useTeamMode()
+  const shared = team.mode === "team"
+  const togglesLocked = shared && team.lockWatchdog
 
   useEffect(() => {
     setProvider(config.provider)
@@ -132,21 +136,34 @@ function WatchdogConfigSection({
     try {
       await api("/api/watchdog/config", {
         method: "PUT",
-        body: JSON.stringify({
-          enabled: next.enabled ?? enabled,
-          stopOnHigh: next.stopOnHigh ?? stopOnHigh,
-          provider,
-          accountId,
-          apiKey,
-          model,
-          baseUrl,
-        }),
+        body: JSON.stringify(
+          shared
+            ? {
+                enabled: next.enabled ?? enabled,
+                stopOnHigh: next.stopOnHigh ?? stopOnHigh,
+              }
+            : {
+                enabled: next.enabled ?? enabled,
+                stopOnHigh: next.stopOnHigh ?? stopOnHigh,
+                provider,
+                accountId,
+                apiKey,
+                model,
+                baseUrl,
+              },
+        ),
       })
       setSaved("Saved. The desktop watchdog picks this up within a minute.")
       setApiKey("")
       onChanged()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "save failed")
+      setError(
+        isTeamLockedError(caught)
+          ? "Managed by your admin — the team's shared watchdog settings changed since this page loaded."
+          : caught instanceof Error
+            ? caught.message
+            : "save failed",
+      )
     } finally {
       setBusy(false)
     }
@@ -177,6 +194,13 @@ function WatchdogConfigSection({
       <Stack spacing={1.5}>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
+        {shared ? (
+          <Alert severity="info">
+            Managed by your admin — the team's shared watchdog provider applies
+            to everyone.
+            {togglesLocked ? " The toggles below are locked too." : ""}
+          </Alert>
+        ) : null}
         <Stack
           direction="row"
           spacing={2}
@@ -186,7 +210,7 @@ function WatchdogConfigSection({
         >
           <Switch
             checked={enabled}
-            disabled={busy}
+            disabled={busy || togglesLocked}
             onChange={(event) => {
               const next = event.currentTarget.checked
               setEnabled(next)
@@ -196,7 +220,7 @@ function WatchdogConfigSection({
           <Typography variant="body2">Watchdog enabled</Typography>
           <Switch
             checked={stopOnHigh}
-            disabled={busy}
+            disabled={busy || togglesLocked}
             onChange={(event) => {
               const next = event.currentTarget.checked
               setStopOnHigh(next)
@@ -211,7 +235,7 @@ function WatchdogConfigSection({
           name="watchdog-provider"
           label="Verdict provider (optional)"
           value={provider}
-          disabled={busy}
+          disabled={busy || shared}
           onSelect={(value: string) => {
             setProvider(value)
             const nextSpec = state.providers.find((item) => item.id === value)
@@ -239,7 +263,7 @@ function WatchdogConfigSection({
                   }
                   value={vault.locked ? accountId : accountId}
                   placeholder="Cloudflare account ID"
-                  disabled={busy || vault.locked}
+                  disabled={busy || vault.locked || shared}
                   sx={{ flex: 1 }}
                   onChange={(event) => setAccountId(event.currentTarget.value)}
                 />
@@ -260,7 +284,7 @@ function WatchdogConfigSection({
                 type={vault.locked ? undefined : "password"}
                 value={vault.locked ? "" : apiKey}
                 placeholder={vault.locked ? "••••••••" : undefined}
-                disabled={busy || vault.locked}
+                disabled={busy || vault.locked || shared}
                 sx={{ flex: 1 }}
                 onChange={(event) => setApiKey(event.currentTarget.value)}
               />
@@ -272,7 +296,7 @@ function WatchdogConfigSection({
               label="Model"
               value={model}
               placeholder={spec.defaultModel}
-              disabled={busy}
+              disabled={busy || shared}
               onChange={(event) => setModel(event.currentTarget.value)}
             />
             {spec.needsBaseUrl ? (
@@ -280,7 +304,7 @@ function WatchdogConfigSection({
                 label="Base URL"
                 value={baseUrl}
                 placeholder="https://gateway.example/v1"
-                disabled={busy}
+                disabled={busy || shared}
                 onChange={(event) => setBaseUrl(event.currentTarget.value)}
               />
             ) : null}
@@ -291,25 +315,27 @@ function WatchdogConfigSection({
             </Typography>
           </>
         ) : null}
-        <Stack direction="row" spacing={1}>
-          <Button
-            variant="contained"
-            disabled={busy}
-            onClick={() => void save()}
-          >
-            Save watchdog settings
-          </Button>
-          {config.provider ? (
+        {togglesLocked ? null : (
+          <Stack direction="row" spacing={1}>
             <Button
-              variant="text"
-              color="error"
+              variant="contained"
               disabled={busy}
-              onClick={() => void clearProvider()}
+              onClick={() => void save()}
             >
-              Remove provider
+              Save watchdog settings
             </Button>
-          ) : null}
-        </Stack>
+            {config.provider && !shared ? (
+              <Button
+                variant="text"
+                color="error"
+                disabled={busy}
+                onClick={() => void clearProvider()}
+              >
+                Remove provider
+              </Button>
+            ) : null}
+          </Stack>
+        )}
       </Stack>
     </ConfigSection>
   )

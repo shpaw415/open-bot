@@ -156,6 +156,14 @@ import {
   system1ProviderPublic,
   system1Providers,
 } from "./system1"
+import {
+  effectiveUserKey,
+  getTeamConfig,
+  objectHasAnyField,
+  resolveQuota,
+  teamMode,
+  teamWriteLocked,
+} from "./team"
 import { handleThreadDirs } from "./thread-dirs"
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
 import { cleanupDeletedThread, handleThreads, isThreadRequest } from "./threads"
@@ -175,6 +183,7 @@ import {
 } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 import {
+  applyVoicePatch,
   resolveVoiceConfig,
   runStt,
   runTts,
@@ -184,9 +193,11 @@ import {
   voiceProviderById,
   voiceProvidersPublic,
   voiceReady,
+  voiceSharedFieldsPresent,
   voiceVaultSlug,
 } from "./voice-providers"
 import {
+  applyWatchdogPatch,
   findingPublic,
   ingestFinding,
   resolveWatchdogConfig,
@@ -194,6 +205,7 @@ import {
   watchdogContainerPayload,
   watchdogProviderById,
   watchdogProviders,
+  watchdogSharedFieldsPresent,
 } from "./watchdog"
 import {
   IMAGE_REPLY,
@@ -331,6 +343,12 @@ async function readJson(req: Request) {
   }
   if (!text) return {}
   return JSON.parse(text) as Record<string, unknown>
+}
+
+// Team mode GETs report key state from the resolved (overlay-authoritative)
+// value; personal mode keeps the raw saved row.
+function hasKey(shared: boolean, saved: string, resolved: string): boolean {
+  return shared ? resolved !== "" : saved !== ""
 }
 
 const loginHits = new Map<string, number[]>()
@@ -756,6 +774,25 @@ function pluginKeyCatalog(db: Db, userId: string) {
     access: key.access,
     enabled: key.enabled,
   }))
+}
+
+// Team mode overlays the chat model: a locked picker forces the team
+// {provider, model} on non-admins; otherwise the personal selection wins
+// once set and the team value is only the default.
+function effectiveSelection(db: Db, user: User) {
+  const desktop = db.desktop(user.id)
+  const team = getTeamConfig(db)
+  const overlay = team.mode === "team" ? team.providers.chat : undefined
+  const locked =
+    team.mode === "team" && team.lockModelPicker && user.role !== "admin"
+  return {
+    provider: locked
+      ? (overlay?.provider ?? desktop?.selectedProvider ?? null)
+      : (desktop?.selectedProvider ?? overlay?.provider ?? null),
+    model: locked
+      ? (overlay?.model ?? desktop?.selectedModel ?? null)
+      : (desktop?.selectedModel ?? overlay?.model ?? null),
+  }
 }
 
 async function skillsClient(user: User, db: Db) {
@@ -1379,6 +1416,7 @@ async function api(
   if (url.pathname === "/api/me") {
     const phase = await desktopPhase(user.id)
     const desktop = db.desktop(user.id)
+    const selection = effectiveSelection(db, user)
     return json({
       id: user.id,
       email: user.email,
@@ -1387,15 +1425,18 @@ async function api(
       desktop: phase,
       model: desktop
         ? {
-            providerID: desktop.selectedProvider,
-            modelID: desktop.selectedModel,
+            providerID: selection.provider ?? desktop.selectedProvider,
+            modelID: selection.model ?? desktop.selectedModel,
             thinkingEffort: desktop.thinkingEffort,
           }
         : null,
     })
   }
+  if (url.pathname === "/api/quota" && req.method === "GET") {
+    return json(resolveQuota(db, user.id, Date.now()))
+  }
   if (url.pathname.startsWith("/api/admin/")) {
-    return handleAdmin(req, url, db, user)
+    return handleAdmin(req, url, db, user, hub)
   }
   if (url.pathname === "/api/invites" && req.method === "POST") {
     if (user.role !== "admin") return json({ error: "admin only" }, 403)
@@ -1592,7 +1633,19 @@ async function api(
     return json({ sessionId: screen.sessionId, ...launch })
   }
   if (url.pathname === "/api/keys" && req.method === "GET") {
-    const entries = db.getUserKeys(user.id).map((key) => ({
+    const team = getTeamConfig(db)
+    const shared = team.mode === "team"
+    const catalogSlugs = new Set(keyVaultPublic().map((item) => item.id))
+    const entry = (key: {
+      slug: string
+      accountId: string
+      gatewayId: string
+      gatewaySlug: string
+      baseUrl: string
+      apiKey: string
+      gatewayToken: string
+      updatedAt: number
+    }) => ({
       slug: key.slug,
       accountId: key.accountId,
       gatewayId: key.gatewayId,
@@ -1601,10 +1654,28 @@ async function api(
       hasKey: key.apiKey !== "",
       hasGatewayToken: key.gatewayToken !== "",
       updatedAt: key.updatedAt,
-    }))
+    })
+    const personal = db
+      .getUserKeys(user.id)
+      .filter((key) => !shared || !catalogSlugs.has(key.slug))
+      .map(entry)
+    const entries = shared
+      ? [
+          ...db
+            .getTeamKeys()
+            .filter((key) => catalogSlugs.has(key.slug))
+            .map(entry),
+          ...personal,
+        ]
+      : personal
     return json({
       catalog: [...keyVaultPublic(), ...pluginKeyCatalog(db, user.id)],
       entries,
+      team: {
+        mode: team.mode,
+        lockModelPicker: team.lockModelPicker,
+        lockWatchdog: team.lockWatchdog,
+      },
       sources: {
         image: resolveImageProvider(db, user.id)?.keySource ?? null,
         video: resolveVideoProvider(db, user.id)?.keySource ?? null,
@@ -1614,6 +1685,9 @@ async function api(
     })
   }
   if (url.pathname === "/api/keys" && req.method === "PUT") {
+    if (getTeamConfig(db).mode === "team") {
+      return json({ error: "team_locked" }, 403)
+    }
     const body = await readJson(req)
     const slug = String(body.slug ?? "").trim()
     const spec = keyVaultSpecById(slug)
@@ -1679,6 +1753,9 @@ async function api(
     return json({ ok: true, applied })
   }
   if (url.pathname === "/api/keys" && req.method === "DELETE") {
+    if (getTeamConfig(db).mode === "team") {
+      return json({ error: "team_locked" }, 403)
+    }
     const slug = url.searchParams.get("slug") ?? ""
     const spec = keyVaultSpecById(slug)
     const pluginKey = spec ? null : pluginKeyBySlug(db, user.id, slug)
@@ -1746,11 +1823,18 @@ async function api(
           ? resolved.value.accountId
           : (saved?.accountId ?? ""),
       model: saved?.model ?? selected?.defaultModel ?? "",
-      hasKey: Boolean(saved?.apiKey),
+      hasKey: hasKey(
+        teamMode(db) === "team",
+        saved?.apiKey ?? "",
+        resolved?.value.apiKey ?? "",
+      ),
       keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/image" && req.method === "PUT") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     const body = await readJson(req)
     const current = db.getRawImageProvider(user.id)
     const spec = imageProviderById(String(body.provider ?? "").trim())
@@ -1762,7 +1846,7 @@ async function api(
       apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
       model: String(body.model ?? "").trim() || spec.defaultModel,
     }
-    const vault = db.getUserKey(user.id, imageVaultSlug(spec.id))
+    const vault = effectiveUserKey(db, user.id, imageVaultSlug(spec.id))
     if (!imageAuthReady(fillImageFromVault(next, vault))) {
       return json(
         { error: "the fields required by this provider are missing" },
@@ -1777,6 +1861,9 @@ async function api(
     })
   }
   if (url.pathname === "/api/image" && req.method === "DELETE") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     db.clearImageProvider(user.id)
     try {
       await syncImageAuth(user.id, null)
@@ -1798,6 +1885,7 @@ async function api(
     const sttSpec = voiceProviderById(saved.sttProvider)
     const ttsSpec = voiceProviderById(saved.ttsProvider)
     const resolved = resolveVoiceConfig(db, user.id)
+    const shared = teamMode(db) === "team"
     return json({
       providers: voiceProvidersPublic(),
       stt: {
@@ -1810,8 +1898,10 @@ async function api(
             ? resolved.value.sttAccountId
             : saved.sttAccountId,
         model: saved.sttModel || sttSpec?.defaultModel || "",
-        hasKey: Boolean(saved.sttApiKey),
-        keySource: saved.sttProvider ? resolved.sttSource : null,
+        hasKey: hasKey(shared, saved.sttApiKey, resolved.value.sttApiKey),
+        keySource: (shared ? resolved.value.sttProvider : saved.sttProvider)
+          ? resolved.sttSource
+          : null,
       },
       tts: {
         provider: saved.ttsProvider,
@@ -1821,45 +1911,31 @@ async function api(
             : saved.ttsAccountId,
         model: saved.ttsModel || ttsSpec?.defaultModel || "",
         voice: saved.ttsVoice || ttsSpec?.defaultVoice || "",
-        hasKey: Boolean(saved.ttsApiKey),
-        keySource: saved.ttsProvider ? resolved.ttsSource : null,
+        hasKey: hasKey(shared, saved.ttsApiKey, resolved.value.ttsApiKey),
+        keySource: (shared ? resolved.value.ttsProvider : saved.ttsProvider)
+          ? resolved.ttsSource
+          : null,
       },
       language: saved.language,
     })
   }
   if (url.pathname === "/api/voice" && req.method === "PUT") {
     const body = (await readJson(req)) as Record<string, unknown>
-    const stt = (body.stt ?? {}) as Record<string, unknown>
-    const tts = (body.tts ?? {}) as Record<string, unknown>
-    const sttSpec = voiceProviderById(String(stt.provider ?? "").trim())
-    const ttsSpec = voiceProviderById(String(tts.provider ?? "").trim())
-    if (String(stt.provider ?? "").trim() && !sttSpec) {
-      return json({ error: "unsupported speech provider" }, 400)
+    if (teamWriteLocked(db, user.role) && voiceSharedFieldsPresent(body)) {
+      return json({ error: "team_locked" }, 403)
     }
-    if (String(tts.provider ?? "").trim() && !ttsSpec) {
-      return json({ error: "unsupported speech provider" }, 400)
-    }
-    const current = db.getVoiceConfig(user.id)
-    const sttId = sttSpec?.id ?? ""
-    const ttsId = ttsSpec?.id ?? ""
-    const next: VoiceConfig = {
-      sttProvider: sttId,
-      sttAccountId: String(stt.accountId ?? "").trim(),
-      sttApiKey:
-        String(stt.apiKey ?? "").trim() ||
-        (current.sttProvider === sttId ? current.sttApiKey : ""),
-      sttModel: String(stt.model ?? "").trim() || sttSpec?.defaultModel || "",
-      ttsProvider: ttsId,
-      ttsAccountId: String(tts.accountId ?? "").trim(),
-      ttsApiKey:
-        String(tts.apiKey ?? "").trim() ||
-        (current.ttsProvider === ttsId ? current.ttsApiKey : ""),
-      ttsModel: String(tts.model ?? "").trim() || ttsSpec?.defaultModel || "",
-      ttsVoice: String(tts.voice ?? "").trim() || ttsSpec?.defaultVoice || "",
-      language: String(body.language ?? "").trim(),
-    }
-    const sttVault = db.getUserKey(user.id, voiceVaultSlug(sttId))
-    const ttsVault = db.getUserKey(user.id, voiceVaultSlug(ttsId))
+    const { next, error } = applyVoicePatch(db.getVoiceConfig(user.id), body)
+    if (error) return json({ error }, 400)
+    const sttVault = effectiveUserKey(
+      db,
+      user.id,
+      voiceVaultSlug(next.sttProvider),
+    )
+    const ttsVault = effectiveUserKey(
+      db,
+      user.id,
+      voiceVaultSlug(next.ttsProvider),
+    )
     const filled: VoiceConfig = {
       ...next,
       sttApiKey: next.sttApiKey || sttVault?.apiKey || "",
@@ -1868,8 +1944,8 @@ async function api(
       ttsAccountId: next.ttsAccountId || ttsVault?.accountId || "",
     }
     if (
-      (sttId && !voiceReady(filled, "stt")) ||
-      (ttsId && !voiceReady(filled, "tts"))
+      (next.sttProvider && !voiceReady(filled, "stt")) ||
+      (next.ttsProvider && !voiceReady(filled, "tts"))
     ) {
       return json(
         { error: "the fields required by this provider are missing" },
@@ -1881,8 +1957,8 @@ async function api(
     db.setVoiceConfig(user.id, next)
     const resolved = resolveVoiceConfig(db, user.id)
     return json({
-      sttKeySource: sttId ? resolved.sttSource : null,
-      ttsKeySource: ttsId ? resolved.ttsSource : null,
+      sttKeySource: next.sttProvider ? resolved.sttSource : null,
+      ttsKeySource: next.ttsProvider ? resolved.ttsSource : null,
       ok: true,
     })
   }
@@ -1895,6 +1971,7 @@ async function api(
     const resolved = resolveWatchdogConfig(db, user.id)
     const spec = watchdogProviderById(saved.provider)
     const findings = db.watchdogFindings(user.id, { limit: 200 })
+    const shared = teamMode(db) === "team"
     return json({
       providers: watchdogProviders.map((item) => ({
         id: item.id,
@@ -1913,8 +1990,10 @@ async function api(
             : saved.accountId,
         model: saved.model || spec?.defaultModel || "",
         baseUrl: saved.baseUrl,
-        hasKey: Boolean(saved.apiKey),
-        keySource: saved.provider ? resolved.keySource : null,
+        hasKey: hasKey(shared, saved.apiKey, resolved.value.apiKey),
+        keySource: (shared ? resolved.value.provider : saved.provider)
+          ? resolved.keySource
+          : null,
       },
       findings: findings.map(findingPublic),
       unread: findings.filter((row) => row.status === "new").length,
@@ -1922,30 +2001,25 @@ async function api(
   }
   if (url.pathname === "/api/watchdog/config" && req.method === "PUT") {
     const body = (await readJson(req)) as Record<string, unknown>
-    const providerId = String(body.provider ?? "").trim()
-    const spec = watchdogProviderById(providerId)
-    if (providerId && !spec) {
-      return json({ error: "unsupported watchdog provider" }, 400)
+    if (teamWriteLocked(db, user.role)) {
+      const toggles = objectHasAnyField(body, ["enabled", "stopOnHigh"])
+      if (
+        watchdogSharedFieldsPresent(body) ||
+        (getTeamConfig(db).lockWatchdog && toggles)
+      ) {
+        return json({ error: "team_locked" }, 403)
+      }
     }
-    const current = db.getWatchdogConfig(user.id)
-    const next = {
-      enabled:
-        body.enabled === undefined ? current.enabled : body.enabled === true,
-      stopOnHigh:
-        body.stopOnHigh === undefined
-          ? current.stopOnHigh
-          : body.stopOnHigh === true,
-      provider: spec?.id ?? "",
-      accountId: String(body.accountId ?? "").trim(),
-      apiKey:
-        String(body.apiKey ?? "").trim() ||
-        (current.provider === (spec?.id ?? "") ? current.apiKey : ""),
-      model: String(body.model ?? "").trim() || spec?.defaultModel || "",
-      baseUrl: String(body.baseUrl ?? "").trim(),
-    }
+    const patched = applyWatchdogPatch(db.getWatchdogConfig(user.id), body)
+    if (patched.error) return json({ error: patched.error }, 400)
+    const next = patched.next
     const configError = watchdogConfigError(next)
     if (configError) return json({ error: configError }, 400)
-    const vault = db.getUserKey(user.id, spec?.vaultSlug ?? "")
+    const vault = effectiveUserKey(
+      db,
+      user.id,
+      watchdogProviderById(next.provider)?.vaultSlug ?? "",
+    )
     const filled = {
       ...next,
       apiKey: next.apiKey || vault?.apiKey || "",
@@ -1956,13 +2030,20 @@ async function api(
     try {
       // Always push the full payload: an empty provider means rules-only,
       // and the daemon must still learn the current toggles.
-      await syncWatchdogConfig(user.id, watchdogContainerPayload(filled))
+      const effective =
+        getTeamConfig(db).mode === "team"
+          ? resolveWatchdogConfig(db, user.id).value
+          : filled
+      await syncWatchdogConfig(user.id, watchdogContainerPayload(effective))
     } catch (error) {
       syncError = error instanceof Error ? error.message : "sync failed"
     }
     return json({ ok: true, ...(syncError ? { syncError } : {}) })
   }
   if (url.pathname === "/api/watchdog/config" && req.method === "DELETE") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     const current = db.getWatchdogConfig(user.id)
     db.clearWatchdogProvider(user.id)
     try {
@@ -2090,11 +2171,18 @@ async function api(
           ? resolved.value.accountId
           : (saved?.accountId ?? ""),
       model: saved?.model ?? selected?.defaultModel ?? "",
-      hasKey: Boolean(saved?.apiKey),
+      hasKey: hasKey(
+        teamMode(db) === "team",
+        saved?.apiKey ?? "",
+        resolved?.value.apiKey ?? "",
+      ),
       keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/video" && req.method === "PUT") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     const body = await readJson(req)
     const current = db.getRawVideoProvider(user.id)
     const spec = videoProviderById(String(body.provider ?? "").trim())
@@ -2106,7 +2194,7 @@ async function api(
       apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
       model: String(body.model ?? "").trim() || spec.defaultModel,
     }
-    const vault = db.getUserKey(user.id, videoVaultSlug(spec.id))
+    const vault = effectiveUserKey(db, user.id, videoVaultSlug(spec.id))
     const resolvedNext = fillVideoFromVault(next, vault)
     if (!videoAuthReady(resolvedNext)) {
       return json(
@@ -2130,6 +2218,9 @@ async function api(
     })
   }
   if (url.pathname === "/api/video" && req.method === "DELETE") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     db.clearVideoProvider(user.id)
     try {
       await syncVideoAuth(user.id, null)
@@ -2159,11 +2250,18 @@ async function api(
           ? resolved.value.accountId
           : (saved?.accountId ?? ""),
       model: saved?.model ?? selected?.defaultModel ?? "",
-      hasKey: Boolean(saved?.apiKey),
+      hasKey: hasKey(
+        teamMode(db) === "team",
+        saved?.apiKey ?? "",
+        resolved?.value.apiKey ?? "",
+      ),
       keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/model3d" && req.method === "PUT") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     const body = await readJson(req)
     const current = db.getRawModel3dProvider(user.id)
     const spec = model3dProviderById(String(body.provider ?? "").trim())
@@ -2175,7 +2273,7 @@ async function api(
       apiKey: typedKey || (current?.provider === spec.id ? current.apiKey : ""),
       model: String(body.model ?? "").trim() || spec.defaultModel,
     }
-    const vault = db.getUserKey(user.id, model3dVaultSlug(spec.id))
+    const vault = effectiveUserKey(db, user.id, model3dVaultSlug(spec.id))
     if (!model3dAuthReady(fillModel3dFromVault(next, vault))) {
       return json(
         { error: "the fields required by this provider are missing" },
@@ -2190,6 +2288,9 @@ async function api(
     })
   }
   if (url.pathname === "/api/model3d" && req.method === "DELETE") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     db.clearModel3dProvider(user.id)
     try {
       await syncModel3dAuth(user.id, null)
@@ -2212,6 +2313,7 @@ async function api(
       system1ProviderById(saved?.provider ?? "") ?? system1Providers[0]
     const resolved = resolveSystem1(db, user.id)
     const vaulted = resolved?.keySource === "vault"
+    const shared = teamMode(db) === "team"
     return json({
       providers: system1ProviderPublic(),
       provider: saved?.provider ?? selected?.id ?? "",
@@ -2220,12 +2322,19 @@ async function api(
       accountId: vaulted ? resolved.value.accountId : (saved?.accountId ?? ""),
       gatewayId: vaulted ? resolved.value.gatewayId : (saved?.gatewayId ?? ""),
       slug: vaulted ? resolved.value.slug || "jev" : (saved?.slug ?? "jev"),
-      hasKey: Boolean(saved?.apiKey),
-      hasGatewayToken: Boolean(saved?.gatewayToken),
+      hasKey: hasKey(shared, saved?.apiKey ?? "", resolved?.value.apiKey ?? ""),
+      hasGatewayToken: hasKey(
+        shared,
+        saved?.gatewayToken ?? "",
+        resolved?.value.gatewayToken ?? "",
+      ),
       keySource: resolved?.keySource ?? null,
     })
   }
   if (url.pathname === "/api/system1" && req.method === "PUT") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     const body = await readJson(req)
     const current = db.getSystem1(user.id)
     const spec = system1ProviderById(String(body.provider ?? "").trim())
@@ -2259,7 +2368,7 @@ async function api(
       gatewayId,
       slug,
     }
-    const vault = db.getUserKey(user.id, system1VaultSlug(spec.id))
+    const vault = effectiveUserKey(db, user.id, system1VaultSlug(spec.id))
     const resolvedNext = fillSystem1FromVault(next, vault)
     if (spec.keyRequired && !resolvedNext.apiKey) {
       return json({ error: "API key is required" }, 400)
@@ -2272,6 +2381,9 @@ async function api(
     })
   }
   if (url.pathname === "/api/system1" && req.method === "DELETE") {
+    if (teamWriteLocked(db, user.role)) {
+      return json({ error: "team_locked" }, 403)
+    }
     db.clearSystem1(user.id)
     try {
       await syncSystem1(user.id, null)
@@ -2443,6 +2555,7 @@ async function api(
         name: typeof item.name === "string" && item.name ? item.name : item.id,
       }))
     const saved = db.desktop(user.id)
+    const selection = effectiveSelection(db, user)
     return json({
       providers: {
         catalog,
@@ -2451,8 +2564,8 @@ async function api(
       auth: publicProviderAuth(auth),
       selected: saved
         ? {
-            selectedProvider: saved.selectedProvider,
-            selectedModel: saved.selectedModel,
+            selectedProvider: selection.provider ?? saved.selectedProvider,
+            selectedModel: selection.model ?? saved.selectedModel,
             thinkingEffort: saved.thinkingEffort,
             lastActiveAt: saved.lastActiveAt,
           }
@@ -2504,6 +2617,10 @@ async function api(
     const modelID = String(body.modelID ?? "")
     if (!providerID || !modelID)
       return json({ error: "provider and model required" }, 400)
+    const team = getTeamConfig(db)
+    if (team.mode === "team" && team.lockModelPicker && user.role !== "admin") {
+      return json({ error: "team_locked" }, 403)
+    }
     const rawEffort = body.thinkingEffort
     if (
       rawEffort !== undefined &&

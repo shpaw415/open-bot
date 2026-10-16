@@ -566,6 +566,33 @@ describe("plugins router", () => {
       token: "hunter2",
     })
 
+    // `clear` removes saved values outright (ob-plugin settings ID KEY=),
+    // including secret-typed ones that the "" keep-rule preserves.
+    const clearUnknown = route(
+      "/api/plugins/installed/weather-pro/settings",
+      "PUT",
+      { settings: {}, clear: ["nope"] },
+    )
+    const clearUnknownRes = await handlePlugins(
+      clearUnknown.req,
+      clearUnknown.url,
+      db,
+      user(),
+      hub,
+    )
+    expect(clearUnknownRes?.status).toBe(400)
+
+    const clear = route("/api/plugins/installed/weather-pro/settings", "PUT", {
+      settings: {},
+      clear: ["token", "alerts"],
+    })
+    const clearRes = await handlePlugins(clear.req, clear.url, db, user(), hub)
+    expect(await clearRes?.json()).toMatchObject({ ok: true })
+    const afterClear = Object.fromEntries(
+      db.pluginSettings("a", "weather-pro").map((s) => [s.key, s.value]),
+    )
+    expect(afterClear).toEqual({ units: "imperial" })
+
     const listed = route("/api/plugins/installed")
     const listedRes = await handlePlugins(
       listed.req,
@@ -939,6 +966,56 @@ describe("plugins router", () => {
     expect(after.token).toBe("hunter2")
   })
 
+  test("upgrade restarts a page server that was running (sampled before the stop)", async () => {
+    const pagesManifest = {
+      ...manifest,
+      dashboard: { pages: { entry: "server.ts" } },
+    } as unknown as PluginManifest
+    const runtime = spyOn(pluginPages, "pluginPageRuntime").mockResolvedValue({
+      running: true,
+      port: 4740,
+      pid: 5,
+    })
+    const restart = spyOn(
+      pluginPages,
+      "restartPluginPageServer",
+    ).mockResolvedValue(4740)
+    try {
+      const row = await applyPluginInstall(db, user(), {
+        id: "weather-pro",
+        version: "2.0.0",
+        status: "approved",
+        manifest: pagesManifest,
+        readme: null,
+        downloads: 0,
+      })
+      expect(restart).toHaveBeenCalledTimes(1)
+      expect(row.page).toEqual({ attempted: true, running: true, port: 4740 })
+
+      // A stopped server stays lazy: install never boots it, the first
+      // request does.
+      runtime.mockResolvedValue({ running: false, port: null, pid: null })
+      restart.mockClear()
+      const stopped = await applyPluginInstall(db, user(), {
+        id: "weather-pro",
+        version: "2.0.1",
+        status: "approved",
+        manifest: pagesManifest,
+        readme: null,
+        downloads: 0,
+      })
+      expect(restart).not.toHaveBeenCalled()
+      expect(stopped.page).toEqual({
+        attempted: false,
+        running: false,
+        port: null,
+      })
+    } finally {
+      runtime.mockRestore()
+      restart.mockRestore()
+    }
+  })
+
   test("setup retry surfaces failures", async () => {
     db.createInstalledPlugin({
       id: "row-1",
@@ -1300,7 +1377,7 @@ describe("plugin remove/reinstall orphans", () => {
     }
   })
 
-  test("install still refuses a foreign skill with the same name", async () => {
+  test("install adopts an orphan skill with a different description when no other plugin claims the name", async () => {
     db.ensureDesktop({
       userId: "a",
       llmToken: "tok",
@@ -1329,13 +1406,82 @@ describe("plugin remove/reinstall orphans", () => {
       readme: null,
       downloads: 0,
     }
+    // A hand-installed workaround skill with stale wording must not block
+    // the install forever — adoption re-owns it (uninstall reclaims it).
+    const { client, saves } = fakeVikingSkills([
+      { name: "weather-pro", description: "Old hand-written wording." },
+    ])
+    fakeSkills = client
+    try {
+      const row = await applyPluginInstall(db, user(), entry)
+      expect(row.applied.skills).toEqual(["weather-pro"])
+      expect(saves.map((s) => s.name)).toEqual(["weather-pro"])
+    } finally {
+      fakeSkills = null
+    }
+  })
+
+  test("install still refuses a skill owned by another installed plugin", async () => {
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "tok",
+      opencodePassword: "pw",
+      vikingKey: "vk",
+      selectedProvider: null,
+      selectedModel: null,
+      thinkingEffort: null,
+      lastActiveAt: 1,
+    })
+    const skillManifest = {
+      ...manifest,
+      skills: [
+        {
+          name: "weather-pro",
+          description: "Weather lookups helper.",
+          body: "# weather-pro\nLook up weather.",
+        },
+      ],
+    } as unknown as PluginManifest
+    const entry = {
+      id: "weather-pro",
+      version: "1.0.0",
+      status: "approved" as const,
+      manifest: skillManifest,
+      readme: null,
+      downloads: 0,
+    }
+    // Another installed plugin already declares this skill name.
+    const rival = {
+      ...manifest,
+      skills: [
+        {
+          name: "weather-pro",
+          description: "The rival plugin's own skill.",
+          body: "# rival\nMine.",
+        },
+      ],
+    } as unknown as PluginManifest
+    db.createInstalledPlugin({
+      id: "rival-row",
+      userId: "a",
+      pluginId: "rival-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify(rival),
+      readme: null,
+      enabled: true,
+      source: "marketplace",
+      localPath: null,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
     const { client } = fakeVikingSkills([
-      { name: "weather-pro", description: "A user's own unrelated skill." },
+      { name: "weather-pro", description: "The rival plugin's own skill." },
     ])
     fakeSkills = client
     try {
       await expect(applyPluginInstall(db, user(), entry)).rejects.toThrow(
-        /already exists and was not created by this install/,
+        /already owned by the installed plugin rival-pro/,
       )
     } finally {
       fakeSkills = null
@@ -1738,7 +1884,11 @@ describe("page server routes", () => {
       )
       const res = await handlePlugins(restart.req, restart.url, db, user(), hub)
       expect(res?.status).toBe(200)
-      expect(await res?.json()).toEqual({ ok: true, port: 4742 })
+      expect(await res?.json()).toEqual({
+        ok: true,
+        port: 4742,
+        source: "marketplace",
+      })
       expect(spy).toHaveBeenCalledWith("a", expect.anything(), hub)
     } finally {
       spy.mockRestore()

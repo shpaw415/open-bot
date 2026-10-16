@@ -41,8 +41,19 @@ body,
   padding: 12px 18px;
 }
 
+/* Bubbles live in one observed wrapper so a ResizeObserver can re-pin the
+   log to the bottom when late layout (images, iframes) grows the content. */
+.ob-chat-log-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .ob-chat-docked .ob-chat-log {
   padding: 8px 10px;
+}
+
+.ob-chat-docked .ob-chat-log-inner {
   gap: 8px;
 }
 
@@ -461,6 +472,9 @@ body.ob-preview-dragging iframe {
 @media (max-width: 899px) {
   .ob-chat-log {
     padding: 8px 10px;
+    gap: 8px;
+  }
+  .ob-chat-log-inner {
     gap: 8px;
   }
   .ob-bubble {

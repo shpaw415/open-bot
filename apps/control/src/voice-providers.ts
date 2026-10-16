@@ -1,4 +1,78 @@
 import type { Db, VoiceConfig } from "@open-bot/db"
+import { effectiveUserKey, getTeamConfig, objectHasAnyField } from "./team"
+
+const VOICE_SHARED_SIDE_FIELDS = ["provider", "accountId", "apiKey", "model"]
+
+// A team-mode non-admin may only write per-user fields (tts voice, language);
+// any shared field anywhere in the body makes the whole PUT a team write.
+export function voiceSharedFieldsPresent(
+  body: Record<string, unknown>,
+): boolean {
+  return (
+    objectHasAnyField(body.stt, VOICE_SHARED_SIDE_FIELDS) ||
+    objectHasAnyField(body.tts, VOICE_SHARED_SIDE_FIELDS)
+  )
+}
+
+// Merge a PUT body onto the saved voice config, field by field: an absent
+// section or field keeps the stored value, a present field replaces it (blank
+// clears). Provider config is shared in team mode; voice/language are
+// per-user, which is why a team-mode partial PUT carries only those.
+export function applyVoicePatch(
+  current: VoiceConfig,
+  body: Record<string, unknown>,
+): { next: VoiceConfig; error: string | null } {
+  const section = (value: unknown) =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null
+  const next: VoiceConfig = { ...current }
+  for (const side of ["stt", "tts"] as const) {
+    const raw = section(body[side])
+    if (!raw) continue
+    const savedProvider = current[`${side}Provider`]
+    const savedAccountId = current[`${side}AccountId`]
+    const savedApiKey = current[`${side}ApiKey`]
+    const savedModel = current[`${side}Model`]
+    const rawProvider =
+      raw.provider === undefined
+        ? savedProvider
+        : String(raw.provider ?? "").trim()
+    const spec = rawProvider ? voiceProviderById(rawProvider) : undefined
+    if (rawProvider && !spec) {
+      return { next: current, error: "unsupported speech provider" }
+    }
+    const sameProvider = savedProvider === (spec?.id ?? "")
+    next[`${side}Provider`] = spec?.id ?? ""
+    next[`${side}AccountId`] =
+      raw.accountId === undefined
+        ? sameProvider
+          ? savedAccountId
+          : ""
+        : String(raw.accountId ?? "").trim()
+    next[`${side}ApiKey`] =
+      raw.apiKey === undefined
+        ? sameProvider
+          ? savedApiKey
+          : ""
+        : String(raw.apiKey ?? "").trim() || (sameProvider ? savedApiKey : "")
+    next[`${side}Model`] =
+      raw.model === undefined
+        ? savedModel || spec?.defaultModel || ""
+        : String(raw.model ?? "").trim() || spec?.defaultModel || ""
+    if (side === "tts") {
+      next.ttsVoice =
+        raw.voice === undefined
+          ? current.ttsVoice
+          : String(raw.voice ?? "").trim() || spec?.defaultVoice || ""
+    }
+  }
+  next.language =
+    body.language === undefined
+      ? current.language
+      : String(body.language ?? "").trim()
+  return { next, error: null }
+}
 
 export type VoiceField = {
   label: string
@@ -197,20 +271,49 @@ export type ResolvedVoice = {
 
 export function resolveVoiceConfig(db: Db, userId: string): ResolvedVoice {
   const raw = db.getVoiceConfig(userId)
-  const sttVault = db.getUserKey(userId, voiceVaultSlug(raw.sttProvider))
-  const ttsVault = db.getUserKey(userId, voiceVaultSlug(raw.ttsProvider))
+  const config = getTeamConfig(db)
+  // Team mode: the overlay is authoritative for the shared provider fields
+  // (unset → empty, raw is never a fallback); ttsVoice/language stay per-user.
+  const overlay = config.mode === "team" ? (config.providers.voice ?? {}) : null
+  const merged: VoiceConfig = overlay
+    ? {
+        ...raw,
+        sttProvider: overlay.sttProvider ?? "",
+        sttAccountId: overlay.sttAccountId ?? "",
+        sttApiKey: overlay.sttApiKey ?? "",
+        sttModel: overlay.sttModel ?? "",
+        ttsProvider: overlay.ttsProvider ?? "",
+        ttsAccountId: overlay.ttsAccountId ?? "",
+        ttsApiKey: overlay.ttsApiKey ?? "",
+        ttsModel: overlay.ttsModel ?? "",
+      }
+    : raw
+  const sttVault = effectiveUserKey(
+    db,
+    userId,
+    voiceVaultSlug(merged.sttProvider),
+  )
+  const ttsVault = effectiveUserKey(
+    db,
+    userId,
+    voiceVaultSlug(merged.ttsProvider),
+  )
   const source = (key: string, vault: { apiKey: string } | null) =>
     key ? "setup" : vault?.apiKey ? "vault" : "missing"
   return {
     value: {
-      ...raw,
-      sttApiKey: raw.sttApiKey || sttVault?.apiKey || "",
-      sttAccountId: raw.sttAccountId || sttVault?.accountId || "",
-      ttsApiKey: raw.ttsApiKey || ttsVault?.apiKey || "",
-      ttsAccountId: raw.ttsAccountId || ttsVault?.accountId || "",
+      ...merged,
+      sttApiKey: merged.sttApiKey || sttVault?.apiKey || "",
+      sttAccountId: merged.sttAccountId || sttVault?.accountId || "",
+      ttsApiKey: merged.ttsApiKey || ttsVault?.apiKey || "",
+      ttsAccountId: merged.ttsAccountId || ttsVault?.accountId || "",
     },
-    sttSource: raw.sttProvider ? source(raw.sttApiKey, sttVault) : "missing",
-    ttsSource: raw.ttsProvider ? source(raw.ttsApiKey, ttsVault) : "missing",
+    sttSource: merged.sttProvider
+      ? source(merged.sttApiKey, sttVault)
+      : "missing",
+    ttsSource: merged.ttsProvider
+      ? source(merged.ttsApiKey, ttsVault)
+      : "missing",
   }
 }
 

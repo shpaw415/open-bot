@@ -4,7 +4,7 @@ import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import { useEffect, useState } from "react"
-import { api } from "./api"
+import { api, isTeamLockedError } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { Model3dIcon } from "./icons"
 import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
@@ -32,7 +32,7 @@ type Model3dForm = {
   keySource?: "setup" | "vault" | null
 }
 
-export function Model3dProvider() {
+export function Model3dProvider({ readOnly = false }: { readOnly?: boolean }) {
   const [error, setError] = useState("")
   const [saved, setSaved] = useState("")
   const [busy, setBusy] = useState(false)
@@ -98,7 +98,13 @@ export function Model3dProvider() {
           : "Saved. Applies when the desktop starts.",
       )
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "save failed")
+      setError(
+        isTeamLockedError(caught)
+          ? "Managed by your admin — the team's shared 3D provider changed since this page loaded."
+          : caught instanceof Error
+            ? caught.message
+            : "save failed",
+      )
     } finally {
       setBusy(false)
     }
@@ -119,7 +125,13 @@ export function Model3dProvider() {
       setModel(first?.defaultModel ?? "")
       setSaved("Removed.")
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "remove failed")
+      setError(
+        isTeamLockedError(caught)
+          ? "Managed by your admin — the team's shared 3D provider cannot be removed here."
+          : caught instanceof Error
+            ? caught.message
+            : "remove failed",
+      )
     } finally {
       setBusy(false)
     }
@@ -141,11 +153,17 @@ export function Model3dProvider() {
       <Stack spacing={1.5}>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
+        {readOnly ? (
+          <Alert severity="info">
+            Managed by your admin — the team's shared 3D provider applies to
+            everyone.
+          </Alert>
+        ) : null}
         <Select
           name="model3d-provider"
           label="Provider"
           value={spec?.id ?? ""}
-          disabled={providers.length === 0}
+          disabled={providers.length === 0 || readOnly}
           onSelect={pickProvider}
         >
           {providers.map((item) => (
@@ -163,7 +181,7 @@ export function Model3dProvider() {
             }
             value={accountId}
             placeholder={spec.account.placeholder}
-            disabled={vault.locked}
+            disabled={vault.locked || readOnly}
             onChange={(event) => setAccountId(event.currentTarget.value)}
           />
         ) : null}
@@ -179,7 +197,7 @@ export function Model3dProvider() {
             type={vault.locked ? undefined : "password"}
             value={vault.locked ? "" : apiKey}
             placeholder={vault.locked ? "••••••••" : spec?.secret.placeholder}
-            disabled={vault.locked}
+            disabled={vault.locked || readOnly}
             sx={{ flex: 1 }}
             onChange={(event) => setApiKey(event.currentTarget.value)}
           />
@@ -191,26 +209,29 @@ export function Model3dProvider() {
           label="Model"
           value={model}
           placeholder={spec?.defaultModel}
+          disabled={readOnly}
           onChange={(event) => setModel(event.currentTarget.value)}
         />
-        <Stack direction="row" spacing={1}>
-          <Button
-            variant="contained"
-            disabled={busy || !spec}
-            onClick={() => void save()}
-          >
-            Save 3D provider
-          </Button>
-          {hasKey ? (
+        {readOnly ? null : (
+          <Stack direction="row" spacing={1}>
             <Button
-              variant="text"
-              disabled={busy}
-              onClick={() => void remove()}
+              variant="contained"
+              disabled={busy || !spec}
+              onClick={() => void save()}
             >
-              Remove
+              Save 3D provider
             </Button>
-          ) : null}
-        </Stack>
+            {hasKey ? (
+              <Button
+                variant="text"
+                disabled={busy}
+                onClick={() => void remove()}
+              >
+                Remove
+              </Button>
+            ) : null}
+          </Stack>
+        )}
       </Stack>
     </ConfigSection>
   )

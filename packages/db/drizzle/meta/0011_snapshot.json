@@ -193,10 +193,7 @@
       "indexes": {
         "cron_user_due": {
           "name": "cron_user_due",
-          "columns": [
-            "user_id",
-            "next_run_at"
-          ],
+          "columns": ["user_id", "next_run_at"],
           "isUnique": false
         }
       },
@@ -268,10 +265,7 @@
       "indexes": {
         "cron_notices_user": {
           "name": "cron_notices_user",
-          "columns": [
-            "user_id",
-            "viewed_at"
-          ],
+          "columns": ["user_id", "viewed_at"],
           "isUnique": false
         }
       },
@@ -780,18 +774,12 @@
       "indexes": {
         "improvements_fingerprint_status": {
           "name": "improvements_fingerprint_status",
-          "columns": [
-            "fingerprint",
-            "status"
-          ],
+          "columns": ["fingerprint", "status"],
           "isUnique": false
         },
         "improvements_user_time": {
           "name": "improvements_user_time",
-          "columns": [
-            "user_id",
-            "created_at"
-          ],
+          "columns": ["user_id", "created_at"],
           "isUnique": false
         }
       },
@@ -915,17 +903,12 @@
       "indexes": {
         "installed_plugins_user": {
           "name": "installed_plugins_user",
-          "columns": [
-            "user_id"
-          ],
+          "columns": ["user_id"],
           "isUnique": false
         },
         "installed_plugins_user_plugin": {
           "name": "installed_plugins_user_plugin",
-          "columns": [
-            "user_id",
-            "plugin_id"
-          ],
+          "columns": ["user_id", "plugin_id"],
           "isUnique": true
         }
       },
@@ -1014,26 +997,17 @@
       "indexes": {
         "media_albums_user_name": {
           "name": "media_albums_user_name",
-          "columns": [
-            "user_id",
-            "name"
-          ],
+          "columns": ["user_id", "name"],
           "isUnique": true
         },
         "media_albums_user_session": {
           "name": "media_albums_user_session",
-          "columns": [
-            "user_id",
-            "session_id"
-          ],
+          "columns": ["user_id", "session_id"],
           "isUnique": true
         },
         "media_albums_user": {
           "name": "media_albums_user",
-          "columns": [
-            "user_id",
-            "created_at"
-          ],
+          "columns": ["user_id", "created_at"],
           "isUnique": false
         }
       },
@@ -1140,40 +1114,27 @@
       "indexes": {
         "media_items_album_sha": {
           "name": "media_items_album_sha",
-          "columns": [
-            "album_id",
-            "sha256"
-          ],
+          "columns": ["album_id", "sha256"],
           "isUnique": true
         },
         "media_items_message_path": {
           "name": "media_items_message_path",
-          "columns": [
-            "message_id",
-            "source_path"
-          ],
+          "columns": ["message_id", "source_path"],
           "isUnique": true
         },
         "media_items_album": {
           "name": "media_items_album",
-          "columns": [
-            "album_id",
-            "created_at"
-          ],
+          "columns": ["album_id", "created_at"],
           "isUnique": false
         },
         "media_items_user": {
           "name": "media_items_user",
-          "columns": [
-            "user_id"
-          ],
+          "columns": ["user_id"],
           "isUnique": false
         },
         "media_items_created": {
           "name": "media_items_created",
-          "columns": [
-            "created_at"
-          ],
+          "columns": ["created_at"],
           "isUnique": false
         }
       },
@@ -1224,9 +1185,7 @@
       "indexes": {
         "personas_user": {
           "name": "personas_user",
-          "columns": [
-            "user_id"
-          ],
+          "columns": ["user_id"],
           "isUnique": false
         }
       },
@@ -1278,11 +1237,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "plugin_settings_user_id_plugin_id_key_pk": {
-          "columns": [
-            "user_id",
-            "plugin_id",
-            "key"
-          ],
+          "columns": ["user_id", "plugin_id", "key"],
           "name": "plugin_settings_user_id_plugin_id_key_pk"
         }
       },
@@ -1331,17 +1286,12 @@
       "indexes": {
         "projects_user": {
           "name": "projects_user",
-          "columns": [
-            "user_id"
-          ],
+          "columns": ["user_id"],
           "isUnique": false
         },
         "projects_user_name": {
           "name": "projects_user_name",
-          "columns": [
-            "user_id",
-            "name"
-          ],
+          "columns": ["user_id", "name"],
           "isUnique": true
         }
       },
@@ -1385,9 +1335,7 @@
       "indexes": {
         "sessions_token_hash_unique": {
           "name": "sessions_token_hash_unique",
-          "columns": [
-            "token_hash"
-          ],
+          "columns": ["token_hash"],
           "isUnique": true
         }
       },
@@ -1424,20 +1372,14 @@
       "indexes": {
         "thread_dir_assignments_dir": {
           "name": "thread_dir_assignments_dir",
-          "columns": [
-            "user_id",
-            "dir_id"
-          ],
+          "columns": ["user_id", "dir_id"],
           "isUnique": false
         }
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "thread_dir_assignments_user_id_session_id_pk": {
-          "columns": [
-            "user_id",
-            "session_id"
-          ],
+          "columns": ["user_id", "session_id"],
           "name": "thread_dir_assignments_user_id_session_id_pk"
         }
       },
@@ -1479,18 +1421,12 @@
       "indexes": {
         "thread_dirs_user_name": {
           "name": "thread_dirs_user_name",
-          "columns": [
-            "user_id",
-            "name"
-          ],
+          "columns": ["user_id", "name"],
           "isUnique": true
         },
         "thread_dirs_user": {
           "name": "thread_dirs_user",
-          "columns": [
-            "user_id",
-            "created_at"
-          ],
+          "columns": ["user_id", "created_at"],
           "isUnique": false
         }
       },
@@ -1528,10 +1464,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "thread_personas_user_id_session_id_pk": {
-          "columns": [
-            "user_id",
-            "session_id"
-          ],
+          "columns": ["user_id", "session_id"],
           "name": "thread_personas_user_id_session_id_pk"
         }
       },
@@ -1581,10 +1514,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "thread_screens_user_id_session_id_pk": {
-          "columns": [
-            "user_id",
-            "session_id"
-          ],
+          "columns": ["user_id", "session_id"],
           "name": "thread_screens_user_id_session_id_pk"
         }
       },
@@ -1634,10 +1564,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "thread_titles_user_id_session_id_pk": {
-          "columns": [
-            "user_id",
-            "session_id"
-          ],
+          "columns": ["user_id", "session_id"],
           "name": "thread_titles_user_id_session_id_pk"
         }
       },
@@ -1703,10 +1630,7 @@
       "indexes": {
         "usage_user_time": {
           "name": "usage_user_time",
-          "columns": [
-            "user_id",
-            "created_at"
-          ],
+          "columns": ["user_id", "created_at"],
           "isUnique": false
         }
       },
@@ -1786,10 +1710,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "user_keys_user_id_slug_pk": {
-          "columns": [
-            "user_id",
-            "slug"
-          ],
+          "columns": ["user_id", "slug"],
           "name": "user_keys_user_id_slug_pk"
         }
       },
@@ -1854,9 +1775,7 @@
       "indexes": {
         "users_email_unique": {
           "name": "users_email_unique",
-          "columns": [
-            "email"
-          ],
+          "columns": ["email"],
           "isUnique": true
         }
       },
@@ -2037,18 +1956,12 @@
       "indexes": {
         "watchdog_findings_user_time": {
           "name": "watchdog_findings_user_time",
-          "columns": [
-            "user_id",
-            "created_at"
-          ],
+          "columns": ["user_id", "created_at"],
           "isUnique": false
         },
         "watchdog_findings_fingerprint": {
           "name": "watchdog_findings_fingerprint",
-          "columns": [
-            "user_id",
-            "fingerprint"
-          ],
+          "columns": ["user_id", "fingerprint"],
           "isUnique": false
         }
       },
@@ -2120,25 +2033,17 @@
       "indexes": {
         "workspace_media_message_path": {
           "name": "workspace_media_message_path",
-          "columns": [
-            "message_id",
-            "path"
-          ],
+          "columns": ["message_id", "path"],
           "isUnique": true
         },
         "workspace_media_session": {
           "name": "workspace_media_session",
-          "columns": [
-            "user_id",
-            "session_id"
-          ],
+          "columns": ["user_id", "session_id"],
           "isUnique": false
         },
         "workspace_media_created": {
           "name": "workspace_media_created",
-          "columns": [
-            "created_at"
-          ],
+          "columns": ["created_at"],
           "isUnique": false
         }
       },

@@ -10,7 +10,8 @@
     "deploy": "bun run build && wrangler pages deploy",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:migrate:local": "wrangler d1 migrations apply open-bot-marketplace --local",
-    "db:migrate": "wrangler d1 migrations apply open-bot-marketplace --remote"
+    "db:migrate": "wrangler d1 migrations apply open-bot-marketplace --remote",
+    "deploy:marketplace": "bun run db:migrate && bun run build && echo 'migrated + built. Now deploy both units: (1) git push deploys Pages via Workers Builds, (2) git push deploys the review worker via Workers Builds. Deploy order: migrate -> Pages -> worker.'"
   },
   "dependencies": {
     "@open-bot/plugin-kit": "workspace:*",

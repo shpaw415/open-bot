@@ -129,7 +129,13 @@ async function run(session: string | undefined) {
               }
         if (verb === "type" && !action.text) throw new Error(USAGE)
         const ok = await evaluate(socket, actionScript(action))
-        if (ok === false) throw new Error("target covered")
+        // false is not-found, not occlusion: a stale data-obnav id (the page
+        // reloaded or the active tab changed) must not read as "target
+        // covered" — the agent would retry clicks instead of re-reading ids.
+        if (ok === false)
+          throw new Error(
+            `no element ${id} on this page — run ob-page read for fresh ids (the page reloaded or the active tab changed)`,
+          )
         if (typeof ok === "string" && ok.startsWith("covered:"))
           throw new Error(`target ${ok.replace("covered:", "covered by ")}`)
         await Bun.sleep(verb === "type" ? 200 : 80)

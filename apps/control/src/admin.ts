@@ -1,6 +1,13 @@
-import type { Db, Role, User } from "@open-bot/db"
+import type { Db, Role, User, UserKeyFields } from "@open-bot/db"
 import { desktopPhase, destroyDesktop, stopDesktop } from "./docker"
+import type { EventHub } from "./events"
 import { handleAdminImprovements } from "./improvements"
+import {
+  keyVault,
+  keyVaultFieldError,
+  keyVaultPublic,
+  keyVaultSpecById,
+} from "./key-vault"
 import {
   deleteUserVault,
   MAX_VAULT_CAP_MB,
@@ -10,6 +17,15 @@ import {
 } from "./media-vault"
 import { randomToken } from "./passwords"
 import { DISK_CAP_KEY, desktopDiskMaxGb, MAX_DISK_CAP_GB } from "./stats"
+import {
+  getTeamConfig,
+  redactTeamConfig,
+  resolveQuota,
+  saveTeamConfig,
+  type TeamConfig,
+  type TeamProviderOverlay,
+} from "./team"
+import { applyTeamChange, teamKeysPublic } from "./team-apply"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
 import {
   deleteUserMedia,
@@ -51,7 +67,91 @@ function emptyKind() {
   return { promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0 }
 }
 
-export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
+// Import source: the admin's own provider setups become the shared overlay.
+// ttsVoice/voiceLanguage and the watchdog toggles stay per-user and are
+// never copied.
+function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
+  const overlay: TeamProviderOverlay = {}
+  const desktop = db.desktop(userId)
+  if (desktop && (desktop.selectedProvider || desktop.selectedModel)) {
+    overlay.chat = {
+      provider: desktop.selectedProvider,
+      model: desktop.selectedModel,
+    }
+  }
+  const image = db.getRawImageProvider(userId)
+  if (image) {
+    overlay.image = {
+      provider: image.provider,
+      accountId: image.accountId,
+      apiKey: image.apiKey,
+      model: image.model,
+    }
+  }
+  const video = db.getRawVideoProvider(userId)
+  if (video) {
+    overlay.video = {
+      provider: video.provider,
+      accountId: video.accountId,
+      apiKey: video.apiKey,
+      model: video.model,
+    }
+  }
+  const model3d = db.getRawModel3dProvider(userId)
+  if (model3d) {
+    overlay.model3d = {
+      provider: model3d.provider,
+      accountId: model3d.accountId,
+      apiKey: model3d.apiKey,
+      model: model3d.model,
+    }
+  }
+  const system1 = db.getSystem1(userId)
+  if (system1) {
+    overlay.system1 = {
+      provider: system1.provider,
+      endpoint: system1.endpoint,
+      apiKey: system1.apiKey,
+      gatewayToken: system1.gatewayToken,
+      model: system1.model,
+      accountId: system1.accountId,
+      gatewayId: system1.gatewayId,
+      slug: system1.slug,
+    }
+  }
+  const voice = db.getVoiceConfig(userId)
+  if (voice.sttProvider || voice.ttsProvider) {
+    overlay.voice = {
+      sttProvider: voice.sttProvider,
+      sttAccountId: voice.sttAccountId,
+      sttApiKey: voice.sttApiKey,
+      sttModel: voice.sttModel,
+      ttsProvider: voice.ttsProvider,
+      ttsAccountId: voice.ttsAccountId,
+      ttsApiKey: voice.ttsApiKey,
+      ttsModel: voice.ttsModel,
+    }
+  }
+  const watchdog = db.getWatchdogConfig(userId)
+  if (watchdog.provider) {
+    overlay.watchdog = {
+      provider: watchdog.provider,
+      accountId: watchdog.accountId,
+      apiKey: watchdog.apiKey,
+      model: watchdog.model,
+      baseUrl: watchdog.baseUrl,
+    }
+  }
+  return overlay
+}
+
+export async function handleAdmin(
+  req: Request,
+  url: URL,
+  db: Db,
+  actor: User,
+  hub?: EventHub,
+) {
   if (actor.role !== "admin") return json({ error: "admin only" }, 403)
   if (url.pathname === "/api/admin/settings" && req.method === "GET") {
     return json({
@@ -203,6 +303,122 @@ export async function handleAdmin(req: Request, url: URL, db: Db, actor: User) {
     const code = decodeURIComponent(inviteMatch[1] ?? "")
     if (!db.revokeInvite(code)) return json({ error: "invite not found" }, 404)
     return json({ ok: true })
+  }
+  if (url.pathname === "/api/admin/team" && req.method === "GET") {
+    const { config, secrets } = redactTeamConfig(getTeamConfig(db))
+    return json({
+      config,
+      secrets,
+      catalog: keyVaultPublic(),
+      keys: teamKeysPublic(db),
+    })
+  }
+  if (url.pathname === "/api/admin/team" && req.method === "PUT") {
+    const body = (await readJson(req)) as Partial<TeamConfig>
+    let saved: TeamConfig
+    try {
+      saved = saveTeamConfig(db, body)
+    } catch (error) {
+      return json(
+        {
+          error: error instanceof Error ? error.message : "invalid team config",
+        },
+        400,
+      )
+    }
+    const quotaOnly = Object.keys(body).every(
+      (key) => key === "quotaDefaultTokens" || key === "quotaBehavior",
+    )
+    if (!quotaOnly) {
+      const results = await applyTeamChange(db, hub, { configChanged: true })
+      for (const result of results) {
+        if (!result.ok) {
+          console.error(`team fan-out ${result.userId}: ${result.error}`)
+        }
+      }
+    }
+    const { config, secrets } = redactTeamConfig(saved)
+    return json({ config, secrets })
+  }
+  if (url.pathname === "/api/admin/team/keys" && req.method === "PUT") {
+    const body = await readJson(req)
+    const slug = String(body.slug ?? "").trim()
+    if (!keyVaultSpecById(slug))
+      return json({ error: "unknown key entry" }, 400)
+    const current = db.getTeamKey(slug)
+    const field = (name: keyof UserKeyFields) =>
+      String(body[name] ?? "").trim() || current?.[name] || ""
+    const fields: UserKeyFields = {
+      apiKey: field("apiKey"),
+      accountId: field("accountId"),
+      gatewayId: field("gatewayId"),
+      gatewayToken: field("gatewayToken"),
+      gatewaySlug: field("gatewaySlug"),
+      baseUrl: field("baseUrl"),
+    }
+    for (const name of ["gatewayId", "gatewaySlug"] as const) {
+      const error = keyVaultFieldError(slug, name, fields[name])
+      if (error) return json({ error }, 400)
+    }
+    if (Object.values(fields).every((value) => value === "")) {
+      return json({ error: "at least one field is required" }, 400)
+    }
+    db.setTeamKey(slug, fields)
+    await applyTeamChange(db, hub, { slugs: [slug] })
+    return json({ keys: teamKeysPublic(db) })
+  }
+  if (url.pathname === "/api/admin/team/import" && req.method === "POST") {
+    for (const spec of keyVault) {
+      const key = db.getUserKey(actor.id, spec.id)
+      if (!key) continue
+      const { userId: _userId, ...fields } = key
+      db.setTeamKey(spec.id, fields)
+    }
+    const saved = saveTeamConfig(db, {
+      mode: "team",
+      providers: providerOverlayFromUser(db, actor.id),
+    })
+    await applyTeamChange(db, hub, { configChanged: true })
+    const { config, secrets } = redactTeamConfig(saved)
+    return json({ config, secrets, keys: teamKeysPublic(db) })
+  }
+  if (url.pathname === "/api/admin/team/quotas" && req.method === "GET") {
+    const config = getTeamConfig(db)
+    const now = Date.now()
+    return json({
+      default: config.quotaDefaultTokens,
+      behavior: config.quotaBehavior,
+      users: db.listUsers().map((user) => {
+        const quota = resolveQuota(db, user.id, now)
+        return {
+          userId: user.id,
+          email: user.email,
+          weeklyTokens: db.getUserQuota(user.id)?.weeklyTokens ?? null,
+          used: quota.used,
+          limitTokens: quota.limitTokens,
+        }
+      }),
+    })
+  }
+  if (url.pathname === "/api/admin/team/quota" && req.method === "PUT") {
+    const body = await readJson(req)
+    const userId = String(body.userId ?? "").trim()
+    if (!db.userById(userId)) return json({ error: "user not found" }, 404)
+    const raw = body.weeklyTokens
+    if (
+      raw !== null &&
+      (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0)
+    ) {
+      return json(
+        { error: "weeklyTokens must be a non-negative integer or null" },
+        400,
+      )
+    }
+    db.setUserQuota(userId, raw as number | null)
+    return json({
+      ok: true,
+      weeklyTokens: db.getUserQuota(userId)?.weeklyTokens ?? null,
+    })
   }
   const improvement = await handleAdminImprovements(req, url, db)
   if (improvement) return improvement

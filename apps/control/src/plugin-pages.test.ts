@@ -25,7 +25,11 @@ import {
   sweepIdlePluginPageServers,
   touchPluginPageActivity,
 } from "./plugin-pages"
-import { FRAME_STORAGE_SHIM, rewritePreviewHtml } from "./preview"
+import {
+  FRAME_STORAGE_SHIM,
+  rewritePreviewCss,
+  rewritePreviewHtml,
+} from "./preview"
 import * as shellModule from "./shell"
 
 const shCalls: string[][] = []
@@ -166,13 +170,18 @@ describe("plugin pages", () => {
       "printf '%s' 'bun run /usr/local/bin/ob-plugin-stock-pro-server.ts' > '/home/agent/.open-bot/pages/stock-pro.cmd'",
     )
     expect(frozen).toContain(
-      "exec bun run '/usr/local/bin/ob-plugin-stock-pro-server.ts'",
+      "exec bun run '/usr/local/bin/ob-plugin-stock-pro-server.ts' >> '/home/agent/.open-bot/pages/stock-pro.log' 2>&1",
     )
+    // exec replaces the shell, so anything chained after && never runs —
+    // the log redirect must ride the exec'd command or boot errors vanish.
+    expect(frozen).not.toMatch(/exec bun run '[^']*' && >/)
     const hot = pageServerCommand({
       ...base,
       checkoutEntry: "/checkout/server.ts",
     })
-    expect(hot).toContain("exec bun --hot run '/checkout/server.ts'")
+    expect(hot).toContain(
+      "exec bun --hot run '/checkout/server.ts' >> '/home/agent/.open-bot/pages/stock-pro.log' 2>&1",
+    )
     expect(hot).toContain("'bun --hot run /checkout/server.ts'")
     expect(hot).not.toContain("ob-plugin-stock-pro-server.ts'")
   })
@@ -362,6 +371,41 @@ describe("plugin pages", () => {
     )
     expect(owned.startsWith(`<script>`)).toBe(true)
     expect(owned).toContain(`<base href="/api/pages/_frame/tok/x/">`)
+  })
+
+  test("rewrite covers the sub-resource forms that <base> cannot fix", () => {
+    const prefix = "/api/pages/stock-pro"
+    // Media attributes beyond href/src.
+    const media = rewritePreviewHtml(
+      `<html><head></head><body>` +
+        `<img srcset="/hero.png 1x, hero@2x.png 2x" poster="/cover.jpg">` +
+        `</body></html>`,
+      prefix,
+    )
+    expect(media).toContain(`srcset="${prefix}/hero.png 1x, hero@2x.png 2x"`)
+    expect(media).toContain(`poster="${prefix}/cover.jpg"`)
+    // Inline <style> blocks are HTML content — the CSS rewrite must reach
+    // into them or every url(/…) 404s silently behind the proxy.
+    const styled = rewritePreviewHtml(
+      `<html><head><style>body{background:url(/bg.png)} a{color:red}</style></head></html>`,
+      prefix,
+    )
+    expect(styled).toContain(`url(${prefix}/bg.png)`)
+    expect(styled).toContain("a{color:red}")
+    // @import in served CSS resolves against the stylesheet's own URL, so
+    // the document <base> never applies.
+    const css = rewritePreviewCss(
+      `@import "/theme.css";\np{color:blue}`,
+      prefix,
+    )
+    expect(css).toContain(`@import "${prefix}/theme.css"`)
+    // Protocol-relative and external references stay untouched.
+    const external = rewritePreviewHtml(
+      `<img src="//cdn.example/x.png" srcset="https://cdn.example/y.png 2x">`,
+      prefix,
+    )
+    expect(external).toContain(`src="//cdn.example/x.png"`)
+    expect(external).toContain(`srcset="https://cdn.example/y.png 2x"`)
   })
 
   test("frame proxy injects the shim, direct proxy does not", async () => {

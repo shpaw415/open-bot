@@ -26,9 +26,14 @@ function pluginRow(
 function fakeDb(
   keys: Record<string, FakeKey | null>,
   plugins: InstalledPlugin[] = [],
+  team: Record<string, FakeKey | null> = {},
+  mode: "personal" | "team" = "personal",
 ): Db {
   return {
+    getSetting: (key: string) =>
+      key === "team_config" ? JSON.stringify({ mode }) : null,
     getUserKey: (_userId: string, slug: string) => keys[slug] ?? null,
+    getTeamKey: (slug: string) => team[slug] ?? null,
     installedPlugins: (_userId: string) => plugins,
   } as unknown as Db
 }
@@ -180,5 +185,35 @@ describe("plugin vault keys", () => {
     const res = handleKeys(url("/api/keys/nope"), db, user)
     const body = JSON.parse((await res?.text()) ?? "{}")
     expect(body.slugs).toContain("weatherapi")
+  })
+
+  test("team mode reads shared slugs from team keys, plugins stay per-user", async () => {
+    const db = fakeDb(
+      { weatherapi: { apiKey: "mine" } },
+      [pluginRow("weather", { vaultCreate: ["weatherapi"] }, "Weather")],
+      { xai: { apiKey: "shared-xai" } },
+      "team",
+    )
+    const res = handleKeys(url("/api/keys"), db, user)
+    const body = JSON.parse((await res?.text()) ?? "{}")
+    expect(
+      body.keys.find((k: { slug: string }) => k.slug === "xai").hasKey,
+    ).toBe(true)
+    expect(
+      body.keys.find((k: { slug: string }) => k.slug === "weatherapi").hasKey,
+    ).toBe(true)
+    const detail = handleKeys(url("/api/keys/xai"), db, user)
+    expect(detail?.status).toBe(200)
+    expect(JSON.parse((await detail?.text()) ?? "{}").apiKey).toBe("shared-xai")
+    const pluginDetail = handleKeys(url("/api/keys/weatherapi"), db, user)
+    expect(JSON.parse((await pluginDetail?.text()) ?? "{}").apiKey).toBe("mine")
+    const missing = handleKeys(url("/api/keys/openai"), db, user)
+    expect(missing?.status).toBe(404)
+  })
+
+  test("personal mode never reads team keys", async () => {
+    const db = fakeDb({}, [], { xai: { apiKey: "shared-xai" } })
+    const res = handleKeys(url("/api/keys/xai"), db, user)
+    expect(res?.status).toBe(404)
   })
 })

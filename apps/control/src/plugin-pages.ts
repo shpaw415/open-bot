@@ -124,16 +124,18 @@ export function pageServerCommand(opts: {
   checkoutEntry?: string | null
 }) {
   const run = opts.checkoutEntry
-    ? `exec bun --hot run '${opts.checkoutEntry}'`
-    : `exec bun run '${opts.bin}'`
+    ? `exec bun --hot run '${opts.checkoutEntry}' >> '${opts.pidFile}.log' 2>&1`
+    : `exec bun run '${opts.bin}' >> '${opts.pidFile}.log' 2>&1`
   const cmdline = pageServerCmdline(opts)
   return [
     `echo $$ > '${opts.pidFile}.pid'`,
     `printf '%s' '${opts.token}' > '${opts.pidFile}.token'`,
     `printf '%s' '${opts.port}' > '${opts.pidFile}.port'`,
     `printf '%s' '${cmdline}' > '${opts.pidFile}.cmd'`,
+    // exec replaces the shell, so the log redirection rides the exec'd
+    // command itself — chained after && it would never run and boot
+    // errors (bad entry, EADDRINUSE) would vanish.
     run,
-    `> '${opts.pidFile}.log' 2>&1`,
   ].join(" && ")
 }
 
@@ -246,6 +248,25 @@ async function pickPort(userId: string, pluginId: string) {
       taken.add(state.port)
     }
   }
+  // Servers from a previous control lifetime still hold their ports (they
+  // die with the desktop, not with the control restart), and the in-memory
+  // state does not survive that restart — the spawn records the resolved
+  // port next to the pid file, so honor those recordings too.
+  const ports = await opencodeExecUser(names(userId).opencode, [
+    "sh",
+    "-c",
+    "cat /home/agent/.open-bot/pages/*.port 2>/dev/null || true",
+  ]).catch(() => ({ code: 1, stdout: "", stderr: "" }))
+  for (const value of ports.stdout.split(/\s+/)) {
+    const recorded = Number(value)
+    if (
+      Number.isInteger(recorded) &&
+      recorded >= PAGE_PORT_MIN &&
+      recorded <= PAGE_PORT_MAX
+    ) {
+      taken.add(recorded)
+    }
+  }
   let port = basePluginPagePort(pluginId)
   const span = PAGE_PORT_MAX - PAGE_PORT_MIN + 1
   for (let attempt = 0; attempt < span; attempt++) {
@@ -259,11 +280,19 @@ async function pickPort(userId: string, pluginId: string) {
   )
 }
 
-async function healthy(userId: string, pluginId: string, port: number) {
+async function healthy(
+  userId: string,
+  pluginId: string,
+  port: number,
+  opts: { fresh?: boolean } = {},
+) {
   const key = stateKey(userId, pluginId)
   const hit = healthCache.get(key)
   const now = Date.now()
-  if (hit && now - hit.at < PAGE_HEALTH_TTL_MS) return hit.ok
+  // Callers probing a start in progress pass fresh: a cached failure (5 s
+  // TTL) collapses the 15 s wait loop to ~3 real probes and reports
+  // "did not come up" for a server that binds seconds later.
+  if (!opts.fresh && hit && now - hit.at < PAGE_HEALTH_TTL_MS) return hit.ok
   let ok = false
   try {
     const base = await endpoint(userId, "opencode", port)
@@ -445,7 +474,15 @@ async function ensurePluginPageServerInner(
   const deadline = Date.now() + PAGE_START_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 250))
-    if (await healthy(userId, pluginId, port)) {
+    if (await healthy(userId, pluginId, port, { fresh: true })) {
+      // Health alone can lie when a crashed spawn left a foreign server
+      // holding the port — only accept it while the spawned pid is alive.
+      const alive = await opencodeExecUser(n.opencode, [
+        "sh",
+        "-c",
+        `pid=$(cat '${pidFile}.pid' 2>/dev/null) && kill -0 "$pid" 2>/dev/null`,
+      ]).catch(() => ({ code: 1, stdout: "", stderr: "" }))
+      if (alive.code !== 0) continue
       states.set(key, { port, token, startedAt: Date.now() })
       touchPluginPageActivity(userId, pluginId)
       if (hub) {

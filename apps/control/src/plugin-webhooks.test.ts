@@ -7,8 +7,10 @@ import {
   publicPagesEnabled,
   resolveUserWebhookTarget,
   resolveWebhookTarget,
+  secretCameFromQuery,
   webhookRetryAfter,
   webhookSecret,
+  withSecretDeprecation,
 } from "./plugin-webhooks"
 
 const USER_ID = "1f0e3dad-9931-4d9a-b1a0-1a2b3c4d5e6f"
@@ -148,6 +150,35 @@ describe("plugin webhooks", () => {
         new URL("http://control.test/hooks/stock-pro/api/event?secret=abc"),
       ),
     ).toBe("abc")
+  })
+
+  test("query-param secrets get the deprecation headers; header secrets do not", async () => {
+    const queryUrl = new URL(
+      "http://control.test/hooks/stock-pro/api/event?secret=abc",
+    )
+    expect(
+      secretCameFromQuery(
+        request("/hooks/stock-pro/api/event?secret=abc"),
+        queryUrl,
+      ),
+    ).toBe(true)
+    const headerReq = request("/hooks/stock-pro/api/event", {
+      "x-open-bot-webhook-secret": "abc",
+    })
+    expect(secretCameFromQuery(headerReq, queryUrl)).toBe(false)
+    const plain = Response.json({ ok: true })
+    const flagged = withSecretDeprecation(plain)
+    expect(flagged.headers.get("deprecation")).toBe("true")
+    expect(flagged.headers.get("warning")).toContain("deprecated")
+    expect(flagged.status).toBe(200)
+    expect(await flagged.text()).toBe(JSON.stringify({ ok: true }))
+    // A plain request with no secret is not flagged.
+    expect(
+      secretCameFromQuery(
+        request("/hooks/stock-pro/api/event"),
+        new URL("http://control.test/hooks/stock-pro/api/event"),
+      ),
+    ).toBe(false)
   })
 
   test("public flag needs a page entry", () => {

@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test"
 import type { PageTarget } from "./cdp"
-import { matchTab, normalizeTarget, shapeState, verbFrom } from "./chrome"
+import {
+  matchTab,
+  normalizeTarget,
+  schemeError,
+  shapeState,
+  verbFrom,
+} from "./chrome"
 
 const USAGE =
   "usage: chrome.ts PORT navigate URL | newtab URL | tabs | switch N | closetab N | url | back | forward | reload"
@@ -23,6 +29,23 @@ test("navigate target rejects junk and empties", () => {
   expect(normalizeTarget("   ")).toBeNull()
   expect(normalizeTarget("not a domain")).toBeNull()
   expect(normalizeTarget("javascript:alert(1)")).toBeNull()
+})
+
+test("navigate target passes file urls through", () => {
+  expect(normalizeTarget("file:///tmp/x.html")).toBe("file:///tmp/x.html")
+  expect(normalizeTarget("  FILE:///home/agent/page.html  ")).toBe(
+    "FILE:///home/agent/page.html",
+  )
+})
+
+test("scheme error explains unsupported schemes and passes known ones", () => {
+  expect(schemeError("ftp://example.test/x")).toContain("ftp")
+  expect(schemeError("ssh://example.test")).toContain("http(s):// or file://")
+  expect(schemeError("javascript:alert(1)")).toContain("javascript")
+  expect(schemeError("https://example.test/")).toBeNull()
+  expect(schemeError("file:///tmp/x.html")).toBeNull()
+  expect(schemeError("example.com")).toBeNull()
+  expect(schemeError("")).toBeNull()
 })
 
 test("verbs parse positional and --url forms", () => {

@@ -116,10 +116,20 @@ export function rewritePreviewHtml(
 ): string {
   const base = prefix.endsWith("/") ? prefix : `${prefix}/`
   const head = storageShim ? FRAME_STORAGE_SHIM : ""
-  const out = html.replace(
-    /\b(href|src|action)=(["'])\/(?!\/)/gi,
-    `$1=$2${base}`,
-  )
+  // Root-absolute sub-resources: attribute form (href/src plus the
+  // media-heavy srcset/poster), and url(...) inside inline <style> blocks —
+  // the style element is HTML content, so the CSS rewrite below never sees
+  // it. Anything relative is handled by the injected <base>.
+  const out = html
+    .replace(
+      /\b(href|src|action|poster|srcset)=(["'])\/(?!\/)/gi,
+      `$1=$2${base}`,
+    )
+    .replace(
+      /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi,
+      (_match, open: string, css: string, close: string) =>
+        open + rewritePreviewCss(css, base) + close,
+    )
   if (/<base\s/i.test(out)) return `${head}${out}`
   if (/<head[^>]*>/i.test(out)) {
     return out.replace(
@@ -132,7 +142,13 @@ export function rewritePreviewHtml(
 
 export function rewritePreviewCss(css: string, prefix: string): string {
   const base = prefix.endsWith("/") ? prefix : `${prefix}/`
-  return css.replace(/url\(\s*(['"]?)\/(?!\/)/g, `url($1${base}`)
+  return (
+    css
+      .replace(/url\(\s*(['"]?)\/(?!\/)/g, `url($1${base}`)
+      // @import resolves against the stylesheet's own URL, so the document's
+      // <base> never applies — root-absolute imports must be rewritten too.
+      .replace(/@import\s+(['"])\/(?!\/)/g, `@import $1${base}`)
+  )
 }
 
 export function mintPreviewToken(

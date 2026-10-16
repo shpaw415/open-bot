@@ -65,14 +65,14 @@ marketplace is the one you'd use for your own private tooling.
   "version": "1.0.0",
   "description": "Web search with automatic quota fallback",
   "author": "you",
-  "repo": "github.com/you/open-bot-web-search",
+  "repo": "you/open-bot-web-search",
   "category": "productivity",
   "skills": [{ "name": "search", "description": "…", "body": "…" }],
   "tools": [{ "name": "web_search", "content": "…" }],
-  "configs": [{ "key": "engine", "type": "enum", "options": ["brave", "tavily"] }],
+  "configs": [{ "key": "engine", "label": "Search engine", "def": "brave", "type": "enum", "options": ["brave", "tavily"] }],
   "permissions": { "vaultCreate": ["brave"] },
   "cron": [{ "name": "morning-digest", "cronExpr": "0 9 * * *", "run": "prompt", "message": "…" }],
-  "dashboard": { "tabs": [{ "kind": "page", "dataUrl": "/stats.json", "pollSeconds": 60 }] },
+  "dashboard": { "tabs": [{ "id": "stats", "title": "Search stats", "kind": "page", "dataUrl": "/stats.json", "pollSeconds": 60, "cards": [{ "kind": "stat", "label": "Searches today", "value": "$.count" }] }] },
   "opencode": { "agentsMd": "Always answer in the user's language." }
 }
 ```

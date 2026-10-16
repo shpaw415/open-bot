@@ -1,5 +1,6 @@
 import { type AiConfig, AiError, resolvePublicModel } from "@open-bot/ai"
 import type { Db, UsageKind } from "@open-bot/db"
+import { resolveQuota } from "./team"
 import { readUsage, type TokenUsage, teeUsage } from "./usage"
 
 export async function handleLlm(req: Request, url: URL, ai: AiConfig, db: Db) {
@@ -15,6 +16,15 @@ export async function handleLlm(req: Request, url: URL, ai: AiConfig, db: Db) {
     return Response.json({ error: "account disabled" }, { status: 403 })
   }
   db.touchDesktop(userId)
+  const quota =
+    account.role !== "admin" ? resolveQuota(db, userId, Date.now()) : null
+  if (quota?.over && quota.behavior === "block") {
+    return Response.json(
+      { error: "weekly quota reached", quota },
+      { status: 429 },
+    )
+  }
+  const quotaWarn = quota?.over === true
   const record = (kind: UsageKind, usage: TokenUsage | null) => {
     try {
       db.recordUsage({
@@ -107,11 +117,16 @@ export async function handleLlm(req: Request, url: URL, ai: AiConfig, db: Db) {
         headers: {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
+          ...(quotaWarn ? { "x-open-bot-quota": "warn" } : {}),
         },
       })
     }
     record(which, readUsage(result.json))
-    return Response.json(result.json)
+    return quotaWarn
+      ? Response.json(result.json, {
+          headers: { "x-open-bot-quota": "warn" },
+        })
+      : Response.json(result.json)
   } catch (error) {
     const status = error instanceof AiError ? error.status : 502
     const message = error instanceof Error ? error.message : "upstream failed"

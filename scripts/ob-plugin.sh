@@ -20,8 +20,9 @@ Usage:
   ob-plugin publish DIR --dev        staging loop for a dev-tag version: commit, push, force-move the
                                       v<tag> tag, clobber the release, publish, then reinstall pinned
                                       (--no-commit skips the git commit step)
-  ob-plugin doctor DIR               pre-publish checks: manifest validity, repo reachability, tag
-  ob-plugin guard status ID          show the plugin's maintenance guard cron
+   ob-plugin doctor DIR               pre-publish checks: manifest validity, repo reachability, tag
+   ob-plugin review ID [--version X]  poll the marketplace security review for one version
+   ob-plugin guard status ID          show the plugin's maintenance guard cron
   ob-plugin guard off ID             delete the plugin's maintenance guard cron (stop maintaining)
   ob-plugin search [QUERY]           search the marketplace
   ob-plugin info ID                  marketplace details for one plugin
@@ -41,7 +42,8 @@ Usage:
   ob-plugin endpoint ID secret VALUE set the secret (callers then send X-Open-Bot-Webhook-Secret or ?secret=)
   ob-plugin endpoint ID secret --generate   set a fresh random secret and print it
   ob-plugin endpoint ID clear        remove the secret (endpoint becomes public)
-  ob-plugin settings ID [key=value]  show or update plugin settings
+  ob-plugin settings ID [key=value]  show, set (KEY=value), or clear (KEY=)
+                                     plugin settings
   ob-plugin guide ID                 print the plugin's CONFIG.md configuration guide (how to configure it with the user)
   ob-plugin vault ID                 list the plugin's vaultCreate slugs (hasKey only, never values)
   ob-plugin vault ID SLUG=value [--account ACCOUNT] [--url URL]
@@ -126,13 +128,18 @@ fail_on_error() {
   fi
 }
 
-# Surface a failed page-server start from the install/update response.
+# Surface a failed page-server start from the install/update response. The
+# lifecycle is lazy — a fresh install reports attempted:false until the first
+# dashboard/webhook request boots the server, which is not a failure.
 page_warn() {
   if printf '%s' "$1" | jq -e '.plugin.page and .plugin.page.attempted and (.plugin.page.running | not)' >/dev/null 2>&1; then
     reason=$(printf '%s' "$1" | jq -r '.plugin.page.error // "did not come up in time"')
     id=$(printf '%s' "$1" | jq -r '.plugin.pluginId')
     echo "ob-plugin: warning: page server is not running ($reason)" >&2
     echo "  see ~/.open-bot/pages/$id.log on this desktop, or ob-plugin restart $id to retry" >&2
+  elif printf '%s' "$1" | jq -e '.plugin.page and (.plugin.page.attempted | not) and ((.plugin.manifest | fromjson? | .dashboard.pages) != null)' >/dev/null 2>&1; then
+    id=$(printf '%s' "$1" | jq -r '.plugin.pluginId')
+    echo "ob-plugin: page server is lazy — it starts on the first dashboard/webhook request (ob-plugin restart $id to boot now)" >&2
   fi
 }
 
@@ -154,6 +161,70 @@ purchase_gate() {
 
 urlencode() {
   printf '%s' "$1" | jq -sRr @uri
+}
+
+# Local filesystem pre-checks the control-plane validate cannot do (it never
+# sees the checkout): every declared files[].source must exist on disk — a
+# typo passes validate and only 404s at install, or worse, after the tag and
+# release are cut — and payload/manifest sizes must fit the security-review
+# windows. Window constants mirror packages/plugin-kit (REVIEW_*); the
+# plugin-kit drift test asserts this text stays in sync.
+REVIEW_PAYLOAD_FILE_CHARS=16000
+REVIEW_PAYLOAD_TOTAL_CHARS=64000
+REVIEW_MANIFEST_CHARS=150000
+REVIEW_TAR_PATH_MAX=99
+local_payload_checks() {
+  dir="$1"
+  file="$2"
+  rc=0
+  total=0
+  missing=$(mktemp)
+  oversize=$(mktemp)
+  jq -r '[(.files // [])[] | .source] | .[]' "$file" > "$missing.sources" 2>/dev/null || : > "$missing.sources"
+  while IFS= read -r source; do
+    [ -n "$source" ] || continue
+    segment_too_long=0
+    printf '%s' "$source" | tr '/' '\n' | while IFS= read -r segment; do
+      [ ${#segment} -le "$REVIEW_TAR_PATH_MAX" ] || exit 1
+    done || segment_too_long=1
+    if [ "$segment_too_long" -eq 1 ]; then
+      echo "warning: files[] source \"$source\" has a path segment longer than $REVIEW_TAR_PATH_MAX chars — the review tarball cannot match it and the publish will be rejected; shorten the path" >&2
+      rc=1
+      continue
+    fi
+    if [ ! -f "$dir/$source" ]; then
+      echo "$source" >> "$missing"
+      rc=1
+      continue
+    fi
+    size=$(wc -c < "$dir/$source" | tr -d ' ')
+    if [ "$source" != "CONFIG.md" ] && [ "$size" -gt "$REVIEW_PAYLOAD_FILE_CHARS" ]; then
+      echo "$source ($size chars)" >> "$oversize"
+      rc=1
+    fi
+    if [ "$source" != "CONFIG.md" ]; then
+      total=$((total + size))
+    fi
+  done < "$missing.sources"
+  if [ -s "$missing" ]; then
+    echo "invalid: declared files[] sources missing from the plugin directory (fix the spelling or add the files — a missing source only 404s at install time, or worse, after the tag is cut):" >&2
+    sed 's/^/  - /' "$missing" >&2
+  fi
+  if [ -s "$oversize" ]; then
+    echo "warning: payload files past the security-review window ($REVIEW_PAYLOAD_FILE_CHARS chars/file) — the publish will be rejected; shorten or split:" >&2
+    sed 's/^/  - /' "$oversize" >&2
+  fi
+  if [ "$total" -gt "$REVIEW_PAYLOAD_TOTAL_CHARS" ]; then
+    echo "warning: payload files total $total chars; the security-review window is $REVIEW_PAYLOAD_TOTAL_CHARS — the publish will be rejected; trim the payloads" >&2
+    rc=1
+  fi
+  manifest_chars=$(jq -S . "$file" | wc -c | tr -d ' ')
+  if [ "$manifest_chars" -gt "$REVIEW_MANIFEST_CHARS" ]; then
+    echo "warning: manifest is $manifest_chars chars; the security-review window is $REVIEW_MANIFEST_CHARS — the publish will be rejected; trim skills/personas/tools/cron content" >&2
+    rc=1
+  fi
+  rm -f "$missing" "$oversize" "$missing.sources"
+  return "$rc"
 }
 
 [ $# -ge 1 ] || { usage; exit 2; }
@@ -215,6 +286,18 @@ case "$cmd" in
 
 const port = Number(process.env.OPEN_BOT_PAGE_PORT ?? 4740)
 
+// API auth for anything beyond /healthz. The dashboard proxy and public
+// /hooks inject the real token as x-open-bot-page-token; a local checkout
+// or ob-preview run has no token configured (or the dev-preview value) and
+// stays open. Exact match only: never accept a fixed literal like
+// "dev-preview" as an incoming credential while a real token is set — the
+// marketplace security review flags that pattern as a backdoor.
+const expectedToken = process.env.OPEN_BOT_PAGE_TOKEN ?? ""
+const authorized = (req: Request) =>
+  expectedToken === "" ||
+  expectedToken === "dev-preview" ||
+  req.headers.get("x-open-bot-page-token") === expectedToken
+
 // The "/" route branches on the mode: the HTML import is only valid as a
 // static routes value, so pick the table before the server starts.
 const routes = process.env.OPEN_BOT_PAGE_UI
@@ -232,6 +315,7 @@ const server = Bun.serve({
   fetch(req) {
     const url = new URL(req.url)
     if (url.pathname === "/healthz") return new Response("ok")
+    if (!authorized(req)) return new Response("unauthorized", { status: 401 })
     if (url.pathname === "/api/ping") return Response.json({ pong: Date.now() })
     return new Response("not found", { status: 404 })
   },
@@ -271,6 +355,45 @@ body {
   color: #eee;
 }
 EOF
+    cat > "$stage/smoke.test.ts" <<'EOF'
+// Plugin smoke test — `bun test` from the plugin root (ob-plugin doctor runs
+// it automatically when *.test.ts files exist). Keep it fast and hermetic.
+import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+
+const manifest = JSON.parse(
+  readFileSync(new URL("./open-bot.plugin.json", import.meta.url), "utf8"),
+) as {
+  id?: unknown
+  version?: unknown
+  files?: { name: string; source: string }[]
+  dashboard?: { pages?: { entry?: string } }
+}
+
+describe("plugin smoke", () => {
+  test("manifest is well-formed", () => {
+    expect(manifest.id).toBeString()
+    expect(manifest.version).toBeString()
+  })
+
+  test("every declared files[] source exists on disk", () => {
+    for (const file of manifest.files ?? []) {
+      expect(
+        () => readFileSync(new URL(`./${file.source}`, import.meta.url)),
+        `files[] source ${file.source} is missing from the checkout`,
+      ).not.toThrow()
+    }
+  })
+
+  test("page server entry is a declared files[] name", () => {
+    const entry = manifest.dashboard?.pages?.entry
+    if (!entry) return
+    expect(
+      (manifest.files ?? []).some((file) => file.name === entry),
+    ).toBe(true)
+  })
+})
+EOF
     cat > "$stage/README.md" <<EOF
 # $name
 
@@ -297,25 +420,42 @@ commit, tag, release, publish, and reinstall:
 ob-plugin publish ~/plugins-create/$name --dev
 \`\`\`
 
+## Testing
+
+Run the plugin's tests with \`bun test\` — \`ob-plugin doctor\` runs them
+automatically whenever *.test.ts files exist (failures are advisory, but fix
+them before publishing). The scaffold ships smoke.test.ts covering the two
+checks everything else depends on: a well-formed manifest and every declared
+files[] source existing on disk. Grow it with real tests for your server's
+logic and exports.
+
 Manifest quick reference:
 - skills[]: {name, description, body} — installed into the desktop's OpenViking
 - personas[]: {name, instruction} — personalities the thread picker can choose
-- cron[]: {name, message, everySeconds | cronExpr} — scheduled jobs
+- cron[]: {name, message, everySeconds | cronExpr, run?: prompt|script|both|auto, script?} — scheduled jobs (run=script/both/auto needs script, max 16k chars)
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
-- files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools; every frontend file the page server references (index.html, app.ts, styles.css) must be declared here
-- dashboard.pages: {entry, ui} — entry is the page server files[] name; ui is the files[] source of the frontend entry (index.html) — the control plane bundles it with bun build into one self-contained HTML for frozen installs, local installs import it live
+- files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools; every frontend file the page server references (index.html, app.ts, styles.css) must be declared here; omitted exec means executable
+- dashboard.pages: {entry, ui, public?} — entry is the page server files[] name; ui is the files[] source of the frontend entry (index.html) — the control plane bundles it with bun build into one self-contained HTML for frozen installs, local installs import it live; public: true also exposes /hooks/<userId>/<id>/<path> on the public internet (optional per-install secret)
+- dashboard.hooks[]: {event: session.idle|thread.created, message} — up to 8; each runs an agent session in a hidden worker thread when the event fires (max 20 runs/day)
+- dashboard.mentions: [{section, label?, path?}] — up to 4 dynamic @section/name composer entries; your page server answers GET <path> with {items: [{name, description?, aliases?, hint?}]}
 - Write plugin code in TypeScript, not JavaScript: tool scripts (with a "#!/usr/bin/env bun" shebang), files[] payloads, and dashboard page servers are all .ts files — Bun runs .ts natively, no build step
-- configs[]: {key, label, def} — settings shown on the Plugins page
+- configs[]: {key, label, def, type?: string|bool|number|enum, options?: [...], secret?: true} — settings shown on the Plugins page; typed settings are validated and render matching inputs (max 64)
 - setup: {commands: [...], uninstall: [...]} — shell commands run as root in the desktop at install and on every desktop start (commands must be idempotent, e.g. "apt-get install -y figlet"); uninstall runs at uninstall; the user sees them in the consent prompt, log at ~/.open-bot/plugin-init/<id>.log
 - permissions.vaultRead / vaultCreate: vault key slugs
-- dashboard.tabs[]: {id, title, kind: page|iframe, url?, cards?}
+- dashboard.tabs[]: {id, title, icon?, kind: app|page|iframe, path? (app: server path, default /), url? (iframe), dataUrl?, pollSeconds?, cards? (page: 1-64 cards)}
+- pricing: {model: "one-time", amount} — USD cents 99-50000; makes the plugin a paid marketplace listing
 - textbox: renderers, commands, buttons, validators, attachments
 - opencode: {plugin: [npm...], mcp: {...}, agents: {...new agent defs...}, agentTools: {agent: {glob: bool}}, agentsMd: "standing instructions injected next to AGENTS.md (max 4000 chars, no secrets)"}
 - Helper sessions your plugin spawns must be titled with the "worker:" prefix so they stay out of the dashboard thread list.
 
 CONFIG.md (created alongside this file) is the configuration guide the
 installing agent reads to configure the plugin with the user — fill it in
-whenever the plugin declares configs[] or vault keys.
+whenever the plugin declares configs[] or vault keys. It is also read by the
+marketplace security reviewer on every publish: no secrets, no real personal
+data, and no instructions that try to steer the agent.
+
+Your README is shown on the marketplace listing and the dashboard detail
+view — write it for the person deciding whether to install.
 
 Privacy: publishing makes this folder public (GitHub repo + marketplace).
 Never hard-code the user's personal information — real names, contacts,
@@ -332,6 +472,10 @@ EOF
 You are configuring the \`$name\` open-bot plugin on this desktop for the user.
 Walk them through it step by step. Never print or echo secret values; fill
 them with the write-only commands shown here.
+
+This file is read by the installing agent AND by the marketplace security
+reviewer on every publish: no secrets, no real personal data, and no
+instructions that try to steer the agent beyond configuring this plugin.
 
 This file ships publicly with the plugin: placeholders only, never the
 current user's personal information.
@@ -398,13 +542,17 @@ EOF
     ;;
   validate)
     [ $# -eq 1 ] || { usage; exit 2; }
-    file="$1/$MANIFEST_FILE"
+    dir="$1"
+    file="$dir/$MANIFEST_FILE"
     [ -f "$file" ] || { echo "ob-plugin: missing $file" >&2; exit 2; }
     body=$(jq -n --slurpfile m "$file" '{manifest: $m[0]}')
     out=$(request POST /api/plugins/validate "$body")
     fail_on_error "$out"
     printf '%s' "$out" | jq -r 'if .ok then "valid\n" + (.permissions[]? | " - " + .) else "invalid\n" + ([.issues[]? | " - \(.path // "manifest"): \(.message)"] | join("\n")) end'
     [ "$(printf '%s' "$out" | jq -r '.ok')" = "true" ] || exit 1
+    # Local pre-check: declared sources must exist and payloads must fit the
+    # security-review windows (the control plane validates JSON only).
+    local_payload_checks "$dir" "$file" || exit 1
     # Local pre-check: bundle the declared dashboard frontend so build errors
     # surface before a release is cut (frozen installs get this same build
     # from the control plane at install). Skipped when bun is missing.
@@ -457,6 +605,47 @@ EOF
     repo=$(jq -r '.repo' "$file")
     stable=1
     printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || stable=0
+    # Pre-flight: name each failure mode instead of one opaque POST error.
+    # (1) The instance must actually have a marketplace configured.
+    mp_out=$(request GET /api/plugins/market || true)
+    if printf '%s' "$mp_out" | grep -q "marketplace is not configured"; then
+      echo "ob-plugin: this instance has no marketplace configured (OPEN_BOT_MARKETPLACE_URL / OPEN_BOT_MARKETPLACE_TOKEN) — publishing is impossible here; publish from an instance with a marketplace, or install locally with: ob-plugin install --path $dir" >&2
+      exit 1
+    fi
+    if [ -z "$mp_out" ]; then
+      echo "ob-plugin: cannot reach the control plane to check the marketplace" >&2
+      exit 1
+    fi
+    # (2) Identity echo: publish as the authenticated GitHub account — on a
+    # bot account a guessed OWNER name publishes under the wrong identity.
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      account=$(gh api user -q .login 2>/dev/null || echo "")
+      if [ -n "$account" ]; then
+        echo "publishing as @$account -> $repo" >&2
+      fi
+    elif [ "$dev" -eq 1 ]; then
+      echo "ob-plugin: gh is not authenticated — --dev needs it to push the tag and create the release" >&2
+      exit 1
+    fi
+    # (3) Stable publishes must ship the bytes that were tested: the
+    # marketplace reviews and installs the tag tarball, not this checkout.
+    if [ "$dev" -ne 1 ] && [ -d "$dir/.git" ]; then
+      dirty=$(git -C "$dir" status --porcelain 2>/dev/null | head -5 || true)
+      if [ -n "$dirty" ]; then
+        echo "ob-plugin: $dir has uncommitted changes — commit or stash them; the release tag must contain exactly what you tested" >&2
+        exit 1
+      fi
+      head_sha=$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "")
+      tag_sha=$(git -C "$dir" rev-parse -q --verify "v$version^{commit}" 2>/dev/null || echo "")
+      if [ -z "$tag_sha" ]; then
+        echo "ob-plugin: local tag v$version does not exist — create it first (git tag v$version && git push origin v$version)" >&2
+        exit 1
+      fi
+      if [ "$head_sha" != "$tag_sha" ]; then
+        echo "ob-plugin: HEAD ($head_sha) is not tag v$version ($tag_sha) — move the tag onto HEAD (git tag -f v$version && git push -f origin v$version) or the reviewed tarball will not match the checkout" >&2
+        exit 1
+      fi
+    fi
     if [ "$dev" -eq 1 ]; then
       if [ "$stable" -eq 1 ]; then
         echo "ob-plugin: --dev stages a dev tag (e.g. beta-1); manifest version is $version" >&2
@@ -523,6 +712,7 @@ EOF
           queued|running|"")
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "ob-plugin: security review still ${status:-pending} after 8 minutes" >&2
+              echo "  the publish is queued — check the verdict later with: ob-plugin review $plugin_id --version $version" >&2
               break
             fi
             sleep 2
@@ -538,6 +728,9 @@ EOF
       done
     fi
     printf '%s' "$out" | jq '{pluginId, version, marketplace, guardCronId, review}'
+    if [ -d "$dir/.git" ]; then
+      echo "published tag v$version at $(git -C "$dir" rev-parse HEAD 2>/dev/null || echo unknown-sha)"
+    fi
     echo "guard cron keeps this plugin maintained daily: ob-cron list | grep guard"
     if [ "$dev" -eq 1 ]; then
       installed=$(request GET /api/plugins/installed)
@@ -571,6 +764,44 @@ EOF
       fail_on_error "$out"
       echo "guard cron for $plugin_id deleted (the plugin is no longer maintained)"
     fi
+    ;;
+  review)
+    id=""
+    version=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --version) [ $# -ge 2 ] || { usage; exit 2; }; version="$2"; shift 2 ;;
+        -*) usage; exit 2 ;;
+        *)
+          [ -z "$id" ] || { echo "ob-plugin: unexpected argument: $1" >&2; usage; exit 2; }
+          id="$1"
+          shift
+          ;;
+      esac
+    done
+    [ -n "$id" ] || { usage; exit 2; }
+    if [ -z "$version" ]; then
+      # Default to the local checkout's manifest version (the usual case:
+      # asking about the version just published).
+      version=$(jq -r '.version // empty' "$CREATE_ROOT/$id/$MANIFEST_FILE" 2>/dev/null || true)
+      if [ -z "$version" ]; then
+        echo "ob-plugin: --version is required (no local manifest found at $CREATE_ROOT/$id)" >&2
+        exit 2
+      fi
+    fi
+    out=$(request GET "/api/plugins/review?id=$(urlencode "$id")&version=$(urlencode "$version")")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{pluginId: .pluginId, version: .version, pluginStatus: .pluginStatus, security, review}'
+    status=$(printf '%s' "$out" | jq -r '.review.status // .security.status // ""')
+    case "$status" in
+      queued|running|"")
+        echo "ob-plugin: review still in flight — poll again with: ob-plugin review $id --version $version" >&2
+        exit 3
+        ;;
+      concern|error)
+        exit 1
+        ;;
+    esac
     ;;
   doctor)
     [ $# -eq 1 ] || { usage; exit 2; }
@@ -652,6 +883,11 @@ EOF
       fi
     done
     [ "$html_missing" -eq 1 ] && problems=1
+    # Declared-source existence + review-window sizes (same checks validate
+    # runs; doctor reports them as problems with fuller context).
+    if ! local_payload_checks "$dir" "$file"; then
+      problems=1
+    fi
     # Pre-run the standalone UI build so bundle errors surface pre-publish.
     ui_entry=$(jq -r '.dashboard.pages.ui // empty' "$file")
     if [ -n "$ui_entry" ] && command -v bun >/dev/null 2>&1; then
@@ -663,6 +899,19 @@ EOF
         problems=1
       fi
       rm -rf "$build_dir"
+    fi
+    # Run the plugin's own tests when any exist (advisory: doctor is author-
+    # invoked, so flaky tests cost the author a look — never a publish gate).
+    if command -v bun >/dev/null 2>&1 && ls "$dir"/*.test.ts >/dev/null 2>&1; then
+      test_log=$(mktemp)
+      if (cd "$dir" && bun test) > "$test_log" 2>&1; then
+        echo "tests: ok"
+      else
+        echo "tests: FAILED — tail of bun test output:" >&2
+        tail -12 "$test_log" | sed 's/^/  /' >&2
+        problems=1
+      fi
+      rm -f "$test_log"
     fi
     # Soft advisory: plugin source ships publicly (GitHub repo + marketplace),
     # so personal information must never be hard-coded in it. The marketplace
@@ -845,7 +1094,14 @@ EOF
     out=$(request POST "/api/plugins/installed/$(urlencode "$1")/page/restart")
     fail_on_error "$out"
     port=$(printf '%s' "$out" | jq -r '.port')
-    echo "page server for $1 restarted on port $port (local installs run the checkout with bun --hot — no restart needed after edits)"
+    case "$(printf '%s' "$out" | jq -r '.source // ""')" in
+      local)
+        echo "page server for $1 restarted on port $port (local install — the checkout hot-reloads via bun --hot, no restart needed after edits)"
+        ;;
+      *)
+        echo "page server for $1 restarted on port $port (marketplace install serves the frozen copy — restart lands edits)"
+        ;;
+    esac
     ;;
   endpoint)
     [ $# -ge 1 ] || { usage; exit 2; }
@@ -865,6 +1121,7 @@ EOF
           '{pluginId: $id, enabled, secured, secret: (.secret // null), url: (.publicUrl // ($base + .path))}'
         if printf '%s' "$out" | jq -e '.secured == true' >/dev/null 2>&1; then
           echo "test: curl -s -H \"X-Open-Bot-Webhook-Secret: \$(ob-plugin endpoint $id secret)\" \"\$(ob-plugin endpoint $id url)\"" >&2
+          echo "send the secret as the X-Open-Bot-Webhook-Secret header — the ?secret= query form is deprecated (it leaks into access logs and Referer headers)" >&2
         fi
         ;;
       url)
@@ -939,13 +1196,21 @@ EOF
       exit 0
     fi
     settings='{}'
+    clears='[]'
     for pair in "$@"; do
       key=${pair%%=*}
       value=${pair#*=}
       [ "$key" != "$pair" ] || { echo "ob-plugin: expected key=value, got $pair" >&2; exit 2; }
-      settings=$(printf '%s' "$settings" | jq --arg k "$key" --arg v "$value" '. + {($k): $v}')
+      # KEY= (empty value) clears the saved setting outright — including
+      # secret-typed ones, which the PUT route keeps when "" arrives inside
+      # settings (the dashboard resends every key on each save).
+      if [ -z "$value" ]; then
+        clears=$(printf '%s' "$clears" | jq --arg k "$key" '. + [$k]')
+      else
+        settings=$(printf '%s' "$settings" | jq --arg k "$key" --arg v "$value" '. + {($k): $v}')
+      fi
     done
-    body=$(jq -n --argjson s "$settings" '{settings: $s}')
+    body=$(jq -n --argjson s "$settings" --argjson c "$clears" '{settings: $s, clear: $c}')
     out=$(request PUT "/api/plugins/installed/$(urlencode "$id")/settings" "$body")
     fail_on_error "$out"
     echo "updated settings for $id"

@@ -6,9 +6,10 @@ import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useState } from "react"
-import { api } from "./api"
+import { api, isTeamLockedError } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { MicIcon } from "./icons"
+import { useTeamMode } from "./team"
 import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
 
 type VoiceField = {
@@ -95,6 +96,8 @@ export function VoiceProvider() {
   const [language, setLanguage] = useState("auto")
   const sttVault = useVaultOverride(stt.keySource)
   const ttsVault = useVaultOverride(tts.keySource)
+  const team = useTeamMode()
+  const shared = team.mode === "team"
 
   const sttSpec = providers.find(
     (item) => item.kind === "stt" && item.id === stt.provider,
@@ -165,38 +168,48 @@ export function VoiceProvider() {
         ttsKeySource?: "setup" | "vault" | null
       }>("/api/voice", {
         method: "PUT",
-        body: JSON.stringify({
-          stt: {
-            provider: stt.provider,
-            accountId: stt.accountId,
-            apiKey: stt.apiKey,
-            model: stt.model,
-          },
-          tts: {
-            provider: tts.provider,
-            accountId: tts.accountId,
-            apiKey: tts.apiKey,
-            model: tts.model,
-            voice: tts.voice,
-          },
-          language,
-        }),
+        body: JSON.stringify(
+          shared
+            ? { tts: { voice: tts.voice }, language }
+            : {
+                stt: {
+                  provider: stt.provider,
+                  accountId: stt.accountId,
+                  apiKey: stt.apiKey,
+                  model: stt.model,
+                },
+                tts: {
+                  provider: tts.provider,
+                  accountId: tts.accountId,
+                  apiKey: tts.apiKey,
+                  model: tts.model,
+                  voice: tts.voice,
+                },
+                language,
+              },
+        ),
       })
       setStt({
         ...stt,
         apiKey: "",
-        hasKey: Boolean(stt.provider),
+        hasKey: shared ? stt.hasKey : Boolean(stt.provider),
         keySource: body.sttKeySource ?? null,
       })
       setTts({
         ...tts,
         apiKey: "",
-        hasKey: Boolean(tts.provider),
+        hasKey: shared ? tts.hasKey : Boolean(tts.provider),
         keySource: body.ttsKeySource ?? null,
       })
       setSaved("Saved. Voice works right away.")
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "save failed")
+      setError(
+        isTeamLockedError(caught)
+          ? "Managed by your admin — the team's shared voice providers changed since this page loaded."
+          : caught instanceof Error
+            ? caught.message
+            : "save failed",
+      )
     } finally {
       setBusy(false)
     }
@@ -244,12 +257,18 @@ export function VoiceProvider() {
       <Stack spacing={1.5}>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
+        {shared ? (
+          <Alert severity="info">
+            Managed by your admin — the team's shared speech providers apply to
+            everyone. Your voice and language stay yours.
+          </Alert>
+        ) : null}
         <Typography variant="subtitle2">Speech to text (microphone)</Typography>
         <Select
           name="stt-provider"
           label="STT provider"
           value={stt.provider}
-          disabled={providers.length === 0}
+          disabled={providers.length === 0 || shared}
           onSelect={(id) => pickSide("stt", id, stt, setStt)}
         >
           {[
@@ -274,7 +293,7 @@ export function VoiceProvider() {
             }
             value={stt.accountId}
             placeholder={sttSpec.account.placeholder}
-            disabled={sttLocked}
+            disabled={sttLocked || shared}
             onChange={(event) =>
               setStt({ ...stt, accountId: event.currentTarget.value })
             }
@@ -296,7 +315,7 @@ export function VoiceProvider() {
                 placeholder={
                   sttLocked ? "••••••••" : sttSpec?.secret.placeholder
                 }
-                disabled={sttLocked}
+                disabled={sttLocked || shared}
                 sx={{ flex: 1 }}
                 onChange={(event) =>
                   setStt({ ...stt, apiKey: event.currentTarget.value })
@@ -310,6 +329,7 @@ export function VoiceProvider() {
               label="STT model"
               value={stt.model}
               placeholder={sttSpec?.defaultModel}
+              disabled={shared}
               onChange={(event) =>
                 setStt({ ...stt, model: event.currentTarget.value })
               }
@@ -322,7 +342,7 @@ export function VoiceProvider() {
           name="tts-provider"
           label="TTS provider"
           value={tts.provider}
-          disabled={providers.length === 0}
+          disabled={providers.length === 0 || shared}
           onSelect={(id) => pickSide("tts", id, tts, setTts)}
         >
           {[
@@ -349,7 +369,7 @@ export function VoiceProvider() {
                 }
                 value={tts.accountId}
                 placeholder={ttsSpec.account.placeholder}
-                disabled={ttsLocked}
+                disabled={ttsLocked || shared}
                 onChange={(event) =>
                   setTts({ ...tts, accountId: event.currentTarget.value })
                 }
@@ -369,7 +389,7 @@ export function VoiceProvider() {
                 placeholder={
                   ttsLocked ? "••••••••" : ttsSpec?.secret.placeholder
                 }
-                disabled={ttsLocked}
+                disabled={ttsLocked || shared}
                 sx={{ flex: 1 }}
                 onChange={(event) =>
                   setTts({ ...tts, apiKey: event.currentTarget.value })
@@ -384,6 +404,7 @@ export function VoiceProvider() {
                 label="TTS model"
                 value={tts.model}
                 placeholder={ttsSpec?.defaultModel}
+                disabled={shared}
                 onChange={(event) =>
                   setTts({ ...tts, model: event.currentTarget.value })
                 }
@@ -422,7 +443,7 @@ export function VoiceProvider() {
           >
             Save voice
           </Button>
-          {anyKey || stt.provider || tts.provider ? (
+          {shared ? null : anyKey || stt.provider || tts.provider ? (
             <Button
               variant="text"
               disabled={busy}

@@ -250,9 +250,9 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\]{1,200}$",
-            "description": "Repo-relative path inside the release tarball: 1-8 safe segments, no leading /, no .. segments, no backslashes. Text files only, max 10 MB each."
+            "description": "Repo-relative path inside the release tarball: 1-8 safe segments, no leading /, no .. segments, no backslashes. Text files only. The security review reads the first 16,000 chars per file and 64,000 chars total; payloads past that window are rejected at publish. Keep each path segment under 99 chars (longer paths cannot be matched in the review tarball)."
           },
-          "exec": { "type": "boolean", "default": false }
+          "exec": { "type": "boolean", "default": false, "description": "Omitted = executable (true): installers treat files without an explicit exec flag as executable code." }
         }
       }
     },

@@ -41,6 +41,29 @@ function listingFromRow(row: PluginRow): PluginListing {
   }
 }
 
+// Migration guard: a Pages deploy that lands before the remote D1 migrate
+// must answer a diagnosable 503 instead of a raw D1 500 on every write (the
+// 0005 outage class). The probe is cached per isolate — one cheap query per
+// fresh deployment, never per request.
+let schemaCheckCache: { ok: true } | { ok: false; error: string } | null = null
+export async function schemaSelfCheck(
+  DB: D1Database,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (schemaCheckCache) return schemaCheckCache
+  try {
+    await DB.prepare(
+      "SELECT review_enqueued_at FROM plugin_versions LIMIT 1",
+    ).first()
+    schemaCheckCache = { ok: true }
+  } catch (error) {
+    schemaCheckCache = {
+      ok: false,
+      error: `marketplace schema is missing columns — run D1 migrations before deploying (hint: bunx wrangler d1 migrations apply open-bot-marketplace --remote) [${error instanceof Error ? error.message : "probe failed"}]`,
+    }
+  }
+  return schemaCheckCache
+}
+
 function parseFindings(raw: string | null): SecurityFinding[] {
   if (!raw) return []
   try {

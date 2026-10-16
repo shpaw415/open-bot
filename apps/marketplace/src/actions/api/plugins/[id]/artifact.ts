@@ -25,7 +25,10 @@ export async function onRequestGet(context: EventContext<Env, "id", never>) {
   if (!row) return Response.json({ error: "plugin not found" }, { status: 404 })
   const priceCents = row.price_cents ?? 0
   if (priceCents > 0) {
-    if (!apiKey || !(await hasLicense(DB, apiKey.userId, id))) {
+    // The author's own key is a license (post-publish verification installs —
+    // same owner_user_id identity the publish flow enforces).
+    const author = Boolean(apiKey && row.owner_user_id === apiKey.userId)
+    if (!author && (!apiKey || !(await hasLicense(DB, apiKey.userId, id)))) {
       return Response.json(
         {
           error:

@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { ExtensionIcon, VpnKeyIcon } from "./icons"
+import { useTeamMode } from "./team"
 
 type VaultField = {
   id: string
@@ -61,7 +62,7 @@ function fieldSaved(entry: VaultEntry | undefined, field: string) {
   return false
 }
 
-export function KeyVault() {
+export function KeyVault({ isAdmin = false }: { isAdmin?: boolean }) {
   const [catalog, setCatalog] = useState<VaultSpec[]>([])
   const [entries, setEntries] = useState<VaultEntry[]>([])
   const [sources, setSources] = useState<Record<string, string | null>>({})
@@ -69,6 +70,10 @@ export function KeyVault() {
   const [error, setError] = useState("")
   const [saved, setSaved] = useState("")
   const [busy, setBusy] = useState("")
+  const team = useTeamMode()
+  const shared = team.mode === "team"
+  const adminNote =
+    "Team mode is on — shared keys are managed on the Admin page's Team section."
 
   const load = useCallback(() => {
     return api<KeyVaultForm>("/api/keys")
@@ -223,6 +228,13 @@ export function KeyVault() {
           </Typography>
           {spec.fields.map((field) => {
             const hasSaved = fieldSaved(entry, field.id)
+            if (shared) {
+              return hasSaved ? (
+                <Chip key={field.id} size="small" variant="outlined">
+                  {field.label} saved
+                </Chip>
+              ) : null
+            }
             return (
               <TextField
                 key={field.id}
@@ -240,24 +252,26 @@ export function KeyVault() {
               />
             )
           })}
-          <Stack direction="row" spacing={1}>
-            <Button
-              variant="contained"
-              disabled={busy === spec.id}
-              onClick={() => void saveEntry(spec)}
-            >
-              Save
-            </Button>
-            {anySaved ? (
+          {shared ? null : (
+            <Stack direction="row" spacing={1}>
               <Button
-                variant="text"
+                variant="contained"
                 disabled={busy === spec.id}
-                onClick={() => void removeEntry(spec)}
+                onClick={() => void saveEntry(spec)}
               >
-                Remove
+                Save
               </Button>
-            ) : null}
-          </Stack>
+              {anySaved ? (
+                <Button
+                  variant="text"
+                  disabled={busy === spec.id}
+                  onClick={() => void removeEntry(spec)}
+                >
+                  Remove
+                </Button>
+              ) : null}
+            </Stack>
+          )}
         </Stack>
       </Box>
     )
@@ -268,14 +282,29 @@ export function KeyVault() {
       <ConfigSection
         icon={<VpnKeyIcon />}
         title="Provider keys"
-        description="Shared API keys for this account. Provider setups below use these when their own key is blank; a key typed into a provider setup always wins. Keys that installed plugins declare are merged into this page too."
+        description={
+          shared
+            ? isAdmin
+              ? adminNote
+              : "Managed by your admin — this host runs in team mode on one shared key set, so these entries are read-only here."
+            : "Shared API keys for this account. Provider setups below use these when their own key is blank; a key typed into a provider setup always wins. Keys that installed plugins declare are merged into this page too."
+        }
         status={
-          vaultUsers.length > 0
-            ? { label: `${vaultUsers.length} in use`, color: "primary" }
-            : null
+          shared
+            ? { label: "Team", color: "primary" }
+            : vaultUsers.length > 0
+              ? { label: `${vaultUsers.length} in use`, color: "primary" }
+              : null
         }
       >
         <Stack spacing={1.5}>
+          {shared ? (
+            <Alert severity="info">
+              {isAdmin
+                ? adminNote
+                : "Managed by your admin — key changes are handled on the host, not here."}
+            </Alert>
+          ) : null}
           {error ? <Alert severity="error">{error}</Alert> : null}
           {saved ? <Alert severity="success">{saved}</Alert> : null}
           {vaultUsers.length > 0 ? (
@@ -292,7 +321,11 @@ export function KeyVault() {
         <ConfigSection
           icon={<ExtensionIcon />}
           title="Plugin keys"
-          description="API keys declared by installed plugins and merged into this vault, so every key lives in one place. Shared provider keys a plugin reads stay in the list above."
+          description={
+            shared
+              ? "Managed by your admin — plugin keys follow the same shared set in team mode."
+              : "API keys declared by installed plugins and merged into this vault, so every key lives in one place. Shared provider keys a plugin reads stay in the list above."
+          }
         >
           <Stack spacing={1.5}>
             {pluginSpecs.map((spec, index) => renderEntry(spec, index))}

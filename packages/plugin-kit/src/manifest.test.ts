@@ -663,6 +663,46 @@ describe("plugin manifest", () => {
     }
   })
 
+  test("consent names public endpoints, MCP servers, and npm packages", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      files: [{ name: "serve.ts", source: "server/serve.ts" }],
+      dashboard: {
+        pages: { entry: "serve.ts", public: true },
+      },
+      opencode: {
+        mcp: { context7: { url: "https://mcp.example.com" } },
+        plugin: ["opencode-alpha@1.2.3"],
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const summary = pluginPermissionSummary(result.manifest)
+      expect(summary).toContain(
+        "Exposes a public internet endpoint (/hooks/…) that anyone can call unless you set a secret",
+      )
+      expect(summary).toContain("Adds MCP servers: context7")
+      expect(summary).toContain(
+        "Installs OpenCode plugin packages: opencode-alpha@1.2.3",
+      )
+    }
+    // Non-public page servers must not claim internet exposure.
+    const quiet = validatePluginManifest({
+      ...valid,
+      files: [{ name: "serve.ts", source: "server/serve.ts" }],
+      dashboard: { pages: { entry: "serve.ts" } },
+      opencode: {},
+    })
+    expect(quiet.ok).toBe(true)
+    if (quiet.ok) {
+      const summary = pluginPermissionSummary(quiet.manifest)
+      expect(summary.some((line) => line.includes("/hooks/…"))).toBe(false)
+      expect(summary.some((line) => line.startsWith("Adds MCP servers"))).toBe(
+        false,
+      )
+    }
+  })
+
   test("rejects bad file names and sources", () => {
     const result = validatePluginManifest({
       ...valid,

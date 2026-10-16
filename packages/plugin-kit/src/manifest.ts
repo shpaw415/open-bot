@@ -404,6 +404,17 @@ const MAX_TEXT = 64 * 1024
 const MAX_AGENTS_MD = 4000
 const MAX_MANIFEST = 512 * 1024
 
+// Security-review coverage windows (single source for the marketplace review,
+// the publish-route rejection, doctor warnings, and doc-drift tests). Payload
+// bytes and manifest JSON past these windows are NOT reviewed: the publish
+// path must fail closed instead of silently truncating.
+export const REVIEW_PAYLOAD_FILE_CHARS = 16000
+export const REVIEW_PAYLOAD_TOTAL_CHARS = 64000
+export const REVIEW_MANIFEST_CHARS = 150000
+// Paths longer than this cannot be matched by the review tar parser's 100-char
+// name field (no long-name extension support).
+export const REVIEW_TAR_PATH_MAX = 99
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
@@ -461,6 +472,16 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push(
       "Serves a live dashboard page (API + UI) from the desktop to the dashboard",
     )
+  if (manifest.dashboard?.pages?.public)
+    summary.push(
+      "Exposes a public internet endpoint (/hooks/…) that anyone can call unless you set a secret",
+    )
+  const mcpServers = Object.keys(manifest.opencode?.mcp ?? {})
+  if (mcpServers.length > 0)
+    summary.push(`Adds MCP servers: ${mcpServers.join(", ")}`)
+  const ocPlugins = manifest.opencode?.plugin ?? []
+  if (ocPlugins.length > 0)
+    summary.push(`Installs OpenCode plugin packages: ${ocPlugins.join(", ")}`)
   if (manifest.dashboard?.mentions?.length)
     summary.push("Adds dynamic @mention entries to the chat composer")
   if (manifest.textbox) summary.push("Extends the chat composer")

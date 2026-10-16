@@ -9,7 +9,73 @@ import { endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
 import type { EventHub } from "./events"
 import { sha256 } from "./passwords"
+import { effectiveUserKey, getTeamConfig, objectHasAnyField } from "./team"
 import { redactSecrets } from "./watchdog-rules"
+
+const WATCHDOG_SHARED_FIELDS = [
+  "provider",
+  "accountId",
+  "apiKey",
+  "model",
+  "baseUrl",
+]
+
+export function watchdogSharedFieldsPresent(
+  body: Record<string, unknown>,
+): boolean {
+  return objectHasAnyField(body, WATCHDOG_SHARED_FIELDS)
+}
+
+// Merge a PUT body onto the saved watchdog config: an absent field keeps the
+// stored value, a present field replaces it (blank clears). A typed key only
+// survives a provider change when the provider stays the same.
+export function applyWatchdogPatch(
+  current: WatchdogConfig,
+  body: Record<string, unknown>,
+): { next: WatchdogConfig; error: string | null } {
+  const rawProvider =
+    body.provider === undefined
+      ? current.provider
+      : String(body.provider ?? "").trim()
+  const spec = rawProvider ? watchdogProviderById(rawProvider) : undefined
+  if (rawProvider && !spec) {
+    return { next: current, error: "unsupported watchdog provider" }
+  }
+  const sameProvider = current.provider === (spec?.id ?? "")
+  return {
+    next: {
+      enabled:
+        body.enabled === undefined ? current.enabled : body.enabled === true,
+      stopOnHigh:
+        body.stopOnHigh === undefined
+          ? current.stopOnHigh
+          : body.stopOnHigh === true,
+      provider: spec?.id ?? "",
+      accountId:
+        body.accountId === undefined
+          ? sameProvider
+            ? current.accountId
+            : ""
+          : String(body.accountId ?? "").trim(),
+      apiKey:
+        body.apiKey === undefined
+          ? sameProvider
+            ? current.apiKey
+            : ""
+          : String(body.apiKey ?? "").trim() ||
+            (sameProvider ? current.apiKey : ""),
+      model:
+        body.model === undefined
+          ? current.model || spec?.defaultModel || ""
+          : String(body.model ?? "").trim() || spec?.defaultModel || "",
+      baseUrl:
+        body.baseUrl === undefined
+          ? current.baseUrl
+          : String(body.baseUrl ?? "").trim(),
+    },
+    error: null,
+  }
+}
 
 export const WATCHDOG_FINDING_KEEP = 200
 export const WATCHDOG_DEDUPE_MS = 10 * 60_000
@@ -80,16 +146,32 @@ export function resolveWatchdogConfig(
   userId: string,
 ): ResolvedWatchdog {
   const raw = db.getWatchdogConfig(userId)
-  const vault = db.getUserKey(
+  const config = getTeamConfig(db)
+  // Team mode: the overlay is authoritative for the shared provider fields
+  // (unset → empty, raw is never a fallback); enabled/stopOnHigh stay per-user.
+  const overlay =
+    config.mode === "team" ? (config.providers.watchdog ?? {}) : null
+  const merged = overlay
+    ? {
+        ...raw,
+        provider: overlay.provider ?? "",
+        accountId: overlay.accountId ?? "",
+        apiKey: overlay.apiKey ?? "",
+        model: overlay.model ?? "",
+        baseUrl: overlay.baseUrl ?? "",
+      }
+    : raw
+  const vault = effectiveUserKey(
+    db,
     userId,
-    watchdogProviderById(raw.provider)?.vaultSlug ?? "",
+    watchdogProviderById(merged.provider)?.vaultSlug ?? "",
   )
-  const apiKey = raw.apiKey || vault?.apiKey || ""
-  const accountId = raw.accountId || vault?.accountId || ""
+  const apiKey = merged.apiKey || vault?.apiKey || ""
+  const accountId = merged.accountId || vault?.accountId || ""
   return {
-    value: { ...raw, apiKey, accountId },
-    keySource: raw.provider
-      ? raw.apiKey
+    value: { ...merged, apiKey, accountId },
+    keySource: merged.provider
+      ? merged.apiKey
         ? "setup"
         : vault?.apiKey
           ? "vault"

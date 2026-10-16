@@ -305,3 +305,80 @@ test("an HTML error page fails with a digest instead of being echoed", async () 
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("ob-plugin new ships smoke.test.ts, the config-guide reviewer note, and the app tab kind", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-new-"))
+  try {
+    const bin = fakeCurl(
+      home,
+      '{"project":{"id":"p1","name":"price-scout","path":"/x","category":"plugins"}}',
+    )
+    const result = await run(home, ["new", "price-scout"], bin)
+    expect(result.code).toBe(0)
+    const dir = join(home, "plugins-create/price-scout")
+    // S4: a runnable smoke test ships with the scaffold.
+    expect(existsSync(join(dir, "smoke.test.ts"))).toBe(true)
+    const readme = readFileSync(join(dir, "README.md"), "utf8")
+    // S1: the quick-reference documents the tab kind the scaffold itself uses.
+    expect(readme).toContain("kind: app|page|iframe")
+    expect(readme).toContain("run?: prompt|script|both|auto")
+    expect(readme).toContain("type?: string|bool|number|enum")
+    // DOC5: CONFIG.md is a review input — the template says so.
+    const config = readFileSync(join(dir, "CONFIG.md"), "utf8")
+    expect(config).toContain("marketplace security")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("ob-plugin doctor fails when a declared files[] source is missing", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-doctor-"))
+  try {
+    flakyRawCurl(home, true)
+    const bin = join(home, "bin")
+    writeFileSync(join(bin, "gh"), "#!/bin/sh\nexit 1\n")
+    chmodSync(join(bin, "gh"), 0o755)
+    const dir = doctorFixture(home)
+    writeFileSync(
+      join(dir, "open-bot.plugin.json"),
+      JSON.stringify({
+        id: "price-scout",
+        version: "0.1.0",
+        repo: "shpaw415/price-scout",
+        files: [{ name: "gone.ts", source: "server/gone.ts" }],
+      }),
+    )
+    const result = await run(home, ["doctor", dir], bin)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("missing from the plugin directory")
+    expect(result.stderr).toContain("server/gone.ts")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("ob-plugin publish stops with a clear message when no marketplace is configured", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-publish-"))
+  try {
+    const bin = fakeCurl(
+      home,
+      '{"error":"the plugin marketplace is not configured on this instance"}',
+    )
+    const dir = join(home, "plugins-create/price-scout")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, "open-bot.plugin.json"),
+      JSON.stringify({
+        id: "price-scout",
+        version: "0.1.0",
+        repo: "shpaw415/price-scout",
+      }),
+    )
+    const result = await run(home, ["publish", dir, "--yes"], bin)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("no marketplace configured")
+    expect(result.stderr).toContain("install --path")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

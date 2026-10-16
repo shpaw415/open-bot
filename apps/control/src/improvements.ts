@@ -8,7 +8,7 @@ import type {
   User,
 } from "@open-bot/db"
 
-export const NEW_ROW_LIMIT = 8
+export const NEW_ROW_LIMIT = 100
 export const HOUR_MS = 60 * 60 * 1000
 export const TITLE_MAX = 120
 export const DETAIL_MAX = 4000
