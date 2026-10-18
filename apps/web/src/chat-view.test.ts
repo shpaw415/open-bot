@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test"
 import {
   applyMessageDelta,
+  type ChatMessage,
   chatImageUrl,
   embedWorkspaceImages,
   mediaKey,
+  modelActivity,
   pinMediaUrls,
   previewFrameSrc,
   showLivePreview,
@@ -17,6 +19,61 @@ import {
   workspaceModel3dPath,
   workspaceModel3dSrc,
 } from "./chat-view"
+
+test("modelActivity keeps the orb through the send-to-reply gap", () => {
+  const running = {
+    phase: "running" as const,
+    sending: false,
+    status: { type: "idle" },
+  }
+  const sent: ChatMessage[] = [
+    { info: { role: "user", time: { created: 1_000 } } },
+  ]
+  // Fresh user message with no assistant reply yet: the turn is in flight.
+  expect(modelActivity({ ...running, messages: sent, now: 5_000 })).toBe(
+    "working",
+  )
+  // Stale unanswered request: stop claiming activity.
+  expect(modelActivity({ ...running, messages: sent, now: 20_000 })).toBe(
+    "done",
+  )
+  // Completed reply ends the turn.
+  expect(
+    modelActivity({
+      ...running,
+      messages: [
+        ...sent,
+        {
+          info: {
+            role: "assistant",
+            time: { created: 2_000, completed: 3_000 },
+          },
+        },
+      ],
+      now: 5_000,
+    }),
+  ).toBe("done")
+  // In-flight assistant reply still reads as working.
+  expect(
+    modelActivity({
+      ...running,
+      messages: [
+        ...sent,
+        { info: { role: "assistant", time: { created: 4_000 } } },
+      ],
+      now: 5_000,
+    }),
+  ).toBe("working")
+  // A sleeping desktop never claims activity.
+  expect(
+    modelActivity({
+      phase: "sleeping",
+      sending: false,
+      messages: sent,
+      now: 5_000,
+    }),
+  ).toBeNull()
+})
 
 test("routes workspace glb paths to the model3d endpoint", () => {
   expect(workspaceModel3dPath("/home/agent/workspace/owl.glb")).toBe(

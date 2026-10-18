@@ -717,7 +717,18 @@ export function modelActivity(input: {
   const now = input.now ?? Date.now()
   for (let i = input.messages.length - 1; i >= 0; i--) {
     const info = input.messages[i]?.info
-    if (info?.role !== "assistant" || info.summary === true) continue
+    if (info?.summary === true) continue
+    if (info?.role === "user") {
+      // An accepted request with no assistant reply yet is still in
+      // flight: the session status can lag the send (or miss it), and the
+      // previous turn's completed reply says nothing about this one.
+      const created = info.time?.created
+      if (created != null && now - created < STALE_TURN_MS) {
+        return "working"
+      }
+      break
+    }
+    if (info?.role !== "assistant") continue
     const created = info.time?.created
     if (
       info.time &&
