@@ -2,7 +2,7 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useId, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -17,6 +17,7 @@ import {
   PluginBadge,
 } from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
+import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { ExtensionIcon, PsychologyIcon } from "./icons"
 import Stack from "./stack"
 
@@ -51,6 +52,9 @@ export function CustomSkills() {
   const [saved, setSaved] = useState("")
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<Draft | null>(null)
+  // The draft as it opened: closing asks before dropping real edits.
+  const [pristine, setPristine] = useState<Draft | null>(null)
+  const titleId = useId()
   const [confirmName, setConfirmName] = useState("")
 
   const load = useCallback(async () => {
@@ -78,6 +82,7 @@ export function CustomSkills() {
     setSaved("")
     setConfirmName("")
     setDraft(emptyDraft)
+    setPristine(emptyDraft)
   }
 
   async function openEdit(name: string) {
@@ -89,12 +94,14 @@ export function CustomSkills() {
       const skill = await api<SkillDetail>(
         `/api/skills?name=${encodeURIComponent(name)}`,
       )
-      setDraft({
+      const next: Draft = {
         previousName: skill.name,
         name: skill.name,
         description: skill.description,
         body: skill.body,
-      })
+      }
+      setDraft(next)
+      setPristine(next)
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "failed to load skill",
@@ -102,6 +109,21 @@ export function CustomSkills() {
     } finally {
       setBusy(false)
     }
+  }
+
+  /** Escape, backdrop and Cancel share this: real edits ask first. */
+  function requestClose() {
+    if (busy) return
+    if (
+      snapshotDirty(
+        pristine as Record<string, unknown> | null,
+        (draft ?? null) as Record<string, unknown> | null,
+      ) &&
+      !confirmDiscard()
+    )
+      return
+    setDraft(null)
+    setPristine(null)
   }
 
   async function save() {
@@ -120,6 +142,7 @@ export function CustomSkills() {
         }),
       })
       setDraft(null)
+      setPristine(null)
       setSaved("Saved. The desktop agent can load this skill from OpenViking.")
       await load()
     } catch (caught) {
@@ -138,7 +161,10 @@ export function CustomSkills() {
         method: "DELETE",
         body: JSON.stringify({ name }),
       })
-      if (draft?.previousName === name || draft?.name === name) setDraft(null)
+      if (draft?.previousName === name || draft?.name === name) {
+        setDraft(null)
+        setPristine(null)
+      }
       setConfirmName("")
       setSaved("Removed.")
       await load()
@@ -228,12 +254,11 @@ export function CustomSkills() {
             open
             fullWidth
             scroll="paper"
+            aria-labelledby={titleId}
             slotProps={{ paper: { sx: { maxWidth: 900, minWidth: "45%" } } }}
-            onClose={() => {
-              if (!busy) setDraft(null)
-            }}
+            onClose={requestClose}
           >
-            <DialogTitle>
+            <DialogTitle id={titleId}>
               {draft.previousName ? "Edit skill" : "New skill"}
             </DialogTitle>
             <DialogContent>
@@ -275,11 +300,7 @@ export function CustomSkills() {
               </Stack>
             </DialogContent>
             <DialogActions>
-              <Button
-                variant="text"
-                disabled={busy}
-                onClick={() => setDraft(null)}
-              >
+              <Button variant="text" disabled={busy} onClick={requestClose}>
                 Cancel
               </Button>
               <Button

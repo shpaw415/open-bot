@@ -1412,6 +1412,13 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
   border-color: var(--ob-accent);
 }
 
+/* The chat column is a size container so the message field can be capped
+   against the space that actually exists (short phone viewports, landscape,
+   the chat docked beside the IDE) instead of a fixed row count. */
+.ob-chat-paper {
+  container-type: size;
+}
+
 .ob-chat-docked .ob-composer {
   width: 100%;
 }
@@ -1423,6 +1430,26 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
   font-size: 15px;
   line-height: 1.5;
   padding: 6px 6px 2px;
+}
+
+/* Vertical budget: the field grows with its text (mui-lite caps it at 10
+   rows inline) but must never push Send/Stop, the model/effort row — or a
+   usable sliver of journal — off the screen. The clamp is measured against
+   the chat column itself; 340px reserves the header bars, the orb row, the
+   composer's own toolbar rows and ~96px of journal, and the 96px floor
+   keeps the field usable when the column is tiny. Unsupported container
+   queries drop the whole declaration and keep today's behavior. */
+.ob-composer-field textarea.MUI_TextField_TextArea {
+  /* mui-lite writes its 10-row cap inline; the stylesheet only wins with
+     !important — without it tight viewports keep the full 10-row field and
+     the action rows fall below the fold. */
+  /* biome-ignore lint/complexity/noImportantStyles: must beat mui-lite's inline max-height */
+  max-height: max(96px, calc(100cqh - 340px)) !important;
+  /* mui-lite syncs height/overflow inline and only allows scrolling past
+     its 10-row cap; when this clamp bites first, the field must still
+     scroll its content. */
+  /* biome-ignore lint/complexity/noImportantStyles: must beat mui-lite's inline overflow style */
+  overflow-y: auto !important;
 }
 
 /* The composer surface is the field chrome: the mui-lite standard underline

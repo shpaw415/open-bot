@@ -3,14 +3,13 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useId, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "./AccessibleDialog"
 import { api } from "./api"
-import { Chip } from "./chip"
 import {
   ConfigItemCard,
   EmptyState,
@@ -19,6 +18,8 @@ import {
   PluginBadge,
 } from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
+import { Chip } from "./chip"
+import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { FaceIcon, LockIcon, PersonIcon } from "./icons"
 import Stack from "./stack"
 import { Tip } from "./Tip"
@@ -75,6 +76,21 @@ function restrictedNames(draft: Draft): string[] | null {
   return draft.skills && draft.skills.length > 0 ? draft.skills : null
 }
 
+type DraftSnapshot = Pick<
+  Draft,
+  "id" | "name" | "instruction" | "skills" | "extras"
+>
+
+function snapshotOf(draft: Draft): DraftSnapshot {
+  return {
+    id: draft.id,
+    name: draft.name,
+    instruction: draft.instruction,
+    skills: draft.skills,
+    extras: draft.extras,
+  }
+}
+
 function initial(name: string): string {
   return (name.trim()[0] ?? "?").toUpperCase()
 }
@@ -129,11 +145,15 @@ export function Personalities() {
   const [saved, setSaved] = useState("")
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<Draft | null>(null)
+  // The draft as it opened: closing compares against this so an intact
+  // form closes silently and real edits ask before being dropped.
+  const [pristine, setPristine] = useState<DraftSnapshot | null>(null)
   const [confirmId, setConfirmId] = useState("")
   const [catalog, setCatalog] = useState<string[] | null>(null)
   const [catalogFailed, setCatalogFailed] = useState(false)
   const [filter, setFilter] = useState("")
   const [manualName, setManualName] = useState("")
+  const titleId = useId()
 
   const load = useCallback(async () => {
     setError("")
@@ -158,9 +178,11 @@ export function Personalities() {
   }, [load])
 
   // The skill catalog is only needed inside the dialog; a failure falls back
-  // to free-text entry and never blocks saving.
+  // to free-text entry and never blocks saving. Keyed by the persona the
+  // dialog opened for, so keystrokes in the draft never refetch it.
+  const [catalogFor, setCatalogFor] = useState<string | null>(null)
   useEffect(() => {
-    if (!draft) return
+    if (!catalogFor) return
     let cancelled = false
     setCatalog(null)
     setCatalogFailed(false)
@@ -181,13 +203,13 @@ export function Personalities() {
     return () => {
       cancelled = true
     }
-  }, [draft?.id])
+  }, [catalogFor])
 
   function openNew() {
     setError("")
     setSaved("")
     setConfirmId("")
-    setDraft({
+    const fresh: Draft = {
       id: "",
       name: "",
       instruction: "",
@@ -196,14 +218,20 @@ export function Personalities() {
       baseLocked: null,
       extras: [],
       skillsTouched: false,
-    })
+    }
+    setDraft(fresh)
+    setPristine(snapshotOf(fresh))
+    setCatalogFor("new")
   }
 
   function openEdit(persona: PersonaInfo) {
     setError("")
     setSaved("")
     setConfirmId("")
-    setDraft(draftFrom(persona))
+    const next = draftFrom(persona)
+    setDraft(next)
+    setPristine(snapshotOf(next))
+    setCatalogFor(persona.id)
   }
 
   function toggleSkill(name: string) {
@@ -263,6 +291,22 @@ export function Personalities() {
     })
   }
 
+  /** Escape, backdrop and Cancel share this: real edits ask first. */
+  function requestClose() {
+    if (busy) return
+    if (
+      draft &&
+      snapshotDirty(
+        pristine as Record<string, unknown> | null,
+        snapshotOf(draft) as Record<string, unknown>,
+      ) &&
+      !confirmDiscard()
+    )
+      return
+    setDraft(null)
+    setPristine(null)
+  }
+
   async function save() {
     if (!draft) return
     setError("")
@@ -290,6 +334,7 @@ export function Personalities() {
       }
       const wasRestricted = Boolean(restricted)
       setDraft(null)
+      setPristine(null)
       setSaved(
         `Saved. Start a new thread and pick it.${
           wasRestricted ? " Only the allowed skills load in new threads." : ""
@@ -309,7 +354,10 @@ export function Personalities() {
     setBusy(true)
     try {
       await api(`/api/personas/${encodeURIComponent(id)}`, { method: "DELETE" })
-      if (draft?.id === id) setDraft(null)
+      if (draft?.id === id) {
+        setDraft(null)
+        setPristine(null)
+      }
       setConfirmId("")
       setSaved("Removed. Threads that used it fall back to Assistant.")
       await load()
@@ -330,9 +378,7 @@ export function Personalities() {
     for (const name of restrictedNames(draft) ?? []) names.add(name)
     for (const name of draft.extras) names.add(name)
     const query = filter.trim().toLowerCase()
-    return [...names]
-      .filter((name) => !query || name.includes(query))
-      .sort()
+    return [...names].filter((name) => !query || name.includes(query)).sort()
   })()
 
   const lockedTitle = draft?.pluginName ?? "the plugin"
@@ -458,12 +504,13 @@ export function Personalities() {
             open
             fullWidth
             scroll="paper"
+            aria-labelledby={titleId}
             slotProps={{ paper: { sx: { maxWidth: 900, minWidth: "45%" } } }}
             onClose={() => {
-              if (!busy) setDraft(null)
+              requestClose()
             }}
           >
-            <DialogTitle>
+            <DialogTitle id={titleId}>
               {draft.id ? "Edit personality" : "New personality"}
             </DialogTitle>
             <DialogContent>
@@ -547,9 +594,7 @@ export function Personalities() {
                     <TextField
                       label="Filter skills"
                       value={filter}
-                      onChange={(event) =>
-                        setFilter(event.currentTarget.value)
-                      }
+                      onChange={(event) => setFilter(event.currentTarget.value)}
                     />
                     {catalogFailed ? (
                       <Alert severity="info" sx={{ py: 0.75 }}>
@@ -598,10 +643,9 @@ export function Personalities() {
                               key={name}
                               name={name}
                               locked={(draft.baseLocked ?? []).includes(name)}
-                              selected={(
-                                draft.baseLocked !== null
-                                  ? draft.extras
-                                  : (draft.skills ?? [])
+                              selected={(draft.baseLocked !== null
+                                ? draft.extras
+                                : (draft.skills ?? [])
                               ).includes(name)}
                               lockedTitle={lockedTitle}
                               onToggle={toggleSkill}
@@ -609,10 +653,7 @@ export function Personalities() {
                           ))}
                           {pickerNames.length === 0 &&
                           draft.baseLocked !== null ? (
-                            <Typography
-                              variant="caption"
-                              color="textSecondary"
-                            >
+                            <Typography variant="caption" color="textSecondary">
                               No skills match the filter.
                             </Typography>
                           ) : null}
@@ -646,11 +687,7 @@ export function Personalities() {
               </Stack>
             </DialogContent>
             <DialogActions>
-              <Button
-                variant="text"
-                disabled={busy}
-                onClick={() => setDraft(null)}
-              >
+              <Button variant="text" disabled={busy} onClick={requestClose}>
                 Cancel
               </Button>
               <Button

@@ -70,6 +70,7 @@ export type InstalledPluginInfo = {
   setupCommands?: string[]
   init?: { ranAt: number; ok: boolean; output: string } | null
   mentionClashes?: { section: string; owner: string }[]
+  warnings?: string[]
   settings?: Record<string, string>
   updateAvailable?: string | null
   manifest: {

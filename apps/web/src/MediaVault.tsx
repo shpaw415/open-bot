@@ -5,7 +5,7 @@ import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -88,6 +88,8 @@ export function MediaVault({
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
   const [dropAlbum, setDropAlbum] = useState<Album | null>(null)
+  const albumTitleId = useId()
+  const itemTitleId = useId()
   const [dropItem, setDropItem] = useState<Item | null>(null)
   const [dropSource, setDropSource] = useState(true)
 
@@ -248,8 +250,8 @@ export function MediaVault({
               Media vault
             </Typography>
             <Typography variant="caption" color="textSecondary">
-              Albums of immutable copies. Chat media files itself; anything else
-              you add with ob-media.
+              Saved copies of your pictures, videos, and 3D models. Chat media
+              lands here by itself.
             </Typography>
             {albums === null ? (
               <Stack spacing={1.5} sx={{ maxWidth: 420 }} aria-busy="true">
@@ -376,7 +378,11 @@ export function MediaVault({
               >
                 <ArrowBackIcon />
               </IconButton>
-              <Typography variant="subtitle1" sx={{ flex: 1, minWidth: 0 }}>
+              <Typography
+                variant="subtitle1"
+                component="h1"
+                sx={{ flex: 1, minWidth: 0 }}
+              >
                 {album?.name ?? "Album"}
               </Typography>
               <Button
@@ -627,11 +633,12 @@ export function MediaVault({
       <AccessibleDialog
         open={Boolean(dropAlbum)}
         onClose={() => !busy && setDropAlbum(null)}
+        aria-labelledby={albumTitleId}
       >
-        <DialogTitle>Delete album</DialogTitle>
+        <DialogTitle id={albumTitleId}>Delete album</DialogTitle>
         <DialogContent>
           <Typography>
-            Delete {dropAlbum?.name} and its vault copies?
+            Delete {dropAlbum?.name} and its saved copies?
           </Typography>
           <FormControlLabel
             sx={{ mt: 1 }}
@@ -645,8 +652,8 @@ export function MediaVault({
           />
           <Typography variant="caption" color="textSecondary" sx={{ mt: 0.5 }}>
             {dropSource
-              ? "Frees desktop disk space. Copies are always removed from the vault."
-              : "Copies leave the vault; files stay on the desktop."}
+              ? "Frees desktop disk space. The saved copies are removed too."
+              : "Only the saved copies are removed; files stay on the desktop."}
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -661,10 +668,11 @@ export function MediaVault({
       <AccessibleDialog
         open={Boolean(dropItem)}
         onClose={() => !busy && setDropItem(null)}
+        aria-labelledby={itemTitleId}
       >
-        <DialogTitle>Delete item</DialogTitle>
+        <DialogTitle id={itemTitleId}>Delete item</DialogTitle>
         <DialogContent>
-          <Typography>Remove this copy from the vault?</Typography>
+          <Typography>Remove this saved copy?</Typography>
           <FormControlLabel
             sx={{ mt: 1 }}
             control={

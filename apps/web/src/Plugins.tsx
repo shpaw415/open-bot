@@ -19,7 +19,7 @@ import Table, {
 } from "@shpaw415/mui-lite/Table"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useState } from "react"
 import AccessibleDialog, { DialogActions } from "./AccessibleDialog"
 import { ApiHttpError, api } from "./api"
 import { Chip } from "./chip"
@@ -113,6 +113,7 @@ function InstallDialog({
   onClose: () => void
   onInstalled: () => void
 }) {
+  const installTitleId = useId()
   const [version, setVersion] = useState(target.version)
   const [permissions, setPermissions] = useState(target.permissions)
   const [setupCommands, setSetupCommands] = useState(target.setupCommands)
@@ -213,9 +214,16 @@ function InstallDialog({
     : [{ version: target.version, stability: "stable" }, ...target.versions]
 
   return (
-    <AccessibleDialog open onClose={() => !busy && onClose()} fullWidth>
+    <AccessibleDialog
+      open
+      onClose={() => !busy && onClose()}
+      aria-labelledby={installTitleId}
+      fullWidth
+    >
       <Stack spacing={2} sx={{ p: 3 }}>
-        <Typography variant="h6">Install {target.name}?</Typography>
+        <Typography variant="h6" id={installTitleId}>
+          Install {target.name}?
+        </Typography>
         {busy || checking ? <LinearProgress variant="indeterminate" /> : null}
         <Stack direction="row" spacing={1} alignItems="center">
           <Select
@@ -483,6 +491,18 @@ function InstalledTable({
                             )
                             .join("; ")}
                         </Typography>
+                      ) : null}
+                      {plugin.warnings?.length ? (
+                        <Tip title={plugin.warnings.join("\n")}>
+                          <Typography
+                            variant="caption"
+                            color="warning"
+                            sx={{ display: "block", mt: 0.5 }}
+                          >
+                            {plugin.warnings.length} install warning
+                            {plugin.warnings.length === 1 ? "" : "s"}
+                          </Typography>
+                        </Tip>
                       ) : null}
                       {plugin.init && !plugin.init.ok ? (
                         <Tip
@@ -896,6 +916,7 @@ function SettingsDialog({
   plugin: InstalledPluginInfo
   onClose: () => void
 }) {
+  const settingsTitleId = useId()
   const [values, setValues] = useState<Record<string, string>>(() => {
     const out: Record<string, string> = {}
     for (const config of plugin.manifest.configs ?? [])
@@ -960,9 +981,14 @@ function SettingsDialog({
   }
 
   return (
-    <AccessibleDialog open onClose={() => !busy && onClose()} fullWidth>
+    <AccessibleDialog
+      open
+      onClose={() => !busy && onClose()}
+      aria-labelledby={settingsTitleId}
+      fullWidth
+    >
       <Stack spacing={2} sx={{ p: 3 }}>
-        <Typography variant="h6">
+        <Typography variant="h6" id={settingsTitleId}>
           {plugin.name} {vaultSlugs.length > 0 ? "settings & keys" : "settings"}
         </Typography>
         {(plugin.manifest.configs ?? []).map((config) => {

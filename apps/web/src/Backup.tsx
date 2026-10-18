@@ -6,7 +6,7 @@ import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Paper from "@shpaw415/mui-lite/Paper"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useRef, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -317,6 +317,7 @@ function RestoreDialog({
   onClose: () => void
   onStarted: () => void
 }) {
+  const titleId = useId()
   const admin = me.role === "admin"
   const [manifest, setManifest] = useState<ManifestBody["manifest"] | null>(
     null,
@@ -366,8 +367,8 @@ function RestoreDialog({
   }
 
   return (
-    <AccessibleDialog open onClose={onClose}>
-      <DialogTitle>Restore backup</DialogTitle>
+    <AccessibleDialog open onClose={onClose} aria-labelledby={titleId}>
+      <DialogTitle id={titleId}>Restore backup</DialogTitle>
       <DialogContent>
         <Stack spacing={1} sx={{ mt: 0.5 }}>
           {error ? <Alert severity="error">{error}</Alert> : null}
@@ -464,6 +465,7 @@ function ResetDesktopDialog({
   onClose: () => void
   onStarted: () => void
 }) {
+  const titleId = useId()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [preBackup, setPreBackup] = useState(true)
@@ -486,8 +488,8 @@ function ResetDesktopDialog({
   }
 
   return (
-    <AccessibleDialog open onClose={onClose}>
-      <DialogTitle>Factory reset your desktop?</DialogTitle>
+    <AccessibleDialog open onClose={onClose} aria-labelledby={titleId}>
+      <DialogTitle id={titleId}>Factory reset your desktop?</DialogTitle>
       <DialogContent>
         <Stack spacing={1} sx={{ mt: 0.5 }}>
           {error ? <Alert severity="error">{error}</Alert> : null}

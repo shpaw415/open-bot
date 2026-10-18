@@ -68,4 +68,16 @@ describe("PluginAppsView — render", () => {
     expect(html).toContain("No plugin apps here yet")
     expect(html).not.toContain("Retry")
   })
+
+  test("the apps filter is a native field with a visible placeholder", () => {
+    // mui-lite hides ::placeholder globally (its floating-label animation
+    // keys off :placeholder-shown), so the filter must be the same native
+    // control as the threads filter: real placeholder attribute + label.
+    const html = renderToStaticMarkup(
+      <PluginAppsView tabs={[tab("grid")]} status={ready} />,
+    )
+    expect(html).toContain('placeholder="Filter apps"')
+    expect(html).toContain('aria-label="Filter apps"')
+    expect(html).toContain('type="search"')
+  })
 })

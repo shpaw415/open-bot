@@ -372,24 +372,32 @@ function NoticeBellButton({
     [onOpenThread, go],
   )
 
+  // The Tip wrapper stays mounted in BOTH states: swapping it out when the
+  // panel opens remounts the button, so the click that opened the panel ends
+  // on a detached node — ClickAwayListener's document listener then sees a
+  // target outside the Box and closes the panel in the same event. While
+  // open the tip is suppressed through `disabled` (ToolTip keeps its child
+  // mounted and skips its trigger handlers; the open panel covers the bell).
   const bell = (
-    <IconButton
-      ref={bellRef}
-      size="medium"
-      aria-label={
-        unread > 0 ? `Notifications, ${unread} unread` : "Notifications"
-      }
-      aria-haspopup="dialog"
-      aria-expanded={open}
-      onClick={() => setOpen((current) => !current)}
-    >
-      {unread > 0 ? (
-        <NotificationsIcon width={20} height={20} />
-      ) : (
-        <NotificationsNoneIcon width={20} height={20} />
-      )}
-      {badge ? <span className="ob-header-badge">{badge}</span> : null}
-    </IconButton>
+    <Tip title="Notifications" disabled={open}>
+      <IconButton
+        ref={bellRef}
+        size="medium"
+        aria-label={
+          unread > 0 ? `Notifications, ${unread} unread` : "Notifications"
+        }
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {unread > 0 ? (
+          <NotificationsIcon width={20} height={20} />
+        ) : (
+          <NotificationsNoneIcon width={20} height={20} />
+        )}
+        {badge ? <span className="ob-header-badge">{badge}</span> : null}
+      </IconButton>
+    </Tip>
   )
 
   return (
@@ -403,9 +411,7 @@ function NoticeBellButton({
           zIndex: open ? 60 : "auto",
         }}
       >
-        {/* While the panel is open the tooltip is suppressed: a hover tip
-            would float over (and visually merge with) the open panel. */}
-        {open ? bell : <Tip title="Notifications">{bell}</Tip>}
+        {bell}
         {open ? (
           <Paper
             ref={panelRef}

@@ -4,7 +4,7 @@ import Select from "@shpaw415/mui-lite/Select"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useRef, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -20,6 +20,7 @@ import {
 } from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
 import { Chip } from "./chip"
+import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { useEventStream } from "./hooks"
 import { HubIcon } from "./icons"
 import Stack from "./stack"
@@ -96,6 +97,9 @@ export function McpView() {
   const [saved, setSaved] = useState("")
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<Draft | null>(null)
+  // The draft as it opened: closing asks before dropping real edits.
+  const [pristine, setPristine] = useState<Draft | null>(null)
+  const titleId = useId()
   const [confirmName, setConfirmName] = useState("")
   const reloading = useRef(false)
 
@@ -136,13 +140,14 @@ export function McpView() {
     setSaved("")
     setConfirmName("")
     setDraft(emptyDraft)
+    setPristine(emptyDraft)
   }
 
   function openEdit(server: McpServer) {
     setError("")
     setSaved("")
     setConfirmName("")
-    setDraft({
+    const next: Draft = {
       previousName: server.name,
       name: server.name,
       type: server.type,
@@ -155,7 +160,24 @@ export function McpView() {
         ? JSON.stringify(server.environment, null, 2)
         : "",
       headers: server.headers ? JSON.stringify(server.headers, null, 2) : "",
-    })
+    }
+    setDraft(next)
+    setPristine(next)
+  }
+
+  /** Escape, backdrop and Cancel share this: real edits ask first. */
+  function requestClose() {
+    if (busy) return
+    if (
+      snapshotDirty(
+        pristine as Record<string, unknown> | null,
+        (draft ?? null) as Record<string, unknown> | null,
+      ) &&
+      !confirmDiscard()
+    )
+      return
+    setDraft(null)
+    setPristine(null)
   }
 
   async function save() {
@@ -193,6 +215,7 @@ export function McpView() {
         body: JSON.stringify(server),
       })
       setDraft(null)
+      setPristine(null)
       setSaved("Saved. OpenCode restarts to pick up the change.")
       await load()
     } catch (caught) {
@@ -359,12 +382,11 @@ export function McpView() {
             open
             fullWidth
             scroll="paper"
+            aria-labelledby={titleId}
             slotProps={{ paper: { sx: { maxWidth: 720, minWidth: "45%" } } }}
-            onClose={() => {
-              if (!busy) setDraft(null)
-            }}
+            onClose={requestClose}
           >
-            <DialogTitle>
+            <DialogTitle id={titleId}>
               {draft.previousName
                 ? `Edit ${draft.previousName}`
                 : "New MCP server"}
@@ -448,11 +470,7 @@ export function McpView() {
               </Stack>
             </DialogContent>
             <DialogActions>
-              <Button
-                variant="text"
-                disabled={busy}
-                onClick={() => setDraft(null)}
-              >
+              <Button variant="text" disabled={busy} onClick={requestClose}>
                 Cancel
               </Button>
               <Button

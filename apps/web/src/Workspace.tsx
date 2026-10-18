@@ -4660,7 +4660,9 @@ export function Workspace({
             ) : null}
             <Dock target={chatDocked ? threadDock : null}>
               <Paper
-                className={chatDocked ? "ob-chat-docked" : undefined}
+                className={
+                  chatDocked ? "ob-chat-paper ob-chat-docked" : "ob-chat-paper"
+                }
                 variant="outlined"
                 sx={{
                   flex: 1,

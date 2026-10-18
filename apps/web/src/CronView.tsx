@@ -8,7 +8,7 @@ import Select from "@shpaw415/mui-lite/Select"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useId, useState } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import AccessibleDialog, {
@@ -19,6 +19,7 @@ import AccessibleDialog, {
 import { api, type Me } from "./api"
 import { PluginBadge } from "./ConfigList"
 import { Chip } from "./chip"
+import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
   AddIcon,
@@ -145,6 +146,9 @@ export function CronView({ me }: { me: Me }) {
   const [addOpen, setAddOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<CronJobInfo | null>(null)
+  const addTitleId = useId()
+  const deleteTitleId = useId()
+  const resultTitleId = useId()
   const [name, setName] = useState("")
   const [message, setMessage] = useState("")
   const [kind, setKind] = useState<CronKind>("every")
@@ -158,6 +162,8 @@ export function CronView({ me }: { me: Me }) {
   )
   const [script, setScript] = useState("")
   const [editId, setEditId] = useState<string | null>(null)
+  // The form as it opened: closing asks before dropping real edits.
+  const [pristine, setPristine] = useState<Record<string, unknown> | null>(null)
   const [result, setResult] = useState<CronNotice | null>(null)
   const [error, setError] = useState("")
   const [models, setModels] = useState<Model[]>([])
@@ -211,19 +217,56 @@ export function CronView({ me }: { me: Me }) {
     return personas.find((item) => item.id === id)?.name ?? id
   }
 
+  function cronFormState(job?: CronJobInfo): Record<string, unknown> {
+    return {
+      name: job?.name ?? "",
+      message: job?.message ?? "",
+      kind: job?.kind ?? "every",
+      every: String(job?.everySeconds ?? 3600),
+      expr: job?.cronExpr ?? "0 9 * * *",
+      at: "",
+      model: job ? cronModelValue(job) : "",
+      persona: job?.personaId || "assistant",
+      runKind: job?.runKind ?? "prompt",
+      script: job?.script ?? "",
+    }
+  }
+
   function openForm(job?: CronJobInfo) {
+    const next = cronFormState(job)
     setEditId(job?.id ?? null)
-    setName(job?.name ?? "")
-    setMessage(job?.message ?? "")
-    setKind(job?.kind ?? "every")
-    setEvery(String(job?.everySeconds ?? 3600))
-    setExpr(job?.cronExpr ?? "0 9 * * *")
+    setName(next.name as string)
+    setMessage(next.message as string)
+    setKind(next.kind as CronKind)
+    setEvery(next.every as string)
+    setExpr(next.expr as string)
     setAt("")
-    setModel(job ? cronModelValue(job) : "")
-    setPersona(job?.personaId || "assistant")
-    setRunKind(job?.runKind ?? "prompt")
-    setScript(job?.script ?? "")
+    setModel(next.model as string)
+    setPersona(next.persona as string)
+    setRunKind(next.runKind as "prompt" | "script" | "both" | "auto")
+    setScript(next.script as string)
+    setPristine(next)
     setAddOpen(true)
+  }
+
+  /** Escape, backdrop and Cancel share this: real edits ask first. */
+  function requestCloseForm() {
+    if (saving) return
+    const current: Record<string, unknown> = {
+      name,
+      message,
+      kind,
+      every,
+      expr,
+      at,
+      model,
+      persona,
+      runKind,
+      script,
+    }
+    if (snapshotDirty(pristine, current) && !confirmDiscard()) return
+    setPristine(null)
+    setAddOpen(false)
   }
 
   function openNotice(notice: CronNotice) {
@@ -282,6 +325,7 @@ export function CronView({ me }: { me: Me }) {
           }),
         })
       }
+      setPristine(null)
       setAddOpen(false)
       await loadJobs()
     } catch (caught) {
@@ -552,8 +596,14 @@ export function CronView({ me }: { me: Me }) {
       </Stack>
 
       {addOpen ? (
-        <AccessibleDialog open onClose={() => setAddOpen(false)}>
-          <DialogTitle>{editId ? "Edit cron job" : "Add cron job"}</DialogTitle>
+        <AccessibleDialog
+          open
+          onClose={requestCloseForm}
+          aria-labelledby={addTitleId}
+        >
+          <DialogTitle id={addTitleId}>
+            {editId ? "Edit cron job" : "Add cron job"}
+          </DialogTitle>
           <DialogContent>
             <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
               <TextField
@@ -700,7 +750,7 @@ export function CronView({ me }: { me: Me }) {
             </Stack>
           </DialogContent>
           <DialogActions>
-            <Button variant="text" onClick={() => setAddOpen(false)}>
+            <Button variant="text" onClick={requestCloseForm}>
               Cancel
             </Button>
             <Button
@@ -725,8 +775,12 @@ export function CronView({ me }: { me: Me }) {
       ) : null}
 
       {deleteTarget ? (
-        <AccessibleDialog open onClose={() => setDeleteTarget(null)}>
-          <DialogTitle>Delete cron job?</DialogTitle>
+        <AccessibleDialog
+          open
+          onClose={() => setDeleteTarget(null)}
+          aria-labelledby={deleteTitleId}
+        >
+          <DialogTitle id={deleteTitleId}>Delete cron job?</DialogTitle>
           <DialogContent>
             <Typography variant="body2">
               Deletes “{deleteTarget?.name ?? ""}” and its past results. It will
@@ -751,8 +805,14 @@ export function CronView({ me }: { me: Me }) {
       ) : null}
 
       {result ? (
-        <AccessibleDialog open onClose={() => setResult(null)}>
-          <DialogTitle>{result.jobName ?? ""}</DialogTitle>
+        <AccessibleDialog
+          open
+          onClose={() => setResult(null)}
+          aria-labelledby={resultTitleId}
+        >
+          <DialogTitle id={resultTitleId}>
+            {result.jobName ?? "Last run result"}
+          </DialogTitle>
           <DialogContent>
             {result.summary?.trim() ? (
               <div className="ob-md">

@@ -11,7 +11,7 @@ import Table, {
 } from "@shpaw415/mui-lite/Table"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useId, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -53,6 +53,7 @@ export function Improvements() {
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState<10 | 25 | 50 | 100>(10)
   const [selected, setSelected] = useState<Report | null>(null)
+  const titleId = useId()
   const [note, setNote] = useState("")
   const [busy, setBusy] = useState(false)
 
@@ -189,8 +190,9 @@ export function Improvements() {
       <AccessibleDialog
         open={Boolean(selected)}
         onClose={() => setSelected(null)}
+        aria-labelledby={titleId}
       >
-        <DialogTitle>{selected?.title}</DialogTitle>
+        <DialogTitle id={titleId}>{selected?.title}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mb: 1 }}>
             {selected?.detail}

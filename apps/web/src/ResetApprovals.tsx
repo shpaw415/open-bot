@@ -5,7 +5,7 @@ import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Snackbar from "@shpaw415/mui-lite/Snackbar"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -52,6 +52,7 @@ export function ResetApprovals() {
   const [preBackup, setPreBackup] = useState(true)
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+  const titleId = useId()
   const [outcome, setOutcome] = useState<string | null>(null)
   const seen = useRef(new Set<string>())
 
@@ -123,8 +124,9 @@ export function ResetApprovals() {
         <AccessibleDialog
           open
           onClose={busy ? undefined : () => setRequest(null)}
+          aria-labelledby={titleId}
         >
-          <DialogTitle>Confirm desktop {request.kind}</DialogTitle>
+          <DialogTitle id={titleId}>Confirm desktop {request.kind}</DialogTitle>
           <DialogContent>
             <Stack spacing={1.5} sx={{ mt: 0.5 }}>
               {error ? <Alert severity="error">{error}</Alert> : null}

@@ -3,7 +3,6 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
-import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useMemo, useState } from "react"
 import { api } from "./api"
@@ -617,34 +616,31 @@ export function PluginAppsView({
               {query.trim() ? `${shown.length} of ${tabs.length}` : tabs.length}
             </Typography>
           </Stack>
-          <TextField
-            variant="outlined"
-            placeholder="Filter apps"
-            aria-label="Filter apps"
-            value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            startIcon={
-              <Box
-                Element="span"
-                sx={{ display: "flex", color: "text.secondary" }}
+          {/* Native field like the threads filter: mui-lite hides
+              ::placeholder (its floating-label animation keys off
+              :placeholder-shown), so a label-less TextField shows nothing.
+              This filters the apps already listed here; it is not a server
+              search. */}
+          <label className="ob-filter-field">
+            <SearchIcon width={14} height={14} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Filter apps"
+              aria-label="Filter apps"
+              type="search"
+            />
+            {query ? (
+              <button
+                type="button"
+                className="ob-filter-clear"
+                aria-label="Clear app filter"
+                onClick={() => setQuery("")}
               >
-                <SearchIcon width={15} height={15} />
-              </Box>
-            }
-            endIcon={
-              query ? (
-                <IconButton
-                  aria-label="Clear filter"
-                  size="small"
-                  onClick={() => setQuery("")}
-                  sx={{ p: 0.25 }}
-                >
-                  <CloseIcon width={14} height={14} />
-                </IconButton>
-              ) : undefined
-            }
-            sx={{ width: "100%", "& input": { py: 0.9, fontSize: 13 } }}
-          />
+                <CloseIcon width={13} height={13} />
+              </button>
+            ) : null}
+          </label>
         </Box>
         <List
           dense

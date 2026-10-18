@@ -239,11 +239,13 @@ export function App() {
     return window.confirm("You have unsaved changes. Leave this page anyway?")
   }, [])
 
-  // The shell tags every history entry with a monotonic id (history.state
-  // .ob) so the pop guard knows a pop's direction and can restore the exact
-  // entry with back() or forward(). Other state fields are not used today
-  // but would ride along untouched.
+  // The shell tags every history entry with a monotonic id (`ob`, identity)
+  // and its traversal position in the stack (`obPos`) so the pop guard knows
+  // a pop's direction and distance and can restore the exact entry — exact
+  // even after a push truncates the Forward branch, where ids stop being
+  // contiguous. See nav-guard.ts. Foreign state fields ride along untouched.
   const popGuardRef = useRef<ReturnType<typeof createPopGuard> | null>(null)
+  const posRef = useRef(0)
   const announceRef = useRef(announce)
   const confirmDirtyRef = useRef(confirmDirty)
   confirmDirtyRef.current = confirmDirty
@@ -252,15 +254,21 @@ export function App() {
 
   const go = useCallback((next: string) => {
     if (next !== location.pathname && !confirmDirtyRef.current()) return
-    const id = popGuardRef.current?.tagPush() ?? 0
-    history.pushState({ ob: id }, "", next)
+    const pos = posRef.current + 1
+    const id = popGuardRef.current?.tagPush(pos) ?? 0
+    posRef.current = pos
+    history.pushState({ ob: id, obPos: pos }, "", next)
     setPath(next)
     announceRef.current()
   }, [])
 
   const replace = useCallback((next: string) => {
-    const id = popGuardRef.current?.tagReplace() ?? 0
-    history.replaceState({ ob: id }, "", next)
+    const id = popGuardRef.current?.tagReplace(posRef.current) ?? 0
+    history.replaceState(
+      { ...history.state, ob: id, obPos: posRef.current },
+      "",
+      next,
+    )
     setPath(next)
     announceRef.current()
   }, [])
@@ -293,7 +301,14 @@ export function App() {
         locationPath: () => location.pathname,
         go: (delta) => history.go(delta),
         forward: () => history.forward(),
-        pushState: (next) => history.pushState({}, "", next),
+        // The settle fallback rebuilds the guarded entry — tag it like a
+        // shell push so position tracking stays exact afterwards.
+        pushState: (next) => {
+          const pos = posRef.current + 1
+          const id = popGuardRef.current?.tagPush(pos) ?? 0
+          posRef.current = pos
+          history.pushState({ ob: id, obPos: pos }, "", next)
+        },
       },
       {
         isBlocked: () => dirtyForms.hasDirty(),
@@ -302,18 +317,31 @@ export function App() {
       },
     )
     popGuardRef.current = guard
-    const entryId = (event: PopStateEvent): number | null =>
-      event.state && typeof event.state.ob === "number"
-        ? (event.state.ob as number)
-        : null
+    const entryTags = (event: PopStateEvent) => {
+      const state = event.state as { ob?: unknown; obPos?: unknown } | null
+      return {
+        id: state && typeof state.ob === "number" ? (state.ob as number) : null,
+        pos:
+          state && typeof state.obPos === "number"
+            ? (state.obPos as number)
+            : null,
+      }
+    }
     const onPop = (event: PopStateEvent) => {
-      if (guard.onPop(entryId(event))) return
+      const tags = entryTags(event)
+      if (tags.pos != null) posRef.current = tags.pos
+      if (guard.onPop(tags.id, tags.pos)) return
       setPath(location.pathname)
       announceRef.current()
     }
     window.addEventListener("popstate", onPop)
-    // Tag the entry this tab booted on so later pops know where they stand.
-    history.replaceState({ ob: guard.tagReplace() }, "", location.pathname)
+    // Tag the entry this tab booted on (position 0) so later pops know
+    // where they stand.
+    history.replaceState(
+      { ...history.state, ob: guard.tagReplace(0), obPos: 0 },
+      "",
+      location.pathname,
+    )
     return () => {
       window.removeEventListener("popstate", onPop)
       popGuardRef.current = null

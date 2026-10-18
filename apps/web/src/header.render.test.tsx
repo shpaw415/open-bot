@@ -102,6 +102,21 @@ describe("AppHeader — render", () => {
     clearNotices()
   })
 
+  test("the notifications bell keeps its tooltip wrapper (stable trigger node)", () => {
+    // The bell must render inside the ToolTip container unconditionally.
+    // Swapping the wrapper out while the panel is open remounts the button,
+    // so the opening click lands on a detached node and ClickAwayListener
+    // closes the panel in the same event. Suppression while open is the
+    // `disabled` prop, not a structure swap.
+    const html = renderToStaticMarkup(<AppHeader {...baseProps} />)
+    const bell = html.indexOf('aria-haspopup="dialog"')
+    expect(bell).toBeGreaterThanOrEqual(0)
+    const tipContainer = html.lastIndexOf("MUI_Tooltip-Container", bell)
+    expect(tipContainer).toBeGreaterThanOrEqual(0)
+    const wrapperClose = html.indexOf("</span>", tipContainer)
+    expect(wrapperClose).toBeGreaterThan(bell)
+  })
+
   test("light mode advertises the dark switch", () => {
     const html = renderToStaticMarkup(
       <AppHeader {...baseProps} themeMode="light" />,
