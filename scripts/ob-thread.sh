@@ -11,9 +11,11 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-thread start [--title TEXT] [--persona NAME] [--display] [--hidden] [--dir NAME] [--message TEXT]
+  ob-thread start [--title TEXT] [--persona NAME] [--display] [--hidden] [--dir NAME] [--council NAME] [--role TEXT] [--message TEXT]
   ob-thread list
   ob-thread dirs
+  ob-thread councils
+  ob-thread council close NAME
   ob-thread delete ID [ID...] | --all
 
 start creates a thread. Without --display the thread is hidden for background
@@ -31,9 +33,21 @@ persona (team delegation). Typos in the name are tolerated and the output
 tells you which persona matched. Persona threads are visible by default;
 add --hidden for a background teammate. Check `ob-persona list` for names.
 
+--council NAME adds the thread to a council (an agent team). Council members
+are always hidden worker: threads; the user watches them in the dashboard
+council viewer, so never combine --council with --display or --dir. Use a
+short lowercase-kebab name (auth-review). --role TEXT labels the member's
+job in the viewer rail ("Reviewer"). After starting the members, end your
+reply with ![council: NAME](open-bot://council/NAME) so the viewer opens.
+
 list shows the hidden threads created through this tool.
 
 dirs lists the dashboard thread folders.
+
+councils lists the councils and their member counts.
+
+council close NAME deletes every member thread of the council and removes
+it. Run it when the team's work is done.
 
 delete removes hidden threads by id (as shown by list). --all removes every
 hidden agent thread. The server refuses anything that is not a hidden agent
@@ -45,6 +59,10 @@ Examples:
   ob-thread start --title "Scrape prices" --message "Scrape prices and save to /home/agent/workspace/prices.json"
   ob-thread start --persona "Software manager" --title "Add export" --message "Implement CSV export in ~/project/report-app"
   ob-thread start --title "Invoice follow-up" --dir "Billing" --display
+  ob-thread start --council auth-review --role Researcher --title "OAuth paths" --message "Map every OAuth path in ~/project/api"
+  ob-thread start --council auth-review --role Reviewer --title "Token storage" --message "Review token storage in ~/project/api"
+  ob-thread councils
+  ob-thread council close auth-review
   ob-thread dirs
   ob-thread list
   ob-thread delete ses_abc123
@@ -86,6 +104,8 @@ case "$cmd" in
     message=""
     persona=""
     dir=""
+    council=""
+    role=""
     display=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -101,6 +121,12 @@ case "$cmd" in
         --dir|--topic)
           [ $# -ge 2 ] || { usage; exit 2; }
           dir="$2"; shift 2 ;;
+        --council)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          council="$2"; shift 2 ;;
+        --role)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          role="$2"; shift 2 ;;
         --display)
           display=1; shift ;;
         --hidden)
@@ -113,13 +139,23 @@ case "$cmd" in
       echo "ob-thread: --dir applies to visible threads and cannot be combined with --hidden" >&2
       exit 2
     fi
+    if [ -n "$council" ] && [ -n "$dir" ]; then
+      echo "ob-thread: --council members are hidden and cannot be combined with --dir" >&2
+      exit 2
+    fi
+    if [ -n "$council" ] && [ "$display" = "1" ]; then
+      echo "ob-thread: --council members are hidden and cannot be combined with --display" >&2
+      exit 2
+    fi
     body="{}"
     if [ -n "$title" ]; then
       body=$(printf '%s' "$body" | jq --arg title "$title" '. + {title: $title}')
     fi
     visible="$display"
     if [ -z "$visible" ]; then
-      if [ -n "$persona" ] || [ -n "$dir" ]; then visible=1; else visible=0; fi
+      if [ -n "$council" ]; then
+        visible=0
+      elif [ -n "$persona" ] || [ -n "$dir" ]; then visible=1; else visible=0; fi
     fi
     if [ "$visible" -eq 1 ]; then
       body=$(printf '%s' "$body" | jq '. + {display: true}')
@@ -130,6 +166,12 @@ case "$cmd" in
     if [ -n "$dir" ]; then
       body=$(printf '%s' "$body" | jq --arg dir "$dir" '. + {dir: $dir}')
     fi
+    if [ -n "$council" ]; then
+      body=$(printf '%s' "$body" | jq --arg council "$council" '. + {council: $council}')
+    fi
+    if [ -n "$role" ]; then
+      body=$(printf '%s' "$body" | jq --arg role "$role" '. + {role: $role}')
+    fi
     if [ -n "$message" ]; then
       body=$(printf '%s' "$body" | jq --arg message "$message" '. + {message: $message}')
     fi
@@ -139,7 +181,41 @@ case "$cmd" in
     if [ -n "$warning" ]; then
       echo "ob-thread: $warning" >&2
     fi
-    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end) + (if .dir then {dir: .dir} else {} end)'
+    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end) + (if .dir then {dir: .dir} else {} end) + (if .council then {council: .council} else {} end)'
+    ;;
+  councils)
+    out=$(request GET /api/councils)
+    fail_on_error "$out"
+    printf '%s' "$out" | jq -r 'if (.councils | length) == 0 then "(no councils yet)" else .councils[] | "- \(.name) — \(.members) member(s)" end'
+    ;;
+  council)
+    [ $# -ge 2 ] || { usage; exit 2; }
+    sub="$1"
+    shift
+    case "$sub" in
+      close)
+        [ $# -ge 1 ] || { usage; exit 2; }
+        name="$1"
+        out=$(request DELETE "/api/councils/$name")
+        fail_on_error "$out"
+        deleted=$(printf '%s' "$out" | jq -r '.deleted | length')
+        if [ "$deleted" -gt 0 ]; then
+          printf '%s' "$out" | jq -r '"deleted: " + (.deleted | join(", "))'
+        fi
+        printf '%s' "$out" | jq -r '.skipped[] | "skipped [\(.sessionId)]: \(.reason)"'
+        if [ "$deleted" -eq 0 ]; then
+          echo "ob-thread: nothing deleted; the council is kept for a retry" >&2
+          exit 1
+        fi
+        if [ "$(printf '%s' "$out" | jq -r '.skipped | length')" -eq 0 ]; then
+          echo "council $name closed"
+        else
+          echo "council $name partially closed; remaining members are still tracked"
+        fi
+        ;;
+      *)
+        echo "unknown council command: $sub" >&2; usage; exit 2 ;;
+    esac
     ;;
   dirs)
     out=$(request GET /api/thread-dirs)

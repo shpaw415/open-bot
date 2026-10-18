@@ -109,6 +109,7 @@ export type InstalledResponse = {
   plugins: InstalledPluginInfo[]
   policy: "manual" | "auto"
   autoUpdate?: "off" | "stable"
+  publicOrigin?: string
   configured: boolean
 }
 
@@ -116,6 +117,7 @@ export function useInstalledPlugins() {
   const [plugins, setPlugins] = useState<InstalledPluginInfo[]>([])
   const [policy, setPolicy] = useState<"manual" | "auto">("manual")
   const [autoUpdate, setAutoUpdate] = useState<"off" | "stable">("off")
+  const [publicOrigin, setPublicOrigin] = useState("")
   const [configured, setConfigured] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -125,6 +127,7 @@ export function useInstalledPlugins() {
       setPlugins(body.plugins ?? [])
       setPolicy(body.policy ?? "manual")
       setAutoUpdate(body.autoUpdate ?? "off")
+      setPublicOrigin(body.publicOrigin ?? "")
       setConfigured(body.configured ?? false)
       setLoaded(true)
     } catch {
@@ -147,7 +150,15 @@ export function useInstalledPlugins() {
     [subscribe, refresh],
   )
 
-  return { plugins, policy, autoUpdate, configured, loaded, refresh }
+  return {
+    plugins,
+    policy,
+    autoUpdate,
+    publicOrigin,
+    configured,
+    loaded,
+    refresh,
+  }
 }
 
 export function resolveSpecField(

@@ -16,6 +16,9 @@ export type PurchaseRow = {
   refund_reason: string | null
   created_at: number
   paid_at: number | null
+  is_gift: number
+  gifted_by: string | null
+  gift_note: string | null
 }
 
 export type PurchaseView = {
@@ -28,6 +31,8 @@ export type PurchaseView = {
   createdAt: number
   paidAt: number | null
   refundedAt: number | null
+  isGift: boolean
+  giftNote: string | null
 }
 
 export type SaleView = PurchaseView & {
@@ -50,6 +55,8 @@ function view(row: PurchaseRow, pluginName: string | null): PurchaseView {
     createdAt: row.created_at,
     paidAt: row.paid_at,
     refundedAt: row.refunded_at,
+    isGift: row.is_gift === 1,
+    giftNote: row.gift_note,
   }
 }
 
@@ -105,6 +112,9 @@ export async function createPurchase(
     refund_reason: null,
     created_at: Date.now(),
     paid_at: null,
+    is_gift: 0,
+    gifted_by: null,
+    gift_note: null,
   }
   await db
     .prepare(
@@ -162,6 +172,120 @@ export async function markPurchaseRefunded(
   return getPurchase(db, purchaseId)
 }
 
+// A comped lifetime license: a paid, zero-amount purchase row. hasLicense
+// counts it with no special casing; is_gift keeps it out of money math.
+export async function createGift(
+  db: D1Database,
+  opts: {
+    plugin: PluginRow
+    version: string
+    fromUserId: string
+    toUserId: string
+    note?: string
+  },
+): Promise<PurchaseRow> {
+  const now = Date.now()
+  const row: PurchaseRow = {
+    id: crypto.randomUUID(),
+    user_id: opts.toUserId,
+    plugin_id: opts.plugin.id,
+    version: opts.version,
+    amount_cents: 0,
+    fee_cents: 0,
+    earnings_cents: 0,
+    currency: "usd",
+    stripe_session_id: null,
+    stripe_payment_intent_id: null,
+    status: "paid",
+    refunded_at: null,
+    refund_reason: null,
+    created_at: now,
+    paid_at: now,
+    is_gift: 1,
+    gifted_by: opts.fromUserId,
+    gift_note: opts.note?.trim() ? opts.note.trim().slice(0, 500) : null,
+  }
+  await db
+    .prepare(
+      `INSERT INTO purchases (id, user_id, plugin_id, version, amount_cents, fee_cents, earnings_cents, currency, stripe_session_id, stripe_payment_intent_id, status, created_at, paid_at, is_gift, gifted_by, gift_note)
+       VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 'usd', NULL, NULL, 'paid', ?5, ?5, 1, ?6, ?7)`,
+    )
+    .bind(
+      row.id,
+      row.user_id,
+      row.plugin_id,
+      row.version,
+      row.created_at,
+      row.gifted_by,
+      row.gift_note,
+    )
+    .run()
+  return row
+}
+
+// Owner-side revoke: flips the gift row to refunded so hasLicense stops
+// counting it. No Stripe involvement — money rows are never touched here.
+export async function revokeGift(
+  db: D1Database,
+  giftId: string,
+  ownerId: string,
+): Promise<PurchaseRow | null> {
+  await db
+    .prepare(
+      `UPDATE purchases SET status = 'refunded', refunded_at = ?3, refund_reason = 'gift revoked by owner'
+       WHERE id = ?1 AND gifted_by = ?2 AND is_gift = 1 AND status = 'paid'`,
+    )
+    .bind(giftId, ownerId, Date.now())
+    .run()
+  return getPurchase(db, giftId)
+}
+
+export type GiftView = {
+  id: string
+  recipientEmail: string | null
+  recipientName: string | null
+  note: string | null
+  status: PurchaseRow["status"]
+  createdAt: number
+  revokedAt: number | null
+}
+
+// The plugin owner's gift list for one plugin, with recipient identity from
+// the marketplace users table.
+export async function listPluginGifts(
+  db: D1Database,
+  pluginId: string,
+): Promise<GiftView[]> {
+  const result = await db
+    .prepare(
+      `SELECT p.id, p.status, p.created_at, p.refunded_at, p.gift_note,
+              u.email AS recipient_email, u.name AS recipient_name
+       FROM purchases p
+       LEFT JOIN market_users u ON u.id = p.user_id
+       WHERE p.plugin_id = ?1 AND p.is_gift = 1
+       ORDER BY p.created_at DESC LIMIT 200`,
+    )
+    .bind(pluginId)
+    .all<{
+      id: string
+      status: PurchaseRow["status"]
+      created_at: number
+      refunded_at: number | null
+      gift_note: string | null
+      recipient_email: string | null
+      recipient_name: string | null
+    }>()
+  return (result.results ?? []).map((row) => ({
+    id: row.id,
+    recipientEmail: row.recipient_email,
+    recipientName: row.recipient_name,
+    note: row.gift_note,
+    status: row.status,
+    createdAt: row.created_at,
+    revokedAt: row.refunded_at,
+  }))
+}
+
 export async function getPurchase(
   db: D1Database,
   purchaseId: string,
@@ -198,7 +322,7 @@ export async function getUserPurchases(
 }
 
 // Author sales: purchases of plugins owned by this user, joined to the plugin
-// name for display.
+// name for display. Gifts carry no money and never appear as sales.
 export async function getOwnerSales(
   db: D1Database,
   ownerId: string,
@@ -207,7 +331,7 @@ export async function getOwnerSales(
     .prepare(
       `SELECT p.*, pl.name AS plugin_name FROM purchases p
        JOIN plugins pl ON pl.id = p.plugin_id AND pl.owner_user_id = ?1
-       WHERE p.status = 'paid'
+       WHERE p.status = 'paid' AND p.is_gift = 0
        ORDER BY p.paid_at DESC LIMIT 200`,
     )
     .bind(ownerId)

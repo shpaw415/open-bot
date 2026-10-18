@@ -1,5 +1,6 @@
 import type { Db, InstalledPlugin, User } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
+import { wakeDesktop } from "./desktop-wake"
 import { desktopPhase, endpoint } from "./docker"
 import { names, pagesOrigin } from "./env"
 import { HttpError } from "./http-error"
@@ -309,6 +310,21 @@ async function healthy(
   return ok
 }
 
+// In-container probe: the control plane reaches the page server over the
+// docker network (container IP), so a server pinned to a loopback hostname
+// answers here while `healthy()` fails. Distinguishes a dead server from one
+// the control plane simply cannot reach. Any HTTP response counts, same rule
+// as `healthy()`.
+async function loopbackAlive(userId: string, port: number) {
+  const n = names(userId)
+  const check = await opencodeExecUser(n.opencode, [
+    "sh",
+    "-c",
+    `curl -s -m 2 -o /dev/null "http://127.0.0.1:${port}/healthz" 2>/dev/null`,
+  ]).catch(() => ({ code: 1, stdout: "", stderr: "" }))
+  return check.code === 0
+}
+
 function emitChanged(hub: PageHub, userId: string) {
   try {
     hub.emit(userId, { type: "pages.changed" })
@@ -492,6 +508,16 @@ async function ensurePluginPageServerInner(
       return port
     }
   }
+  // A loopback-pinned server (author set `hostname` in Bun.serve) stays alive
+  // on the desktop while the network probe keeps failing — name the fix
+  // instead of reporting "did not come up" for a healthy process.
+  if (await loopbackAlive(userId, port)) {
+    throw new HttpError(
+      502,
+      `page server is running but bound to a loopback address — remove any "hostname" option in Bun.serve so it binds all interfaces (the control plane reaches it over the container network); log: ~/.open-bot/pages/${pluginId}.log`,
+      "plugin_page_loopback",
+    )
+  }
   throw new HttpError(
     502,
     `page server did not come up — see ~/.open-bot/pages/${pluginId}.log on the desktop`,
@@ -605,11 +631,17 @@ export async function sweepIdlePluginPageServers(hub?: PageHub) {
 // On-demand runtime status for the agent (`ob-plugin page <id>`): the port
 // comes from the in-memory state, falling back to the .port file the spawn
 // writes (the state map only lives for one control lifetime); running is a
-// live /healthz probe against that port.
+// live /healthz probe against that port. When the probe fails but the server
+// answers from the desktop itself, `note` carries the loopback-bind diagnosis.
 export async function pluginPageRuntime(
   userId: string,
   pluginId: string,
-): Promise<{ running: boolean; port: number | null; pid: number | null }> {
+): Promise<{
+  running: boolean
+  port: number | null
+  pid: number | null
+  note?: string
+}> {
   const n = names(userId)
   const pidFile = pluginPagePath(pluginId)
   const read = (suffix: string) =>
@@ -627,6 +659,14 @@ export async function pluginPageRuntime(
   const pidNumber = Number(pidOut.stdout.trim())
   const pid = Number.isInteger(pidNumber) && pidNumber > 0 ? pidNumber : null
   const running = port !== null && (await healthy(userId, pluginId, port))
+  if (!running && port !== null && (await loopbackAlive(userId, port))) {
+    return {
+      running,
+      port,
+      pid,
+      note: 'listening on the desktop loopback only — remove any "hostname" option in Bun.serve so it binds all interfaces (the control plane reaches the server over the container network)',
+    }
+  }
   return { running, port, pid }
 }
 
@@ -794,6 +834,17 @@ async function rewritePageBody(
   })
 }
 
+// Wakes a sleeping desktop so a dashboard app-tab visit can boot the instance
+// (the webhook path does the same before forwarding). No-op when already
+// running — the phase probe is one docker inspect that only runs on the
+// lazy-start path. Concurrent callers dedupe inside wakeDesktop. Structured
+// HttpErrors (images missing, capacity, viking models) propagate to the
+// caller like a webhook hit.
+async function wakeDesktopForPage(db: Db, userId: string) {
+  if ((await desktopPhase(userId)) === "running") return
+  await wakeDesktop(db, userId)
+}
+
 // Proxies one request to the plugin's page server on the desktop. Session
 // auth happens in server.ts; here the plugin row decides 404s.
 export async function proxyPluginPage(
@@ -816,6 +867,7 @@ export async function proxyPluginPage(
   }
   let state = pageStateFor(user.id, parsed.pluginId)
   if (!state || !(await healthy(user.id, parsed.pluginId, state.port))) {
+    await wakeDesktopForPage(db, user.id)
     await ensurePluginPageServer(user.id, row, hub)
     state = pageStateFor(user.id, parsed.pluginId)
     if (!state) {
@@ -1003,6 +1055,7 @@ export async function proxyPluginPageFrame(
   }
   let state = pageStateFor(grant.userId, grant.pluginId)
   if (!state || !(await healthy(grant.userId, grant.pluginId, state.port))) {
+    await wakeDesktopForPage(db, grant.userId)
     await ensurePluginPageServer(grant.userId, row, hub)
     state = pageStateFor(grant.userId, grant.pluginId)
     if (!state) {

@@ -442,6 +442,111 @@ describe("POST /api/threads", () => {
   })
 })
 
+describe("POST /api/threads councils", () => {
+  function councilDb() {
+    const councils: {
+      id: string
+      userId: string
+      name: string
+      createdAt: number
+    }[] = []
+    const members: {
+      councilId: string
+      userId: string
+      sessionId: string
+      role: string
+      createdAt?: number
+    }[] = []
+    const mock = {
+      desktop: (id: string) =>
+        id === "user-1" ? { opencodePassword: "pw" } : null,
+      personas: () => [],
+      installedPlugins: () => [],
+      setThreadPersona: () => {},
+      councilByName: (userId: string, name: string) =>
+        councils.find(
+          (row) =>
+            row.userId === userId &&
+            row.name.toLowerCase() === name.toLowerCase(),
+        ) ?? null,
+      createCouncil: (row: { id: string; userId: string; name: string }) => {
+        councils.push({ ...row, createdAt: 1 })
+      },
+      setCouncilMember: (row: {
+        councilId: string
+        userId: string
+        sessionId: string
+        role: string
+      }) => {
+        members.push(row)
+      },
+    } as unknown as Db
+    return { mock, councils, members }
+  }
+
+  test("a council member is hidden, bound, and reported", async () => {
+    installFetch()
+    const { mock, councils, members } = councilDb()
+    const res = await post(
+      { title: "Research", council: "Auth Review", role: "Researcher" },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      id: string
+      display: boolean
+      title: string
+      council?: { name: string }
+    }
+    expect(body.display).toBe(false)
+    expect(body.title).toBe("worker:Research")
+    expect(body.council?.name).toBe("auth-review")
+    expect(councils).toHaveLength(1)
+    expect(members).toEqual([
+      {
+        councilId: councils[0]?.id,
+        userId: "user-1",
+        sessionId: body.id,
+        role: "Researcher",
+        createdAt: expect.any(Number),
+      },
+    ])
+    // a second member joins the same council case-insensitively
+    const again = await post({ title: "Review", council: "auth-review" }, mock)
+    expect(again.status).toBe(201)
+    const againBody = (await again.json()) as {
+      council?: { name: string }
+    }
+    expect(againBody.council?.name).toBe("auth-review")
+    expect(councils).toHaveLength(1)
+    expect(members).toHaveLength(2)
+  })
+
+  test("refuses display and dir on council members", async () => {
+    installFetch()
+    const { mock } = councilDb()
+    expect(
+      (await post({ title: "Job", council: "review", display: true }, mock))
+        .status,
+    ).toBe(400)
+    expect(
+      (await post({ title: "Job", council: "review", dir: "Billing" }, mock))
+        .status,
+    ).toBe(400)
+    expect(calls).toHaveLength(0)
+  })
+
+  test("a name with no slug characters is refused", async () => {
+    installFetch()
+    const { mock } = councilDb()
+    const res = await post({ title: "Job", council: "!!!" }, mock)
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toMatch(/letters or digits/)
+    expect(calls).toHaveLength(0)
+  })
+})
+
 describe("GET /api/threads", () => {
   test("lists the hidden agent threads", async () => {
     installFetch()
@@ -538,6 +643,9 @@ describe("DELETE /api/threads", () => {
       clearThreadDir: (_userId: string, sessionId: string) => {
         cleanupLog.push(`dir:${sessionId}`)
       },
+      clearCouncilMember: (_userId: string, sessionId: string) => {
+        cleanupLog.push(`council:${sessionId}`)
+      },
       workspaceMediaForSession: () => [],
       deleteWorkspaceMedia: () => {},
       clearThreadScreen: () => {},
@@ -568,7 +676,12 @@ describe("DELETE /api/threads", () => {
     }
     expect(body.deleted).toEqual(["s1"])
     expect(body.skipped).toEqual([])
-    expect(cleanupLog).toEqual(["persona:s1", "title:s1", "dir:s1"])
+    expect(cleanupLog).toEqual([
+      "persona:s1",
+      "title:s1",
+      "dir:s1",
+      "council:s1",
+    ])
     const del = calls.find(
       (call) =>
         call.url.endsWith("/session/s1") && call.init?.method === "DELETE",
@@ -593,7 +706,12 @@ describe("DELETE /api/threads", () => {
       { id: "s4", reason: "not a hidden agent thread" },
       { id: "missing", reason: "not a hidden agent thread" },
     ])
-    expect(cleanupLog).toEqual(["persona:s1", "title:s1", "dir:s1"])
+    expect(cleanupLog).toEqual([
+      "persona:s1",
+      "title:s1",
+      "dir:s1",
+      "council:s1",
+    ])
   })
 
   test("reports a delete failure as skipped", async () => {

@@ -69,6 +69,32 @@ function autoUpdate(db: Db): AutoUpdate {
     : "off"
 }
 
+// Instance public origin (e.g. https://open-bot.example.com) — the shareable
+// base for /hooks/... URLs that `ob-plugin endpoint <id> url` prints. The
+// admin sets it on the Plugins tab; it wins over the OPEN_BOT_PUBLIC_URL env
+// so an instance can fix its origin without a control-plane redeploy.
+const PUBLIC_ORIGIN_KEY = "public_origin"
+
+export function instancePublicOrigin(db: Db): string {
+  return db.getSetting(PUBLIC_ORIGIN_KEY) || publicOrigin()
+}
+
+function normalizePublicOrigin(value: unknown): string | null {
+  const raw = String(value ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+  if (!raw) return ""
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null
+    if (url.username || url.password) return null
+    if (url.pathname !== "/" || url.search || url.hash) return null
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
 // The plugin dashboard home-screen layout: pages of app tiles and folders.
 // Keys are tab keys "pluginId:tabId"; stale keys are ignored client-side, so
 // validation only guards shape and size.
@@ -761,7 +787,11 @@ export function handlePlugins(
   const keepAlive = () => _holdOpen?.()
 
   if (path === "/api/plugins/policy" && req.method === "GET")
-    return json({ policy: policy(db), autoUpdate: autoUpdate(db) })
+    return json({
+      policy: policy(db),
+      autoUpdate: autoUpdate(db),
+      publicOrigin: instancePublicOrigin(db),
+    })
 
   if (path === "/api/plugins/policy" && req.method === "PUT") {
     if (user.role !== "admin") return json({ error: "admin only" }, 403)
@@ -782,7 +812,25 @@ export function handlePlugins(
           }
           db.setSetting(AUTO_UPDATE_KEY, next)
         }
-        return json({ policy: policy(db), autoUpdate: autoUpdate(db) })
+        if (body.publicOrigin !== undefined) {
+          const next = normalizePublicOrigin(body.publicOrigin)
+          if (next === null) {
+            return json(
+              {
+                error:
+                  "publicOrigin must be an http(s) origin like https://open-bot.example.com (no path), or empty to clear",
+              },
+              400,
+            )
+          }
+          if (next) db.setSetting(PUBLIC_ORIGIN_KEY, next)
+          else db.setSetting(PUBLIC_ORIGIN_KEY, "")
+        }
+        return json({
+          policy: policy(db),
+          autoUpdate: autoUpdate(db),
+          publicOrigin: instancePublicOrigin(db),
+        })
       })
       .catch(() => json({ error: "invalid json" }, 400))
   }
@@ -795,6 +843,7 @@ export function handlePlugins(
         .map((row) => publicInstalled(db, row)),
       policy: policy(db),
       autoUpdate: autoUpdate(db),
+      publicOrigin: instancePublicOrigin(db),
       configured: marketplaceConfigured(db),
     })
   }
@@ -1481,7 +1530,7 @@ export function handlePlugins(
     }
     if (req.method === "GET") {
       const hookPath = `/hooks/${user.id}/${pluginId}/`
-      const origin = agent ? publicOrigin() : ""
+      const origin = agent ? instancePublicOrigin(db) : ""
       return json({
         enabled: true,
         secured: Boolean(row.webhookToken),

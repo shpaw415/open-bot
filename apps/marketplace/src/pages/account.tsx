@@ -28,6 +28,8 @@ type PurchaseRow = {
   amountCents: number
   status: "pending" | "paid" | "refunded"
   createdAt: number
+  isGift?: boolean
+  giftNote?: string | null
 }
 
 type PayoutData = {
@@ -321,9 +323,15 @@ export default function Account() {
                     >
                       {purchase.pluginName}
                     </a>
-                    <span className="font-mono text-[12.5px] font-semibold text-[#1A2333]">
-                      {priceText(purchase.amountCents)}
-                    </span>
+                    {purchase.isGift ? (
+                      <span className="rounded-full bg-[#EEF0FE] px-2 py-[1px] text-[11.5px] font-semibold text-[#2B3DE8]">
+                        Gift
+                      </span>
+                    ) : (
+                      <span className="font-mono text-[12.5px] font-semibold text-[#1A2333]">
+                        {priceText(purchase.amountCents)}
+                      </span>
+                    )}
                     {purchase.status === "paid" ? (
                       <span className="rounded-full bg-[#E7F4ED] px-2 py-[1px] text-[11.5px] font-semibold text-[#157A55]">
                         Owned

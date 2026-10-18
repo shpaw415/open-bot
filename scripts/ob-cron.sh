@@ -11,6 +11,7 @@ usage() {
 Usage:
   ob-cron add --name NAME (--message TEXT | --script TEXT | both) (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601) [--run prompt|script|both|auto] [--model PROVIDER/MODEL] [--persona ID]
   ob-cron list
+  ob-cron show ID
   ob-cron models
   ob-cron set ID [--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601] [--run prompt|script|both|auto] [--script TEXT | --clear-script] [--model PROVIDER/MODEL | --clear-model] [--persona ID | --clear-persona] [--name NAME] [--message TEXT]
   ob-cron remove ID
@@ -198,6 +199,17 @@ case "$cmd" in
         elif .kind == "every" then "every \(.everySeconds)s"
         else "at \((.atMs / 1000 | strftime("%Y-%m-%dT%H:%M:%SZ")) // "")"
         end)\(if .runKind == "script" or .runKind == "both" or .runKind == "auto" then " run=\(.runKind)" else "" end)\(if .providerId and .modelId then " model=\(.providerId)/\(.modelId)" else "" end)\(if .personaId then " persona=\(.personaId)" else "" end)\(if .enabled then "" else " (disabled)" end) runs=\(.runCount)"'
+    ;;
+  show)
+    [ $# -eq 1 ] || { usage; exit 2; }
+    out=$(request GET /api/cron)
+    fail_on_error "$out"
+    job=$(printf '%s' "$out" | jq -c --arg id "$1" '.[] | select(.id == $id)')
+    if [ -z "$job" ]; then
+      echo "ob-cron: no job $1 (ob-cron list for ids)" >&2
+      exit 1
+    fi
+    printf '%s\n' "$job" | jq '{id, name, enabled, kind, cronExpr, everySeconds, atMs, nextRunAt, runKind, message, script, providerId, modelId, personaId, runCount, lastError, lastRunAt}'
     ;;
   models)
     out=$(request GET /api/cron/models)

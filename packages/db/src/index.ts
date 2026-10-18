@@ -21,6 +21,8 @@ import { drizzle } from "drizzle-orm/bun-sqlite"
 import { applyMigrations } from "./migrate"
 import {
   appSettings,
+  councilMembers,
+  councils,
   cronJobs,
   cronNotices,
   dashboardLayouts,
@@ -332,6 +334,21 @@ export type ThreadDirAssignment = {
   userId: string
   sessionId: string
   dirId: string
+}
+
+export type Council = {
+  id: string
+  userId: string
+  name: string
+  createdAt: number
+}
+
+export type CouncilMember = {
+  councilId: string
+  userId: string
+  sessionId: string
+  role: string
+  createdAt: number
 }
 
 export type CronScheduleKind = "cron" | "every" | "at"
@@ -1691,6 +1708,118 @@ export function openDatabase(path: string) {
           ),
         )
         .run()
+    },
+    councils(userId: string) {
+      return orm
+        .select()
+        .from(councils)
+        .where(eq(councils.userId, userId))
+        .orderBy(councils.createdAt)
+        .all()
+    },
+    councilById(id: string, userId: string) {
+      return (
+        orm
+          .select()
+          .from(councils)
+          .where(and(eq(councils.id, id), eq(councils.userId, userId)))
+          .get() ?? null
+      )
+    },
+    councilByName(userId: string, name: string) {
+      const wanted = name.toLowerCase()
+      return (
+        orm
+          .select()
+          .from(councils)
+          .where(eq(councils.userId, userId))
+          .all()
+          .find((row) => row.name.toLowerCase() === wanted) ?? null
+      )
+    },
+    createCouncil(row: Council) {
+      orm.insert(councils).values(row).run()
+    },
+    councilMembers(userId: string, councilId: string) {
+      return orm
+        .select()
+        .from(councilMembers)
+        .where(
+          and(
+            eq(councilMembers.userId, userId),
+            eq(councilMembers.councilId, councilId),
+          ),
+        )
+        .orderBy(councilMembers.createdAt)
+        .all()
+    },
+    allCouncilMembers(userId: string) {
+      return orm
+        .select()
+        .from(councilMembers)
+        .where(eq(councilMembers.userId, userId))
+        .all()
+    },
+    councilMemberBySession(userId: string, sessionId: string) {
+      return (
+        orm
+          .select()
+          .from(councilMembers)
+          .where(
+            and(
+              eq(councilMembers.userId, userId),
+              eq(councilMembers.sessionId, sessionId),
+            ),
+          )
+          .get() ?? null
+      )
+    },
+    setCouncilMember(row: CouncilMember) {
+      orm
+        .insert(councilMembers)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [councilMembers.councilId, councilMembers.sessionId],
+          set: { role: row.role },
+        })
+        .run()
+    },
+    clearCouncilMember(userId: string, sessionId: string) {
+      orm
+        .delete(councilMembers)
+        .where(
+          and(
+            eq(councilMembers.userId, userId),
+            eq(councilMembers.sessionId, sessionId),
+          ),
+        )
+        .run()
+    },
+    deleteCouncil(id: string, userId: string) {
+      if (!this.councilById(id, userId)) return false
+      orm
+        .delete(councilMembers)
+        .where(
+          and(
+            eq(councilMembers.userId, userId),
+            eq(councilMembers.councilId, id),
+          ),
+        )
+        .run()
+      orm
+        .delete(councils)
+        .where(and(eq(councils.id, id), eq(councils.userId, userId)))
+        .run()
+      return true
+    },
+    pruneCouncils(userId: string, keep: number) {
+      const rows = orm
+        .select({ id: councils.id })
+        .from(councils)
+        .where(eq(councils.userId, userId))
+        .orderBy(desc(councils.createdAt), desc(councils.id))
+        .all()
+      for (const row of rows.slice(keep)) this.deleteCouncil(row.id, userId)
     },
     createCronJob(job: CronJob) {
       orm.insert(cronJobs).values(job).run()

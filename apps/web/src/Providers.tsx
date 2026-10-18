@@ -13,12 +13,21 @@ import Paper from "@shpaw415/mui-lite/Paper"
 import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Stack from "@shpaw415/mui-lite/Stack"
+import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { Terminal } from "@xterm/xterm"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { api, waitForDesktop } from "./api"
 import { useMobile } from "./hooks"
-import { CheckCircleIcon, LoginIcon, LogoutIcon, RefreshIcon } from "./icons"
+import {
+  CheckCircleIcon,
+  ContentCopyIcon,
+  LoginIcon,
+  LogoutIcon,
+  OpenInNewIcon,
+  RefreshIcon,
+  SendIcon,
+} from "./icons"
 import "@xterm/xterm/css/xterm.css"
 
 type AuthMethod = { type?: string; label?: string }
@@ -44,6 +53,12 @@ function LoginTerminal({
   onExit: (code: number | null) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const [urls, setUrls] = useState<string[]>([])
+  const [callbackUrl, setCallbackUrl] = useState("")
+  const [relayBusy, setRelayBusy] = useState(false)
+  const [relayError, setRelayError] = useState("")
+  const [relayNote, setRelayNote] = useState("")
+  const mobile = useMobile()
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
@@ -52,6 +67,9 @@ function LoginTerminal({
     let ws: WebSocket | null = null
     let disposed = false
     let sawExit = false
+    setUrls([])
+    setRelayError("")
+    setRelayNote("")
     const fitHost = () => {
       try {
         fit?.fit()
@@ -110,11 +128,15 @@ function LoginTerminal({
               op?: string
               code?: number | null
               note?: string
+              urls?: string[]
             }
             if (body.op === "exit") {
               sawExit = true
               if (body.note) term?.write(`\r\n${body.note}\r\n`)
               onExit(typeof body.code === "number" ? body.code : null)
+            }
+            if (body.op === "urls" && Array.isArray(body.urls)) {
+              setUrls(body.urls.filter((u) => typeof u === "string"))
             }
           } catch {
             // ignore malformed control frames
@@ -153,7 +175,127 @@ function LoginTerminal({
       term?.dispose()
     }
   }, [loginId, onExit])
-  return <div ref={hostRef} className="ob-tty" />
+
+  async function deliverCallback() {
+    const url = callbackUrl.trim()
+    if (!url) return
+    setRelayBusy(true)
+    setRelayError("")
+    setRelayNote("")
+    try {
+      const body = await api<{ delivered: boolean; status: number }>(
+        `/api/providers/login/${encodeURIComponent(loginId)}/callback`,
+        { method: "POST", body: JSON.stringify({ url }) },
+      )
+      setRelayNote(
+        body.status >= 400
+          ? `login server answered ${body.status} — check the terminal`
+          : "callback delivered — watch the terminal",
+      )
+    } catch (caught) {
+      setRelayError(
+        caught instanceof Error ? caught.message : "delivery failed",
+      )
+    } finally {
+      setRelayBusy(false)
+    }
+  }
+
+  const shownUrls = urls.slice(-3).reverse()
+  return (
+    <Stack spacing={1} sx={{ flex: 1, minHeight: 0, width: "100%" }}>
+      {shownUrls.length > 0 ? (
+        <Stack spacing={0.5} sx={{ flexShrink: 0 }}>
+          {shownUrls.map((url, index) => (
+            <Stack
+              key={url}
+              direction="row"
+              spacing={1}
+              sx={{ alignItems: "center", minWidth: 0 }}
+            >
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<OpenInNewIcon />}
+                onClick={() => window.open(url, "_blank", "noopener")}
+                sx={{ flexShrink: 0 }}
+              >
+                {index === 0 ? "Open sign-in page" : "Open"}
+              </Button>
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<ContentCopyIcon />}
+                onClick={() =>
+                  void navigator.clipboard
+                    ?.writeText(url)
+                    .catch(() => undefined)
+                }
+                sx={{ flexShrink: 0 }}
+              >
+                Copy link
+              </Button>
+              <Typography
+                variant="caption"
+                color="textSecondary"
+                sx={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {url}
+              </Typography>
+            </Stack>
+          ))}
+        </Stack>
+      ) : null}
+      <div ref={hostRef} className="ob-tty" />
+      <Stack spacing={0.5} sx={{ flexShrink: 0 }}>
+        <Typography variant="caption" color="textSecondary">
+          Browser says “can’t connect to localhost” after sign-in? Copy the
+          address-bar URL and deliver it — the login server runs inside your
+          desktop.
+        </Typography>
+        <Stack
+          direction={mobile ? "column" : "row"}
+          spacing={1}
+          sx={{ alignItems: mobile ? "stretch" : "center" }}
+        >
+          <TextField
+            label="Callback URL (localhost)"
+            value={callbackUrl}
+            placeholder="http://localhost:1455/auth/callback?code=…"
+            disabled={relayBusy}
+            onChange={(event) => setCallbackUrl(event.currentTarget.value)}
+            sx={{ flex: 1, minWidth: 0 }}
+          />
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<SendIcon />}
+            disabled={relayBusy || !callbackUrl.trim()}
+            onClick={() => void deliverCallback()}
+            sx={{ flexShrink: 0 }}
+          >
+            {relayBusy ? "Delivering…" : "Deliver"}
+          </Button>
+        </Stack>
+        {relayError ? (
+          <Alert severity="error" onClose={() => setRelayError("")}>
+            {relayError}
+          </Alert>
+        ) : null}
+        {relayNote ? (
+          <Alert severity="success" onClose={() => setRelayNote("")}>
+            {relayNote}
+          </Alert>
+        ) : null}
+      </Stack>
+    </Stack>
+  )
 }
 
 function mergedOptions(
@@ -436,7 +578,7 @@ export function Providers() {
               <>
                 <AutoComplete
                   options={providerOptions}
-                  value={query || (provider ? nameOf(provider) : "")}
+                  value={query}
                   onChange={(event) => setQuery(event.currentTarget.value)}
                   onFilter={(opt, input) => {
                     const needle = input.trim().toLowerCase()

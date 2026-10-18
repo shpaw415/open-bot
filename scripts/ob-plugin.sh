@@ -41,6 +41,7 @@ Usage:
   ob-plugin endpoint ID secret       print the raw secret (empty stdout + exit 1 when unset)
   ob-plugin endpoint ID secret VALUE set the secret (callers then send X-Open-Bot-Webhook-Secret or ?secret=)
   ob-plugin endpoint ID secret --generate   set a fresh random secret and print it
+  ob-plugin endpoint ID secret clear   remove the secret (same as 'ob-plugin endpoint ID clear')
   ob-plugin endpoint ID clear        remove the secret (endpoint becomes public)
   ob-plugin settings ID [key=value]  show, set (KEY=value), or clear (KEY=)
                                      plugin settings
@@ -1082,10 +1083,14 @@ EOF
     [ $# -eq 1 ] || { usage; exit 2; }
     out=$(request GET "/api/plugins/installed/$(urlencode "$1")/page")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{pluginId, enabled, running, port, pid}'
+    printf '%s' "$out" | jq '{pluginId, enabled, running, port, pid, note}'
     if printf '%s' "$out" | jq -e '.running == true' >/dev/null 2>&1; then
       printf '%s' "$out" | jq -r '"loopback: http://127.0.0.1:\(.port)/  (click-test: ob-chrome navigate http://127.0.0.1:\(.port)/ — log: ~/.open-bot/pages/\(.pluginId).log)"' >&2
     else
+      note=$(printf '%s' "$out" | jq -r '.note // empty')
+      if [ -n "$note" ]; then
+        echo "ob-plugin: $note" >&2
+      fi
       echo "ob-plugin: page server is not running (try ob-plugin restart $1; log: ~/.open-bot/pages/$1.log)" >&2
     fi
     ;;
@@ -1151,6 +1156,10 @@ EOF
           out=$(request POST "$hook" "$(jq -n --arg s "$secret" '{secret: $s}')")
           fail_on_error "$out"
           printf '%s\n' "$secret"
+        elif [ "$1" = "clear" ]; then
+          out=$(request POST "$hook" '{"secret": ""}')
+          fail_on_error "$out"
+          echo "secret removed — $id endpoint is public"
         else
           secret="$1"
           out=$(request POST "$hook" "$(jq -n --arg s "$secret" '{secret: $s}')")

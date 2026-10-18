@@ -16,6 +16,7 @@ import {
   EmptyState,
   Icon,
   IconTile,
+  Input,
   icons,
   SectionHeading,
   Spinner,
@@ -33,6 +34,16 @@ import {
 type PluginPageData =
   | { ok: false; error: string }
   | { ok: true; detail: MarketDetail; comments: MarketComment[] }
+
+type GiftRow = {
+  id: string
+  recipientEmail: string | null
+  recipientName: string | null
+  note: string | null
+  status: "pending" | "paid" | "refunded"
+  createdAt: number
+  revokedAt: number | null
+}
 
 function pluginId(params: { id?: string | string[] }) {
   const raw = params.id
@@ -215,6 +226,203 @@ function PurchaseCard({
   )
 }
 
+// Owner-only surface: gift a lifetime license to a registered marketplace
+// user. Mounts only when the gift API answers 200 for the signed-in viewer —
+// the publicly cached page itself never carries owner state.
+function GiftCard({ pluginId }: { pluginId: string }) {
+  const [gifts, setGifts] = useState<GiftRow[]>([])
+  const [owner, setOwner] = useState(false)
+  const [email, setEmail] = useState("")
+  const [note, setNote] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const [banner, setBanner] = useState("")
+
+  useEffect(() => {
+    fetch(`/api/plugins/${encodeURIComponent(pluginId)}/gift`)
+      .then(async (res) => {
+        if (!res.ok) return
+        const body = (await res.json()) as { gifts?: GiftRow[] }
+        setGifts(body.gifts ?? [])
+        setOwner(true)
+      })
+      .catch(() => undefined)
+  }, [pluginId])
+
+  async function send() {
+    setBusy(true)
+    setError("")
+    setBanner("")
+    try {
+      const res = await fetch(
+        `/api/plugins/${encodeURIComponent(pluginId)}/gift`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email, note: note.trim() || undefined }),
+        },
+      )
+      if (res.status === 401) {
+        window.location.assign("/api/auth/login")
+        return
+      }
+      const body = (await res.json()) as {
+        ok?: boolean
+        alreadyOwned?: boolean
+        recipient?: { name?: string | null; email?: string | null }
+        error?: string
+      }
+      if (!res.ok || !body.ok) {
+        throw new Error(body.error ?? "could not send the gift")
+      }
+      if (body.alreadyOwned) {
+        setBanner(
+          `${body.recipient?.name || body.recipient?.email || "They"} already owns a license — nothing sent.`,
+        )
+      } else {
+        setBanner(
+          `Gift sent to ${body.recipient?.name || body.recipient?.email || email} — it appears in their Purchases on next sign-in.`,
+        )
+      }
+      setEmail("")
+      setNote("")
+      const list = await fetch(
+        `/api/plugins/${encodeURIComponent(pluginId)}/gift`,
+      )
+      if (list.ok) {
+        const fresh = (await list.json()) as { gifts?: GiftRow[] }
+        setGifts(fresh.gifts ?? [])
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "gift failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function revoke(giftId: string) {
+    if (
+      !window.confirm(
+        "Revoke this gift? The recipient loses their license immediately.",
+      )
+    ) {
+      return
+    }
+    setError("")
+    const res = await fetch(
+      `/api/plugins/${encodeURIComponent(pluginId)}/gift?giftId=${encodeURIComponent(giftId)}`,
+      { method: "DELETE" },
+    )
+    if (res.ok) {
+      setGifts((rows) =>
+        rows.map((row) =>
+          row.id === giftId ? { ...row, status: "refunded" } : row,
+        ),
+      )
+    } else {
+      const body = (await res.json().catch(() => null)) as {
+        error?: string
+      } | null
+      setError(body?.error ?? "could not revoke the gift")
+    }
+  }
+
+  if (!owner) return null
+
+  return (
+    <Card className="p-5">
+      <SectionHeading label="Gift licenses" />
+      <p className="mt-2 text-[13px] leading-5 text-[#5F6B80]">
+        You own this plugin. Gift a lifetime license to a registered marketplace
+        user — they install it with their own API key, no payment.
+      </p>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <Input
+          value={email}
+          onChange={(event) => setEmail(event.currentTarget.value)}
+          placeholder="their-marketplace-email"
+          type="email"
+          className="flex-1"
+        />
+        <Button
+          onClick={() => void send()}
+          disabled={busy || !email.trim()}
+          className="w-full sm:w-auto"
+        >
+          {busy ? "Sending…" : "Send gift"}
+        </Button>
+      </div>
+      <Input
+        value={note}
+        onChange={(event) => setNote(event.currentTarget.value)}
+        placeholder="Optional note for the recipient"
+        className="mt-2"
+      />
+      {banner ? (
+        <p className="mt-3 rounded-[10px] border border-[#BEE0D0] bg-[#E7F4ED] p-3 text-[13px] leading-5 text-[#157A55]">
+          {banner}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="mt-3 rounded-[10px] border border-[#F0C2BE] bg-[#FDEEEC] p-3 text-[13px] leading-5 text-[#B4232B]">
+          {error}
+        </p>
+      ) : null}
+      {gifts.length > 0 ? (
+        <ul className="mt-3 divide-y divide-[#E7E2D6] border-t border-[#E7E2D6]">
+          {gifts.map((gift) => (
+            <li
+              key={gift.id}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5"
+            >
+              <span className="max-w-[220px] truncate text-[13px] font-semibold text-[#1A2333]">
+                {gift.recipientName || gift.recipientEmail || gift.id}
+              </span>
+              {gift.recipientName && gift.recipientEmail ? (
+                <span className="max-w-[200px] truncate font-mono text-[11.5px] text-[#5F6B80]">
+                  {gift.recipientEmail}
+                </span>
+              ) : null}
+              {gift.status === "paid" ? (
+                <span className="rounded-full bg-[#E7F4ED] px-2 py-[1px] text-[11.5px] font-semibold text-[#157A55]">
+                  Active
+                </span>
+              ) : (
+                <span className="rounded-full bg-[#FDEEEC] px-2 py-[1px] text-[11.5px] font-semibold text-[#B4232B]">
+                  Revoked
+                </span>
+              )}
+              <span className="font-mono text-[11.5px] text-[#5F6B80]">
+                {new Date(gift.createdAt).toLocaleDateString()}
+              </span>
+              {gift.note ? (
+                <span className="w-full truncate text-[12.5px] italic text-[#3E4A5F]">
+                  “{gift.note}”
+                </span>
+              ) : null}
+              {gift.status === "paid" ? (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => void revoke(gift.id)}
+                  className="ml-0 sm:ml-auto"
+                >
+                  Revoke
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-[12.5px] text-[#5F6B80]">
+          No gifts sent yet. The recipient must have signed in to the
+          marketplace at least once.
+        </p>
+      )}
+    </Card>
+  )
+}
+
 export default function PluginDetail() {
   const data = useLoader<PluginPageData>(loader_plugin)
 
@@ -316,6 +524,9 @@ export default function PluginDetail() {
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_340px]">
         {plugin.priceCents && plugin.priceCents > 0 ? (
           <PurchaseCard pluginId={plugin.id} priceCents={plugin.priceCents} />
+        ) : null}
+        {plugin.priceCents && plugin.priceCents > 0 ? (
+          <GiftCard pluginId={plugin.id} />
         ) : null}
         <Card className="p-5">
           <SectionHeading label="Install" />

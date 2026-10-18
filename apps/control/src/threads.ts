@@ -1,4 +1,10 @@
 import type { Db, User } from "@open-bot/db"
+import {
+  type CouncilView,
+  findOrCreateCouncil,
+  sanitizeCouncilName,
+  sanitizeRole,
+} from "./councils"
 import { createSession } from "./cron"
 import { desktopPhase, endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
@@ -99,6 +105,7 @@ export async function cleanupDeletedThread(
   db.clearThreadPersona(userId, sessionId)
   db.clearThreadTitle(userId, sessionId)
   db.clearThreadDir(userId, sessionId)
+  db.clearCouncilMember(userId, sessionId)
   deleteSessionMedia(db, userId, sessionId)
   await stopThreadScreen(db, userId, sessionId)
 }
@@ -139,6 +146,28 @@ async function startThread(req: Request, db: Db, agent: User) {
   if (dirName && body.display === false)
     return json({ error: "dir requires a visible thread" }, 400)
   const visible = display || Boolean(dirName)
+  // Council members are always hidden worker: threads — the council viewer is
+  // their dashboard surface, so the main thread list stays clean.
+  if (body.council !== undefined && typeof body.council !== "string")
+    return json({ error: "council must be a string" }, 400)
+  const councilRaw = typeof body.council === "string" ? body.council.trim() : ""
+  const councilName = sanitizeCouncilName(body.council) ?? ""
+  if (councilName === null)
+    return json({ error: "council must be a string" }, 400)
+  if (councilRaw && !councilName)
+    return json({ error: "council name must include letters or digits" }, 400)
+  if (councilName && body.display === true)
+    return json(
+      { error: "council members are hidden; display cannot be combined" },
+      400,
+    )
+  if (councilName && dirName)
+    return json({ error: "dir cannot be combined with council" }, 400)
+  if (body.role !== undefined && typeof body.role !== "string")
+    return json({ error: "role must be a string" }, 400)
+  const role = typeof body.role === "string" ? sanitizeRole(body.role) : ""
+  if (role === null) return json({ error: "role must be a string" }, 400)
+  const effectiveVisible = visible && !councilName
   if (body.message !== undefined && typeof body.message !== "string")
     return json({ error: "message must be a string" }, 400)
   const message = body.message ?? ""
@@ -169,7 +198,7 @@ async function startThread(req: Request, db: Db, agent: User) {
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
 
-  const effectiveTitle = visible ? title : hiddenThreadTitle(title)
+  const effectiveTitle = effectiveVisible ? title : hiddenThreadTitle(title)
   let sessionId: string
   try {
     sessionId = await createSession(base, headers, effectiveTitle)
@@ -183,9 +212,20 @@ async function startThread(req: Request, db: Db, agent: User) {
   }
   let warning: string | null = null
   let dir: ThreadDirView | null = null
+  let council: CouncilView | null = null
   if (dirName) {
     dir = findOrCreateThreadDir(db, agent.id, dirName)
     db.setThreadDir(agent.id, sessionId, dir.id)
+  }
+  if (councilName) {
+    council = findOrCreateCouncil(db, agent.id, councilName)
+    db.setCouncilMember({
+      councilId: council.id,
+      userId: agent.id,
+      sessionId,
+      role,
+      createdAt: Date.now(),
+    })
   }
   if (persona && persona.persona.id !== ASSISTANT_ID)
     db.setThreadPersona(agent.id, sessionId, persona.persona.id)
@@ -211,7 +251,7 @@ async function startThread(req: Request, db: Db, agent: User) {
   const result: Record<string, unknown> = {
     id: sessionId,
     title: effectiveTitle,
-    display: visible,
+    display: effectiveVisible,
   }
   if (persona)
     result.persona = {
@@ -220,6 +260,7 @@ async function startThread(req: Request, db: Db, agent: User) {
       matched: persona.matched,
     }
   if (dir) result.dir = dir
+  if (council) result.council = council
   if (warning) result.warning = warning
   return json(result, 201)
 }

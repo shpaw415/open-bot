@@ -21,8 +21,7 @@ function payoutErrorResponse(scope: string, error: unknown): Response {
   const status = error instanceof StripeError ? error.status : 502
   return Response.json(
     {
-      error:
-        error instanceof Error ? error.message : "stripe request failed",
+      error: error instanceof Error ? error.message : "stripe request failed",
     },
     { status: status >= 400 && status < 500 ? status : 502 },
   )

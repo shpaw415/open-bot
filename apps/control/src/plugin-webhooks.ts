@@ -1,9 +1,9 @@
 import { createHash, timingSafeEqual } from "node:crypto"
 import type { Db, InstalledPlugin } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
-import { endpoint, startDesktop } from "./docker"
+import { wakeDesktop } from "./desktop-wake"
+import { endpoint } from "./docker"
 import { HttpError } from "./http-error"
-import { resolveDesktopProviders } from "./key-vault"
 import {
   ensurePluginPageServer,
   pageStateFor,
@@ -183,23 +183,6 @@ export function webhookRetryAfter(userId: string, pluginId: string) {
 
 export function clearWebhookState() {
   hits.clear()
-}
-
-async function wakeDesktop(db: Db, userId: string) {
-  const desktop = db.desktop(userId)
-  if (!desktop) throw new HttpError(404, "not found", "webhook_target")
-  const auth = resolveDesktopProviders(db, userId)
-  await startDesktop(
-    userId,
-    desktop,
-    auth.viking,
-    auth.image,
-    auth.system1,
-    auth.video,
-    auth.model3d,
-    auth.chatKeys,
-  )
-  db.touchDesktop(userId)
 }
 
 function webhookHeaders(headers: Headers, token: string) {

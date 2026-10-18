@@ -22,6 +22,7 @@ type PurchaseRow = {
   status: "pending" | "paid" | "refunded"
   createdAt: number
   paidAt: number | null
+  isGift?: boolean
 }
 
 function priceText(cents: number): string {
@@ -258,7 +259,9 @@ export default function Admin() {
                       </a>
                     </td>
                     <td className="px-4 py-3 font-mono">
-                      {priceText(purchase.amountCents)}
+                      {purchase.isGift
+                        ? "gift"
+                        : priceText(purchase.amountCents)}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -277,7 +280,7 @@ export default function Admin() {
                       {new Date(purchase.createdAt).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {purchase.status === "paid" ? (
+                      {purchase.status === "paid" && !purchase.isGift ? (
                         <Button
                           variant="danger"
                           size="sm"

@@ -1540,12 +1540,21 @@ function MarketplaceAccount({ isAdmin }: { isAdmin: boolean }) {
 
 export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   const mobile = useMobile()
-  const { plugins, policy, autoUpdate, configured, loaded, refresh } =
-    useInstalledPlugins()
+  const {
+    plugins,
+    policy,
+    autoUpdate,
+    publicOrigin,
+    configured,
+    loaded,
+    refresh,
+  } = useInstalledPlugins()
   const [market, setMarket] = useState<MarketPlugin[]>([])
   const [query, setQuery] = useState("")
   const [marketLoading, setMarketLoading] = useState(false)
   const [policyBusy, setPolicyBusy] = useState(false)
+  const [originDraft, setOriginDraft] = useState("")
+  const [originDirty, setOriginDirty] = useState(false)
   const [actionId, setActionId] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [error, setError] = useState("")
@@ -1585,6 +1594,10 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   >("all")
   const [category, setCategory] = useState("")
   const [categories, setCategories] = useState<string[]>([])
+
+  useEffect(() => {
+    if (!originDirty) setOriginDraft(publicOrigin)
+  }, [publicOrigin, originDirty])
 
   const loadMarket = useCallback(async (q: string, cat = "") => {
     setMarketLoading(true)
@@ -1734,6 +1747,30 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  async function savePublicOrigin() {
+    setPolicyBusy(true)
+    setError("")
+    setNotice("")
+    try {
+      await api("/api/plugins/policy", {
+        method: "PUT",
+        body: JSON.stringify({ publicOrigin: originDraft.trim() }),
+      })
+      setOriginDirty(false)
+      setNotice(
+        "public origin updated — ob-plugin endpoint <id> url now reports it",
+      )
+      setToast("public origin updated")
+      await refresh()
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "action failed"
+      setError(message)
+      setToast(message)
+    } finally {
+      setPolicyBusy(false)
+    }
+  }
+
   async function startInstall(target: MarketPlugin) {
     setInstallingId(target.id)
     setError("")
@@ -1841,6 +1878,39 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           </Button>
         ) : null}
       </Stack>
+      {isAdmin ? (
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{ flexWrap: "wrap", rowGap: 1 }}
+        >
+          <TextField
+            label="Public origin"
+            placeholder="https://open-bot.example.com"
+            value={originDraft}
+            disabled={policyBusy}
+            onChange={(event) => {
+              setOriginDraft(event.currentTarget.value)
+              setOriginDirty(true)
+            }}
+            sx={{ minWidth: 280, maxWidth: 420 }}
+          />
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={policyBusy || !originDirty}
+            onClick={() => void savePublicOrigin()}
+          >
+            save
+          </Button>
+          <ToolTip title="Shareable origin for plugin webhook URLs: ob-plugin endpoint <id> url prints it instead of the internal control URL. Empty falls back to OPEN_BOT_PUBLIC_URL on the control plane.">
+            <Typography variant="caption" color="text-secondary">
+              what ob-plugin endpoint url reports
+            </Typography>
+          </ToolTip>
+        </Stack>
+      ) : null}
       {!configured ? (
         <Alert severity="info">
           The marketplace is not configured on this instance. Paste a

@@ -135,6 +135,7 @@ describe("plugins router", () => {
     expect(await res?.json()).toEqual({
       policy: "manual",
       autoUpdate: "off",
+      publicOrigin: "",
     })
 
     const denied = route("/api/plugins/policy", "PUT", { policy: "auto" })
@@ -158,12 +159,14 @@ describe("plugins router", () => {
     expect(await allowedRes?.json()).toEqual({
       policy: "auto",
       autoUpdate: "off",
+      publicOrigin: "",
     })
     const after = route("/api/plugins/policy")
     const afterRes = await handlePlugins(after.req, after.url, db, user(), hub)
     expect(await afterRes?.json()).toEqual({
       policy: "auto",
       autoUpdate: "off",
+      publicOrigin: "",
     })
 
     const toggle = route("/api/plugins/policy", "PUT", { autoUpdate: "stable" })
@@ -177,6 +180,7 @@ describe("plugins router", () => {
     expect(await toggleRes?.json()).toEqual({
       policy: "auto",
       autoUpdate: "stable",
+      publicOrigin: "",
     })
   })
 
@@ -2057,5 +2061,91 @@ describe("webhook endpoint routes", () => {
         )
       )?.status,
     ).toBe(400)
+  })
+
+  test("instance public origin: admin sets and clears it, webhooks prefer it over the env", async () => {
+    webhookRow("hook-pro")
+    process.env.OPEN_BOT_PUBLIC_URL = "https://env.test/"
+    const admin = user({ role: "admin" })
+
+    const setOrigin = route("/api/plugins/policy", "PUT", {
+      publicOrigin: "https://setting.test//",
+    })
+    const setRes = await handlePlugins(
+      setOrigin.req,
+      setOrigin.url,
+      db,
+      admin,
+      hub,
+    )
+    expect(setRes?.status).toBe(200)
+    expect(await setRes?.json()).toMatchObject({
+      publicOrigin: "https://setting.test",
+    })
+    expect(db.getSetting("public_origin")).toBe("https://setting.test")
+
+    // Policy GET reports it to every principal; webhook GET prefers it.
+    const policyGet = route("/api/plugins/policy", "GET")
+    expect(
+      await (
+        await handlePlugins(policyGet.req, policyGet.url, db, user(), hub)
+      )?.json(),
+    ).toMatchObject({ publicOrigin: "https://setting.test" })
+    const get = route("/api/plugins/installed/hook-pro/webhook", "GET")
+    const agent = await handlePlugins(
+      get.req,
+      get.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect((await agent?.json())?.publicUrl).toBe(
+      "https://setting.test/hooks/a/hook-pro/",
+    )
+
+    // Clearing falls back to the env origin.
+    const clearOrigin = route("/api/plugins/policy", "PUT", {
+      publicOrigin: "",
+    })
+    await handlePlugins(clearOrigin.req, clearOrigin.url, db, admin, hub)
+    expect(db.getSetting("public_origin")).toBe("")
+    const fallback = await handlePlugins(
+      get.req,
+      get.url,
+      db,
+      user(),
+      hub,
+      undefined,
+      true,
+    )
+    expect((await fallback?.json())?.publicUrl).toBe(
+      "https://env.test/hooks/a/hook-pro/",
+    )
+
+    // Bad origins are rejected, and non-admins cannot write the setting.
+    for (const bad of ["ftp://x.test", "https://x.test/path", "not a url"]) {
+      const badRes = await handlePlugins(
+        route("/api/plugins/policy", "PUT", { publicOrigin: bad }).req,
+        route("/api/plugins/policy", "PUT", { publicOrigin: bad }).url,
+        db,
+        admin,
+        hub,
+      )
+      expect(badRes?.status).toBe(400)
+    }
+    expect(db.getSetting("public_origin")).toBe("")
+    const denied = await handlePlugins(
+      route("/api/plugins/policy", "PUT", { publicOrigin: "https://x.test" })
+        .req,
+      route("/api/plugins/policy", "PUT", { publicOrigin: "https://x.test" })
+        .url,
+      db,
+      user(),
+      hub,
+    )
+    expect(denied?.status).toBe(403)
+    expect(db.getSetting("public_origin")).toBe("")
   })
 })

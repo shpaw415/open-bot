@@ -99,6 +99,13 @@
       "when": 1792176592038,
       "tag": "0013_cooing_puff_adder",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1792197443400,
+      "tag": "0014_mute_red_skull",
+      "breakpoints": true
     }
   ]
 }

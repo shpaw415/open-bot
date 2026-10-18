@@ -20,6 +20,7 @@ import { handleAdmin } from "./admin"
 import { handleKeys, isKeysRequest } from "./api-keys"
 import { desktopAppCatalog, launchDesktopApp } from "./apps"
 import { handleBackupApi } from "./backup-api"
+import { handleCouncils, isCouncilPath } from "./councils"
 import {
   cronModelFields,
   cronPersonaFields,
@@ -88,6 +89,11 @@ import {
   videoVaultSlug,
 } from "./key-vault"
 import { handleLlm } from "./llm"
+import {
+  createLoginUrlScanner,
+  isLocalUrl,
+  parseLocalCallbackUrl,
+} from "./login-urls"
 import { handleMcp } from "./mcp"
 import { handleMedia, isMediaRequest } from "./media-vault"
 import { trimDashboardMessages } from "./messages-trim"
@@ -148,6 +154,7 @@ import {
   screenHeld,
   setScreenHold,
 } from "./screens"
+import { sh } from "./shell"
 import { hardwareStats } from "./stats"
 import {
   system1EndpointError,
@@ -262,6 +269,9 @@ type LoginSession = {
   cancelled: boolean
   code: number | null
   proc: ReturnType<typeof spawnLogin> | null
+  scanner: ReturnType<typeof createLoginUrlScanner>
+  urls: string[]
+  urlFlush: ReturnType<typeof setTimeout> | null
   sockets: Set<Bun.ServerWebSocket<SocketData>>
   expire: ReturnType<typeof setTimeout> | null
   db?: Db
@@ -828,6 +838,8 @@ const types: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".webmanifest": "application/manifest+json",
   ".json": "application/json",
   ".ttf": "font/ttf",
   ".woff": "font/woff",
@@ -1274,6 +1286,7 @@ async function api(
   const isThreadDirsPath =
     url.pathname === "/api/thread-dirs" ||
     url.pathname.startsWith("/api/thread-dirs/")
+  const isCouncilsPath = isCouncilPath(url.pathname)
   const isPluginPath =
     url.pathname === "/api/plugins" || url.pathname.startsWith("/api/plugins/")
   const isProjectManage = isProjectManageRequest(url.pathname, req.method)
@@ -1284,6 +1297,7 @@ async function api(
     isCronPath ||
     isPersonaPath ||
     isThreadDirsPath ||
+    isCouncilsPath ||
     isPluginPath ||
     isProjectManage ||
     isMedia ||
@@ -1312,6 +1326,11 @@ async function api(
       }
       if (isThreadDirsPath) {
         const handled = handleThreadDirs(req, url, db, agent, hub)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
+      if (isCouncilsPath) {
+        const handled = handleCouncils(req, url, db, agent, hub)
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -1346,6 +1365,11 @@ async function api(
   }
   if (isThreadDirsPath) {
     const handled = handleThreadDirs(req, url, db, user, hub)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
+  if (isCouncilsPath) {
+    const handled = handleCouncils(req, url, db, user, hub)
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
@@ -2586,6 +2610,9 @@ async function api(
       cancelled: false,
       code: null,
       proc: null,
+      scanner: createLoginUrlScanner(),
+      urls: [],
+      urlFlush: null,
       sockets: new Set(),
       expire: null,
       db,
@@ -2596,6 +2623,58 @@ async function api(
     }, 30_000)
     logins.set(id, session)
     return json({ id })
+  }
+  if (
+    /^\/api\/providers\/login\/[^/]+\/callback$/.test(url.pathname) &&
+    req.method === "POST"
+  ) {
+    const id = decodeURIComponent(url.pathname.split("/")[4] ?? "")
+    const session = logins.get(id)
+    if (!session || session.userId !== user.id)
+      return json({ error: "not found" }, 404)
+    if (!session.started || session.done)
+      return json({ error: "login is not active — start the login again" }, 409)
+    const body = await readJson(req)
+    const parsed = parseLocalCallbackUrl(body.url)
+    if (!parsed.ok) return json({ error: parsed.error }, 400)
+    const container = names(user.id).opencode
+    const relay = await sh(
+      [
+        "docker",
+        "exec",
+        container,
+        "curl",
+        "-sS",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "--max-time",
+        "10",
+        parsed.url,
+      ],
+      undefined,
+      15_000,
+    )
+    if (relay.code === 7)
+      return json(
+        {
+          error:
+            "no login server is waiting inside the desktop — restart the login",
+        },
+        409,
+      )
+    if (relay.code !== 0)
+      return json(
+        {
+          error:
+            relay.stderr.trim().slice(0, 200) ||
+            "could not reach the login server inside the desktop",
+        },
+        502,
+      )
+    const status = Number(relay.stdout.trim()) || 0
+    return json({ delivered: true, status })
   }
   if (url.pathname === "/api/providers/logout" && req.method === "POST") {
     const body = await readJson(req)
@@ -3364,6 +3443,48 @@ function startLogin(session: LoginSession, cols: number, rows: number) {
     cols,
     rows,
     onData(data) {
+      if (session.urlFlush) {
+        clearTimeout(session.urlFlush)
+        session.urlFlush = null
+      }
+      const fresh = session.scanner.push(data).some((u) => !isLocalUrl(u))
+      if (fresh) {
+        session.urls = session.scanner.urls().filter((u) => !isLocalUrl(u))
+        const frame = JSON.stringify({ op: "urls", urls: session.urls })
+        for (const sock of session.sockets) {
+          try {
+            sock.send(frame)
+          } catch {
+            // socket already closed
+          }
+        }
+      }
+      // A URL may have ended exactly at the chunk edge (or be the last thing
+      // the login ever prints) — flush the scanner after a quiet period.
+      session.urlFlush = setTimeout(
+        (sessionRef: LoginSession) => {
+          sessionRef.urlFlush = null
+          if (
+            sessionRef.done ||
+            sessionRef.scanner.flush().every((u) => isLocalUrl(u))
+          )
+            return
+          sessionRef.urls = sessionRef.scanner
+            .urls()
+            .filter((u) => !isLocalUrl(u))
+          const frame = JSON.stringify({ op: "urls", urls: sessionRef.urls })
+          for (const sock of sessionRef.sockets) {
+            try {
+              sock.send(frame)
+            } catch {
+              // socket already closed
+            }
+          }
+        },
+        2000,
+        session,
+      )
+      session.urlFlush.unref?.()
       for (const sock of session.sockets) {
         try {
           sock.send(data)
@@ -3399,6 +3520,10 @@ function closeLogin(ws: Bun.ServerWebSocket<SocketData>) {
   session.sockets.delete(ws)
   if (session.done || session.cancelled) return
   session.cancelled = true
+  if (session.urlFlush) {
+    clearTimeout(session.urlFlush)
+    session.urlFlush = null
+  }
   try {
     session.proc?.kill()
   } catch {
@@ -3514,6 +3639,10 @@ async function finishLogin(session: LoginSession) {
   const proc = session.proc
   if (!proc) return
   const code = await proc.exited
+  if (session.urlFlush) {
+    clearTimeout(session.urlFlush)
+    session.urlFlush = null
+  }
   if (session.cancelled) return
   session.code = code
   session.done = true

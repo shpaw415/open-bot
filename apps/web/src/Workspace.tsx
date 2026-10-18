@@ -42,6 +42,12 @@ import {
   waitForDesktop,
 } from "./api"
 import { type AppEntry, filterApps } from "./app-launcher"
+import {
+  type CouncilData,
+  CouncilOverlay,
+  CouncilPane,
+  clampCouncilWidth,
+} from "./CouncilView"
 import type { CronJobInfo } from "./CronView"
 import {
   ACTIVITY_LABEL,
@@ -685,10 +691,12 @@ type BubbleViewProps = {
   onScreenDone: () => void
   onScreenClose: () => void
   onOpenPreview: () => void
+  onOpenCouncil: (name: string) => void
   previewLive: boolean
   previewOpened: boolean
   previewSrc: string
   previewError: string
+  councilOpened: boolean
   onSpeak: (key: string, text: string) => void
   onStopSpeak: () => void
 }
@@ -714,10 +722,12 @@ const MessageBubble = memo(function MessageBubble({
   onScreenDone,
   onScreenClose,
   onOpenPreview,
+  onOpenCouncil,
   previewLive,
   previewOpened,
   previewSrc,
   previewError,
+  councilOpened,
   onSpeak,
   onStopSpeak,
 }: BubbleViewProps) {
@@ -819,6 +829,27 @@ const MessageBubble = memo(function MessageBubble({
               <Typography variant="body2" color="textSecondary">
                 {previewError || "Opening preview…"}
               </Typography>
+            )}
+          </div>
+        ) : null}
+        {message.council ? (
+          <div className="ob-preview-note">
+            {councilOpened ? (
+              <Typography variant="body2" color="textSecondary">
+                Council is open.
+              </Typography>
+            ) : !running ? (
+              <Typography variant="body2" color="textSecondary">
+                Start the desktop to view this council.
+              </Typography>
+            ) : (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => onOpenCouncil(message.council)}
+              >
+                Open council
+              </Button>
             )}
           </div>
         ) : null}
@@ -2074,6 +2105,12 @@ function Composer({
               onClick={(event) =>
                 setCaret(event.currentTarget.selectionStart ?? 0)
               }
+              onPaste={(event) => {
+                const files = event.clipboardData?.files
+                if (!files?.length) return
+                event.preventDefault()
+                void addJoined(files)
+              }}
               onKeyUp={(event) =>
                 setCaret(event.currentTarget.selectionStart ?? 0)
               }
@@ -2390,6 +2427,19 @@ export function Workspace({ me }: { me: Me }) {
   const previewRowRef = useRef<HTMLDivElement>(null)
   const previewPaneRef = useRef<HTMLDivElement>(null)
   const widthRef = useRef(previewWidth)
+  const [councilMode, setCouncilMode] = useState<"closed" | "pane" | "overlay">(
+    "closed",
+  )
+  const [councilWidth, setCouncilWidth] = useState(() => {
+    const raw = Number(sessionStorage.getItem("ob-council-width"))
+    return Number.isFinite(raw) && raw >= 280 ? raw : 420
+  })
+  const councilWidthRef = useRef(councilWidth)
+  const councilPaneRef = useRef<HTMLDivElement>(null)
+  const [councilName, setCouncilName] = useState("")
+  const [councilData, setCouncilData] = useState<CouncilData | null>(null)
+  const [councilError, setCouncilError] = useState("")
+  const [councilMemberId, setCouncilMemberId] = useState("")
   const [controlBusy, setControlBusy] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([])
   const mobile = useMobile()
@@ -2750,6 +2800,7 @@ export function Workspace({ me }: { me: Me }) {
     screenDone: () => {},
     screenClose: () => {},
     openPreview: () => {},
+    openCouncil: (_name: string) => {},
   })
   const bubbleActions = useMemo(
     () => ({
@@ -2757,6 +2808,7 @@ export function Workspace({ me }: { me: Me }) {
       screenDone: () => bubbleActionsRef.current.screenDone(),
       screenClose: () => bubbleActionsRef.current.screenClose(),
       openPreview: () => bubbleActionsRef.current.openPreview(),
+      openCouncil: (name: string) => bubbleActionsRef.current.openCouncil(name),
     }),
     [],
   )
@@ -2805,6 +2857,14 @@ export function Workspace({ me }: { me: Me }) {
       widthRef.current = next
       setPreviewWidth(next)
       setPreviewMode(mobile ? "overlay" : "pane")
+    },
+    openCouncil: (name: string) => {
+      const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
+      const next = clampCouncilWidth(councilWidthRef.current, parent)
+      councilWidthRef.current = next
+      setCouncilWidth(next)
+      setCouncilName(name)
+      setCouncilMode(mobile ? "overlay" : "pane")
     },
   }
   threadActionsRef.current = {
@@ -2948,27 +3008,46 @@ export function Workspace({ me }: { me: Me }) {
     }
   }
 
+  // A remount (e.g. Workspace → Apps → Workspace) re-seeds the phase from the
+  // page-load snapshot in me.desktop, which can be stale. Correct it once;
+  // never clobber a start the user just clicked.
+  useEffect(() => {
+    let cancelled = false
+    void api<DesktopStatus>("/api/desktop")
+      .then((status) => {
+        if (cancelled || status.error) return
+        setPhase((current) => (current === "starting" ? current : status.phase))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   useEffect(() => {
     if (phase === "running") return
-    // Poll while starting, and on the Projects tab where IDE API calls wake
-    // the desktop behind our back and the stream needs to catch up.
-    if (phase !== "starting" && tab !== "projects") return
-    const timer = setInterval(() => {
-      void api<DesktopStatus>("/api/desktop")
-        .then((status) => {
-          if (status.error) {
-            if (phase === "starting") {
-              setPhase("sleeping")
-              setError(status.error)
+    // Poll while starting, while sleeping (a cron or webhook can wake the
+    // desktop behind our back), and on the Projects tab where IDE API calls
+    // wake it too. `/api/desktop` never wakes the desktop itself.
+    const timer = setInterval(
+      () => {
+        void api<DesktopStatus>("/api/desktop")
+          .then((status) => {
+            if (status.error) {
+              if (phase === "starting") {
+                setPhase("sleeping")
+                setError(status.error)
+              }
+            } else if (status.phase !== phase) {
+              setPhase(status.phase)
             }
-          } else if (status.phase !== phase) {
-            setPhase(status.phase)
-          }
-        })
-        .catch(() => {})
-    }, 2000)
+          })
+          .catch(() => {})
+      },
+      phase === "starting" ? 2000 : 10_000,
+    )
     return () => clearInterval(timer)
-  }, [phase, tab])
+  }, [phase])
 
   const loadModels = useCallback(async () => {
     if (!running) return
@@ -3325,20 +3404,28 @@ export function Workspace({ me }: { me: Me }) {
     setPreviewMode("closed")
     setPreviewFrame(null)
     setPreviewError("")
+    setCouncilMode("closed")
+    setCouncilName("")
+    setCouncilData(null)
+    setCouncilError("")
+    setCouncilMemberId("")
   }, [sessionId])
   useEffect(() => {
     if (previewMode === "pane" && mobile) setPreviewMode("overlay")
     if (previewMode === "overlay" && !mobile) setPreviewMode("pane")
-  }, [mobile, previewMode])
+    if (councilMode === "pane" && mobile) setCouncilMode("overlay")
+    if (councilMode === "overlay" && !mobile) setCouncilMode("pane")
+  }, [mobile, previewMode, councilMode])
   useEffect(() => {
-    if (previewMode === "closed") return
+    if (previewMode === "closed" && councilMode === "closed") return
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || document.fullscreenElement) return
       setPreviewMode("closed")
+      setCouncilMode("closed")
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [previewMode])
+  }, [previewMode, councilMode])
   useEffect(() => {
     if (!running || !sessionId || lastPreview < 0) {
       setPreviewFrame(null)
@@ -3385,6 +3472,54 @@ export function Workspace({ me }: { me: Me }) {
     }, 60_000)
     return () => clearInterval(timer)
   }, [previewSrc])
+
+  // Council viewer: fetch membership for the open council and keep the rail
+  // fresh as members appear or the council is closed by the agent.
+  const loadCouncil = useCallback(async () => {
+    if (!councilName) return
+    try {
+      const next = await api<CouncilData>(
+        `/api/councils/${encodeURIComponent(councilName)}`,
+      )
+      setCouncilData(next)
+      setCouncilError("")
+      setCouncilMemberId((current) =>
+        next.members.some((member) => member.sessionId === current)
+          ? current
+          : (next.members[0]?.sessionId ?? ""),
+      )
+    } catch (caught) {
+      setCouncilData(null)
+      setCouncilError(
+        caught instanceof Error ? caught.message : "could not open the council",
+      )
+    }
+  }, [councilName])
+  useEffect(() => {
+    if (councilMode === "closed" || !running || !councilName) {
+      setCouncilData(null)
+      return
+    }
+    void loadCouncil()
+  }, [councilMode, running, councilName, loadCouncil])
+  const scheduleCouncilLoad = useDebounced(() => void loadCouncil(), 300)
+  useEffect(() => {
+    if (councilMode === "closed" || !councilName) return
+    return subscribe((event) => {
+      const type = event.type ?? ""
+      if (
+        type === "councils.changed" ||
+        type === "session.created" ||
+        type === "session.deleted"
+      ) {
+        scheduleCouncilLoad()
+      }
+    })
+  }, [councilMode, councilName, subscribe, scheduleCouncilLoad])
+  const councilStatusOf = useCallback(
+    (id: string) => sessionStatus[id],
+    [sessionStatus],
+  )
   useEffect(() => {
     if (tab === "desktop" || !running || !sessionId || !needsScreen) return
     let cancelled = false
@@ -3981,6 +4116,44 @@ export function Workspace({ me }: { me: Me }) {
     setPreviewMode("closed")
   }
 
+  function onCouncilDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startW = councilWidthRef.current
+    const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
+    document.body.classList.add("ob-preview-dragging")
+    const move = (next: PointerEvent) => {
+      const width = clampCouncilWidth(startW - (next.clientX - startX), parent)
+      councilWidthRef.current = width
+      setCouncilWidth(width)
+    }
+    const up = () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", up)
+      document.body.classList.remove("ob-preview-dragging")
+      sessionStorage.setItem(
+        "ob-council-width",
+        String(councilWidthRef.current),
+      )
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", up)
+  }
+
+  function openCouncilFullscreen() {
+    const el = councilPaneRef.current
+    if (!el?.requestFullscreen) {
+      setCouncilMode("overlay")
+      return
+    }
+    void el.requestFullscreen().catch(() => setCouncilMode("overlay"))
+  }
+
+  function closeCouncilPane() {
+    if (document.fullscreenElement) void document.exitFullscreen()
+    setCouncilMode("closed")
+  }
+
   const phaseColor = stopping
     ? "warning"
     : phase === "running"
@@ -4358,6 +4531,8 @@ export function Workspace({ me }: { me: Me }) {
                           onScreenDone={bubbleActions.screenDone}
                           onScreenClose={bubbleActions.screenClose}
                           onOpenPreview={bubbleActions.openPreview}
+                          onOpenCouncil={bubbleActions.openCouncil}
+                          councilOpened={councilMode !== "closed"}
                           previewLive={showLivePreview({
                             preview: Boolean(entry.message.preview),
                             isLast: index === lastPreview,
@@ -4470,10 +4645,83 @@ export function Workspace({ me }: { me: Me }) {
                 onDrag={onPreviewDrag}
               />
             ) : null}
+            {councilMode === "pane" && councilData ? (
+              <CouncilPane
+                data={councilData}
+                selectedId={councilMemberId}
+                statusOf={councilStatusOf}
+                width={councilWidth}
+                paneRef={councilPaneRef}
+                onClose={closeCouncilPane}
+                onFullscreen={openCouncilFullscreen}
+                onDrag={onCouncilDrag}
+                onSelect={setCouncilMemberId}
+                subscribe={subscribe}
+                live={live}
+              />
+            ) : null}
+            {councilMode === "pane" && !councilData ? (
+              <div className="ob-preview-pane" style={{ width: councilWidth }}>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  className="ob-preview-bar"
+                >
+                  <Typography variant="caption" sx={{ flex: 1 }}>
+                    Council
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={closeCouncilPane}
+                  >
+                    Close
+                  </Button>
+                </Stack>
+                <Typography variant="body2" color="textSecondary" sx={{ p: 2 }}>
+                  {!running
+                    ? "Start the desktop to view this council."
+                    : councilError || "Opening council…"}
+                </Typography>
+              </div>
+            ) : null}
           </Box>
         </Box>
         {previewMode === "overlay" && previewSrc ? (
           <PreviewOverlay src={previewSrc} onClose={closePreview} />
+        ) : null}
+        {councilMode === "overlay" && councilData ? (
+          <CouncilOverlay
+            data={councilData}
+            selectedId={councilMemberId}
+            statusOf={councilStatusOf}
+            onClose={closeCouncilPane}
+            onSelect={setCouncilMemberId}
+            subscribe={subscribe}
+            live={live}
+          />
+        ) : null}
+        {councilMode === "overlay" && !councilData ? (
+          <div className="ob-preview-overlay">
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="caption" sx={{ flex: 1, color: "#fff" }}>
+                Council
+              </Typography>
+              <Button
+                size="small"
+                variant="contained"
+                onClick={closeCouncilPane}
+              >
+                Close
+              </Button>
+            </Stack>
+            <Typography variant="body2" sx={{ color: "#fff", p: 2 }}>
+              {!running
+                ? "Start the desktop to view this council."
+                : councilError || "Opening council…"}
+            </Typography>
+          </div>
         ) : null}
 
         {/* Desktop — keep alive while running so VNC state survives tab switches */}

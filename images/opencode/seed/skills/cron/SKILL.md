@@ -13,6 +13,12 @@ List jobs:
 ob-cron list
 ```
 
+Inspect a job's stored prompt/script (`list` hides the message and script):
+
+```sh
+ob-cron show JOB_ID
+```
+
 Add a job (exactly one of `--every`, `--cron`, `--at`, and at least one of `--message` or `--script`):
 
 ```sh

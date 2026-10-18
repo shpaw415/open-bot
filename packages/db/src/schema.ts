@@ -213,6 +213,39 @@ export const threadDirAssignments = sqliteTable(
   ],
 )
 
+export const councils = sqliteTable(
+  "councils",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("councils_user_name").on(table.userId, table.name),
+    index("councils_user").on(table.userId, table.createdAt),
+  ],
+)
+
+// Membership of a council: each row is one hidden worker: thread spawned by
+// the desktop agent for the council. The session itself lives in opencode;
+// this table only maps it into the group so the dashboard viewer can list it.
+export const councilMembers = sqliteTable(
+  "council_members",
+  {
+    councilId: text("council_id").notNull(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    role: text("role").notNull().default(""),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.councilId, table.sessionId] }),
+    index("council_members_user_session").on(table.userId, table.sessionId),
+    index("council_members_user").on(table.userId, table.createdAt),
+  ],
+)
+
 export const cronJobs = sqliteTable(
   "cron_jobs",
   {

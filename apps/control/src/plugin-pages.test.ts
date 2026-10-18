@@ -16,7 +16,9 @@ import {
   parsePluginPagePath,
   pendingPluginPageRestartsCount,
   pluginPageBin,
+  pluginPageJson,
   pluginPagePath,
+  pluginPageRuntime,
   proxyPluginPage,
   proxyPluginPageFrame,
   removePluginPageLog,
@@ -33,17 +35,32 @@ import {
 import * as shellModule from "./shell"
 
 const shCalls: string[][] = []
+type ShResult = { code: number; stdout: string; stderr: string }
+let shResponder: (args: string[]) => ShResult = () => ({
+  code: 0,
+  stdout: "",
+  stderr: "",
+})
+let phase = "running"
+let wakeDesktopCalls = 0
 mock.module("./shell", () => ({
   ...shellModule,
   sh: async (args: string[]) => {
     shCalls.push(args)
-    return { code: 0, stdout: "", stderr: "" }
+    return shResponder(args)
   },
 }))
 mock.module("./docker", () => ({
   ...dockerModule,
-  desktopPhase: async () => "running",
+  desktopPhase: async () => phase,
   endpoint: async () => "http://opencode:4096",
+}))
+mock.module("./desktop-wake", () => ({
+  wakeDesktop: async () => {
+    wakeDesktopCalls += 1
+    phase = "running"
+    return true
+  },
 }))
 
 describe("plugin pages", () => {
@@ -344,6 +361,66 @@ describe("plugin pages", () => {
     expect(script).toContain(".port'")
   })
 
+  test("runtime names the loopback bind when only the desktop can reach the server", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    // Network probe (control container → container IP) fails…
+    globalThis.fetch = (async () => {
+      throw new Error("connection refused")
+    }) as unknown as typeof fetch
+    // …while the in-container probe answers.
+    shResponder = (args) => {
+      const cmd = String(args.at(-1))
+      if (cmd.includes(".port'"))
+        return { code: 0, stdout: "4740\n", stderr: "" }
+      if (cmd.includes(".pid'")) return { code: 0, stdout: "123\n", stderr: "" }
+      if (cmd.includes("curl")) return { code: 0, stdout: "", stderr: "" }
+      return { code: 0, stdout: "", stderr: "" }
+    }
+    try {
+      const runtime = await pluginPageRuntime("u1", "loop-pro")
+      expect(runtime.running).toBe(false)
+      expect(runtime.port).toBe(4740)
+      expect(runtime.pid).toBe(123)
+      expect(runtime.note).toContain("loopback")
+      expect(runtime.note).toContain("hostname")
+      const probe = shCalls.find((args) => String(args.at(-1)).includes("curl"))
+      expect(probe?.at(-1)).toContain("127.0.0.1:4740/healthz")
+    } finally {
+      globalThis.fetch = originalFetch
+      shResponder = () => ({ code: 0, stdout: "", stderr: "" })
+      clearPluginPageState()
+    }
+  })
+
+  test("runtime stays quiet when the server is dead everywhere", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      throw new Error("connection refused")
+    }) as unknown as typeof fetch
+    shResponder = (args) => {
+      const cmd = String(args.at(-1))
+      if (cmd.includes(".port'"))
+        return { code: 0, stdout: "4740\n", stderr: "" }
+      if (cmd.includes(".pid'")) return { code: 0, stdout: "123\n", stderr: "" }
+      if (cmd.includes("curl")) return { code: 7, stdout: "", stderr: "" }
+      return { code: 0, stdout: "", stderr: "" }
+    }
+    try {
+      const runtime = await pluginPageRuntime("u1", "dead-pro")
+      expect(runtime.running).toBe(false)
+      expect(runtime.port).toBe(4740)
+      expect(runtime.note).toBeUndefined()
+    } finally {
+      globalThis.fetch = originalFetch
+      shResponder = () => ({ code: 0, stdout: "", stderr: "" })
+      clearPluginPageState()
+    }
+  })
+
   test("frame html carries the storage shim ahead of page scripts", () => {
     const page =
       `<!doctype html><html><head><title>T</title></head>` +
@@ -591,6 +668,150 @@ describe("plugin pages", () => {
       expect(shCalls).toHaveLength(0)
     } finally {
       clearPluginPageState()
+    }
+  })
+
+  // Accessing an app on the dashboard wakes a sleeping desktop, like a
+  // webhook hit does — the proxies wake before ensure so the app appears
+  // instead of a "desktop is asleep" error body.
+  test("a sleeping desktop wakes before the page proxy serves", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    wakeDesktopCalls = 0
+    phase = "sleeping"
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      const db = {
+        installedPlugin: (_userId: string, pluginId: string) =>
+          pluginId === "stock-pro" ? row : null,
+        desktop: () => ({}),
+        touchDesktop: () => {},
+      } as never
+      const res = await proxyPluginPage(
+        new Request("http://x/api/pages/stock-pro/"),
+        new URL("http://x/api/pages/stock-pro/"),
+        db,
+        { id: "u1" } as unknown as User,
+        { emit() {} } as never,
+        { upgrade: () => false } as never,
+      )
+      expect(res?.status).toBe(200)
+      expect(wakeDesktopCalls).toBe(1)
+      expect(pageStateFor("u1", "stock-pro")).not.toBeNull()
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+      phase = "running"
+    }
+  })
+
+  test("a sleeping desktop wakes before the frame proxy serves", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    wakeDesktopCalls = 0
+    phase = "sleeping"
+    const originalFetch = globalThis.fetch
+    const html = async () =>
+      new Response("<!doctype html><html><body>S</body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      })
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      String(input).endsWith("/healthz")
+        ? new Response("ok")
+        : await html()) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      const db = {
+        installedPlugin: (_userId: string, pluginId: string) =>
+          pluginId === "stock-pro" ? row : null,
+        desktop: () => ({}),
+        touchDesktop: () => {},
+      } as never
+      const token = mintPageFrameToken("u1", "stock-pro").token
+      const framed = await proxyPluginPageFrame(
+        new Request(`http://x/api/pages/_frame/${token}/`, {
+          headers: { origin: "null" },
+        }),
+        new URL(`http://x/api/pages/_frame/${token}/`),
+        db,
+        { emit() {} } as never,
+        { upgrade: () => false } as never,
+      )
+      expect(framed?.status).toBe(200)
+      expect(wakeDesktopCalls).toBe(1)
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+      phase = "running"
+    }
+  })
+
+  test("a running desktop is never woken by the page proxies", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    wakeDesktopCalls = 0
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      const db = {
+        installedPlugin: (_userId: string, pluginId: string) =>
+          pluginId === "stock-pro" ? row : null,
+        desktop: () => ({}),
+        touchDesktop: () => {},
+      } as never
+      const res = await proxyPluginPage(
+        new Request("http://x/api/pages/stock-pro/"),
+        new URL("http://x/api/pages/stock-pro/"),
+        db,
+        { id: "u1" } as unknown as User,
+        { emit() {} } as never,
+        { upgrade: () => false } as never,
+      )
+      expect(res?.status).toBe(200)
+      expect(wakeDesktopCalls).toBe(0)
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
+  })
+
+  test("@mention lookups never wake a sleeping desktop", async () => {
+    clearPluginPageState()
+    shCalls.length = 0
+    wakeDesktopCalls = 0
+    phase = "sleeping"
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response("ok")) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      await expect(pluginPageJson("u1", row, "/mentions")).rejects.toThrow()
+      expect(wakeDesktopCalls).toBe(0)
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+      phase = "running"
     }
   })
 })

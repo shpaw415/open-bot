@@ -8,6 +8,7 @@ import {
   previewFrameSrc,
   showLivePreview,
   speakableText,
+  splitCouncil,
   splitPluginCards,
   splitPreview,
   transcriptBubbles,
@@ -295,6 +296,65 @@ test("a preview marker embeds the latest page and strips the url", () => {
     "/api/preview/frame/tok/pricing",
   )
   expect(previewFrameSrc("https://evil.example/", "/")).toBe("")
+})
+
+test("a council marker names the team and strips the url", () => {
+  expect(
+    splitCouncil(
+      "Started the team.\n\n![council: auth-review](open-bot://council/auth-review)",
+    ),
+  ).toEqual({ text: "Started the team.", council: "auth-review" })
+  expect(
+    splitCouncil("[council: auth-review](open-bot://council/auth-review)"),
+  ).toEqual({
+    text: "",
+    council: "auth-review",
+  })
+  expect(splitCouncil("Team on it.\n\nopen-bot://council/auth-review")).toEqual(
+    {
+      text: "Team on it.",
+      council: "auth-review",
+    },
+  )
+  // inline mentions without an image/link wrapper stay untouched
+  expect(splitCouncil("inline open-bot://council/auth-review text")).toEqual({
+    text: "inline open-bot://council/auth-review text",
+    council: "",
+  })
+  expect(splitCouncil("see open-bot://council/")).toEqual({
+    text: "see open-bot://council/",
+    council: "",
+  })
+  expect(splitCouncil("plain text")).toEqual({
+    text: "plain text",
+    council: "",
+  })
+  const bubbles = visibleMessages([
+    {
+      info: { role: "assistant" },
+      parts: [
+        {
+          type: "text",
+          text: "Team is on it.\n\n![council: r2](open-bot://council/r2)",
+        },
+      ],
+    },
+  ])
+  expect(bubbles[0]?.council).toBe("r2")
+  expect(bubbles[0]?.text).toBe("Team is on it.")
+  // a bubble that is only the marker still renders, so the button exists
+  const bare = visibleMessages([
+    {
+      info: { role: "assistant" },
+      parts: [{ type: "text", text: "![council: r2](open-bot://council/r2)" }],
+    },
+  ])
+  expect(bare).toHaveLength(1)
+  expect(bare[0]?.text).toBe("")
+  // speakable text drops the marker
+  expect(
+    speakableText("Team on it.\n\n![council: r2](open-bot://council/r2)"),
+  ).toBe("Team on it.")
 })
 
 test("applyMessageDelta upserts message info and parts", () => {

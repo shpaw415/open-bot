@@ -73,7 +73,7 @@ export function speakableText(input: string): string {
   const text = splitPluginCards(input)
     .map((segment) => (segment.kind === "text" ? (segment.text ?? "") : ""))
     .join("\n\n")
-  const clean = splitPreview(splitScreenHandoff(text).text)
+  const clean = splitCouncil(splitPreview(splitScreenHandoff(text).text).text)
     .text.replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
@@ -95,6 +95,12 @@ const SCREEN_LINE = /(^|\n)\s*open-bot:\/\/screen\s*(?=\n|$)/g
 const PREVIEW_IMAGE = /!\[[^\]]*\]\(open-bot:\/\/preview(\/[^)\s]*)?\)/g
 const PREVIEW_LINK = /\[[^\]]*\]\(open-bot:\/\/preview(\/[^)\s]*)?\)/g
 const PREVIEW_LINE = /(^|\n)\s*open-bot:\/\/preview(\/[^\s]*)?\s*(?=\n|$)/g
+const COUNCIL_IMAGE =
+  /!\[[^\]]*\]\(open-bot:\/\/council\/([a-z0-9][a-z0-9-]*)\)/gi
+const COUNCIL_LINK =
+  /\[[^\]]*\]\(open-bot:\/\/council\/([a-z0-9][a-z0-9-]*)\)/gi
+const COUNCIL_LINE =
+  /(^|\n)\s*open-bot:\/\/council\/([a-z0-9][a-z0-9-]*)\s*(?=\n|$)/gi
 
 export type VisibleMessage = ChatMessage & {
   text: string
@@ -102,6 +108,7 @@ export type VisibleMessage = ChatMessage & {
   handoff: boolean
   preview: boolean
   previewPath: string
+  council: string
   sentAt: number | null
 }
 
@@ -195,6 +202,32 @@ export function splitPreview(text: string): {
   PREVIEW_LINK.lastIndex = 0
   PREVIEW_LINE.lastIndex = 0
   return { text: stripped, preview: true, path: previewPath(found[1] ?? "") }
+}
+
+// Council reply marker: ![council: name](open-bot://council/name) (or a bare
+// link/line). Stripped from the bubble; the slug opens the council viewer.
+export function splitCouncil(text: string): {
+  text: string
+  council: string
+} {
+  COUNCIL_IMAGE.lastIndex = 0
+  COUNCIL_LINK.lastIndex = 0
+  COUNCIL_LINE.lastIndex = 0
+  const image = COUNCIL_IMAGE.exec(text)
+  const link = COUNCIL_LINK.exec(text)
+  const line = COUNCIL_LINE.exec(text)
+  const slug = (image?.[1] ?? link?.[1] ?? line?.[2] ?? "").toLowerCase()
+  if (!slug) return { text, council: "" }
+  const stripped = text
+    .replace(COUNCIL_IMAGE, "")
+    .replace(COUNCIL_LINK, "")
+    .replace(COUNCIL_LINE, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+  COUNCIL_IMAGE.lastIndex = 0
+  COUNCIL_LINK.lastIndex = 0
+  COUNCIL_LINE.lastIndex = 0
+  return { text: stripped, council: slug }
 }
 
 export function vncFrameSrc(path: string, interactive: boolean): string {
@@ -374,21 +407,24 @@ export function visibleMessages(
       ),
     )
     const preview = splitPreview(parsed.text)
+    const council = splitCouncil(preview.text)
     const images = visibleImages(message, media)
     if (
-      !preview.text.trim() &&
+      !council.text.trim() &&
       images.length === 0 &&
       !parsed.handoff &&
-      !preview.preview
+      !preview.preview &&
+      !council.council
     )
       continue
     out.push({
       ...message,
-      text: preview.text,
+      text: council.text,
       images,
       handoff: parsed.handoff,
       preview: preview.preview,
       previewPath: preview.path,
+      council: council.council,
       sentAt: messageSentAt(message),
     })
   }
@@ -643,6 +679,7 @@ export function threadBubbles(
       prev.images = [...prev.images, ...message.images]
       prev.handoff = prev.handoff || message.handoff
       prev.preview = prev.preview || message.preview
+      prev.council = prev.council || message.council
       if (message.previewPath) prev.previewPath = message.previewPath
       if (prev.sentAt == null && message.sentAt != null)
         prev.sentAt = message.sentAt
