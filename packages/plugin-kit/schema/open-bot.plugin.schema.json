@@ -250,7 +250,7 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\]{1,200}$",
-            "description": "Repo-relative path inside the release tarball: 1-8 safe segments, no leading /, no .. segments, no backslashes. Text files only. The security review reads the first 16,000 chars per file and 64,000 chars total; payloads past that window are rejected at publish. Keep each path segment under 99 chars (longer paths cannot be matched in the review tarball)."
+            "description": "Repo-relative path inside the release tarball: 1-8 safe segments, no leading /, no .. segments, no backslashes. Text files only. The security review reads the first 128,000 chars per file and 512,000 chars total; payloads past that window are rejected at publish. Keep each path segment under 99 chars (longer paths cannot be matched in the review tarball)."
           },
           "exec": {
             "type": "boolean",
@@ -352,7 +352,7 @@
             "entry": {
               "type": "string",
               "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
-              "description": "A declared files[] name run as the plugin's page server (Bun HTTP server). The control plane proxies it to the dashboard under /api/pages/<pluginId>/."
+              "description": "A declared files[] name run as the plugin's page server (Bun HTTP server). The control plane proxies it to the dashboard under /api/pages/<pluginId>/ with that prefix stripped — your server sees the bare path."
             },
             "public": {
               "type": "boolean",
@@ -394,13 +394,13 @@
                 "type": "string",
                 "pattern": "^/(?:[^/].*)?$",
                 "maxLength": 200,
-                "description": "app tabs: plugin-server-relative path to load (default /)."
+                "description": "app tabs: plugin-server-relative path to load (default /). The /api/pages prefix the dashboard adds is stripped before your server sees the request — never include it here."
               },
               "dataUrl": {
                 "type": "string",
                 "pattern": "^/(?:[^/].*)?$",
                 "maxLength": 200,
-                "description": "page tabs: plugin-server-relative JSON path polled for live card data (needs dashboard.pages)."
+                "description": "page tabs: plugin-server-relative JSON path polled for live card data (needs dashboard.pages). The /api/pages prefix the dashboard adds is stripped before your server sees the request — never include it here."
               },
               "pollSeconds": {
                 "type": "integer",

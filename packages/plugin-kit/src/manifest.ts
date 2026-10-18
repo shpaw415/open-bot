@@ -408,8 +408,8 @@ const MAX_MANIFEST = 512 * 1024
 // the publish-route rejection, doctor warnings, and doc-drift tests). Payload
 // bytes and manifest JSON past these windows are NOT reviewed: the publish
 // path must fail closed instead of silently truncating.
-export const REVIEW_PAYLOAD_FILE_CHARS = 16000
-export const REVIEW_PAYLOAD_TOTAL_CHARS = 64000
+export const REVIEW_PAYLOAD_FILE_CHARS = 128000
+export const REVIEW_PAYLOAD_TOTAL_CHARS = 512000
 export const REVIEW_MANIFEST_CHARS = 150000
 // Paths longer than this cannot be matched by the review tar parser's 100-char
 // name field (no long-name extension support).

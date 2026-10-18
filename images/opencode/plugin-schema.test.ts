@@ -36,6 +36,30 @@ describe("plugin manifest schema", () => {
     )
   })
 
+  // The agent wrote a plugin with a broken proxy config when the skill only
+  // named the proxy URL and never the mapping — keep the contract in the doc.
+  test("the seed skill documents the page-proxy path contract", () => {
+    // Prefix stripping: the server sees the bare path.
+    expect(seedSkill).toContain("stripped before forwarding")
+    // tab.path/dataUrl are server routes; the dashboard prepends its prefix.
+    expect(seedSkill).toContain("routes on your server")
+    expect(seedSkill).toContain("never repeat `/api/pages/...`")
+    // The JS-vs-HTML rewrite asymmetry and the header contract.
+    expect(seedSkill).toContain("JavaScript is never rewritten")
+    expect(seedSkill).toContain("`cookie`, `authorization`")
+    // All three tab kinds are documented.
+    expect(seedSkill).toContain('kind: "iframe"')
+  })
+
+  test("the schema descriptions teach the prefix stripping", () => {
+    expect(
+      schema.properties.dashboard.properties.pages.properties.entry.description,
+    ).toContain("stripped")
+    const tabs = schema.properties.dashboard.properties.tabs.items.properties
+    expect(tabs.path.description).toContain("stripped")
+    expect(tabs.dataUrl.description).toContain("stripped")
+  })
+
   test("the schema declares the agentsMd surface", () => {
     expect(schema.properties.opencode.properties.agentsMd.maxLength).toBe(4000)
   })

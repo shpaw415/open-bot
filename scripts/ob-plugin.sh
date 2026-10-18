@@ -170,8 +170,8 @@ urlencode() {
 # release are cut — and payload/manifest sizes must fit the security-review
 # windows. Window constants mirror packages/plugin-kit (REVIEW_*); the
 # plugin-kit drift test asserts this text stays in sync.
-REVIEW_PAYLOAD_FILE_CHARS=16000
-REVIEW_PAYLOAD_TOTAL_CHARS=64000
+REVIEW_PAYLOAD_FILE_CHARS=128000
+REVIEW_PAYLOAD_TOTAL_CHARS=512000
 REVIEW_MANIFEST_CHARS=150000
 REVIEW_TAR_PATH_MAX=99
 local_payload_checks() {
@@ -436,14 +436,14 @@ Manifest quick reference:
 - cron[]: {name, message, everySeconds | cronExpr, run?: prompt|script|both|auto, script?} — scheduled jobs (run=script/both/auto needs script, max 16k chars)
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
 - files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools; every frontend file the page server references (index.html, app.ts, styles.css) must be declared here; omitted exec means executable
-- dashboard.pages: {entry, ui, public?} — entry is the page server files[] name; ui is the files[] source of the frontend entry (index.html) — the control plane bundles it with bun build into one self-contained HTML for frozen installs, local installs import it live; public: true also exposes /hooks/<userId>/<id>/<path> on the public internet (optional per-install secret)
+- dashboard.pages: {entry, ui, public?} — entry is the page server files[] name; ui is the files[] source of the frontend entry (index.html) — the control plane bundles it with bun build into one self-contained HTML for frozen installs, local installs import it live; the control plane proxies this server to the dashboard under /api/pages/<pluginId>/ with that prefix stripped (your code sees bare paths); public: true also exposes /hooks/<userId>/<id>/<path> on the public internet (optional per-install secret)
 - dashboard.hooks[]: {event: session.idle|thread.created, message} — up to 8; each runs an agent session in a hidden worker thread when the event fires (max 20 runs/day)
 - dashboard.mentions: [{section, label?, path?}] — up to 4 dynamic @section/name composer entries; your page server answers GET <path> with {items: [{name, description?, aliases?, hint?}]}
 - Write plugin code in TypeScript, not JavaScript: tool scripts (with a "#!/usr/bin/env bun" shebang), files[] payloads, and dashboard page servers are all .ts files — Bun runs .ts natively, no build step
 - configs[]: {key, label, def, type?: string|bool|number|enum, options?: [...], secret?: true} — settings shown on the Plugins page; typed settings are validated and render matching inputs (max 64)
 - setup: {commands: [...], uninstall: [...]} — shell commands run as root in the desktop at install and on every desktop start (commands must be idempotent, e.g. "apt-get install -y figlet"); uninstall runs at uninstall; the user sees them in the consent prompt, log at ~/.open-bot/plugin-init/<id>.log
 - permissions.vaultRead / vaultCreate: vault key slugs
-- dashboard.tabs[]: {id, title, icon?, kind: app|page|iframe, path? (app: server path, default /), url? (iframe), dataUrl?, pollSeconds?, cards? (page: 1-64 cards)}
+- dashboard.tabs[]: {id, title, icon?, kind: app|page|iframe, path? (app: your server's route to open, default /), url? (iframe: external https), dataUrl? (page: your server's JSON route), pollSeconds?, cards? (page: 1-64 cards)} — path/dataUrl are server-relative: the dashboard prepends its own /api/pages/<id> prefix, so never include it there
 - pricing: {model: "one-time", amount} — USD cents 99-50000; makes the plugin a paid marketplace listing
 - textbox: renderers, commands, buttons, validators, attachments
 - opencode: {plugin: [npm...], mcp: {...}, agents: {...new agent defs...}, agentTools: {agent: {glob: bool}}, agentsMd: "standing instructions injected next to AGENTS.md (max 4000 chars, no secrets)"}
