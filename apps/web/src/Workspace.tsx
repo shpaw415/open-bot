@@ -4942,7 +4942,7 @@ export function Workspace({
                       alignSelf: "center",
                     }}
                   >
-                    <AgentOrb state={orb} size={mobile ? 64 : 80} />
+                    <AgentOrb state={orb} size={mobile ? 80 : 112} />
                     <Typography
                       variant="caption"
                       color="textSecondary"

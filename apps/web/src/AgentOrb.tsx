@@ -81,7 +81,7 @@ export default function AgentOrb({
       const r = canvas.getBoundingClientRect()
       width = r.width
       height = r.height
-      const dpr = Math.min(devicePixelRatio || 1, 2)
+      const dpr = Math.min(devicePixelRatio || 1, 3)
       canvas.width = Math.round(width * dpr)
       canvas.height = Math.round(height * dpr)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -115,8 +115,10 @@ export default function AgentOrb({
       speed += (target.speed - speed) * 0.045
       ripple += (target.ripple - ripple) * 0.045
       pulse += (target.pulse - pulse) * 0.045
+      const compact = Math.min(width, height) <= 128
       const radius =
-        Math.min(width * 0.32, 106) * (1 + Math.sin(time * 1.5) * pulse)
+        Math.min(Math.min(width, height) * (compact ? 0.37 : 0.32), 106) *
+        (1 + Math.sin(time * 1.5) * pulse)
       const cx = width / 2,
         cy = height / 2 - 1
       const halo = ctx.createRadialGradient(
@@ -139,7 +141,21 @@ export default function AgentOrb({
         ct = Math.cos(tilt),
         st = Math.sin(tilt)
       const projected: { x: number; y: number; z: number; band: number }[] = []
-      for (const p of points) {
+      const targetCount = compact
+        ? Math.max(260, Math.min(2800, Math.round(width * height * 0.45)))
+        : points.length
+      for (let index = 0; index < targetCount; index++) {
+        const sy = 1 - (2 * (index + 0.5)) / targetCount
+        const sradius = Math.sqrt(1 - sy * sy)
+        const angle = index * golden
+        const p = compact
+          ? {
+              x: Math.cos(angle) * sradius,
+              y: sy,
+              z: Math.sin(angle) * sradius,
+              a: angle,
+            }
+          : points[index]
         const wave =
           Math.sin(p.x * 5 + time * 1.7) * Math.cos(p.y * 4 - time * 0.9) +
           0.5 * Math.sin(p.z * 7 + time * 1.2)
@@ -161,15 +177,21 @@ export default function AgentOrb({
       projected.sort((a, b) => a.z - b.z)
       for (const p of projected) {
         const depth = (p.z + 1.3) / 2.6
-        const mix = 0.5 + 0.5 * Math.sin((p.y / radius) * 1.8 + time * 0.3)
+        const mix =
+          0.5 + 0.5 * Math.sin(((p.y - cy) / radius) * 1.8 + time * 0.3)
         const c = colors[0].map((v, i) => v * (1 - mix) + colors[1][i] * mix)
-        const alpha = (0.12 + 0.62 * depth) * (0.3 + 0.7 * p.band ** 2)
-        const size = 0.38 + 0.68 * depth + 0.32 * p.band
-        ctx.fillStyle = rgba(c, alpha)
+        const alpha = (compact ? 0.22 : 0.12) + (compact ? 0.7 : 0.62) * depth
+        const opacity = alpha * (0.3 + 0.7 * p.band ** 2)
+        const dotScale = compact
+          ? Math.max(0.36, Math.min(0.9, Math.min(width, height) / 120))
+          : 1
+        const size = (0.38 + 0.68 * depth + 0.32 * p.band) * dotScale
+        ctx.fillStyle = rgba(c, opacity)
         ctx.beginPath()
         ctx.arc(p.x, p.y, size, 0, Math.PI * 2)
         ctx.fill()
       }
+      if (compact && Math.min(width, height) < 64) return
       // A subtle orbit carries the same motion beyond the particle surface.
       ctx.save()
       ctx.translate(cx, cy)
