@@ -5,7 +5,6 @@ import IconButton from "@shpaw415/mui-lite/IconButton"
 import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Select from "@shpaw415/mui-lite/Select"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
@@ -32,6 +31,7 @@ import {
 } from "./icons"
 import { ModelSelect } from "./ModelSelect"
 import type { PersonaInfo } from "./Personalities"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 
 export type CronJobInfo = {

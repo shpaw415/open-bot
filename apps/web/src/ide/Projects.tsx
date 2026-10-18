@@ -5,7 +5,6 @@ import Divider from "@shpaw415/mui-lite/Divider"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { type ReactNode, useCallback, useEffect, useState } from "react"
@@ -25,6 +24,8 @@ import {
   FolderIcon,
   RefreshIcon,
 } from "../icons"
+import { OPEN_PROJECT_EVENT, takePendingProject } from "../open-project"
+import Stack from "../stack"
 import { Tip } from "../Tip"
 import { Ide } from "./Ide"
 import { groupProjects } from "./project-groups"
@@ -485,6 +486,32 @@ export function Projects({
     })
   }, [subscribe, load])
 
+  // "Open this project" pipeline (search results, future links): an event
+  // for the mounted view, plus a pending slot for the race where the pick
+  // navigated to /projects and this view mounts after the event fired.
+  const [pendingOpen, setPendingOpen] = useState("")
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const id = (event as CustomEvent<{ projectId?: string }>).detail
+        ?.projectId
+      if (!id) return
+      setPendingOpen(id)
+    }
+    window.addEventListener(OPEN_PROJECT_EVENT, onOpen)
+    return () => window.removeEventListener(OPEN_PROJECT_EVENT, onOpen)
+  }, [])
+  useEffect(() => {
+    const raced = takePendingProject()
+    if (raced) setPendingOpen(raced)
+  }, [])
+  useEffect(() => {
+    if (!pendingOpen || !projects) return
+    const found = projects.find((project) => project.id === pendingOpen)
+    if (!found) return
+    setSelected(found)
+    setPendingOpen("")
+  }, [pendingOpen, projects])
+
   async function create() {
     const trimmed = name.trim()
     if (busy) return
@@ -577,7 +604,9 @@ export function Projects({
           sx={{ flexWrap: "wrap", rowGap: 1 }}
         >
           <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
-            <Typography variant="h6">Projects</Typography>
+            <Typography variant="h6" component="h1">
+              Projects
+            </Typography>
             <Typography variant="caption" sx={{ color: META }}>
               {loading
                 ? "Loading workspaces…"

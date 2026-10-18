@@ -3,12 +3,12 @@ import Box from "@shpaw415/mui-lite/Box"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "./api"
 import { ChartView } from "./ChartView"
 import { MemoryIcon, RefreshIcon } from "./icons"
+import Stack from "./stack"
 
 type DesktopSample = {
   at: number

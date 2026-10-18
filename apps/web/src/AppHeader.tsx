@@ -6,7 +6,6 @@ import Divider from "@shpaw415/mui-lite/Divider"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Menu from "@shpaw415/mui-lite/Menu"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import {
   useCallback,
@@ -50,6 +49,8 @@ import {
   readNotifySound,
   writeNotifySound,
 } from "./notify-sound"
+import { openProjectById } from "./open-project"
+import { workspacePath } from "./routes"
 import {
   flattenSearchGroups,
   initialSearchResults,
@@ -62,6 +63,7 @@ import {
   searchProjectEntries,
   searchThreadEntries,
 } from "./search"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 import { formatAgo } from "./time"
 
@@ -347,8 +349,10 @@ function SoundToggleRow() {
  */
 function NoticeBellButton({
   onOpenThread,
+  go,
 }: {
   onOpenThread: (sessionId: string) => void
+  go: (path: string) => void
 }) {
   const items = useNoticesSnapshot()
   const unread = useUnreadNoticeCount()
@@ -362,10 +366,30 @@ function NoticeBellButton({
     (notice: NoticeItem) => {
       markNoticeRead(notice.id)
       if (notice.sessionId) onOpenThread(notice.sessionId)
-      else if (notice.href) setOpen(false)
+      else if (notice.href) go(notice.href)
       setOpen(false)
     },
-    [onOpenThread],
+    [onOpenThread, go],
+  )
+
+  const bell = (
+    <IconButton
+      ref={bellRef}
+      size="medium"
+      aria-label={
+        unread > 0 ? `Notifications, ${unread} unread` : "Notifications"
+      }
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      onClick={() => setOpen((current) => !current)}
+    >
+      {unread > 0 ? (
+        <NotificationsIcon width={20} height={20} />
+      ) : (
+        <NotificationsNoneIcon width={20} height={20} />
+      )}
+      {badge ? <span className="ob-header-badge">{badge}</span> : null}
+    </IconButton>
   )
 
   return (
@@ -379,25 +403,9 @@ function NoticeBellButton({
           zIndex: open ? 60 : "auto",
         }}
       >
-        <Tip title="Notifications">
-          <IconButton
-            ref={bellRef}
-            size="medium"
-            aria-label={
-              unread > 0 ? `Notifications, ${unread} unread` : "Notifications"
-            }
-            aria-haspopup="dialog"
-            aria-expanded={open}
-            onClick={() => setOpen((current) => !current)}
-          >
-            {unread > 0 ? (
-              <NotificationsIcon width={20} height={20} />
-            ) : (
-              <NotificationsNoneIcon width={20} height={20} />
-            )}
-            {badge ? <span className="ob-header-badge">{badge}</span> : null}
-          </IconButton>
-        </Tip>
+        {/* While the panel is open the tooltip is suppressed: a hover tip
+            would float over (and visually merge with) the open panel. */}
+        {open ? bell : <Tip title="Notifications">{bell}</Tip>}
         {open ? (
           <Paper
             ref={panelRef}
@@ -507,9 +515,11 @@ function ProfileButton({
           aria-haspopup="menu"
           aria-expanded={open}
           onClick={() => setOpen((current) => !current)}
-          sx={{ p: 0.5 }}
         >
-          <Avatar size={30} alt="">
+          {/* mui-lite's Avatar is a fixed 40×40 div (its `size` prop is not
+              implemented) — an explicit 24px box inside a medium IconButton
+              lands the same 40px hit area as the neighboring actions. */}
+          <Avatar sx={{ width: 24, height: 24, fontSize: 12 }} alt="">
             {initials}
           </Avatar>
         </IconButton>
@@ -769,7 +779,11 @@ function SearchControl({
       if (!entry) return
       close()
       if (entry.sessionId) onOpenThread(entry.sessionId)
-      else if (entry.path) go(entry.path)
+      else if (entry.projectId) {
+        // A named project opens that project, not just the Projects view.
+        go(entry.path ?? workspacePath("projects"))
+        openProjectById(entry.projectId)
+      } else if (entry.path) go(entry.path)
     },
     [flat, close, go, onOpenThread],
   )
@@ -1093,7 +1107,7 @@ export function AppHeader({
             )}
           </IconButton>
         </Tip>
-        <NoticeBellButton onOpenThread={onOpenThread} />
+        <NoticeBellButton onOpenThread={onOpenThread} go={go} />
         <SearchControl
           me={me}
           appTabs={appTabs}

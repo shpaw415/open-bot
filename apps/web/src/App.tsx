@@ -3,7 +3,6 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import Drawer from "@shpaw415/mui-lite/Drawer"
 import IconButton from "@shpaw415/mui-lite/IconButton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Admin } from "./Admin"
@@ -46,6 +45,7 @@ import {
   type WorkspaceTab,
   workspacePath,
 } from "./routes"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 import { useThemeMode } from "./theme"
 import { Workspace } from "./Workspace"
@@ -239,24 +239,31 @@ export function App() {
     return window.confirm("You have unsaved changes. Leave this page anyway?")
   }, [])
 
-  const go = useCallback(
-    (next: string) => {
-      if (next !== location.pathname && !confirmDirty()) return
-      history.pushState({}, "", next)
-      setPath(next)
-      announce()
-    },
-    [announce, confirmDirty],
-  )
+  // The shell tags every history entry with a monotonic id (history.state
+  // .ob) so the pop guard knows a pop's direction and can restore the exact
+  // entry with back() or forward(). Other state fields are not used today
+  // but would ride along untouched.
+  const popGuardRef = useRef<ReturnType<typeof createPopGuard> | null>(null)
+  const announceRef = useRef(announce)
+  const confirmDirtyRef = useRef(confirmDirty)
+  confirmDirtyRef.current = confirmDirty
+  const pathRef = useRef(path)
+  pathRef.current = path
 
-  const replace = useCallback(
-    (next: string) => {
-      history.replaceState({}, "", next)
-      setPath(next)
-      announce()
-    },
-    [announce],
-  )
+  const go = useCallback((next: string) => {
+    if (next !== location.pathname && !confirmDirtyRef.current()) return
+    const id = popGuardRef.current?.tagPush() ?? 0
+    history.pushState({ ob: id }, "", next)
+    setPath(next)
+    announceRef.current()
+  }, [])
+
+  const replace = useCallback((next: string) => {
+    const id = popGuardRef.current?.tagReplace() ?? 0
+    history.replaceState({ ob: id }, "", next)
+    setPath(next)
+    announceRef.current()
+  }, [])
 
   useEffect(() => {
     api<Me>("/api/me")
@@ -276,17 +283,15 @@ export function App() {
     return () => window.removeEventListener("beforeunload", guard)
   }, [])
 
-  // Internal navigation guards forms with unsaved changes; browser Back is
-  // canceled by re-entering the current entry (forward first, so the
-  // forward stack survives the common case) — see nav-guard.ts.
-  const pathRef = useRef(path)
-  pathRef.current = path
-  const confirmDirtyRef = useRef(confirmDirty)
-  confirmDirtyRef.current = confirmDirty
+  // Internal navigation guards forms with unsaved changes; a canceled pop
+  // re-enters the current entry in the opposite direction of the pop
+  // (forward() after Back, back() after Forward) so the exact guarded entry
+  // is restored and no stack is truncated — see nav-guard.ts.
   useEffect(() => {
     const guard = createPopGuard(
       {
         locationPath: () => location.pathname,
+        go: (delta) => history.go(delta),
         forward: () => history.forward(),
         pushState: (next) => history.pushState({}, "", next),
       },
@@ -296,17 +301,25 @@ export function App() {
         getGuardedPath: () => pathRef.current,
       },
     )
-    const onPop = () => {
-      if (guard.onPop()) return
+    popGuardRef.current = guard
+    const entryId = (event: PopStateEvent): number | null =>
+      event.state && typeof event.state.ob === "number"
+        ? (event.state.ob as number)
+        : null
+    const onPop = (event: PopStateEvent) => {
+      if (guard.onPop(entryId(event))) return
       setPath(location.pathname)
-      announce()
+      announceRef.current()
     }
     window.addEventListener("popstate", onPop)
+    // Tag the entry this tab booted on so later pops know where they stand.
+    history.replaceState({ ob: guard.tagReplace() }, "", location.pathname)
     return () => {
       window.removeEventListener("popstate", onPop)
+      popGuardRef.current = null
       guard.reset()
     }
-  }, [announce])
+  }, [])
 
   useEffect(() => {
     setNoticeFocus({ path })

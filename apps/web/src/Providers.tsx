@@ -11,7 +11,6 @@ import {
 import Paper from "@shpaw415/mui-lite/Paper"
 import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { Terminal } from "@xterm/xterm"
@@ -28,6 +27,7 @@ import {
   RefreshIcon,
   SendIcon,
 } from "./icons"
+import Stack from "./stack"
 import "@xterm/xterm/css/xterm.css"
 
 type AuthMethod = { type?: string; label?: string }

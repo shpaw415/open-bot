@@ -3,7 +3,6 @@ import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Snackbar from "@shpaw415/mui-lite/Snackbar"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useRef, useState } from "react"
@@ -14,6 +13,7 @@ import AccessibleDialog, {
 } from "./AccessibleDialog"
 import { api } from "./api"
 import { useEventStream, useMobile } from "./hooks"
+import Stack from "./stack"
 
 type ApprovalSummary = {
   id: string

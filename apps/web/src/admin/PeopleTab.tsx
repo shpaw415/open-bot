@@ -7,7 +7,6 @@ import Menu from "@shpaw415/mui-lite/Menu"
 import { TablePagination } from "@shpaw415/mui-lite/Pagination"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Table, {
   TableBody,
   TableCell,
@@ -32,6 +31,7 @@ import {
   PersonAddIcon,
   RefreshIcon,
 } from "../icons"
+import Stack from "../stack"
 import { formatTokenCount } from "../team"
 import { tokensFor, type UsageDay } from "../usage-charts"
 import type { AdminUser, DayWindow, Invite } from "./types"

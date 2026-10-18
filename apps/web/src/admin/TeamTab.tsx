@@ -6,7 +6,6 @@ import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Switch from "@shpaw415/mui-lite/Switch"
 import Table, {
   TableBody,
@@ -37,6 +36,7 @@ import {
   type TeamQuotaUser,
 } from "../api"
 import { Chip } from "../chip"
+import Stack from "../stack"
 import {
   formatTokenCount,
   isTeamSecretField,

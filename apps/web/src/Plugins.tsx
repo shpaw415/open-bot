@@ -9,7 +9,6 @@ import { CircularProgress, LinearProgress } from "@shpaw415/mui-lite/Progress"
 import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Snackbar from "@shpaw415/mui-lite/Snackbar"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Switch from "@shpaw415/mui-lite/Switch"
 import Table, {
   TableBody,
@@ -28,6 +27,7 @@ import { useDirtyFlag } from "./dirty-form"
 import { useMobile } from "./hooks"
 import { DeleteIcon, RefreshIcon } from "./icons"
 import { type InstalledPluginInfo, PluginBadges, usePlugins } from "./plugin-ui"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 
 type MarketPlugin = {
@@ -533,6 +533,11 @@ function InstalledTable({
                         <Switch
                           checked={plugin.enabled}
                           disabled={rowBusy}
+                          aria-label={
+                            plugin.enabled
+                              ? `Disable ${plugin.name}`
+                              : `Enable ${plugin.name}`
+                          }
                           onChange={() => onToggle(plugin)}
                         />
                       </Tip>
@@ -975,6 +980,7 @@ function SettingsDialog({
                 <Switch
                   checked={values[config.key] === "true"}
                   disabled={busy}
+                  aria-label={config.label}
                   onChange={() =>
                     setValues({
                       ...values,

@@ -3,7 +3,6 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Select from "@shpaw415/mui-lite/Select"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api, type Me } from "./api"
@@ -47,6 +46,7 @@ import { Providers } from "./Providers"
 import { Reports } from "./Reports"
 import { CONFIG_GROUPS, CONFIG_TAB_LABELS, type ConfigTab } from "./routes"
 import { System1 } from "./System1"
+import Stack from "./stack"
 import { useTeamMode } from "./team"
 import { QuotaMeter } from "./team-quota"
 import { VideoProvider } from "./VideoProvider"
@@ -503,7 +503,9 @@ export function Config({
           sx={{ p: 1.5, maxWidth: 640, width: "100%", mx: "auto" }}
         >
           <Stack spacing={0.25}>
-            <Typography variant="h6">Settings</Typography>
+            <Typography variant="h6" component="h1">
+              Settings
+            </Typography>
             <Typography variant="body2" color="textSecondary">
               Choose a group, then a section.
             </Typography>
@@ -580,7 +582,11 @@ export function Config({
             </IconButton>
           ) : null}
           <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-            <Typography variant="h6" sx={{ whiteSpace: "nowrap" }}>
+            <Typography
+              variant="h6"
+              component="h1"
+              sx={{ whiteSpace: "nowrap" }}
+            >
               {mobile ? CONFIG_TAB_LABELS[activeTab] : "Settings"}
             </Typography>
             <Typography variant="body2" color="textSecondary">

@@ -26,6 +26,8 @@ export type SearchEntry = {
   path?: string
   /** Conversations open through the thread pipeline, not a path. */
   sessionId?: string
+  /** Projects open through the project pipeline (id, not just the view). */
+  projectId?: string
 }
 
 export const SEARCH_GROUP_LABELS: Record<SearchGroupId, string> = {
@@ -130,6 +132,7 @@ export function searchProjectEntries(
     title: project.name,
     hint: "Project",
     path: workspacePath("projects"),
+    projectId: project.id,
   }))
 }
 

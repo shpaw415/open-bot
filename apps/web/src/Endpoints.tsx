@@ -3,13 +3,13 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
 import { Chip } from "./chip"
 import { type InstalledPluginInfo, usePlugins } from "./plugin-ui"
+import Stack from "./stack"
 
 type PagesStatus = {
   pages: { pluginId: string; running: boolean }[]
@@ -223,7 +223,9 @@ export function Endpoints() {
         alignItems="center"
         justifyContent="space-between"
       >
-        <Typography variant="h6">Public endpoints</Typography>
+        <Typography variant="h6" component="h1">
+          Public endpoints
+        </Typography>
         {status ? (
           <Chip
             size="small"

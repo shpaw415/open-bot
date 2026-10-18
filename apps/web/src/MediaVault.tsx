@@ -4,7 +4,6 @@ import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import IconButton from "@shpaw415/mui-lite/IconButton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import AccessibleDialog, {
@@ -27,6 +26,7 @@ import {
   VideoIcon,
 } from "./icons"
 import { Model3dView } from "./Model3dView"
+import Stack from "./stack"
 
 type Kind = "image" | "video" | "model3d" | "file"
 type Filter = "all" | Kind
@@ -241,117 +241,128 @@ export function MediaVault({
           </Alert>
         ) : null}
         {!albumId ? (
-          albums === null ? (
-            <Stack spacing={1.5} sx={{ maxWidth: 420 }} aria-busy="true">
-              {[0, 1, 2].map((i) => (
-                <Box
-                  key={i}
-                  className="ob-skeleton"
-                  sx={{ height: 56, borderRadius: "10px" }}
-                />
-              ))}
-              <output className="ob-sr-status">Loading albums</output>
-            </Stack>
-          ) : albums.length === 0 ? (
-            <Typography color="textSecondary">
-              No albums yet. Pictures, videos, and 3D models from chat land
-              here. The agent can also file other files into a named album.
+          <>
+            {/* The Media workspace tab has no other title (the top bar only
+                carries thread context) — this is the page heading. */}
+            <Typography variant="h6" component="h1">
+              Media vault
             </Typography>
-          ) : (
-            <Stack spacing={1}>
-              {albums.map((row) => (
-                <Stack
-                  key={row.id}
-                  direction="row"
-                  spacing={1.5}
-                  alignItems="center"
-                  sx={{
-                    p: 1.25,
-                    borderRadius: 2,
-                    border: 1,
-                    borderColor: "divider",
-                    "&:hover": { borderColor: "primary.main" },
-                  }}
-                >
-                  {/* The open action is a real button (Enter/Space work, and
-                      the delete control stays a sibling, not nested). */}
+            <Typography variant="caption" color="textSecondary">
+              Albums of immutable copies. Chat media files itself; anything else
+              you add with ob-media.
+            </Typography>
+            {albums === null ? (
+              <Stack spacing={1.5} sx={{ maxWidth: 420 }} aria-busy="true">
+                {[0, 1, 2].map((i) => (
                   <Box
-                    Element="button"
-                    type="button"
-                    onClick={() => openAlbum(row.id)}
-                    aria-label={`Open album ${row.name}`}
+                    key={i}
+                    className="ob-skeleton"
+                    sx={{ height: 56, borderRadius: "10px" }}
+                  />
+                ))}
+                <output className="ob-sr-status">Loading albums</output>
+              </Stack>
+            ) : albums.length === 0 ? (
+              <Typography color="textSecondary">
+                No albums yet. Pictures, videos, and 3D models from chat land
+                here. The agent can also file other files into a named album.
+              </Typography>
+            ) : (
+              <Stack spacing={1}>
+                {albums.map((row) => (
+                  <Stack
+                    key={row.id}
+                    direction="row"
+                    spacing={1.5}
+                    alignItems="center"
                     sx={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 1.5,
-                      flex: 1,
-                      minWidth: 0,
-                      p: 0,
-                      border: "none",
-                      background: "transparent",
-                      color: "inherit",
-                      font: "inherit",
-                      textAlign: "left",
-                      cursor: "pointer",
-                      borderRadius: 1,
-                      "&:focus-visible": {
-                        outline: "2px solid",
-                        outlineColor: "primary.main",
-                        outlineOffset: 2,
-                      },
+                      p: 1.25,
+                      borderRadius: 2,
+                      border: 1,
+                      borderColor: "divider",
+                      "&:hover": { borderColor: "primary.main" },
                     }}
                   >
+                    {/* The open action is a real button (Enter/Space work, and
+                      the delete control stays a sibling, not nested). */}
                     <Box
+                      Element="button"
+                      type="button"
+                      onClick={() => openAlbum(row.id)}
+                      aria-label={`Open album ${row.name}`}
                       sx={{
-                        width: 56,
-                        height: 56,
-                        borderRadius: 1.5,
-                        overflow: "hidden",
-                        flexShrink: 0,
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "center",
-                        backgroundColor: "action.hover",
+                        gap: 1.5,
+                        flex: 1,
+                        minWidth: 0,
+                        p: 0,
+                        border: "none",
+                        background: "transparent",
+                        color: "inherit",
+                        font: "inherit",
+                        textAlign: "left",
+                        cursor: "pointer",
+                        borderRadius: 1,
+                        "&:focus-visible": {
+                          outline: "2px solid",
+                          outlineColor: "primary.main",
+                          outlineOffset: 2,
+                        },
                       }}
                     >
-                      {row.latest?.kind === "image" ? (
-                        <img
-                          src={row.latest.url}
-                          alt=""
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            objectFit: "cover",
-                          }}
-                        />
-                      ) : (
-                        <FolderIcon />
-                      )}
+                      <Box
+                        sx={{
+                          width: 56,
+                          height: 56,
+                          borderRadius: 1.5,
+                          overflow: "hidden",
+                          flexShrink: 0,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          backgroundColor: "action.hover",
+                        }}
+                      >
+                        {row.latest?.kind === "image" ? (
+                          <img
+                            src={row.latest.url}
+                            alt=""
+                            style={{
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "cover",
+                            }}
+                          />
+                        ) : (
+                          <FolderIcon />
+                        )}
+                      </Box>
+                      <Stack sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 600 }}>
+                          {row.name}
+                        </Typography>
+                        <Typography variant="caption" color="textSecondary">
+                          {row.count} {row.count === 1 ? "item" : "items"}
+                          {row.sessionId ? " · thread" : ""}
+                        </Typography>
+                      </Stack>
                     </Box>
-                    <Stack sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 600 }}>
-                        {row.name}
-                      </Typography>
-                      <Typography variant="caption" color="textSecondary">
-                        {row.count} {row.count === 1 ? "item" : "items"}
-                        {row.sessionId ? " · thread" : ""}
-                      </Typography>
-                    </Stack>
-                  </Box>
-                  <IconButton
-                    size="small"
-                    aria-label={`Delete ${row.name}`}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      askDeleteAlbum(row)
-                    }}
-                  >
-                    <DeleteIcon width={18} height={18} />
-                  </IconButton>
-                </Stack>
-              ))}
-            </Stack>
-          )
+                    <IconButton
+                      size="small"
+                      aria-label={`Delete ${row.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        askDeleteAlbum(row)
+                      }}
+                    >
+                      <DeleteIcon width={18} height={18} />
+                    </IconButton>
+                  </Stack>
+                ))}
+              </Stack>
+            )}
+          </>
         ) : (
           <Stack spacing={1.5}>
             <Stack direction="row" spacing={1} alignItems="center">

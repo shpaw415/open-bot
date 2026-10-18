@@ -1,11 +1,11 @@
 import Avatar from "@shpaw415/mui-lite/Avatar"
 import Box from "@shpaw415/mui-lite/Box"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { ReactNode, RefObject } from "react"
 import { Chip } from "./chip"
 import { ExtensionIcon } from "./icons"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 
 export type PluginOriginInfo = { id: string; name: string }
@@ -214,6 +214,7 @@ export function GhostCards({ count = 3 }: { count?: number }) {
       </Box>
       {Array.from({ length: count }, (_, index) => (
         <Paper
+          // biome-ignore lint/suspicious/noArrayIndexKey: static ghost rows never reorder
           key={`ghost-${index}`}
           variant="outlined"
           sx={{ borderRadius: "12px", p: { xs: 1.5, sm: 2 } }}

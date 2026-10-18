@@ -11,7 +11,6 @@ import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import {
@@ -134,6 +133,11 @@ import {
   putCachedMessages,
 } from "./message-cache"
 import {
+  createSettingsSaver,
+  type MeLike,
+  type SettingsSaver,
+} from "./model-effort"
+import {
   OPEN_THREAD_EVENT,
   seenThread,
   setNoticeFocus,
@@ -165,6 +169,7 @@ import {
   type Suggestion,
 } from "./references"
 import type { WorkspaceTab } from "./routes"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 import { expandFolder, parseCollapsedFolders } from "./thread-folders"
 
@@ -1219,45 +1224,34 @@ const ThreadsPanel = memo(function ThreadsPanel({
         )}
       </Stack>
       {/* Search + new thread live under the header so they are identifiable
-          controls, not small icon-only affordances. mui-lite hides native
-          input placeholders (opacity 0) and relies on floating labels, so
-          the filter carries a real label — a placeholder-only field would
-          render invisible. It filters the threads already loaded on this
-          device; it is not a server search. */}
+          controls, not small icon-only affordances. The filter is a compact
+          native field (real placeholder + aria-label): mui-lite's floating
+          label geometry broke below the input edge at this height. It
+          filters the threads already loaded on this device; it is not a
+          server search. */}
       {selectMode ? null : (
         <Box sx={{ px: 1, pt: 0.75, pb: 0.5 }}>
           <Stack spacing={0.75}>
-            <TextField
-              variant="outlined"
-              label="Filter loaded threads"
-              value={threadQuery}
-              onChange={(event) => setThreadQuery(event.currentTarget.value)}
-              aria-label="Filter loaded threads"
-              startIcon={
-                <Box
-                  Element="span"
-                  sx={{ display: "flex", color: "text.secondary" }}
+            <label className="ob-filter-field">
+              <SearchIcon width={14} height={14} />
+              <input
+                value={threadQuery}
+                onChange={(event) => setThreadQuery(event.currentTarget.value)}
+                placeholder="Filter loaded threads"
+                aria-label="Filter loaded threads"
+                type="search"
+              />
+              {threadQuery ? (
+                <button
+                  type="button"
+                  className="ob-filter-clear"
+                  aria-label="Clear thread filter"
+                  onClick={() => setThreadQuery("")}
                 >
-                  <SearchIcon width={14} height={14} />
-                </Box>
-              }
-              endIcon={
-                threadQuery ? (
-                  <IconButton
-                    aria-label="Clear thread filter"
-                    size="small"
-                    onClick={() => setThreadQuery("")}
-                    sx={{ p: 0.25 }}
-                  >
-                    <CloseIcon width={13} height={13} />
-                  </IconButton>
-                ) : undefined
-              }
-              sx={{
-                width: "100%",
-                "& input": { py: 0.7, fontSize: 12.5 },
-              }}
-            />
+                  <CloseIcon width={13} height={13} />
+                </button>
+              ) : null}
+            </label>
             <Button
               size="small"
               variant="outlined"
@@ -1496,6 +1490,7 @@ function Composer({
   stopBusy,
   canStop,
   mobile,
+  compact,
   joined,
   rememberJoined,
   onError,
@@ -1533,6 +1528,9 @@ function Composer({
   stopBusy: boolean
   canStop: boolean
   mobile: boolean
+  /** Narrow chat column (phone, or chat docked beside the IDE): the
+      model/effort pickers move to their own designed second row. */
+  compact: boolean
   joined: JoinedFile[]
   rememberJoined: (next: JoinedFile[]) => void
   onError: (message: string) => void
@@ -2291,175 +2289,198 @@ function Composer({
             </Paper>
           ) : null}
         </Box>
-        <Stack
-          direction="row"
-          spacing={0.5}
-          alignItems="center"
-          className="ob-composer-actions"
-          sx={{ flexWrap: "wrap", rowGap: 0.5 }}
-        >
-          <IconButton
-            size="medium"
-            aria-label="Attach file"
-            disabled={!running || sending || stopping}
-            onClick={(event) => {
-              joinAnchor.current = event.currentTarget
-              setJoinOpen(true)
-            }}
-            sx={{ flexShrink: 0 }}
-          >
-            <AttachFileIcon />
-          </IconButton>
-          <Tip title={recording ? "Release to transcribe" : "Hold to speak"}>
+        <Box className="ob-composer-actions">
+          {/* Row 1 — designed, never wrapped by accident: secondary tools on
+              the left, Send/Stop pinned to the right edge of the same row.
+              Wide desks keep the pickers inline between the two. */}
+          <Box className="ob-composer-row">
             <IconButton
               size="medium"
-              aria-label={recording ? "Release to transcribe" : "Hold to speak"}
-              disabled={!running || sending || stopping || transcribing}
-              sx={{
-                flexShrink: 0,
-                touchAction: "none",
-                ...(recording
-                  ? {
-                      bgcolor: "error.main",
-                      color: "error.contrastText",
-                      animation: "ob-pulse 1.2s ease-in-out infinite",
-                    }
-                  : {}),
+              aria-label="Attach file"
+              disabled={!running || sending || stopping}
+              onClick={(event) => {
+                joinAnchor.current = event.currentTarget
+                setJoinOpen(true)
               }}
-              onPointerDown={(event) => {
-                event.preventDefault()
-                void startRecording()
-              }}
-              onPointerUp={(event) => {
-                event.preventDefault()
-                if (recording) stopRecording()
-              }}
-              onPointerLeave={() => {
-                if (recording) stopRecording()
-              }}
-              onPointerCancel={() => {
-                if (recording) stopRecording()
-              }}
-              onContextMenu={(event) => event.preventDefault()}
+              sx={{ flexShrink: 0 }}
             >
-              {transcribing ? (
-                <CircularProgress size={1.1} />
-              ) : recording ? (
-                <StopIcon />
-              ) : (
-                <MicIcon />
-              )}
+              <AttachFileIcon />
             </IconButton>
-          </Tip>
-          {recording ? (
-            <Typography
-              variant="caption"
-              color="error"
-              sx={{ flexShrink: 0, fontVariantNumeric: "tabular-nums" }}
-            >
-              {Math.floor(recordMs / 1000)}s
-            </Typography>
-          ) : null}
-          <Tip
-            title={
-              readAloud
-                ? "Read replies out loud: on"
-                : "Read replies out loud: off"
-            }
-          >
-            <IconButton
-              size="medium"
-              aria-label="Read replies out loud"
-              aria-pressed={readAloud}
-              disabled={!running && !readAloud}
-              onClick={() => {
-                onToggleReadAloud()
-              }}
-              sx={{
-                flexShrink: 0,
-                ...(readAloud
-                  ? { bgcolor: "primary.main", color: "primary.contrastText" }
-                  : {}),
-              }}
-            >
-              {readAloud ? <VolumeUpIcon /> : <VolumeOffIcon />}
-            </IconButton>
-          </Tip>
-          <span style={{ flex: 1 }} />
-          <ComposerPickers
-            mobile={mobile}
-            models={models}
-            model={model}
-            onModel={onModel}
-            effort={effort}
-            effortSaving={effortSaving}
-            onEffort={onEffort}
-            userId={userId}
-            disabled={!running || sending || stopping}
-            modelButtonId="ob-composer-model"
-          />
-          {canStop ? (
-            mobile ? (
+            <Tip title={recording ? "Release to transcribe" : "Hold to speak"}>
               <IconButton
                 size="medium"
-                aria-label="Stop"
-                disabled={stopping || stopBusy}
-                onClick={onStop}
+                aria-label={
+                  recording ? "Release to transcribe" : "Hold to speak"
+                }
+                disabled={!running || sending || stopping || transcribing}
                 sx={{
                   flexShrink: 0,
-                  marginLeft: "auto",
-                  bgcolor: "error.main",
-                  color: "error.contrastText",
+                  touchAction: "none",
+                  ...(recording
+                    ? {
+                        bgcolor: "error.main",
+                        color: "error.contrastText",
+                        animation: "ob-pulse 1.2s ease-in-out infinite",
+                      }
+                    : {}),
+                }}
+                onPointerDown={(event) => {
+                  event.preventDefault()
+                  void startRecording()
+                }}
+                onPointerUp={(event) => {
+                  event.preventDefault()
+                  if (recording) stopRecording()
+                }}
+                onPointerLeave={() => {
+                  if (recording) stopRecording()
+                }}
+                onPointerCancel={() => {
+                  if (recording) stopRecording()
+                }}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                {transcribing ? (
+                  <CircularProgress size={1.1} />
+                ) : recording ? (
+                  <StopIcon />
+                ) : (
+                  <MicIcon />
+                )}
+              </IconButton>
+            </Tip>
+            {recording ? (
+              <Typography
+                variant="caption"
+                color="error"
+                sx={{ flexShrink: 0, fontVariantNumeric: "tabular-nums" }}
+              >
+                {Math.floor(recordMs / 1000)}s
+              </Typography>
+            ) : null}
+            <Tip
+              title={
+                readAloud
+                  ? "Read replies out loud: on"
+                  : "Read replies out loud: off"
+              }
+            >
+              <IconButton
+                size="medium"
+                aria-label="Read replies out loud"
+                aria-pressed={readAloud}
+                disabled={!running && !readAloud}
+                onClick={() => {
+                  onToggleReadAloud()
+                }}
+                sx={{
+                  flexShrink: 0,
+                  ...(readAloud
+                    ? { bgcolor: "primary.main", color: "primary.contrastText" }
+                    : {}),
                 }}
               >
-                <StopIcon />
+                {readAloud ? <VolumeUpIcon /> : <VolumeOffIcon />}
+              </IconButton>
+            </Tip>
+            <span className="ob-composer-row-space" style={{ flex: 1 }} />
+            {compact ? null : (
+              <ComposerPickers
+                mobile={mobile}
+                models={models}
+                model={model}
+                onModel={onModel}
+                effort={effort}
+                effortSaving={effortSaving}
+                onEffort={onEffort}
+                userId={userId}
+                disabled={!running || sending || stopping}
+                modelButtonId="ob-composer-model"
+              />
+            )}
+            {canStop ? (
+              mobile ? (
+                <IconButton
+                  size="medium"
+                  aria-label="Stop"
+                  disabled={stopping || stopBusy}
+                  onClick={onStop}
+                  sx={{
+                    flexShrink: 0,
+                    bgcolor: "error.main",
+                    color: "error.contrastText",
+                  }}
+                >
+                  <StopIcon />
+                </IconButton>
+              ) : (
+                <Button
+                  variant="contained"
+                  color="error"
+                  startIcon={<StopIcon />}
+                  disabled={stopping || stopBusy}
+                  onClick={onStop}
+                  sx={{ flexShrink: 0 }}
+                >
+                  Stop
+                </Button>
+              )
+            ) : mobile ? (
+              <IconButton
+                size="medium"
+                aria-label="Send message"
+                disabled={
+                  !running ||
+                  sending ||
+                  stopping ||
+                  (!draft.trim() && joined.length === 0)
+                }
+                onClick={() => void submitFlow()}
+                sx={{
+                  flexShrink: 0,
+                  bgcolor: "primary.main",
+                  color: "primary.contrastText",
+                }}
+              >
+                {sending ? "…" : <SendIcon />}
               </IconButton>
             ) : (
               <Button
                 variant="contained"
-                color="error"
-                startIcon={<StopIcon />}
-                disabled={stopping || stopBusy}
-                onClick={onStop}
+                startIcon={<SendIcon />}
+                onClick={() => void submitFlow()}
+                disabled={
+                  !running ||
+                  sending ||
+                  stopping ||
+                  (!draft.trim() && joined.length === 0)
+                }
+                sx={{ flexShrink: 0 }}
               >
-                Stop
+                {sending ? "…" : "Send"}
               </Button>
-            )
-          ) : mobile ? (
-            <IconButton
-              size="medium"
-              aria-label="Send message"
-              disabled={
-                !running ||
-                sending ||
-                stopping ||
-                (!draft.trim() && joined.length === 0)
-              }
-              onClick={() => void submitFlow()}
-              sx={{
-                flexShrink: 0,
-                bgcolor: "primary.main",
-                color: "primary.contrastText",
-              }}
-            >
-              {sending ? "…" : <SendIcon />}
-            </IconButton>
-          ) : (
-            <Button
-              variant="contained"
-              startIcon={<SendIcon />}
-              onClick={() => void submitFlow()}
-              disabled={
-                !running ||
-                sending ||
-                stopping ||
-                (!draft.trim() && joined.length === 0)
-              }
-            >
-              {sending ? "…" : "Send"}
-            </Button>
-          )}
-        </Stack>
+            )}
+          </Box>
+          {/* Row 2 — only when the chat column is compact (phones, chat
+              docked beside the IDE): model + effort get their own stable
+              row instead of being squeezed into row 1. */}
+          {compact ? (
+            <Box className="ob-composer-row ob-composer-row-pickers">
+              <ComposerPickers
+                mobile={mobile}
+                models={models}
+                model={model}
+                onModel={onModel}
+                effort={effort}
+                effortSaving={effortSaving}
+                onEffort={onEffort}
+                userId={userId}
+                disabled={!running || sending || stopping}
+                modelButtonId="ob-composer-model"
+              />
+            </Box>
+          ) : null}
+        </Box>
         <input
           ref={fileInputRef}
           type="file"
@@ -2604,10 +2625,52 @@ export function Workspace({
   // Saved thinking effort for the current model; "" means model default.
   const [effort, setEffort] = useState(me.model?.thinkingEffort ?? "")
   const [effortSaving, setEffortSaving] = useState(false)
-  // Sequence guard for model/effort saves: only the newest local change may
-  // settle, so out-of-order responses can never clobber a newer pick.
-  const saveSeqRef = useRef(0)
-  const settledSeqRef = useRef(0)
+  // Model/effort writes are coordinated (serialized, per-channel staleness)
+  // by the shared saver — see model-effort.ts for the contract.
+  const settingsSaverRef = useRef<SettingsSaver | null>(null)
+  const onMeRefreshedRef = useRef(onMeRefreshed)
+  onMeRefreshedRef.current = onMeRefreshed
+  if (!settingsSaverRef.current) {
+    settingsSaverRef.current = createSettingsSaver({
+      putModel: (key) =>
+        api("/api/model", {
+          method: "PUT",
+          body: JSON.stringify({
+            providerID: key.slice(0, key.indexOf("/")),
+            modelID: key.slice(key.indexOf("/") + 1),
+          }),
+        }),
+      putThinking: (value) =>
+        api("/api/thinking", {
+          method: "PUT",
+          body: JSON.stringify({ effort: value }),
+        }),
+      fetchMe: () => api<MeLike>("/api/me"),
+      adoptServer: (next) => {
+        onMeRefreshedRef.current?.(next as Me)
+        const info = next.model
+        if (info?.providerID && info.modelID) {
+          const key = `${info.providerID}/${info.modelID}`
+          setModel((current) => (current === key ? current : key))
+        }
+        // While an effort save is still queued we keep the optimistic
+        // value — the older /api/me snapshot must not clobber a pick the
+        // queue has not written yet.
+        if (!settingsSaverRef.current?.effortPending()) {
+          const serverEffort = info?.thinkingEffort ?? ""
+          setEffort((current) =>
+            current === serverEffort ? current : serverEffort,
+          )
+        }
+      },
+      revertModel: (previous) => setModel(previous),
+      revertEffort: (previous) => setEffort(previous),
+      setEffortSaving,
+      onError: setError,
+      isTeamLocked: isTeamLockedError,
+    })
+  }
+  const settingsSaver = settingsSaverRef.current
   const [desktopKey, setDesktopKey] = useState(0)
   const [screen, setScreen] = useState<{
     sessionId: string
@@ -3974,109 +4037,30 @@ export function Workspace({
   }
 
   function selectModel(value: string) {
-    const previous = model
     setModel(value)
-    const split = value.indexOf("/")
-    const providerID = split > 0 ? value.slice(0, split) : ""
-    const modelID = split > 0 ? value.slice(split + 1) : ""
-    if (!providerID || !modelID) return
-    const seq = ++saveSeqRef.current
-    void (async () => {
-      try {
-        await api("/api/model", {
-          method: "PUT",
-          body: JSON.stringify({ providerID, modelID }),
-        })
-      } catch (caught) {
-        if (seq !== saveSeqRef.current) return
-        settledSeqRef.current = seq
-        setModel(previous)
-        setError(
-          isTeamLockedError(caught)
-            ? "the model is managed by your team admin"
-            : caught instanceof Error
-              ? caught.message
-              : "model save failed",
-        )
-        return
-      }
-      // The server re-validated the saved effort against the new model and
-      // dropped it when unsupported; adopt the server answer so the picker
-      // never claims a level the engine will not use.
-      try {
-        const next = await api<Me>("/api/me")
-        if (seq !== saveSeqRef.current) return
-        settledSeqRef.current = seq
-        onMeRefreshed?.(next)
-        const info = next.model
-        if (info?.providerID && info.modelID) {
-          const key = `${info.providerID}/${info.modelID}`
-          setModel((current) => (current === key ? current : key))
-        }
-        setEffort((current) => {
-          const server = info?.thinkingEffort ?? ""
-          return current === server ? current : server
-        })
-      } catch {
-        // keep the optimistic pick; the saved model is already server truth
-        if (seq !== saveSeqRef.current) return
-        settledSeqRef.current = seq
-      }
-    })()
+    settingsSaver.selectModel({ value, previous: model })
   }
 
   function selectEffort(value: string) {
-    const previous = effort
     setEffort(value)
-    const seq = ++saveSeqRef.current
-    setEffortSaving(true)
-    void (async () => {
-      try {
-        await api("/api/thinking", {
-          method: "PUT",
-          body: JSON.stringify({ effort: value }),
-        })
-        const next = await api<Me>("/api/me").catch(() => null)
-        if (seq !== saveSeqRef.current) return
-        settledSeqRef.current = seq
-        if (next) {
-          onMeRefreshed?.(next)
-          // Adopt effort only — a concurrent model save owns the model key.
-          const server = next.model?.thinkingEffort ?? ""
-          setEffort((current) => (current === server ? current : server))
-        }
-      } catch (caught) {
-        if (seq !== saveSeqRef.current) return
-        settledSeqRef.current = seq
-        setEffort(previous)
-        setError(
-          isTeamLockedError(caught)
-            ? "thinking effort is managed by your team admin"
-            : caught instanceof Error
-              ? caught.message
-              : "thinking effort save failed",
-        )
-      } finally {
-        if (seq === saveSeqRef.current) setEffortSaving(false)
-      }
-    })()
+    settingsSaver.selectEffort({ value, previous: effort })
   }
 
   // Follow server-side model/effort changes (Config page saves, admin
-  // overlays) while no local save is settling — otherwise the optimistic
-  // picker state wins until its own response arrives.
+  // overlays) while no local save is queued or settling — otherwise the
+  // optimistic picker state wins until its own response arrives.
   const serverModelKey =
     me.model?.providerID && me.model.modelID
       ? `${me.model.providerID}/${me.model.modelID}`
       : ""
   const serverEffort = me.model?.thinkingEffort ?? ""
   useEffect(() => {
-    if (settledSeqRef.current !== saveSeqRef.current) return
+    if (settingsSaver.busy()) return
     setModel((current) =>
       !serverModelKey || current === serverModelKey ? current : serverModelKey,
     )
     setEffort((current) => (current === serverEffort ? current : serverEffort))
-  }, [serverModelKey, serverEffort])
+  }, [serverModelKey, serverEffort, settingsSaver])
 
   // Display name for a model key ("provider/id" → real name when known).
   function modelName(key: string): string {
@@ -4525,19 +4509,16 @@ export function Workspace({
               whiteSpace: "nowrap",
             }}
           >
-            {/* Thread/view context — but not a repeat of the page name the
-                shell header already shows when nothing is open. */}
+            {/* Thread context only — Desktop/Projects/Media page names are
+                already announced by the shell header; saying them here too
+                repeated the page title at two levels. */}
             {tab === "chat"
               ? activeThread
                 ? threadTitle(activeThread)
                 : sessionId
                   ? "New thread"
                   : ""
-              : tab === "desktop"
-                ? "Desktop"
-                : tab === "projects"
-                  ? "Projects"
-                  : "Media"}
+              : ""}
           </Typography>
           {mobile ? null : running ? (
             <Button
@@ -4959,11 +4940,7 @@ export function Workspace({
                       alignSelf: "center",
                     }}
                   >
-                    <AgentOrb
-                      state={orb}
-                      size={mobile ? 64 : 80}
-                      label={activityLabel}
-                    />
+                    <AgentOrb state={orb} size={mobile ? 64 : 80} />
                     <Typography
                       variant="caption"
                       color="textSecondary"
@@ -4983,6 +4960,7 @@ export function Workspace({
                   stopBusy={stopBusy}
                   canStop={canStop}
                   mobile={mobile}
+                  compact={mobile || chatDocked}
                   joined={joined}
                   rememberJoined={rememberJoined}
                   onError={setError}

@@ -1,7 +1,7 @@
 import Button from "@shpaw415/mui-lite/Button"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { PointerEvent, Ref } from "react"
+import Stack from "./stack"
 
 export function PreviewFrame({ src, title }: { src: string; title: string }) {
   return (

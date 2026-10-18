@@ -1,6 +1,12 @@
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
+import IconButton from "@shpaw415/mui-lite/IconButton"
+import {
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText,
+} from "@shpaw415/mui-lite/List"
 import Menu from "@shpaw415/mui-lite/Menu"
 import TextField from "@shpaw415/mui-lite/TextField"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -210,61 +216,51 @@ export function ComposerPickers({
           >
             {filtered.map((item) => {
               const id = modelKey(item)
+              const favorite = ids.includes(id)
               return (
-                <ListItemButton
-                  key={id}
-                  data-ob-menu-item=""
-                  selected={id === model}
-                  onClick={() => pickModel(id)}
-                  title={modelTitle(item)}
-                >
-                  <ListItemText
-                    primary={
-                      <span className="ob-composer-model-row">
+                // One row, two separate targets: the row selects the model,
+                // the trailing button toggles the favorite — no interactive
+                // control nested inside another (keyboard targets stay
+                // distinct and the list markup stays valid ul > li).
+                <ListItem key={id} dense disablePadding>
+                  <ListItemButton
+                    data-ob-menu-item=""
+                    selected={id === model}
+                    onClick={() => pickModel(id)}
+                    title={modelTitle(item)}
+                    sx={{ flex: 1, minWidth: 0, borderRadius: 1 }}
+                  >
+                    <ListItemText
+                      primary={
                         <span className="ob-composer-model-name">
                           {modelTitle(item)}
                         </span>
-                        <Box
-                          Element="span"
-                          role="button"
-                          tabIndex={0}
-                          aria-label={
-                            ids.includes(id)
-                              ? `Unfavorite ${modelTitle(item)}`
-                              : `Favorite ${modelTitle(item)}`
-                          }
-                          aria-pressed={ids.includes(id)}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            toggle(id)
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ")
-                              return
-                            event.preventDefault()
-                            event.stopPropagation()
-                            toggle(id)
-                          }}
-                          sx={{
-                            display: "inline-flex",
-                            flexShrink: 0,
-                            cursor: "pointer",
-                            color: ids.includes(id)
-                              ? "primary.main"
-                              : "text.secondary",
-                            lineHeight: 0,
-                          }}
-                        >
-                          {ids.includes(id) ? (
-                            <StarIcon width={16} height={16} />
-                          ) : (
-                            <StarBorderIcon width={16} height={16} />
-                          )}
-                        </Box>
-                      </span>
+                      }
+                    />
+                  </ListItemButton>
+                  <IconButton
+                    size="small"
+                    data-ob-menu-item=""
+                    aria-label={
+                      favorite
+                        ? `Unfavorite ${modelTitle(item)}`
+                        : `Favorite ${modelTitle(item)}`
                     }
-                  />
-                </ListItemButton>
+                    aria-pressed={favorite}
+                    onClick={() => toggle(id)}
+                    sx={{
+                      flexShrink: 0,
+                      mr: 0.5,
+                      color: favorite ? "primary.main" : "text.secondary",
+                    }}
+                  >
+                    {favorite ? (
+                      <StarIcon width={16} height={16} />
+                    ) : (
+                      <StarBorderIcon width={16} height={16} />
+                    )}
+                  </IconButton>
+                </ListItem>
               )
             })}
             {filtered.length === 0 ? (
@@ -291,6 +287,9 @@ export function ComposerPickers({
             ? "Not available for this model"
             : "Thinking effort — applies to the next message in every thread"
         }
+        aria-label={`Thinking effort: ${
+          noVariants ? "default" : effort ? effortLabel(effort) : "default"
+        }`}
         sx={{
           maxWidth: mobile ? 130 : 190,
           minWidth: 0,

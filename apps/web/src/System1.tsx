@@ -1,12 +1,12 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
 import Select from "@shpaw415/mui-lite/Select"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import { useEffect, useState } from "react"
 import { api } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { NavigationIcon } from "./icons"
+import Stack from "./stack"
 import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
 
 type System1Spec = {

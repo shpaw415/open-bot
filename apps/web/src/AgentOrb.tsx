@@ -12,21 +12,13 @@ export type AgentOrbProps = {
   state: OrbState
   /** Whole animation area, including halo and orbit, in CSS pixels. */
   size?: number
-  label?: string
   className?: string
-}
-
-const labels: Record<OrbState, string> = {
-  idle: "Au repos",
-  thinking: "Je réfléchis",
-  working: "Je travaille",
 }
 
 /** Local canvas only. No network requests, dependencies or global styles. */
 export default function AgentOrb({
   state,
   size = 112,
-  label,
   className,
 }: AgentOrbProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -257,8 +249,10 @@ export default function AgentOrb({
     <canvas
       ref={canvasRef}
       className={className}
-      role="img"
-      aria-label={label ?? labels[state]}
+      /* Decorative animation: the sibling status text (role="status") is
+         the single accessible announcement — labeling the canvas too made
+         screen readers say the same state twice. A bare canvas carries no
+         implicit role, so nothing is announced from this element. */
       style={{
         display: "block",
         width: size,

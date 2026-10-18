@@ -44,6 +44,8 @@ describe("search — sources", () => {
     expect(apps[0].hint).toBe("Stock")
     const projects = searchProjectEntries([{ id: "p1", name: "open-bot" }])
     expect(projects[0].path).toBe("/projects")
+    // A named result must open THAT project, not just the Projects view.
+    expect(projects[0].projectId).toBe("p1")
   })
 })
 

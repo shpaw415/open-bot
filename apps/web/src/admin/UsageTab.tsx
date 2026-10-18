@@ -2,11 +2,11 @@ import Box from "@shpaw415/mui-lite/Box"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useRef, useState } from "react"
 import { ChartView } from "../ChartView"
 import { useMobile } from "../hooks"
+import Stack from "../stack"
 import {
   type ChartTheme,
   fleetOption,

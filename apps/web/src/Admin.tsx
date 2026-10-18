@@ -3,7 +3,6 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import Drawer from "@shpaw415/mui-lite/Drawer"
 import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import { type ReactNode, useCallback, useEffect, useState } from "react"
 import { HostTab } from "./admin/HostTab"
@@ -23,6 +22,7 @@ import {
   PersonIcon,
   WorkIcon,
 } from "./icons"
+import Stack from "./stack"
 import { formatTokenCount } from "./team"
 
 type AdminTab = "people" | "usage" | "improvements" | "team" | "host"

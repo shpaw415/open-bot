@@ -1,7 +1,6 @@
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
 import Markdown from "react-markdown"
@@ -13,6 +12,7 @@ import {
   visibleMessages,
 } from "./chat-view"
 import { clampPreviewWidth } from "./PreviewView"
+import Stack from "./stack"
 
 export type CouncilMemberInfo = {
   sessionId: string

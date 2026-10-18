@@ -1,7 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
 import Select from "@shpaw415/mui-lite/Select"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
@@ -23,6 +22,7 @@ import { ConfigSection } from "./ConfigSection"
 import { Chip } from "./chip"
 import { useEventStream } from "./hooks"
 import { HubIcon } from "./icons"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 
 type McpServer = {

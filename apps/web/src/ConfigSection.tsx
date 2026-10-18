@@ -1,10 +1,10 @@
 import Box from "@shpaw415/mui-lite/Box"
 import Divider from "@shpaw415/mui-lite/Divider"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { ReactNode } from "react"
 import { Chip } from "./chip"
+import Stack from "./stack"
 
 export type ConfigStatus = {
   label: string

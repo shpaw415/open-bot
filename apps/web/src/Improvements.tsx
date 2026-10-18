@@ -2,7 +2,6 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
 import { TablePagination } from "@shpaw415/mui-lite/Pagination"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Table, {
   TableBody,
   TableCell,
@@ -19,6 +18,7 @@ import AccessibleDialog, {
   DialogTitle,
 } from "./AccessibleDialog"
 import { api } from "./api"
+import Stack from "./stack"
 
 type ReportStatus = "open" | "done" | "wontfix"
 type Filter = ReportStatus | "all"
@@ -100,7 +100,9 @@ export function Improvements() {
 
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }}>
-      <Typography variant="subtitle1">Product reports</Typography>
+      <Typography variant="subtitle1" component="h1">
+        Product reports
+      </Typography>
       <Typography variant="caption" color="textSecondary">
         Filed by desktops. Review and patch from the repo queue.
       </Typography>

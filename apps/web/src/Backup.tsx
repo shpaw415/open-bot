@@ -4,7 +4,6 @@ import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -18,6 +17,7 @@ import { ConfigSection } from "./ConfigSection"
 import { Chip } from "./chip"
 import { useMobile } from "./hooks"
 import { BackupIcon, DeleteIcon, FactoryIcon, RestoreIcon } from "./icons"
+import Stack from "./stack"
 
 type BackupUser = { userId: string; email: string; files: number }
 type BackupSummary = {

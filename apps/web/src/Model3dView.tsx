@@ -1,10 +1,10 @@
 import Box from "@shpaw415/mui-lite/Box"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useRef, useState } from "react"
 import type { Mesh, Object3D } from "three"
 import { MediaDownloadButton } from "./MediaDownload"
+import Stack from "./stack"
 
 export function Model3dView({ src, alt }: { src: string; alt?: string }) {
   const holder = useRef<HTMLDivElement | null>(null)

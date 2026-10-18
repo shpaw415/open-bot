@@ -1,6 +1,5 @@
 import AutoComplete from "@shpaw415/mui-lite/AutoComplete"
 import Box from "@shpaw415/mui-lite/Box"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { StarBorderIcon, StarIcon } from "./icons"
@@ -14,6 +13,7 @@ import {
   toggleFavorite,
   writeFavorites,
 } from "./model-favorites"
+import Stack from "./stack"
 
 const DESKTOP_DEFAULT_LABEL = "__desktop-default__"
 

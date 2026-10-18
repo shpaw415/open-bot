@@ -2,13 +2,13 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useState } from "react"
 import { api, type Me } from "./api"
 import { DarkModeIcon, LightModeIcon, LoginIcon, PersonAddIcon } from "./icons"
+import Stack from "./stack"
 import { Tip } from "./Tip"
 import { useThemeMode } from "./theme"
 
@@ -89,7 +89,9 @@ export function SetCredentials({
       <Stack spacing={2}>
         <ThemeToggle />
         <Stack spacing={0.5}>
-          <Typography variant="h5">Set login</Typography>
+          <Typography variant="h5" component="h1">
+            Set login
+          </Typography>
           <Typography variant="body2" color="textSecondary">
             The default password is still in use. Choose the email and password
             to store.
@@ -174,7 +176,9 @@ export function Login({ onLogin }: { onLogin: (me: Me) => void }) {
               scale: 2.3,
             }}
           />
-          <Typography variant="h5">open-bot</Typography>
+          <Typography variant="h5" component="h1">
+            open-bot
+          </Typography>
           <Typography variant="body2" color="textSecondary">
             Self-hosted OpenCode desktops per user.
           </Typography>

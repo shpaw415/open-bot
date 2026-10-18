@@ -3,7 +3,6 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useMemo, useState } from "react"
@@ -23,6 +22,7 @@ import {
   PluginCards,
   type PluginsStatus,
 } from "./plugin-ui"
+import Stack from "./stack"
 
 /** What the shell's apps view needs to know about the install-list fetch. */
 export type PluginsViewStatus = {
@@ -174,7 +174,9 @@ function PageTab({ tab }: { tab: PluginTab }) {
       sx={{ p: 2, maxWidth: 860, mx: "auto", width: "100%" }}
     >
       <Stack spacing={2}>
-        <Typography variant="h6">{tab.title}</Typography>
+        <Typography variant="h6" component="h1">
+          {tab.title}
+        </Typography>
         {loading && !hasData ? <PageTabSkeleton /> : null}
         {!loading && error ? (
           <Alert severity={hasData ? "warning" : "error"}>
@@ -251,7 +253,9 @@ function AppTabError({
       spacing={1.5}
       sx={{ height: "100%", p: 3, textAlign: "center" }}
     >
-      <Typography variant="subtitle1">This app did not open</Typography>
+      <Typography variant="subtitle1" component="h1">
+        This app did not open
+      </Typography>
       <Typography variant="body2" color="textSecondary" sx={{ maxWidth: 440 }}>
         {message}
       </Typography>
@@ -422,7 +426,9 @@ function AppsLoadState({ status }: { status: PluginsViewStatus }) {
       ) : null}
       {status.status === "error" ? (
         <>
-          <Typography variant="subtitle1">Apps could not load</Typography>
+          <Typography variant="subtitle1" component="h1">
+            Apps could not load
+          </Typography>
           <Typography variant="body2" color="textSecondary">
             {status.error ||
               "The installed plugin list did not load. Nothing is broken on this page — the request failed."}

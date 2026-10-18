@@ -4,7 +4,6 @@ import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useState } from "react"
@@ -16,6 +15,7 @@ import AccessibleDialog, {
 import { api } from "../api"
 import { Chip } from "../chip"
 import { FactoryIcon } from "../icons"
+import Stack from "../stack"
 
 function formatBytes(value: number) {
   if (value >= 1024 * 1024 * 1024)

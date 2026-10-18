@@ -288,6 +288,14 @@ body,
   white-space: nowrap;
 }
 
+/* Very narrow phones: logo-only brand. The link keeps its accessible name
+   ("open-bot — go to chat"), so the text node is the thing that yields. */
+@media (max-width: 379px) {
+  .ob-header-name {
+    display: none;
+  }
+}
+
 .ob-header-context {
   color: var(--ob-text-2);
   font-size: 13px;
@@ -392,6 +400,66 @@ body,
 }
 
 .ob-search-clear:hover {
+  background: rgba(var(--text-main, 255, 255, 255), 0.08);
+  color: var(--ob-text);
+}
+
+/* Compact list filter (threads panel): a native input like the header
+   search. mui-lite's outlined TextField floats its label with geometry
+   tuned for its own paddings — on a compact field the label sat below the
+   input's bottom edge; the label-as-placeholder keeps one source of truth
+   and the aria-label keeps the accessible name. */
+.ob-filter-field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 9px;
+  border: 1px solid var(--ob-border);
+  background: var(--ob-surface);
+  color: var(--ob-muted);
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 150ms ease;
+}
+
+.ob-filter-field:focus-within {
+  border-color: var(--ob-accent);
+  color: var(--ob-text-2);
+}
+
+.ob-filter-field input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: 0;
+  color: var(--ob-text);
+  font-size: 12.5px;
+  font-family: inherit;
+  height: 100%;
+}
+
+.ob-filter-field input::placeholder {
+  color: var(--ob-muted);
+}
+
+.ob-filter-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ob-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ob-filter-clear:hover {
   background: rgba(var(--text-main, 255, 255, 255), 0.08);
   color: var(--ob-text);
 }
@@ -511,6 +579,21 @@ body,
   flex-direction: column;
   z-index: 50;
   border: 1px solid var(--ob-border);
+}
+
+/* Narrow viewports: anchor to the viewport itself, not the bell — the bell
+   sits before the search icon, so a right-anchored absolute panel pushes
+   past the left edge (title and controls were cut off). Fixed keeps the
+   same side margin on both edges with room for the header above. */
+@media (max-width: 899px) {
+  .ob-notice-panel {
+    position: fixed;
+    top: 62px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-height: calc(100dvh - 74px);
+  }
 }
 
 .ob-notice-list {
@@ -1342,6 +1425,17 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
   padding: 6px 6px 2px;
 }
 
+/* The composer surface is the field chrome: the mui-lite standard underline
+   (and its focus animation bar) are removed — the rounded border plus
+   :focus-within accent is the only focus indicator here. */
+.ob-composer-field .MUI_TextField_Wrapper {
+  border-bottom: 0;
+}
+
+.ob-composer-field .MUI_TextField_AnimationWrapper {
+  display: none;
+}
+
 .ob-composer-placeholder {
   position: absolute;
   top: 7px;
@@ -1359,6 +1453,32 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
 
 .ob-composer-actions {
   padding: 2px 2px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Deterministic toolbar rows: row 1 carries the secondary tools and the
+   pinned Send/Stop; compact layouts (phones, chat docked beside the IDE)
+   get an intentional second row for model + effort instead of an accidental
+   flex-wrap that strands Send alone on a new line. */
+.ob-composer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  flex-wrap: nowrap;
+}
+
+.ob-composer-row-pickers {
+  min-height: 40px;
+}
+
+.ob-composer-row-pickers > .MUI_Button {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 240px;
+  min-height: 40px;
 }
 
 /* Compact model / effort pickers: truncate long values, keep the full name

@@ -5,7 +5,6 @@ import IconButton from "@shpaw415/mui-lite/IconButton"
 import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Select from "@shpaw415/mui-lite/Select"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api } from "./api"
@@ -18,6 +17,7 @@ import {
   ContentCopyIcon,
   RefreshIcon,
 } from "./icons"
+import Stack from "./stack"
 
 type ReportStatus = "open" | "done" | "wontfix"
 

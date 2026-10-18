@@ -1,6 +1,5 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
@@ -19,6 +18,7 @@ import {
 } from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
 import { ExtensionIcon, PsychologyIcon } from "./icons"
+import Stack from "./stack"
 
 type SkillSummary = {
   name: string

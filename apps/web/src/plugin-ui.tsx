@@ -1,6 +1,5 @@
 import Box from "@shpaw415/mui-lite/Box"
 import Paper from "@shpaw415/mui-lite/Paper"
-import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import {
   createContext,
@@ -15,6 +14,7 @@ import {
 import { api } from "./api"
 import { Chip } from "./chip"
 import { useEventStream } from "./hooks"
+import Stack from "./stack"
 
 export type PluginTextboxManifest = {
   renderers?: {
