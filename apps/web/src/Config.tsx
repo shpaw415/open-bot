@@ -5,13 +5,14 @@ import IconButton from "@shpaw415/mui-lite/IconButton"
 import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { api, type Me } from "./api"
 import { Backup } from "./Backup"
 import { ConfigSection } from "./ConfigSection"
 import { CustomSkills } from "./CustomSkills"
+import { effortLabel, effortOptions } from "./chat-controls"
 import { Chip } from "./chip"
-import { useDirtyForm } from "./dirty-form"
+import { useDirtyFlag } from "./dirty-form"
 import { Endpoints } from "./Endpoints"
 import { Hardware } from "./Hardware"
 import { useMobile } from "./hooks"
@@ -118,18 +119,16 @@ function DefaultModelSection({
   )
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [dirty, setDirty] = useDirtyForm()
-  const dirtyRef = useRef(false)
-
-  // Both flags stay in sync: the ref for the unload guard below, the
-  // registry for the shell's internal-navigation guard.
-  const markDirty = useCallback(
-    (next: boolean) => {
-      dirtyRef.current = next
-      setDirty(next)
-    },
-    [setDirty],
-  )
+  // Dirty = differs from the last saved value. Toggling back to the saved
+  // model goes clean again; a failed save stays dirty because the saved
+  // value never moved. The shell's registry (internal nav + beforeunload)
+  // picks the flag up via useDirtyFlag.
+  const savedSelection =
+    me.model?.providerID && me.model.modelID
+      ? `${me.model.providerID}/${me.model.modelID}`
+      : ""
+  const dirty = !loading && selected !== savedSelection
+  useDirtyFlag(dirty)
 
   const loadModels = useCallback(async () => {
     setError("")
@@ -153,17 +152,6 @@ function DefaultModelSection({
     void loadModels()
   }, [loadModels])
 
-  // Tab close/refresh guard; in-app navigation is covered by the
-  // useDirtyForm registry the shell consults on pushState/popstate.
-  useEffect(() => {
-    const guard = (event: BeforeUnloadEvent) => {
-      if (!dirtyRef.current) return
-      event.preventDefault()
-    }
-    window.addEventListener("beforeunload", guard)
-    return () => window.removeEventListener("beforeunload", guard)
-  }, [])
-
   async function save() {
     setError("")
     setSaved(false)
@@ -181,7 +169,6 @@ function DefaultModelSection({
         body: JSON.stringify({ providerID, modelID }),
       })
       setSaved(true)
-      markDirty(false)
       onChanged()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "save failed")
@@ -234,7 +221,6 @@ function DefaultModelSection({
             onSelect={(value) => {
               setSelected(value)
               setSaved(false)
-              markDirty(true)
             }}
           />
         )}
@@ -277,23 +263,6 @@ function DefaultModelSection({
   )
 }
 
-const EFFORT_LABELS: Record<string, string> = {
-  none: "Off",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-  thinking: "Thinking on",
-}
-
-function effortLabel(variant: string): string {
-  return (
-    EFFORT_LABELS[variant] ?? variant.charAt(0).toUpperCase() + variant.slice(1)
-  )
-}
-
 function ThinkingEffortSection({
   me,
   onChanged,
@@ -307,7 +276,11 @@ function ThinkingEffortSection({
   const [effort, setEffort] = useState(me.model?.thinkingEffort ?? "")
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [effortDirty, setEffortDirty] = useDirtyForm()
+  // Same compare-with-saved rule as the model section; the shell registry
+  // (internal nav + beforeunload) picks this up via useDirtyFlag.
+  const savedEffort = me.model?.thinkingEffort ?? ""
+  const effortDirty = !loading && effort !== savedEffort
+  useDirtyFlag(effortDirty)
   const loadModels = useCallback(async () => {
     setError("")
     setLoading(true)
@@ -343,8 +316,7 @@ function ThinkingEffortSection({
   const variants =
     models.find((item) => `${item.providerID}/${item.modelID}` === selectedKey)
       ?.variants ?? []
-  const options =
-    effort && !variants.includes(effort) ? [...variants, effort] : variants
+  const options = effortOptions(variants, effort)
 
   async function save() {
     setError("")
@@ -356,7 +328,6 @@ function ThinkingEffortSection({
         body: JSON.stringify({ effort }),
       })
       setSaved(true)
-      setEffortDirty(false)
       onChanged()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "save failed")
@@ -407,10 +378,9 @@ function ThinkingEffortSection({
             onSelect={(value: string) => {
               setEffort(value)
               setSaved(false)
-              setEffortDirty(true)
             }}
           >
-            {["", ...options].map((variant) => (
+            {options.map((variant) => (
               <option key={variant} value={variant}>
                 {variant === "" ? "Model default" : effortLabel(variant)}
               </option>

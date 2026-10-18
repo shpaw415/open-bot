@@ -1,34 +1,25 @@
 import Button from "@shpaw415/mui-lite/Button"
-import IconButton from "@shpaw415/mui-lite/IconButton"
 import Snackbar from "@shpaw415/mui-lite/Snackbar"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "./api"
 import type { ChatMessage } from "./chat-view"
 import { useEventStream, useMobile } from "./hooks"
 import {
-  NotificationsIcon,
-  NotificationsNoneIcon,
-  NotificationsOffIcon,
-  VolumeOffIcon,
-  VolumeUpIcon,
-} from "./icons"
+  type NoticeInput,
+  noticeFromPluginEvent,
+  noticeFromSecurityEvent,
+  pushNotice,
+} from "./notices"
 import {
   armsSession,
   claimNotice,
   freshReply,
   getNoticeFocus,
   idleSessionId,
-  type NativePermission,
   noteThreadUnread,
-  readNativePermission,
   shouldNotify,
 } from "./notify"
-import {
-  playNotifySound,
-  readNotifySound,
-  writeNotifySound,
-} from "./notify-sound"
-import { Tip } from "./Tip"
+import { playNotifySound } from "./notify-sound"
 
 type Toast = {
   id: string
@@ -60,7 +51,13 @@ function showNative(
   sessionId: string,
   onOpen: (sessionId: string) => void,
 ) {
-  if (readNativePermission() !== "granted") return
+  if (
+    typeof window === "undefined" ||
+    !window.isSecureContext ||
+    typeof Notification === "undefined" ||
+    Notification.permission !== "granted"
+  )
+    return
   try {
     const note = new Notification(title, { body, tag: `ob-${sessionId}` })
     note.onclick = () => {
@@ -71,28 +68,54 @@ function showNative(
   } catch {}
 }
 
+/**
+ * One delivery path for every notified event: the shared notice store (bell
+ * panel), the one-up toast, the notify sound, and the native notification
+ * when the user granted it. Dedup stays in claimNotice — every consumer of
+ * the same event runs once.
+ */
+function deliver(
+  notice: NoticeInput,
+  onOpen: (sessionId: string) => void,
+): Toast {
+  const stored = pushNotice(notice)
+  playNotifySound()
+  showNative(stored.title, stored.body, stored.sessionId ?? "open-bot", onOpen)
+  return {
+    id: stored.id,
+    title: stored.title,
+    body: stored.body,
+    sessionId: stored.sessionId ?? "",
+  }
+}
+
 async function deliverReply(
   sessionId: string,
   armedAt: number,
   onOpen: (sessionId: string) => void,
-  push: (toast: Toast) => void,
-) {
-  if (watching(sessionId)) return
+): Promise<Toast | null> {
+  if (watching(sessionId)) return null
   const [messageBody, sessionBody] = await Promise.all([
     api<unknown>(`/api/opencode/session/${sessionId}/message`).catch(
       () => null,
     ),
     api<unknown>(`/api/opencode/session/${sessionId}`).catch(() => null),
   ])
-  if (!Array.isArray(messageBody)) return
+  if (!Array.isArray(messageBody)) return null
   const reply = freshReply(messageBody as ChatMessage[], armedAt)
-  if (!reply || watching(sessionId)) return
+  if (!reply || watching(sessionId)) return null
   noteThreadUnread(sessionId)
-  if (!claimNotice(localStorage, reply.id)) return
-  playNotifySound()
-  const title = sessionTitle(sessionBody)
-  push({ id: reply.id, title, body: reply.text, sessionId })
-  showNative(title, reply.text, sessionId, onOpen)
+  if (!claimNotice(localStorage, reply.id)) return null
+  return deliver(
+    {
+      id: reply.id,
+      kind: "reply",
+      title: sessionTitle(sessionBody),
+      body: reply.text,
+      sessionId,
+    },
+    onOpen,
+  )
 }
 
 export function AgentNotices({
@@ -116,22 +139,11 @@ export function AgentNotices({
               findingId?: unknown
               severity?: unknown
               title?: unknown
-              sessionId?: unknown
               action?: unknown
             }
           | undefined
-        const severity =
-          typeof props?.severity === "string" ? props.severity : "finding"
-        const title =
-          typeof props?.title === "string" && props.title.trim()
-            ? props.title.trim().slice(0, 160)
-            : "suspicious activity detected"
-        const stopped = props?.action === "stopped"
-        const heading = `Watchdog (${severity})${stopped ? " — turn stopped" : ""}`
         const id = `security-notice-${String(props?.findingId ?? "x")}-${Date.now()}`
-        setToast({ id, title: heading, body: title, sessionId: "" })
-        playNotifySound()
-        showNative(heading, title, "watchdog", () => {})
+        setToast(deliver(noticeFromSecurityEvent(props, id), () => {}))
         return
       }
       if (event.type === "plugin.notice") {
@@ -143,35 +155,8 @@ export function AgentNotices({
               body?: unknown
             }
           | undefined
-        const name =
-          typeof props?.name === "string" && props.name.trim()
-            ? props.name.trim()
-            : typeof props?.pluginId === "string"
-              ? props.pluginId
-              : "plugin"
-        const heading =
-          typeof props?.title === "string" && props.title.trim()
-            ? props.title.trim().slice(0, 120)
-            : "notification"
-        const detail =
-          typeof props?.body === "string" && props.body.trim()
-            ? props.body.trim().slice(0, 500)
-            : ""
         const id = `plugin-notice-${props?.pluginId ?? "x"}-${Date.now()}`
-        const toast: Toast = {
-          id,
-          title: `${name}: ${heading}`,
-          body: detail,
-          sessionId: "",
-        }
-        setToast(toast)
-        playNotifySound()
-        showNative(
-          `${name}: ${heading}`,
-          detail,
-          `plugin-${props?.pluginId ?? "x"}`,
-          () => {},
-        )
+        setToast(deliver(noticeFromPluginEvent(props, id), () => {}))
         return
       }
       const armId = armsSession(event)
@@ -183,12 +168,11 @@ export function AgentNotices({
       const armedAt = armed.current.get(idleId)
       if (armedAt == null) return
       armed.current.delete(idleId)
-      void deliverReply(
-        idleId,
-        armedAt,
-        (id) => onOpenRef.current(id),
-        setToast,
-      ).catch(() => {})
+      void deliverReply(idleId, armedAt, (id) => onOpenRef.current(id))
+        .then((next) => {
+          if (next) setToast(next)
+        })
+        .catch(() => {})
     })
   }, [subscribe])
 
@@ -226,69 +210,5 @@ export function AgentNotices({
         ) : undefined
       }
     />
-  )
-}
-
-export function SoundBell() {
-  const [on, setOn] = useState(() => readNotifySound())
-  const label = on ? "Reply sound on" : "Reply sound off"
-  return (
-    <Tip title={label}>
-      <IconButton
-        size="small"
-        aria-label={label}
-        onClick={() => {
-          const next = !on
-          writeNotifySound(next)
-          setOn(next)
-          if (next) playNotifySound()
-        }}
-      >
-        {on ? <VolumeUpIcon /> : <VolumeOffIcon />}
-      </IconButton>
-    </Tip>
-  )
-}
-
-function bellCopy(permission: NativePermission): string {
-  if (permission === "unsupported") return "Notifications need HTTPS"
-  if (permission === "denied") return "Notifications blocked in the browser"
-  if (permission === "granted") return "Notifications on"
-  return "Turn on notifications"
-}
-
-export function NoticeBell() {
-  const [permission, setPermission] = useState<NativePermission>(() =>
-    readNativePermission(),
-  )
-  const label = bellCopy(permission)
-  const blocked = permission === "unsupported" || permission === "denied"
-  return (
-    <Tip title={label}>
-      <span>
-        <IconButton
-          size="small"
-          aria-label={label}
-          disabled={blocked}
-          onClick={() => {
-            if (permission !== "default" || typeof Notification === "undefined")
-              return
-            void Notification.requestPermission().then((next) => {
-              setPermission(
-                next === "granted" || next === "denied" ? next : "default",
-              )
-            })
-          }}
-        >
-          {permission === "granted" ? (
-            <NotificationsIcon />
-          ) : permission === "default" ? (
-            <NotificationsNoneIcon />
-          ) : (
-            <NotificationsOffIcon />
-          )}
-        </IconButton>
-      </span>
-    </Tip>
   )
 }

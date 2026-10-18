@@ -136,6 +136,19 @@ export type InstalledResponse = {
  */
 export type PluginsStatus = "initial" | "loading" | "ready" | "error"
 
+/**
+ * When a plugin-shaped URL must hold as `plugin-pending` instead of being
+ * redirected like an unknown path: the first load is in flight, or the first
+ * load FAILED with nothing cached — an error is not "absent", so the shell
+ * keeps the URL and shows retry. Any success (even empty) decides for real.
+ */
+export function pluginsAwaitingRoute(
+  status: PluginsStatus,
+  tabsCount: number,
+): boolean {
+  return status === "loading" || (status === "error" && tabsCount === 0)
+}
+
 export type InstalledPluginsState = {
   plugins: InstalledPluginInfo[]
   policy: "manual" | "auto"

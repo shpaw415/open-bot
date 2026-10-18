@@ -2,9 +2,8 @@ import { useEffect, useState } from "react"
 import { Button, Spinner } from "../components/ui"
 
 export default function Login() {
-  const [state, setState] = useState<"checking" | "guest" | "signed-in">(
-    "checking",
-  )
+  // The state value is write-only: every branch redirects before rendering.
+  const [, setState] = useState<"checking" | "guest" | "signed-in">("checking")
 
   useEffect(() => {
     let cancelled = false
@@ -29,13 +28,13 @@ export default function Login() {
   }, [])
 
   return (
-    <div className="grid min-h-screen place-items-center bg-[#FAFAF7] px-5 text-[#1A2333] antialiased">
-      <div className="w-full max-w-[360px] rounded-[16px] border border-[#E7E2D6] bg-white p-8 text-center shadow-[0_1px_2px_rgba(26,35,51,0.05),0_8px_24px_-12px_rgba(26,35,51,0.12)]">
+    <div className="grid min-h-[60vh] place-items-center px-4 py-16 text-ink">
+      <div className="w-full max-w-[360px] rounded-(--radius-card) border border-line bg-surface p-8 text-center shadow-(--shadow-card)">
         <Spinner size="size-8" />
-        <h1 className="mt-4 text-[18px] font-bold tracking-[-0.01em] text-[#1A2333]">
+        <h1 className="mt-4 text-[18px] font-bold tracking-[-0.01em] text-ink">
           Signing you in
         </h1>
-        <p className="mt-1 text-[13.5px] text-[#5F6B80]">
+        <p className="mt-1 text-[13.5px] text-ink-2">
           You'll be redirected back automatically.
         </p>
         <Button
@@ -47,7 +46,7 @@ export default function Login() {
         </Button>
         <a
           href="/"
-          className="mt-4 inline-block text-[14px] font-semibold text-[#2B3DE8] underline-offset-4 hover:underline"
+          className="mt-4 inline-block text-[14px] font-semibold text-accent underline-offset-4 hover:underline"
         >
           Browse plugins
         </a>

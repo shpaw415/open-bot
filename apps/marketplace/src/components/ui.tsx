@@ -9,7 +9,7 @@ import {
 } from "react"
 
 export const focusRing =
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2B3DE8] focus-visible:ring-offset-2 focus-visible:ring-offset-[#FAFAF7]"
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
 
 export function Icon({
   path,
@@ -59,6 +59,13 @@ export const icons = {
   plug: "M6 1.5v3m4-3v3M4 4.5h8v3a4 4 0 0 1-8 0v-3Zm4 7v3",
   github:
     "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z",
+  x: "M4 4l8 8m0-8-8 8",
+  copy: "M5.5 5.5V3a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-2.5m-7-5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-7a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .5-.5Z",
+  shield:
+    "M8 1.5 13.5 3.6v4.2c0 3.2-2.3 5.6-5.5 6.7-3.2-1.1-5.5-3.5-5.5-6.7V3.6L8 1.5Z",
+  refresh: "M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3",
+  tag: "M2.5 2.5h5l6 6-5 5-6-6v-5Zm2.5 2.5v.1",
+  cube: "M8 1.5 14 5v6l-6 3.5L2 11V5l6-3.5Zm0 0v6.5M14 5 8 8 2 5",
 } as const
 
 type ButtonVariant = "primary" | "secondary" | "quiet" | "danger"
@@ -68,13 +75,12 @@ const buttonBase =
 
 const buttonVariants: Record<ButtonVariant, string> = {
   primary:
-    "bg-[#2B3DE8] text-white shadow-[0_1px_2px_rgba(43,61,232,0.3)] hover:bg-[#2130C4] active:bg-[#1A27A3]",
+    "bg-accent text-white shadow-[0_1px_2px_rgba(43,61,232,0.3)] hover:bg-accent-strong active:bg-accent-deep",
   secondary:
-    "border border-[#D9D3C2] bg-white text-[#1A2333] hover:bg-[#F5F4EE] hover:border-[#C4BDA8]",
+    "border border-line-strong bg-surface text-ink hover:bg-sunken hover:border-ink-3/60",
   quiet:
-    "h-auto p-0 text-[#2B3DE8] hover:underline underline-offset-4 active:translate-y-0",
-  danger:
-    "border border-[#F0C2BE] bg-[#FDEEEC] text-[#B4232B] hover:bg-[#FBD9D5]",
+    "h-auto p-0 text-accent hover:underline underline-offset-4 active:translate-y-0",
+  danger: "border border-bad-line bg-bad-soft text-bad hover:bg-[#fbdcd9]",
 }
 
 const buttonSizes: Record<string, string> = {
@@ -121,28 +127,33 @@ export function Button({
 type BadgeTone = "pass" | "pending" | "danger" | "dev" | "neutral"
 
 const badgeTones: Record<BadgeTone, string> = {
-  pass: "border-[#BEE0D0] bg-[#E7F4ED] text-[#157A55]",
-  pending: "border-[#E7D294] bg-[#FFF4D1] text-[#825F00]",
-  danger: "border-[#F0C2BE] bg-[#FDEEEC] text-[#B4232B]",
-  dev: "border-[#C6C6EC] bg-[#ECECFB] text-[#4B4BB5]",
-  neutral: "border-[#D5DBE3] bg-[#EEF0F3] text-[#5F6B80]",
+  pass: "border-good-line bg-good-soft text-good",
+  pending: "border-warn-line bg-warn-soft text-warn",
+  danger: "border-bad-line bg-bad-soft text-bad",
+  dev: "border-accent-line bg-accent-soft text-accent",
+  neutral: "border-line bg-sunken text-ink-2",
 }
 
 const badgeStatusMap: Record<string, BadgeTone> = {
   approved: "pass",
   pass: "pass",
   pending: "pending",
+  queued: "pending",
+  running: "pending",
   rejected: "danger",
   concern: "danger",
   revoked: "danger",
+  error: "danger",
   dev: "dev",
 }
 
 export function Badge({
   status,
+  label,
   className = "",
 }: {
   status: string
+  label?: string
   className?: string
 }) {
   const tone = badgeStatusMap[status.toLowerCase()] ?? "neutral"
@@ -153,14 +164,14 @@ export function Badge({
       {tone === "pass" ? (
         <Icon path={icons.check} className="size-3.5" />
       ) : null}
-      {status}
+      {label ?? status}
     </span>
   )
 }
 
 export function TagChip({ children }: { children: ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-[6px] border border-[#E7E2D6] bg-[#F1EFE8] px-1.5 py-[2px] text-[12.5px] text-[#5F6B80]">
+    <span className="inline-flex items-center rounded-[6px] border border-line bg-sunken px-1.5 py-[2px] text-[12.5px] text-ink-2">
       <span className="opacity-70">#</span>
       {children}
     </span>
@@ -169,14 +180,14 @@ export function TagChip({ children }: { children: ReactNode }) {
 
 export function CategoryChip({ children }: { children: ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-[#E7E2D6] bg-white px-2.5 py-[2px] text-[12.5px] font-medium text-[#3E4A5F]">
+    <span className="inline-flex items-center rounded-full border border-line bg-surface px-2.5 py-[2px] text-[12.5px] font-medium text-ink-2">
       {children}
     </span>
   )
 }
 
 export const inputClasses =
-  "h-11 w-full rounded-[10px] border border-[#D9D3C2] bg-white px-3.5 text-[15px] text-[#1A2333] placeholder:text-[#5F6B80]/80 focus:border-[#2B3DE8] focus:ring-2 focus:ring-[#2B3DE8]/20 focus:outline-none transition-colors duration-150"
+  "h-11 w-full rounded-[10px] border border-line-strong bg-surface px-3.5 text-[15px] text-ink placeholder:text-ink-3 focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none transition-colors duration-150"
 
 export function Input({
   className = "",
@@ -185,8 +196,7 @@ export function Input({
   return <input className={`${inputClasses} ${className}`} {...rest} />
 }
 
-const cardShadow =
-  "shadow-[0_1px_2px_rgba(26,35,51,0.05),0_8px_24px_-12px_rgba(26,35,51,0.12)]"
+const cardShadow = "shadow-(--shadow-card)"
 
 export function Card({
   href,
@@ -199,10 +209,10 @@ export function Card({
   interactive?: boolean
 }) {
   const classes = [
-    "rounded-[16px] border border-[#E7E2D6] bg-white",
+    "rounded-(--radius-card) border border-line bg-surface",
     cardShadow,
     interactive
-      ? "block transition-all duration-150 hover:border-[#D9D3C2] hover:shadow-[0_2px_4px_rgba(26,35,51,0.06),0_12px_32px_-12px_rgba(26,35,51,0.18)]"
+      ? "block transition-[border-color,box-shadow] duration-150 hover:border-line-strong hover:shadow-(--shadow-card-hover)"
       : "",
     className,
   ]
@@ -236,50 +246,93 @@ export function SectionHeading({
   return (
     <div className={`flex items-end justify-between gap-4 ${className}`}>
       <div className="min-w-0">
-        <h2 className="text-[19px] font-bold tracking-[-0.01em] text-[#1A2333]">
+        <h2 className="text-[17px] font-bold tracking-[-0.01em] text-ink">
           {label}
         </h2>
-        {sub ? <p className="mt-1 text-[14px] text-[#5F6B80]">{sub}</p> : null}
+        {sub ? <p className="mt-1 text-[13.5px] text-ink-2">{sub}</p> : null}
       </div>
       {right ? <div className="shrink-0 pb-0.5">{right}</div> : null}
     </div>
   )
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
+type CopyState = "idle" | "copied" | "failed"
+
+// Only reports success after the copy actually succeeded: the async
+// clipboard API rejects when blocked (permissions, focus, sandbox), and the
+// execCommand fallback returns false — both surface as a visible, announced
+// failure with a manual-selection hint instead of a false "Copied".
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // fall through to the legacy path
+  }
+  try {
+    const area = document.createElement("textarea")
+    area.value = text
+    area.setAttribute("readonly", "")
+    area.style.position = "fixed"
+    area.style.opacity = "0"
+    document.body.appendChild(area)
+    area.select()
+    area.setSelectionRange(0, text.length)
+    const ok = document.execCommand("copy")
+    area.remove()
+    return ok
+  } catch {
+    return false
+  }
+}
+
+export function CopyButton({
+  text,
+  label = "Copy",
+  className = "",
+}: {
+  text: string
+  label?: string
+  className?: string
+}) {
+  const [state, setState] = useState<CopyState>("idle")
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
+  async function copy() {
+    const ok = await copyTextToClipboard(text)
+    setState(ok ? "copied" : "failed")
+    clearTimeout(timer.current)
+    if (ok) {
+      timer.current = setTimeout(() => setState("idle"), 1500)
+    } else {
+      timer.current = setTimeout(() => setState("idle"), 4000)
+    }
+  }
   return (
-    <button
-      type="button"
-      onClick={() => {
-        const clipboard = navigator.clipboard
-        const done = () => {
-          setCopied(true)
-          clearTimeout(timer.current)
-          timer.current = setTimeout(() => setCopied(false), 1500)
-        }
-        if (clipboard) {
-          clipboard.writeText(text).then(done).catch(done)
-        } else {
-          const area = document.createElement("textarea")
-          area.value = text
-          document.body.appendChild(area)
-          area.select()
-          document.execCommand("copy")
-          area.remove()
-          done()
-        }
-      }}
-      className={`h-7 rounded-[8px] border px-2.5 font-mono text-[12.5px] font-semibold transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2B3DE8] ${
-        copied
-          ? "border-[#BEE0D0] bg-[#E7F4ED] text-[#157A55]"
-          : "border-[#C7CDF6] bg-white text-[#2B3DE8] hover:bg-[#EEF0FE]"
-      }`}
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <span className={`inline-flex items-center gap-2 ${className}`}>
+      <button
+        type="button"
+        onClick={() => void copy()}
+        className={`h-7 rounded-[8px] border px-2.5 font-mono text-[12.5px] font-semibold transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+          state === "copied"
+            ? "border-good-line bg-good-soft text-good"
+            : state === "failed"
+              ? "border-bad-line bg-bad-soft text-bad"
+              : "border-accent-line bg-surface text-accent hover:bg-accent-soft"
+        }`}
+      >
+        {state === "copied" ? "Copied" : state === "failed" ? "Failed" : label}
+      </button>
+      <span role="status" className="sr-only">
+        {state === "copied"
+          ? "Copied to clipboard"
+          : state === "failed"
+            ? "Copy failed — select the text and copy it manually"
+            : ""}
+      </span>
+    </span>
   )
 }
 
@@ -287,7 +340,7 @@ function renderCommandLines(text: string) {
   return text.split("\n").map((line, index) => {
     if (line.startsWith("#")) {
       return (
-        <span key={index} className="block text-[#5F6B80]">
+        <span key={index} className="block text-ink-2">
           {line}
         </span>
       )
@@ -296,7 +349,7 @@ function renderCommandLines(text: string) {
     const body = prompt ? line.slice(2) : line
     return (
       <span key={index} className="block whitespace-pre">
-        {prompt ? <span className="font-bold text-[#2B3DE8]">$ </span> : null}
+        {prompt ? <span className="font-bold text-accent">$ </span> : null}
         {body}
       </span>
     )
@@ -318,15 +371,15 @@ export function CommandBlock({
 }) {
   return (
     <div
-      className={`relative overflow-hidden rounded-[12px] border border-[#D6DEF6] bg-[#EDF1FC] ${className}`}
+      className={`relative overflow-hidden rounded-[12px] border border-accent-line bg-accent-soft ${className}`}
     >
-      <div className="flex h-10 items-center justify-between border-b border-[#D6DEF6] px-4">
-        <span className="font-mono text-[12px] font-medium text-[#5F6B80]">
+      <div className="flex h-10 items-center justify-between border-b border-accent-line px-4">
+        <span className="font-mono text-[12px] font-medium text-ink-2">
           {label}
         </span>
         {copy && command ? <CopyButton text={command} /> : null}
       </div>
-      <pre className="overflow-x-auto whitespace-pre p-4 font-mono text-[13.5px] leading-6 text-[#1A2333]">
+      <pre className="overflow-x-auto whitespace-pre p-4 font-mono text-[13.5px] leading-6 text-ink">
         {children ?? renderCommandLines(command ?? "")}
       </pre>
     </div>
@@ -335,7 +388,7 @@ export function CommandBlock({
 
 export function Code({ children }: { children: ReactNode }) {
   return (
-    <code className="rounded-[6px] border border-[#E7E2D6] bg-[#F5F4EE] px-1.5 py-0.5 font-mono text-[12.5px] text-[#1A2333]">
+    <code className="rounded-[6px] border border-line bg-sunken px-1.5 py-0.5 font-mono text-[12.5px] text-ink">
       {children}
     </code>
   )
@@ -353,12 +406,163 @@ export function Spinner({
   return (
     <div className={`grid place-items-center ${className}`}>
       <span
-        className={`${size} animate-spin rounded-full border-2 border-[#D9D3C2] border-t-[#2B3DE8]`}
+        className={`${size} animate-spin rounded-full border-2 border-line-strong border-t-accent`}
       />
-      {label ? (
-        <p className="mt-3 text-[13px] text-[#5F6B80]">{label}</p>
-      ) : null}
+      {label ? <p className="mt-3 text-[13px] text-ink-2">{label}</p> : null}
     </div>
+  )
+}
+
+// ——— Skeleton primitives ————————————————————————————————————————————————
+// Discreet pulse, aria-hidden (the region carrying them announces loading),
+// shaped to match the final layout so swaps are geometrically stable.
+
+export function Skeleton({ className = "" }: { className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`block animate-[skeletonPulse_1.6s_ease-in-out_infinite] rounded-[6px] bg-sunken ${className}`}
+    />
+  )
+}
+
+export function PluginRowSkeleton() {
+  return (
+    <div className="flex items-start gap-4 border-b border-line px-4 py-4 sm:px-5">
+      <Skeleton className="size-11 rounded-(--radius-tile) shrink-0" />
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-4 w-36" />
+          <Skeleton className="h-3.5 w-20" />
+        </div>
+        <Skeleton className="h-3.5 w-full max-w-[420px]" />
+        <Skeleton className="h-3.5 w-2/5" />
+      </div>
+      <div className="hidden shrink-0 items-center gap-3 sm:flex">
+        <Skeleton className="h-5 w-12" />
+        <Skeleton className="h-6 w-24 rounded-full" />
+      </div>
+    </div>
+  )
+}
+
+export function CatalogSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <div
+      className="divide-y divide-line rounded-(--radius-card) border border-line bg-surface shadow-(--shadow-card)"
+      aria-hidden="true"
+    >
+      {Array.from({ length: rows }, (_, index) => (
+        <PluginRowSkeleton key={index} />
+      ))}
+    </div>
+  )
+}
+
+export function PluginDetailSkeleton() {
+  return (
+    <div
+      className="mx-auto max-w-[1120px] px-5 py-8 sm:px-8"
+      aria-hidden="true"
+    >
+      <Skeleton className="mb-6 h-4 w-20" />
+      <div className="rounded-(--radius-card) border border-line bg-surface p-6 shadow-(--shadow-card) sm:p-8">
+        <div className="flex gap-5">
+          <Skeleton className="size-14 rounded-(--radius-tile)" />
+          <div className="min-w-0 flex-1 space-y-3">
+            <Skeleton className="h-6 w-56" />
+            <Skeleton className="h-3.5 w-40" />
+            <Skeleton className="h-4 w-full max-w-[480px]" />
+            <div className="flex gap-2 pt-1">
+              <Skeleton className="h-6 w-20 rounded-full" />
+              <Skeleton className="h-6 w-24 rounded-full" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_320px]">
+        <div className="space-y-6">
+          <div className="rounded-(--radius-card) border border-line bg-surface p-5 shadow-(--shadow-card) sm:p-6">
+            <Skeleton className="h-4 w-24" />
+            <div className="mt-4 space-y-2.5">
+              <Skeleton className="h-3.5 w-full" />
+              <Skeleton className="h-3.5 w-11/12" />
+              <Skeleton className="h-3.5 w-3/5" />
+              <Skeleton className="h-3.5 w-4/5" />
+            </div>
+          </div>
+        </div>
+        <div className="space-y-6">
+          <div className="rounded-(--radius-card) border border-line bg-surface p-5 shadow-(--shadow-card)">
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="mt-4 h-[72px] w-full rounded-[12px]" />
+          </div>
+          <div className="rounded-(--radius-card) border border-line bg-surface p-5 shadow-(--shadow-card)">
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="mt-4 h-6 w-32" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function AccountSkeleton() {
+  return (
+    <div
+      className="mx-auto max-w-[1120px] px-5 py-10 sm:px-8"
+      aria-hidden="true"
+    >
+      <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
+        <div className="rounded-(--radius-card) border border-line bg-surface p-6 shadow-(--shadow-card)">
+          <Skeleton className="size-12 rounded-[12px]" />
+          <Skeleton className="mt-3 h-4 w-32" />
+          <Skeleton className="mt-2 h-3 w-40" />
+        </div>
+        <div className="space-y-6">
+          {[0, 1].map((block) => (
+            <div
+              key={block}
+              className="rounded-(--radius-card) border border-line bg-surface p-6 shadow-(--shadow-card)"
+            >
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="mt-4 h-10 w-full max-w-[360px]" />
+              <div className="mt-4 space-y-3">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-5/6" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// A region whose content is loading: announces busy politely once.
+export function LoadingRegion({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div role="status" aria-busy="true" aria-label={label}>
+      {children}
+    </div>
+  )
+}
+
+// Small inline busy/text indicator for refreshes that keep prior content.
+export function InlineStatus({ children }: { children: ReactNode }) {
+  return (
+    <span
+      role="status"
+      className="inline-flex items-center gap-1.5 text-[12.5px] text-ink-2"
+    >
+      {children}
+    </span>
   )
 }
 
@@ -374,11 +578,11 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="rounded-[16px] border border-[#E7E2D6] bg-white px-6 py-12 text-center shadow-[0_1px_2px_rgba(26,35,51,0.05)]">
-      <Icon path={icon} className="mx-auto mb-3 size-8 text-[#8A94A6]" />
-      <p className="text-[15px] font-semibold text-[#1A2333]">{title}</p>
+    <div className="rounded-(--radius-card) border border-line bg-surface px-6 py-12 text-center shadow-(--shadow-card)">
+      <Icon path={icon} className="mx-auto mb-3 size-8 text-ink-3" />
+      <p className="text-[15px] font-semibold text-ink">{title}</p>
       {children ? (
-        <p className="mt-1 text-[14px] text-[#5F6B80]">{children}</p>
+        <p className="mt-1 text-[14px] text-ink-2">{children}</p>
       ) : null}
       {action ? <div className="mt-4">{action}</div> : null}
     </div>
@@ -386,21 +590,21 @@ export function EmptyState({
 }
 
 const TILE_PAIRS = [
-  "#FFE3C7,#FFC79A",
-  "#D9E9FF,#AACBFF",
-  "#D3F2E2,#9BDFC0",
-  "#E6E1FF,#C3B8FF",
-  "#FFF0B8,#F5D67A",
-  "#FFD9DE,#F5A9B5",
-  "#CFF5F0,#8FE0D4",
-  "#EDE6D3,#D3C8A8",
+  "#FFE3C7,#F5C48E",
+  "#D9E4FF,#A8BFFF",
+  "#D2EFE0,#96D8BC",
+  "#E6E1FF,#C0B4F8",
+  "#FFF0B8,#EFD06E",
+  "#FFD9DE,#F2A2AF",
+  "#CFF3EE,#87D8CB",
+  "#E9E4D6,#CDC1A0",
 ] as const
 
 export function IconTile({
   seed,
   name,
   size = "size-11",
-  rounded = "rounded-[12px]",
+  rounded = "rounded-(--radius-tile)",
   text = "text-[20px]",
 }: {
   seed: string
@@ -419,7 +623,7 @@ export function IconTile({
       style={{ background: `linear-gradient(135deg, ${from} 0%, ${to} 100%)` }}
       aria-hidden="true"
     >
-      <span className={`font-sans font-bold text-[#1A2333]/80 ${text}`}>
+      <span className={`font-sans font-bold text-ink/80 ${text}`}>
         {letter}
       </span>
     </span>

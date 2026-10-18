@@ -55,3 +55,20 @@ export function useDirtyForm(): [boolean, (dirty: boolean) => void] {
   }
   return [isDirty, setDirty]
 }
+
+/**
+ * Register a derived dirty flag — the compare-with-saved pattern. Sections
+ * compute `dirty = value !== lastSavedValue` themselves (so toggling back to
+ * the saved value goes clean again, and a failed save stays dirty because
+ * the saved value never moved) and hand the boolean here for the registry
+ * the shell consults on pushState/popstate and beforeunload.
+ */
+export function useDirtyFlag(dirty: boolean): void {
+  const keyRef = useRef<symbol>(Symbol("dirty-form"))
+  useEffect(() => {
+    const key = keyRef.current
+    if (dirty) dirtyForms.mark(key)
+    else dirtyForms.clear(key)
+    return () => dirtyForms.clear(key)
+  }, [dirty])
+}

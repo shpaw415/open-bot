@@ -3,8 +3,32 @@ import {
   type InstalledResponse,
   initialPluginsState,
   parseInstalledBody,
+  pluginsAwaitingRoute,
   pluginsReducer,
 } from "./plugin-ui"
+
+describe("pluginsAwaitingRoute — direct plugin links on a failed first load", () => {
+  test("the first load in flight holds a plugin-shaped URL", () => {
+    expect(pluginsAwaitingRoute("loading", 0)).toBe(true)
+  })
+
+  test("a failed first load with nothing cached is NOT 'absent' — hold the URL", () => {
+    expect(pluginsAwaitingRoute("error", 0)).toBe(true)
+  })
+
+  test("a settled success decides for real, even with zero plugins", () => {
+    expect(pluginsAwaitingRoute("ready", 0)).toBe(false)
+    expect(pluginsAwaitingRoute("ready", 3)).toBe(false)
+  })
+
+  test("an error with last-good tabs already loaded decides from those tabs", () => {
+    expect(pluginsAwaitingRoute("error", 2)).toBe(false)
+  })
+
+  test("no session at all never blocks routing", () => {
+    expect(pluginsAwaitingRoute("initial", 0)).toBe(false)
+  })
+})
 
 function body(overrides: Partial<InstalledResponse> = {}): InstalledResponse {
   return {

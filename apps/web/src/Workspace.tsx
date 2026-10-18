@@ -20,6 +20,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -32,10 +33,12 @@ import AccessibleDialog, {
   DialogContent,
   DialogTitle,
 } from "./AccessibleDialog"
+import AgentOrb from "./AgentOrb"
 import {
   api,
   clientId,
   type DesktopStatus,
+  isTeamLockedError,
   type Me,
   waitForDesktop,
 } from "./api"
@@ -47,6 +50,7 @@ import {
   clampCouncilWidth,
 } from "./CouncilView"
 import type { CronJobInfo } from "./CronView"
+import { orbState } from "./chat-controls"
 import {
   ACTIVITY_LABEL,
   applyMessageDelta,
@@ -75,12 +79,15 @@ import {
   vncFrameSrc,
 } from "./chat-view"
 import { Chip } from "./chip"
+import { ComposerPickers } from "./composer-controls"
+import { useOverlayA11y } from "./dialog-a11y"
 import { readDraft, writeDraft } from "./draft"
 import {
   useDebounced,
   useEventStream,
   useMobile,
   useUnreadThreads,
+  useViewportBelow,
 } from "./hooks"
 import {
   AddIcon,
@@ -97,7 +104,6 @@ import {
   EditIcon,
   FolderIcon,
   FolderOpenIcon,
-  MenuIcon,
   MicIcon,
   MoreVertIcon,
   OpenInNewIcon,
@@ -122,7 +128,6 @@ import {
 import { MediaDownloadButton, MediaFullscreenButton } from "./MediaDownload"
 import { MediaVault } from "./MediaVault"
 import { Model3dView } from "./Model3dView"
-import { ModelSelect } from "./ModelSelect"
 import {
   dropCachedMessages,
   getCachedMessages,
@@ -174,7 +179,12 @@ const BUILTIN_PERSONA_NAMES: Record<string, string> = {
   "software-designer": "Software designer",
 }
 
-type Model = { providerID: string; modelID: string; name?: string }
+type Model = {
+  providerID: string
+  modelID: string
+  name?: string
+  variants?: string[]
+}
 type ProjectMention = {
   id: string
   name: string
@@ -745,10 +755,11 @@ const MessageBubble = memo(function MessageBubble({
       title={mine ? "You" : "Agent"}
       className={`ob-bubble ${mine ? "ob-bubble-user" : "ob-bubble-assistant"}`}
       sx={{
+        // Geometry lives in app.css; only the user pill's theme tint is set
+        // here so light/dark follow the palette in one place. Assistant
+        // answers stay flat on the conversation surface.
         bgcolor: mine ? "primary.main" : undefined,
         color: mine ? "primary.contrastText" : "text.primary",
-        border: mine ? "none" : "1px solid",
-        borderColor: mine ? undefined : "divider",
       }}
     >
       {mine && entry.mark ? <SendMark mark={entry.mark} /> : null}
@@ -910,6 +921,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
   sessionId,
   loading,
   mobile,
+  mid,
   open,
   personaLabel,
   busyIds,
@@ -925,7 +937,10 @@ const ThreadsPanel = memo(function ThreadsPanel({
   sessions: SessionInfo[]
   sessionId: string
   loading: boolean
+  /** Phone: the history takes the full width. */
   mobile: boolean
+  /** Mid-width desktop: overlay panel with a capped width. */
+  mid?: boolean
   open: boolean
   personaLabel: (id: string) => string
   busyIds: ReadonlySet<string>
@@ -1114,12 +1129,16 @@ const ThreadsPanel = memo(function ThreadsPanel({
     <Paper
       variant="outlined"
       sx={{
-        // Give the chat room on small laptops: the history column scales
-        // with the viewport instead of eating a fixed 280px at 1024.
-        width: mobile ? "100%" : "clamp(240px, 24vw, 280px)",
+        // Give the chat room on small laptops: below 1200px the history is a
+        // swap-in overlay, never a second permanent column.
+        width: mobile
+          ? "100%"
+          : mid
+            ? "min(360px, 100%)"
+            : "clamp(240px, 24vw, 280px)",
         flexShrink: 0,
         minHeight: 0,
-        display: mobile && !open ? "none" : "flex",
+        display: (mobile || mid) && !open ? "none" : "flex",
         flexDirection: "column",
       }}
     >
@@ -1200,16 +1219,19 @@ const ThreadsPanel = memo(function ThreadsPanel({
         )}
       </Stack>
       {/* Search + new thread live under the header so they are identifiable
-          controls, not small icon-only affordances. The search filters the
-          threads already loaded on this device — it is not a server search. */}
+          controls, not small icon-only affordances. mui-lite hides native
+          input placeholders (opacity 0) and relies on floating labels, so
+          the filter carries a real label — a placeholder-only field would
+          render invisible. It filters the threads already loaded on this
+          device; it is not a server search. */}
       {selectMode ? null : (
         <Box sx={{ px: 1, pt: 0.75, pb: 0.5 }}>
           <Stack spacing={0.75}>
             <TextField
               variant="outlined"
+              label="Filter loaded threads"
               value={threadQuery}
               onChange={(event) => setThreadQuery(event.currentTarget.value)}
-              placeholder="Filter loaded threads"
               aria-label="Filter loaded threads"
               startIcon={
                 <Box
@@ -1494,6 +1516,15 @@ function Composer({
   onEnsureReports,
   plugins,
   pluginMentionSources,
+  models,
+  model,
+  onModel,
+  effort,
+  effortSaving,
+  onEffort,
+  userId,
+  modelsError,
+  onReloadModels,
 }: {
   sessionId: string
   running: boolean
@@ -1522,6 +1553,15 @@ function Composer({
   onEnsureReports: () => void
   plugins: PluginMention[]
   pluginMentionSources: PluginMentionSource[]
+  models: Model[]
+  model: string
+  onModel: (value: string) => void
+  effort: string
+  effortSaving: boolean
+  onEffort: (value: string) => void
+  userId: string
+  modelsError: string
+  onReloadModels: () => void
 }) {
   const [draft, setDraft] = useState(() => {
     const stored = readDraft(localStorage, sessionId)
@@ -1984,7 +2024,33 @@ function Composer({
 
   return (
     <>
-      <Stack spacing={1} className="ob-input-row" sx={{ p: mobile ? 0.75 : 1 }}>
+      <Stack
+        spacing={1}
+        className="ob-input-row ob-composer"
+        sx={{ p: mobile ? 0.75 : 1 }}
+      >
+        {modelsError ? (
+          <Stack
+            direction="row"
+            spacing={0.5}
+            alignItems="center"
+            sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+          >
+            <Typography variant="caption" color="error" sx={{ flex: 1 }}>
+              {modelsError}
+            </Typography>
+            {running ? (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<RefreshIcon width={16} height={16} />}
+                onClick={onReloadModels}
+              >
+                Reload
+              </Button>
+            ) : null}
+          </Stack>
+        ) : null}
         {joined.length ? (
           <Stack
             direction="row"
@@ -2037,7 +2103,201 @@ function Composer({
             ))}
           </Stack>
         ) : null}
-        <Stack direction="row" spacing={1} alignItems="flex-end">
+        <Box
+          className="ob-composer-field"
+          sx={{ position: "relative", width: "100%" }}
+        >
+          <ReferenceOverlay
+            text={draft}
+            sections={mentionSections}
+            inputRef={messageInputRef}
+          />
+          {!draft ? (
+            <div className="ob-composer-placeholder" aria-hidden="true">
+              {running ? "Message OpenBot…" : "Start the desktop to chat"}
+            </div>
+          ) : null}
+          <TextField
+            aria-label="Message"
+            value={draft}
+            variant="standard"
+            multiline={{ minRows: mobile ? 1 : 2, maxRows: 10 }}
+            ref={messageInputRef}
+            disabled={!running || sending || stopping}
+            onFocus={() => {
+              onEnsureProjects()
+              onEnsureReports()
+              ensurePluginMentions()
+            }}
+            onChange={(event) => {
+              const el = event.currentTarget
+              setMentionHidden(false)
+              setSlashHidden(false)
+              if (slashIndex !== 0) setSlashIndex(0)
+              if (mentionIndex !== 0) setMentionIndex(0)
+              if (el.value.includes("@")) {
+                ensureSkills()
+                onEnsureProjects()
+                onEnsureReports()
+                ensurePluginMentions()
+              }
+              rememberDraft(el.value)
+              setCaret(el.selectionStart ?? el.value.length)
+            }}
+            onClick={(event) =>
+              setCaret(event.currentTarget.selectionStart ?? 0)
+            }
+            onPaste={(event) => {
+              const files = event.clipboardData?.files
+              if (!files?.length) return
+              event.preventDefault()
+              void addJoined(files)
+            }}
+            onKeyUp={(event) =>
+              setCaret(event.currentTarget.selectionStart ?? 0)
+            }
+            onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+              if (slashActive && !slashHidden) {
+                const last = slashActive.length - 1
+                if (event.key === "ArrowDown") {
+                  event.preventDefault()
+                  setSlashIndex((index) => (index + 1 > last ? 0 : index + 1))
+                  return
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault()
+                  setSlashIndex((index) => (index - 1 < 0 ? last : index - 1))
+                  return
+                }
+                if (event.key === "Tab" || event.key === "Enter") {
+                  event.preventDefault()
+                  const picked = slashActive[Math.min(slashIndex, last)]
+                  if (picked) acceptCommand(picked)
+                  return
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault()
+                  setSlashHidden(true)
+                  return
+                }
+              }
+              if (mention && !mentionHidden && suggestions.length) {
+                const last = suggestions.length - 1
+                if (event.key === "ArrowDown") {
+                  event.preventDefault()
+                  setMentionIndex((index) => (index + 1 > last ? 0 : index + 1))
+                  return
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault()
+                  setMentionIndex((index) => (index - 1 < 0 ? last : index - 1))
+                  return
+                }
+                if (event.key === "Tab" || event.key === "Enter") {
+                  event.preventDefault()
+                  const picked = suggestions[Math.min(mentionIndex, last)]
+                  if (picked) acceptSuggestion(picked)
+                  return
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault()
+                  setMentionHidden(true)
+                  return
+                }
+              }
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                // An IME composition confirms with Enter — never submit then.
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault()
+                if (canStop) onStop()
+                else void submitFlow()
+              }
+            }}
+            sx={{ width: "100%" }}
+          />
+          {mention && !mentionHidden && !sending && !stopping ? (
+            <Paper
+              elevation={8}
+              ref={mentionListRef}
+              sx={{
+                position: "absolute",
+                bottom: "calc(100% + 8px)",
+                left: 0,
+                right: 0,
+                maxHeight: 264,
+                overflowY: "auto",
+                zIndex: 3,
+              }}
+            >
+              <List dense disablePadding>
+                {suggestions.length ? (
+                  suggestions.map((suggestion, index) => (
+                    <ListItemButton
+                      key={suggestion.key}
+                      selected={index === mentionIndex}
+                      onClick={() => acceptSuggestion(suggestion)}
+                    >
+                      <ListItemText
+                        primary={suggestion.primary}
+                        secondary={suggestion.secondary}
+                      />
+                    </ListItemButton>
+                  ))
+                ) : (
+                  <ListItemButton disabled>
+                    <ListItemText
+                      primary={
+                        mention.stage === "name"
+                          ? `No ${mention.section} match`
+                          : "No section match"
+                      }
+                    />
+                  </ListItemButton>
+                )}
+              </List>
+            </Paper>
+          ) : null}
+          {slashActive && !slashHidden && !sending && !stopping ? (
+            <Paper
+              elevation={8}
+              ref={slashListRef}
+              sx={{
+                position: "absolute",
+                bottom: "calc(100% + 8px)",
+                left: 0,
+                right: 0,
+                maxHeight: 264,
+                overflowY: "auto",
+                zIndex: 3,
+              }}
+            >
+              <List dense disablePadding>
+                {slashActive.map((command, index) => (
+                  <ListItemButton
+                    key={`${command.plugin}:${command.command}`}
+                    selected={index === slashIndex}
+                    onClick={() => acceptCommand(command)}
+                  >
+                    <ListItemText
+                      primary={`/${command.command}`}
+                      secondary={`${command.title} — ${command.plugin}`}
+                    />
+                  </ListItemButton>
+                ))}
+              </List>
+            </Paper>
+          ) : null}
+        </Box>
+        <Stack
+          direction="row"
+          spacing={0.5}
+          alignItems="center"
+          className="ob-composer-actions"
+          sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+        >
           <IconButton
             size="medium"
             aria-label="Attach file"
@@ -2125,196 +2385,19 @@ function Composer({
               {readAloud ? <VolumeUpIcon /> : <VolumeOffIcon />}
             </IconButton>
           </Tip>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            hidden
-            accept={pluginAccept || undefined}
-            onChange={(event) => {
-              void addJoined(event.currentTarget.files)
-              event.currentTarget.value = ""
-            }}
+          <span style={{ flex: 1 }} />
+          <ComposerPickers
+            mobile={mobile}
+            models={models}
+            model={model}
+            onModel={onModel}
+            effort={effort}
+            effortSaving={effortSaving}
+            onEffort={onEffort}
+            userId={userId}
+            disabled={!running || sending || stopping}
+            modelButtonId="ob-composer-model"
           />
-          <Box sx={{ position: "relative", flex: 1, minWidth: 0 }}>
-            <ReferenceOverlay
-              text={draft}
-              sections={mentionSections}
-              inputRef={messageInputRef}
-            />
-            <TextField
-              label="Message"
-              value={draft}
-              variant="outlined"
-              multiline={{ minRows: mobile ? 1 : 2, maxRows: 10 }}
-              ref={messageInputRef}
-              disabled={!running || sending || stopping}
-              onFocus={() => {
-                onEnsureProjects()
-                onEnsureReports()
-                ensurePluginMentions()
-              }}
-              onChange={(event) => {
-                const el = event.currentTarget
-                setMentionHidden(false)
-                setSlashHidden(false)
-                if (slashIndex !== 0) setSlashIndex(0)
-                if (mentionIndex !== 0) setMentionIndex(0)
-                if (el.value.includes("@")) {
-                  ensureSkills()
-                  onEnsureProjects()
-                  onEnsureReports()
-                  ensurePluginMentions()
-                }
-                rememberDraft(el.value)
-                setCaret(el.selectionStart ?? el.value.length)
-              }}
-              onClick={(event) =>
-                setCaret(event.currentTarget.selectionStart ?? 0)
-              }
-              onPaste={(event) => {
-                const files = event.clipboardData?.files
-                if (!files?.length) return
-                event.preventDefault()
-                void addJoined(files)
-              }}
-              onKeyUp={(event) =>
-                setCaret(event.currentTarget.selectionStart ?? 0)
-              }
-              onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
-                if (slashActive && !slashHidden) {
-                  const last = slashActive.length - 1
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault()
-                    setSlashIndex((index) => (index + 1 > last ? 0 : index + 1))
-                    return
-                  }
-                  if (event.key === "ArrowUp") {
-                    event.preventDefault()
-                    setSlashIndex((index) => (index - 1 < 0 ? last : index - 1))
-                    return
-                  }
-                  if (event.key === "Tab" || event.key === "Enter") {
-                    event.preventDefault()
-                    const picked = slashActive[Math.min(slashIndex, last)]
-                    if (picked) acceptCommand(picked)
-                    return
-                  }
-                  if (event.key === "Escape") {
-                    event.preventDefault()
-                    setSlashHidden(true)
-                    return
-                  }
-                }
-                if (mention && !mentionHidden && suggestions.length) {
-                  const last = suggestions.length - 1
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault()
-                    setMentionIndex((index) =>
-                      index + 1 > last ? 0 : index + 1,
-                    )
-                    return
-                  }
-                  if (event.key === "ArrowUp") {
-                    event.preventDefault()
-                    setMentionIndex((index) =>
-                      index - 1 < 0 ? last : index - 1,
-                    )
-                    return
-                  }
-                  if (event.key === "Tab" || event.key === "Enter") {
-                    event.preventDefault()
-                    const picked = suggestions[Math.min(mentionIndex, last)]
-                    if (picked) acceptSuggestion(picked)
-                    return
-                  }
-                  if (event.key === "Escape") {
-                    event.preventDefault()
-                    setMentionHidden(true)
-                    return
-                  }
-                }
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault()
-                  if (canStop) onStop()
-                  else void submitFlow()
-                }
-              }}
-              sx={{ flex: 1 }}
-            />
-            {mention && !mentionHidden && !sending && !stopping ? (
-              <Paper
-                elevation={8}
-                ref={mentionListRef}
-                sx={{
-                  position: "absolute",
-                  bottom: "calc(100% + 8px)",
-                  left: 0,
-                  right: 0,
-                  maxHeight: 264,
-                  overflowY: "auto",
-                  zIndex: 3,
-                }}
-              >
-                <List dense disablePadding>
-                  {suggestions.length ? (
-                    suggestions.map((suggestion, index) => (
-                      <ListItemButton
-                        key={suggestion.key}
-                        selected={index === mentionIndex}
-                        onClick={() => acceptSuggestion(suggestion)}
-                      >
-                        <ListItemText
-                          primary={suggestion.primary}
-                          secondary={suggestion.secondary}
-                        />
-                      </ListItemButton>
-                    ))
-                  ) : (
-                    <ListItemButton disabled>
-                      <ListItemText
-                        primary={
-                          mention.stage === "name"
-                            ? `No ${mention.section} match`
-                            : "No section match"
-                        }
-                      />
-                    </ListItemButton>
-                  )}
-                </List>
-              </Paper>
-            ) : null}
-            {slashActive && !slashHidden && !sending && !stopping ? (
-              <Paper
-                elevation={8}
-                ref={slashListRef}
-                sx={{
-                  position: "absolute",
-                  bottom: "calc(100% + 8px)",
-                  left: 0,
-                  right: 0,
-                  maxHeight: 264,
-                  overflowY: "auto",
-                  zIndex: 3,
-                }}
-              >
-                <List dense disablePadding>
-                  {slashActive.map((command, index) => (
-                    <ListItemButton
-                      key={`${command.plugin}:${command.command}`}
-                      selected={index === slashIndex}
-                      onClick={() => acceptCommand(command)}
-                    >
-                      <ListItemText
-                        primary={`/${command.command}`}
-                        secondary={`${command.title} — ${command.plugin}`}
-                      />
-                    </ListItemButton>
-                  ))}
-                </List>
-              </Paper>
-            ) : null}
-          </Box>
           {canStop ? (
             mobile ? (
               <IconButton
@@ -2324,6 +2407,7 @@ function Composer({
                 onClick={onStop}
                 sx={{
                   flexShrink: 0,
+                  marginLeft: "auto",
                   bgcolor: "error.main",
                   color: "error.contrastText",
                 }}
@@ -2376,6 +2460,17 @@ function Composer({
             </Button>
           )}
         </Stack>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          accept={pluginAccept || undefined}
+          onChange={(event) => {
+            void addJoined(event.currentTarget.files)
+            event.currentTarget.value = ""
+          }}
+        />
       </Stack>
       <Menu
         open={joinOpen}
@@ -2400,16 +2495,30 @@ export function Workspace({
   me,
   tab,
   onTab,
-  onOpenNav,
+  onMeRefreshed,
 }: {
   me: Me
   /** Active workspace view, owned by the shell's route. */
   tab: WorkspaceTab
   /** Move to another workspace view (the shell syncs the URL). */
   onTab: (next: WorkspaceTab) => void
-  /** Mobile only: open the shell's navigation drawer. */
-  onOpenNav?: () => void
+  /** Push a refreshed profile up so Config and the shell stay in sync. */
+  onMeRefreshed?: (me: Me) => void
 }) {
+  // Mid widths: the threads history becomes a temporary swap-in instead of a
+  // second permanent column squeezing the composer (1024px laptops).
+  const midWidth = useViewportBelow(1199)
+  // Accessible dialog names: useId keeps ids unique if two instances ever
+  // render side by side.
+  const dialogIdBase = useId()
+  const dialogIds = {
+    newThread: `${dialogIdBase}-new-thread`,
+    renameThread: `${dialogIdBase}-rename-thread`,
+    deleteThread: `${dialogIdBase}-delete-thread`,
+    batchDelete: `${dialogIdBase}-batch-delete`,
+    folder: `${dialogIdBase}-folder`,
+    folderDelete: `${dialogIdBase}-folder-delete`,
+  }
   const [phase, setPhase] = useState<Phase>(me.desktop ?? "sleeping")
   const [stopping, setStopping] = useState(false)
   const [threadDock, setThreadDock] = useState<HTMLDivElement | null>(null)
@@ -2441,25 +2550,15 @@ export function Workspace({
   >({})
   const [threadsOpen, setThreadsOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const drawerTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const drawerPanelRef = useRef<HTMLDivElement | null>(null)
-  // The model/desktop drawer is a temporary overlay: Escape closes it, focus
-  // moves into the panel on open and back to the trigger on close.
-  useEffect(() => {
-    if (!drawerOpen) return
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDrawerOpen(false)
-    }
-    window.addEventListener("keydown", onKey)
-    const timer = window.setTimeout(() => {
-      drawerPanelRef.current?.focus()
-    }, 0)
-    return () => {
-      window.removeEventListener("keydown", onKey)
-      window.clearTimeout(timer)
-      drawerTriggerRef.current?.focus()
-    }
-  }, [drawerOpen])
+  const drawerPaperRef = useRef<HTMLDivElement | null>(null)
+  // The model/desktop drawer shares the app-wide overlay contract: Escape
+  // closes (top overlay only), focus enters the panel and returns to the
+  // exact trigger, Tab stays confined. The Drawer's Paper is the dialog.
+  useOverlayA11y(
+    drawerOpen,
+    useCallback(() => setDrawerOpen(false), []),
+    drawerPaperRef,
+  )
   const [personas, setPersonas] = useState<PersonaInfo[]>([])
   const [threadPersona, setThreadPersona] = useState<Record<string, string>>({})
   const [newThreadOpen, setNewThreadOpen] = useState(false)
@@ -2502,6 +2601,13 @@ export function Workspace({
       ? `${me.model.providerID}/${me.model.modelID}`
       : "",
   )
+  // Saved thinking effort for the current model; "" means model default.
+  const [effort, setEffort] = useState(me.model?.thinkingEffort ?? "")
+  const [effortSaving, setEffortSaving] = useState(false)
+  // Sequence guard for model/effort saves: only the newest local change may
+  // settle, so out-of-order responses can never clobber a newer pick.
+  const saveSeqRef = useRef(0)
+  const settledSeqRef = useRef(0)
   const [desktopKey, setDesktopKey] = useState(0)
   const [screen, setScreen] = useState<{
     sessionId: string
@@ -2541,6 +2647,9 @@ export function Workspace({
   const [controlBusy, setControlBusy] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([])
   const mobile = useMobile()
+  // Threads history behavior: swap-in overlay on phones AND mid-width
+  // desktops (single permanent history column only ≥1200px).
+  const threadsOverlay = mobile || midWidth
 
   // projects power @project(s)/ mentions in the composer and chat bubbles
   const ensureProjects = useCallback(() => {
@@ -2631,6 +2740,9 @@ export function Workspace({
   const unread = useUnreadThreads()
   const outputRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
+  // Mirror of stickRef for rendering: the "jump to latest" pill shows while
+  // the reader scrolled away from the bottom.
+  const [atBottom, setAtBottom] = useState(true)
   const messagesJsonRef = useRef("")
   const messagesRef = useRef<ChatMessage[]>([])
   const menuAnchor = useRef<HTMLElement | null>(null)
@@ -3208,6 +3320,7 @@ export function Workspace({
     }
     messagesRef.current = cached?.messages ?? []
     stickRef.current = true
+    setAtBottom(true)
     setMediaMap(new Map())
   }, [sessionId, running])
 
@@ -3771,6 +3884,7 @@ export function Workspace({
     setError("")
     if (turnIssue) setDismissedTurnId(turnIssue.messageId || turnIssue.detail)
     stickRef.current = true
+    setAtBottom(true)
     setSending(true)
     try {
       if (!id) {
@@ -3860,20 +3974,120 @@ export function Workspace({
   }
 
   function selectModel(value: string) {
+    const previous = model
     setModel(value)
     const split = value.indexOf("/")
     const providerID = split > 0 ? value.slice(0, split) : ""
     const modelID = split > 0 ? value.slice(split + 1) : ""
-    if (providerID && modelID) {
-      void api("/api/model", {
-        method: "PUT",
-        body: JSON.stringify({ providerID, modelID }),
-      }).catch((caught) =>
+    if (!providerID || !modelID) return
+    const seq = ++saveSeqRef.current
+    void (async () => {
+      try {
+        await api("/api/model", {
+          method: "PUT",
+          body: JSON.stringify({ providerID, modelID }),
+        })
+      } catch (caught) {
+        if (seq !== saveSeqRef.current) return
+        settledSeqRef.current = seq
+        setModel(previous)
         setError(
-          caught instanceof Error ? caught.message : "model save failed",
-        ),
-      )
-    }
+          isTeamLockedError(caught)
+            ? "the model is managed by your team admin"
+            : caught instanceof Error
+              ? caught.message
+              : "model save failed",
+        )
+        return
+      }
+      // The server re-validated the saved effort against the new model and
+      // dropped it when unsupported; adopt the server answer so the picker
+      // never claims a level the engine will not use.
+      try {
+        const next = await api<Me>("/api/me")
+        if (seq !== saveSeqRef.current) return
+        settledSeqRef.current = seq
+        onMeRefreshed?.(next)
+        const info = next.model
+        if (info?.providerID && info.modelID) {
+          const key = `${info.providerID}/${info.modelID}`
+          setModel((current) => (current === key ? current : key))
+        }
+        setEffort((current) => {
+          const server = info?.thinkingEffort ?? ""
+          return current === server ? current : server
+        })
+      } catch {
+        // keep the optimistic pick; the saved model is already server truth
+        if (seq !== saveSeqRef.current) return
+        settledSeqRef.current = seq
+      }
+    })()
+  }
+
+  function selectEffort(value: string) {
+    const previous = effort
+    setEffort(value)
+    const seq = ++saveSeqRef.current
+    setEffortSaving(true)
+    void (async () => {
+      try {
+        await api("/api/thinking", {
+          method: "PUT",
+          body: JSON.stringify({ effort: value }),
+        })
+        const next = await api<Me>("/api/me").catch(() => null)
+        if (seq !== saveSeqRef.current) return
+        settledSeqRef.current = seq
+        if (next) {
+          onMeRefreshed?.(next)
+          // Adopt effort only — a concurrent model save owns the model key.
+          const server = next.model?.thinkingEffort ?? ""
+          setEffort((current) => (current === server ? current : server))
+        }
+      } catch (caught) {
+        if (seq !== saveSeqRef.current) return
+        settledSeqRef.current = seq
+        setEffort(previous)
+        setError(
+          isTeamLockedError(caught)
+            ? "thinking effort is managed by your team admin"
+            : caught instanceof Error
+              ? caught.message
+              : "thinking effort save failed",
+        )
+      } finally {
+        if (seq === saveSeqRef.current) setEffortSaving(false)
+      }
+    })()
+  }
+
+  // Follow server-side model/effort changes (Config page saves, admin
+  // overlays) while no local save is settling — otherwise the optimistic
+  // picker state wins until its own response arrives.
+  const serverModelKey =
+    me.model?.providerID && me.model.modelID
+      ? `${me.model.providerID}/${me.model.modelID}`
+      : ""
+  const serverEffort = me.model?.thinkingEffort ?? ""
+  useEffect(() => {
+    if (settledSeqRef.current !== saveSeqRef.current) return
+    setModel((current) =>
+      !serverModelKey || current === serverModelKey ? current : serverModelKey,
+    )
+    setEffort((current) => (current === serverEffort ? current : serverEffort))
+  }, [serverModelKey, serverEffort])
+
+  // Display name for a model key ("provider/id" → real name when known).
+  function modelName(key: string): string {
+    const found = models.find(
+      (item) => `${item.providerID}/${item.modelID}` === key,
+    )
+    return found
+      ? found.name
+        ? `${found.name} (${found.providerID})`
+        : key
+      : key
   }
 
   function personaName(id: string | undefined): string {
@@ -4263,6 +4477,11 @@ export function Workspace({
   // turn in flight. The completed state is the chat itself — a permanent
   // "Done" chip said nothing.
   const activeActivity = activity && activity !== "done" ? activity : null
+  // Orb phase for the active turn: presentation only. Booting the desktop or
+  // an accepted send waiting for events reads as "thinking"; live turn
+  // activity reads as "working". The label stays the factual activity name.
+  const orb = orbState(activeActivity, sending)
+  const activityLabel = activeActivity ? ACTIVITY_LABEL[activeActivity] : ""
   const threadBar = useMemo(
     () => (
       <IdeThreadBar
@@ -4296,15 +4515,6 @@ export function Workspace({
           className="ob-mobile-bar ob-workspace-top"
           sx={{ minHeight: 40, flexShrink: 0, pr: 0.5 }}
         >
-          {mobile && onOpenNav ? (
-            <IconButton
-              size="small"
-              aria-label="Open navigation"
-              onClick={onOpenNav}
-            >
-              <MenuIcon />
-            </IconButton>
-          ) : null}
           <Typography
             variant="subtitle2"
             sx={{
@@ -4315,64 +4525,43 @@ export function Workspace({
               whiteSpace: "nowrap",
             }}
           >
+            {/* Thread/view context — but not a repeat of the page name the
+                shell header already shows when nothing is open. */}
             {tab === "chat"
               ? activeThread
                 ? threadTitle(activeThread)
                 : sessionId
                   ? "New thread"
-                  : "Chat"
+                  : ""
               : tab === "desktop"
                 ? "Desktop"
                 : tab === "projects"
                   ? "Projects"
                   : "Media"}
           </Typography>
-          {mobile ? null : (
-            <>
-              {modelsLoading && models.length === 0 ? (
-                <Box
-                  className="ob-skeleton"
-                  sx={{ width: 230, height: 36, borderRadius: "10px" }}
-                  aria-label="Loading model list"
-                />
-              ) : (
-                <Box sx={{ width: 224, flexShrink: 1, minWidth: 150 }}>
-                  <ModelSelect
-                    name="model-bar"
-                    label="Model"
-                    models={models}
-                    value={model}
-                    disabled={!running || models.length === 0}
-                    userId={me.id}
-                    onSelect={selectModel}
-                  />
-                </Box>
-              )}
-              {running ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={
-                    stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
-                  }
-                  disabled={stopping}
-                  aria-busy={stopping}
-                  onClick={() => void sleep()}
-                >
-                  {stopping ? "Stopping…" : "Sleep"}
-                </Button>
-              ) : (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<PlayArrowIcon />}
-                  disabled={phase === "starting"}
-                  onClick={() => void start()}
-                >
-                  Start
-                </Button>
-              )}
-            </>
+          {mobile ? null : running ? (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={
+                stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
+              }
+              disabled={stopping}
+              aria-busy={stopping}
+              onClick={() => void sleep()}
+            >
+              {stopping ? "Stopping…" : "Sleep"}
+            </Button>
+          ) : (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<PlayArrowIcon />}
+              disabled={phase === "starting"}
+              onClick={() => void start()}
+            >
+              Start
+            </Button>
           )}
           <IconButton
             size="small"
@@ -4384,9 +4573,8 @@ export function Workspace({
           </IconButton>
           {mobile ? (
             <IconButton
-              ref={drawerTriggerRef}
               size="small"
-              aria-label="Desktop and model options"
+              aria-label="Desktop options"
               aria-haspopup="dialog"
               aria-expanded={drawerOpen}
               onClick={() => setDrawerOpen(true)}
@@ -4416,7 +4604,7 @@ export function Workspace({
             gap: mobile ? 0.5 : 1,
           }}
         >
-          {running && mobile ? (
+          {running && threadsOverlay ? (
             <Stack
               direction="row"
               spacing={1}
@@ -4449,8 +4637,10 @@ export function Workspace({
                   whiteSpace: "nowrap",
                 }}
               >
+                {/* The thread title already sits in the top bar; this row
+                    only adds the persona so nothing is said twice. */}
                 {activeThread
-                  ? `${threadTitle(activeThread)} · ${personaName(threadPersona[activeThread.id])}`
+                  ? personaName(threadPersona[activeThread.id])
                   : sessionId
                     ? "New thread"
                     : "No thread selected"}
@@ -4473,6 +4663,7 @@ export function Workspace({
                 sessionId={sessionId}
                 loading={sessionsLoading}
                 mobile={mobile}
+                mid={midWidth && !mobile}
                 open={threadsOpen}
                 personaLabel={personaLabel}
                 busyIds={busyIds}
@@ -4499,7 +4690,7 @@ export function Workspace({
                   border: chatDocked ? "none" : undefined,
                   display: chatDocked
                     ? "flex"
-                    : mobile && running && threadsOpen
+                    : threadsOverlay && running && threadsOpen
                       ? "none"
                       : "flex",
                   flexDirection: "column",
@@ -4528,50 +4719,21 @@ export function Workspace({
                       Stopping the desktop…
                     </Typography>
                   </Stack>
-                ) : activeActivity ? (
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    alignItems="center"
-                    className="ob-status-row"
-                    sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
-                  >
-                    <Chip
-                      size="small"
-                      color={
-                        activeActivity === "initialize" ? "warning" : "primary"
-                      }
-                    >
-                      {ACTIVITY_LABEL[activeActivity]}
-                    </Chip>
-                    <CircularProgress size={1.2} />
-                    {canStop ? (
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        color="error"
-                        startIcon={<StopIcon width={16} height={16} />}
-                        disabled={stopBusy}
-                        onClick={() => void stopThread()}
-                        sx={{ ml: "auto" }}
-                      >
-                        Stop
-                      </Button>
-                    ) : null}
-                  </Stack>
                 ) : null}
-                {stopping || activity ? <Divider /> : null}
+                {stopping ? <Divider /> : null}
                 <Box
                   className="ob-chat-log"
                   ref={outputRef}
                   onScroll={() => {
                     const el = outputRef.current
                     if (!el) return
-                    stickRef.current = nearBottom(
+                    const stick = nearBottom(
                       el.scrollHeight,
                       el.scrollTop,
                       el.clientHeight,
                     )
+                    stickRef.current = stick
+                    setAtBottom(stick)
                   }}
                 >
                   {phase === "sleeping" ? (
@@ -4654,7 +4816,7 @@ export function Workspace({
                         {phase === "starting"
                           ? "The model is not ready until the desktop is up."
                           : model
-                            ? `Using ${model}. Ask anything.`
+                            ? `Using ${modelName(model)}. Ask anything.`
                             : "Pick a model, then ask anything."}
                       </Typography>
                       {phase !== "starting" && !model ? (
@@ -4662,12 +4824,8 @@ export function Workspace({
                           size="small"
                           variant="contained"
                           onClick={() => {
-                            if (mobile) {
-                              setDrawerOpen(true)
-                              return
-                            }
                             document
-                              .getElementById("ob-model-model-bar")
+                              .getElementById("ob-composer-model")
                               ?.focus()
                           }}
                         >
@@ -4715,6 +4873,23 @@ export function Workspace({
                       ))}
                     </div>
                   )}
+                  {!atBottom && shown.length > 0 ? (
+                    <div className="ob-jump-wrap">
+                      <button
+                        type="button"
+                        className="ob-jump-latest"
+                        onClick={() => {
+                          const el = outputRef.current
+                          stickRef.current = true
+                          setAtBottom(true)
+                          if (el) el.scrollTop = el.scrollHeight
+                        }}
+                      >
+                        <ChevronDownIcon width={16} height={16} />
+                        Jump to latest
+                      </button>
+                    </div>
+                  ) : null}
                 </Box>
                 {visibleTurnIssue && (tab === "chat" || chatDocked) ? (
                   <Alert
@@ -4771,6 +4946,33 @@ export function Workspace({
                     />
                   </div>
                 ) : null}
+                {orb ? (
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    className="ob-orb-row"
+                    sx={{
+                      px: mobile ? 1 : 2,
+                      pt: 0.5,
+                      flexShrink: 0,
+                      alignSelf: "center",
+                    }}
+                  >
+                    <AgentOrb
+                      state={orb}
+                      size={mobile ? 64 : 80}
+                      label={activityLabel}
+                    />
+                    <Typography
+                      variant="caption"
+                      color="textSecondary"
+                      role="status"
+                    >
+                      {activityLabel}
+                    </Typography>
+                  </Stack>
+                ) : null}
                 <Divider />
                 <Composer
                   key={sessionId}
@@ -4801,6 +5003,15 @@ export function Workspace({
                   onEnsureReports={ensureReports}
                   plugins={pluginMentions}
                   pluginMentionSources={pluginMentionSources}
+                  models={models}
+                  model={model}
+                  onModel={selectModel}
+                  effort={effort}
+                  effortSaving={effortSaving}
+                  onEffort={selectEffort}
+                  userId={me.id}
+                  modelsError={modelsError}
+                  onReloadModels={() => void loadModels()}
                 />
               </Paper>
             </Dock>
@@ -5038,19 +5249,15 @@ export function Workspace({
           variant="temporary"
           anchor="left"
           width={300}
+          ref={drawerPaperRef}
+          aria-label="Desktop and model options"
         >
           <Box
-            ref={drawerPanelRef}
-            tabIndex={-1}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Desktop and model options"
             sx={{
               p: 1.5,
               display: "flex",
               flexDirection: "column",
               gap: 1,
-              outline: "none",
             }}
           >
             <Stack direction="row" spacing={1} alignItems="center">
@@ -5090,38 +5297,6 @@ export function Workspace({
               </Button>
             )}
             <Divider />
-            <Typography variant="subtitle2">Model</Typography>
-            {modelsLoading && models.length === 0 ? (
-              <Skeleton width="100%" height={40} />
-            ) : (
-              <ModelSelect
-                name="model-drawer"
-                label={running ? "Model" : "Model (start desktop)"}
-                models={models}
-                value={model}
-                disabled={!running || models.length === 0}
-                userId={me.id}
-                onSelect={selectModel}
-              />
-            )}
-            {modelsError ? (
-              <Tip title={modelsError}>
-                <Chip size="small" color="error" variant="outlined">
-                  {modelsError}
-                </Chip>
-              </Tip>
-            ) : null}
-            {running && !modelsLoading ? (
-              <Button
-                size="small"
-                variant="text"
-                startIcon={<RefreshIcon />}
-                onClick={() => void loadModels()}
-              >
-                Reload model list
-              </Button>
-            ) : null}
-            <Divider />
             {running ? (
               <Button
                 size="small"
@@ -5138,6 +5313,9 @@ export function Workspace({
                 New thread
               </Button>
             ) : null}
+            <Typography variant="caption" color="textSecondary">
+              Model and thinking effort live at the bottom of the chat.
+            </Typography>
           </Box>
         </Drawer>
 
@@ -5265,8 +5443,12 @@ export function Workspace({
         </Menu>
 
         {newThreadOpen ? (
-          <AccessibleDialog open onClose={() => setNewThreadOpen(false)}>
-            <DialogTitle>New thread</DialogTitle>
+          <AccessibleDialog
+            open
+            onClose={() => setNewThreadOpen(false)}
+            aria-labelledby={dialogIds.newThread}
+          >
+            <DialogTitle id={dialogIds.newThread}>New thread</DialogTitle>
             <DialogContent>
               <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
                 The personality stays for this thread. It cannot be changed
@@ -5332,8 +5514,12 @@ export function Workspace({
         ) : null}
 
         {renameTarget ? (
-          <AccessibleDialog open onClose={() => setRenameTarget(null)}>
-            <DialogTitle>Rename thread</DialogTitle>
+          <AccessibleDialog
+            open
+            onClose={() => setRenameTarget(null)}
+            aria-labelledby={dialogIds.renameThread}
+          >
+            <DialogTitle id={dialogIds.renameThread}>Rename thread</DialogTitle>
             <DialogContent>
               <TextField
                 label="Title"
@@ -5366,8 +5552,14 @@ export function Workspace({
         ) : null}
 
         {deleteTarget ? (
-          <AccessibleDialog open onClose={() => setDeleteTarget(null)}>
-            <DialogTitle>Delete thread?</DialogTitle>
+          <AccessibleDialog
+            open
+            onClose={() => setDeleteTarget(null)}
+            aria-labelledby={dialogIds.deleteThread}
+          >
+            <DialogTitle id={dialogIds.deleteThread}>
+              Delete thread?
+            </DialogTitle>
             <DialogContent>
               <Typography variant="body2">
                 Deletes “{deleteTarget ? threadTitle(deleteTarget) : ""}” and
@@ -5397,8 +5589,9 @@ export function Workspace({
             onClose={() => {
               if (!batchBusy) setBatchTarget(null)
             }}
+            aria-labelledby={dialogIds.batchDelete}
           >
-            <DialogTitle>
+            <DialogTitle id={dialogIds.batchDelete}>
               {batchTarget.length === 1
                 ? `Delete “${threadTitle(
                     sessions.find((item) => item.id === batchTarget[0]) ?? {
@@ -5437,8 +5630,12 @@ export function Workspace({
           </AccessibleDialog>
         ) : null}
         {folderDialog ? (
-          <AccessibleDialog open onClose={() => setFolderDialog(null)}>
-            <DialogTitle>
+          <AccessibleDialog
+            open
+            onClose={() => setFolderDialog(null)}
+            aria-labelledby={dialogIds.folder}
+          >
+            <DialogTitle id={dialogIds.folder}>
               {folderDialog.mode === "create" ? "New folder" : "Rename folder"}
             </DialogTitle>
             <DialogContent>
@@ -5477,8 +5674,14 @@ export function Workspace({
         ) : null}
 
         {folderDeleteTarget ? (
-          <AccessibleDialog open onClose={() => setFolderDeleteTarget(null)}>
-            <DialogTitle>Delete “{folderDeleteTarget.name}”?</DialogTitle>
+          <AccessibleDialog
+            open
+            onClose={() => setFolderDeleteTarget(null)}
+            aria-labelledby={dialogIds.folderDelete}
+          >
+            <DialogTitle id={dialogIds.folderDelete}>
+              Delete “{folderDeleteTarget.name}”?
+            </DialogTitle>
             <DialogContent>
               <Typography variant="body2">
                 The folder is removed and its threads move back to the top

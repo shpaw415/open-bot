@@ -16,6 +16,11 @@ export function useMobile(breakpoint = 899): boolean {
   return mobile
 }
 
+/** True while the viewport is at most `max` px wide (inclusive). */
+export function useViewportBelow(max: number): boolean {
+  return useMobile(max)
+}
+
 export function useUnreadThreads(): ReadonlySet<string> {
   const [ids, setIds] = useState(
     () =>

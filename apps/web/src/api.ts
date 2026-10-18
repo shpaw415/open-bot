@@ -48,13 +48,25 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const body = (await response.json().catch(() => ({}))) as T & {
     error?: string
+    reason?: string
   }
-  if (!response.ok)
+  if (!response.ok) {
+    // Session 401s carry a machine reason — make the message actionable
+    // instead of a bare "unauthorized" on every surface.
+    const hint =
+      response.status === 401 && body.reason === "no_cookie"
+        ? " — session cookie not sent (insecure origin or blocked cookies); sign in again"
+        : response.status === 401 &&
+            (body.reason === "expired_session" ||
+              body.reason === "invalid_session")
+          ? " — sign in again"
+          : ""
     throw new ApiHttpError(
-      body.error ?? response.statusText,
+      (body.error ?? response.statusText) + hint,
       response.status,
       body,
     )
+  }
   return body
 }
 

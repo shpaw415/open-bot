@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { HttpError } from "./http-error"
-import { extractPluginFiles, PLUGIN_UI_FILE_NAME } from "./plugin-artifact"
+import {
+  extractPluginFiles,
+  fixUiScriptOrder,
+  PLUGIN_UI_FILE_NAME,
+} from "./plugin-artifact"
 
 // Packs a synthetic plugin tree into a tarball with the same layout the
 // marketplace serves: one GitHub root directory, repo-relative sources.
@@ -119,5 +123,113 @@ describe("plugin artifact ui build", () => {
     } finally {
       rmSync(join(tarball, ".."), { recursive: true, force: true })
     }
+  })
+
+  test("bundled src vendors execute before inline classic page code", () => {
+    // Regression for the frozen-install report: Bun turns <script src> code
+    // into a deferred module after the inline classic, so page code referencing
+    // vendor globals died with a ReferenceError on the frozen install.
+    const tarball = packTree({
+      "server/index.html":
+        `<!doctype html><html><head>` +
+        `<script src="./static/vendor.js"></script>` +
+        `</head><body><div id="app"></div>` +
+        `<script>document.getElementById("app").textContent = window.vendor()</script>` +
+        `</body></html>\n`,
+      "server/static/vendor.js": "window.vendor = function () { return 'v' }\n",
+    })
+    try {
+      const files = extractPluginFiles(tarball, [], "server/index.html")
+      const ui = files.at(-1)
+      expect(ui?.name).toBe(PLUGIN_UI_FILE_NAME)
+      const vendorAt = ui?.content.indexOf("window.vendor") ?? -1
+      const pageAt = ui?.content.indexOf("textContent = window.vendor()") ?? -1
+      expect(pageAt).toBeGreaterThan(vendorAt)
+      const pageTag = ui?.content.lastIndexOf("<script", pageAt) ?? 0
+      expect(ui?.content.slice(pageTag, pageAt)).toContain('type="module"')
+    } finally {
+      rmSync(join(tarball, ".."), { recursive: true, force: true })
+    }
+  })
+})
+
+describe("fixUiScriptOrder", () => {
+  // Bun's rewrite shape: src-derived code becomes a trailing module script,
+  // the page's inline classic stays where it was — before it.
+  const BUILT =
+    `<!doctype html><html><head></head><body>` +
+    `<script>alert(window.vendor())</script>` +
+    `<script type="module">// static/vendor.js\n` +
+    `window.vendor = function () { return 1 };\n` +
+    `</script></body></html>`
+
+  test("moves inline classic page code into a module after the vendor module", () => {
+    const fixed = fixUiScriptOrder(BUILT)
+    const vendorAt = fixed.indexOf("window.vendor")
+    const pageAt = fixed.indexOf("alert(window.vendor())")
+    expect(pageAt).toBeGreaterThan(vendorAt)
+    // The page code now rides a module script, not the original classic tag.
+    const pageTag = fixed.lastIndexOf("<script", pageAt)
+    expect(fixed.slice(pageTag, pageAt)).toContain('type="module"')
+    // The classic tag is gone from its original position.
+    expect(fixed.indexOf("alert(window.vendor())")).toBe(pageAt)
+    expect(fixed).not.toContain("<script>alert(")
+  })
+
+  test("keeps non-executable and external scripts untouched", () => {
+    const html =
+      `<body>` +
+      `<script type="application/json">{"a":1}</script>` +
+      `<script type="importmap">{"imports":{}}</script>` +
+      `<script src="https://cdn.example/x.js"></script>` +
+      `<script>alert(1)</script>` +
+      `<script type="module">window.m = 1</script>` +
+      `</body>`
+    const fixed = fixUiScriptOrder(html)
+    expect(fixed).toContain(`<script type="application/json">{"a":1}</script>`)
+    expect(fixed).toContain(`<script type="importmap">{"imports":{}}</script>`)
+    expect(fixed).toContain(`<script src="https://cdn.example/x.js"></script>`)
+    const jsonAt = fixed.indexOf("application/json")
+    const pageAt = fixed.indexOf("alert(1)")
+    // Page code rides a module placed after the real module script; data
+    // blocks stay in their original positions.
+    expect(fixed.slice(fixed.lastIndexOf("<script", pageAt), pageAt)).toContain(
+      'type="module"',
+    )
+    expect(fixed.indexOf("window.m = 1")).toBeLessThan(pageAt)
+    expect(jsonAt).toBeLessThan(fixed.indexOf("importmap"))
+  })
+
+  test("no rewrite needed when only one script kind exists", () => {
+    expect(fixUiScriptOrder("<body><script>a()</script></body>")).toBe(
+      "<body><script>a()</script></body>",
+    )
+    const onlyModules =
+      `<body><script type="module">a()</script>` +
+      `<script type="module">b()</script></body>`
+    expect(fixUiScriptOrder(onlyModules)).toBe(onlyModules)
+  })
+
+  test("joins multiple inline classics in document order with scope shared", () => {
+    const html =
+      `<body>` +
+      `<script type="module">window.m = 1</script>` +
+      `<script>var shared = 1</script>` +
+      `<script>shared += 1</script>` +
+      `</body>`
+    const fixed = fixUiScriptOrder(html)
+    const firstClassic = fixed.indexOf("var shared = 1")
+    const secondClassic = fixed.indexOf("shared += 1")
+    expect(firstClassic).toBeGreaterThan(0)
+    expect(secondClassic).toBeGreaterThan(firstClassic)
+    // Both bodies ride the same merged module script.
+    const moduleOpen = fixed.indexOf(
+      '<script type="module">',
+      firstClassic - 30,
+    )
+    expect(moduleOpen).toBeGreaterThan(0)
+    expect(fixed.indexOf("</script>", secondClassic)).toBeGreaterThan(
+      secondClassic,
+    )
   })
 })

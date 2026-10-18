@@ -1,36 +1,33 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Divider from "@shpaw415/mui-lite/Divider"
 import Drawer from "@shpaw415/mui-lite/Drawer"
 import IconButton from "@shpaw415/mui-lite/IconButton"
-import Menu from "@shpaw415/mui-lite/Menu"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Admin } from "./Admin"
-import { AgentNotices, NoticeBell, SoundBell } from "./AgentNotices"
+import { AgentNotices } from "./AgentNotices"
+import { AppHeader } from "./AppHeader"
 import { api, type Me } from "./api"
 import { Config } from "./Config"
 import { CronView } from "./CronView"
-import { Chip } from "./chip"
+import { useOverlayA11y } from "./dialog-a11y"
 import { dirtyForms } from "./dirty-form"
 import { useMobile } from "./hooks"
 import {
   AdminPanelSettingsIcon,
   AppsIcon,
   ChatIcon,
-  ChevronRightIcon,
-  DarkModeIcon,
   FolderIcon,
-  LightModeIcon,
-  LogoutIcon,
-  MenuIcon,
   PhotoLibraryIcon,
+  RefreshIcon,
   ScheduleIcon,
   SettingsIcon,
 } from "./icons"
 import { Login, SetCredentials } from "./Login"
+import { createPopGuard } from "./nav-guard"
+import { clearNotices, markNoticesForSession } from "./notices"
 import { openNotifiedThread, setNoticeFocus } from "./notify"
 import {
   PluginAppsView,
@@ -38,7 +35,7 @@ import {
   PluginTabView,
   pluginTabs,
 } from "./plugin-tabs"
-import { PluginsProvider, usePlugins } from "./plugin-ui"
+import { PluginsProvider, pluginsAwaitingRoute, usePlugins } from "./plugin-ui"
 import { ResetApprovals } from "./ResetApprovals"
 import {
   CONFIG_GROUPS,
@@ -268,19 +265,48 @@ export function App() {
       .finally(() => setReady(true))
   }, [])
 
+  // Tab close/refresh guard for every registered form (shell-level, so
+  // thinking effort, public origin and future sections are covered by the
+  // same rule as the sections that used to carry a private listener).
   useEffect(() => {
+    const guard = (event: BeforeUnloadEvent) => {
+      if (dirtyForms.hasDirty()) event.preventDefault()
+    }
+    window.addEventListener("beforeunload", guard)
+    return () => window.removeEventListener("beforeunload", guard)
+  }, [])
+
+  // Internal navigation guards forms with unsaved changes; browser Back is
+  // canceled by re-entering the current entry (forward first, so the
+  // forward stack survives the common case) — see nav-guard.ts.
+  const pathRef = useRef(path)
+  pathRef.current = path
+  const confirmDirtyRef = useRef(confirmDirty)
+  confirmDirtyRef.current = confirmDirty
+  useEffect(() => {
+    const guard = createPopGuard(
+      {
+        locationPath: () => location.pathname,
+        forward: () => history.forward(),
+        pushState: (next) => history.pushState({}, "", next),
+      },
+      {
+        isBlocked: () => dirtyForms.hasDirty(),
+        confirmLeave: () => confirmDirtyRef.current(),
+        getGuardedPath: () => pathRef.current,
+      },
+    )
     const onPop = () => {
-      if (!confirmDirty()) {
-        // Undo the pop: pin the entry back so the view does not change.
-        history.pushState({}, "", path)
-        return
-      }
+      if (guard.onPop()) return
       setPath(location.pathname)
       announce()
     }
     window.addEventListener("popstate", onPop)
-    return () => window.removeEventListener("popstate", onPop)
-  }, [announce, confirmDirty, path])
+    return () => {
+      window.removeEventListener("popstate", onPop)
+      guard.reset()
+    }
+  }, [announce])
 
   useEffect(() => {
     setNoticeFocus({ path })
@@ -354,24 +380,28 @@ function Shell({
 }) {
   const pluginsState = usePlugins()
   const [navOpen, setNavOpen] = useState(false)
-  const [accountOpen, setAccountOpen] = useState(false)
-  const accountButton = useRef<HTMLButtonElement | null>(null)
   const { rail, setRailPersisted } = useRailPreference()
-  const navTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const navDrawerRef = useRef<HTMLDivElement | null>(null)
+  const navPaperRef = useRef<HTMLDivElement | null>(null)
+
+  // The notice center is session- and account-scoped: a new sign-in must
+  // start from an empty list, never the previous account's entries.
+  useEffect(() => {
+    if (!me.id) return
+    clearNotices()
+  }, [me.id])
 
   const tabs = useMemo(
     () => pluginTabs(pluginsState.plugins),
     [pluginsState.plugins],
   )
-  // While the install list has never loaded (first fetch in flight), a
-  // plugin-shaped URL stays pending instead of being redirected to chat.
-  // Once loading settles — success, empty, or error — the route is decided
-  // for real; a network error then falls back cleanly like any unknown path.
+  // While the install list has never resolved (first fetch in flight, or a
+  // first fetch that FAILED with nothing loaded — an error is not "absent"),
+  // a plugin-shaped URL stays pending instead of being redirected to chat.
+  // Once a request succeeds — even empty — the route is decided for real.
   const parsed = useMemo(
     () =>
       parseRoute(path, tabs, {
-        awaitingPlugins: pluginsState.status === "loading",
+        awaitingPlugins: pluginsAwaitingRoute(pluginsState.status, tabs.length),
       }),
     [path, tabs, pluginsState.status],
   )
@@ -393,31 +423,30 @@ function Shell({
 
   const openReply = useCallback(
     (sessionId: string) => {
+      // Read state agrees with the view: opening the thread clears its
+      // notice, wherever the open came from.
+      markNoticesForSession(sessionId)
       openNotifiedThread(sessionId)
       go("/")
     },
     [go],
   )
 
+  const logout = useCallback(() => {
+    void api("/api/auth/logout", { method: "POST" }).then(() => setMe(null))
+  }, [setMe])
+
   const activeKey = navActiveKey(parsed.route)
 
-  // The nav drawer is a temporary overlay: Escape closes it, focus moves in
-  // on open and returns to the trigger on close.
-  useEffect(() => {
-    if (!navOpen) return
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setNavOpen(false)
-    }
-    window.addEventListener("keydown", onKey)
-    const focusTimer = window.setTimeout(() => {
-      navDrawerRef.current?.focus()
-    }, 0)
-    return () => {
-      window.removeEventListener("keydown", onKey)
-      window.clearTimeout(focusTimer)
-      navTriggerRef.current?.focus()
-    }
-  }, [navOpen])
+  // The nav drawer is a temporary overlay sharing the app-wide overlay
+  // contract: Escape closes, focus enters the paper and returns to the exact
+  // trigger (header hamburger, rail Settings button…) on close, Tab stays
+  // confined. The Drawer's Paper already carries role="dialog".
+  useOverlayA11y(
+    navOpen,
+    useCallback(() => setNavOpen(false), []),
+    navPaperRef,
+  )
 
   const pluginsViewStatus: PluginsViewStatus = {
     status: pluginsState.status,
@@ -433,41 +462,28 @@ function Shell({
   const workspaceTab: WorkspaceTab =
     parsed.route.view === "workspace" ? parsed.route.tab : "chat"
 
-  const sidebar = (railMode: boolean, showCollapse = true) => (
+  const pageContext = (() => {
+    if (parsed.route.view === "workspace")
+      return {
+        chat: "Chat",
+        desktop: "Desktop",
+        projects: "Projects",
+        media: "Media",
+      }[parsed.route.tab]
+    if (parsed.route.view === "apps" || parsed.route.view === "plugin-pending")
+      return "Apps"
+    if (parsed.route.view === "plugin") return parsed.route.tab.title
+    if (parsed.route.view === "automations") return "Automations"
+    if (parsed.route.view === "admin") return "Admin"
+    if (parsed.route.view === "config")
+      return parsed.route.tab
+        ? `Settings · ${CONFIG_TAB_LABELS[parsed.route.tab]}`
+        : "Settings"
+    return ""
+  })()
+
+  const sidebar = (railMode: boolean) => (
     <>
-      <Box className="ob-side-brand">
-        <a
-          className="ob-side-logo"
-          href="/"
-          aria-label="open-bot — go to chat"
-          onClick={(event) => {
-            event.preventDefault()
-            go("/")
-          }}
-        >
-          <img src="/logo.png" alt="" width={28} height={28} />
-          {railMode ? null : (
-            <Typography className="ob-side-name" component="span">
-              open-bot
-            </Typography>
-          )}
-        </a>
-        {railMode || !showCollapse ? null : (
-          <IconButton
-            size="small"
-            aria-label="Collapse navigation"
-            aria-expanded={!railMode}
-            onClick={() => setRailPersisted(true)}
-            sx={{ ml: "auto" }}
-          >
-            <ChevronRightIcon
-              width={18}
-              height={18}
-              style={{ transform: "rotate(180deg)" }}
-            />
-          </IconButton>
-        )}
-      </Box>
       <nav className="ob-side-nav" aria-label="Main">
         {NAV_ENTRIES.filter(
           (entry) => entry.roles !== "admin" || me.role === "admin",
@@ -518,73 +534,6 @@ function Shell({
       ) : (
         <Box className="ob-side-context" sx={{ flex: 1 }} aria-hidden />
       )}
-      {/* Account cluster: a row in the expanded sidebar, a vertical stack in
-          the 64px rail so every control stays inside the column. */}
-      <Box className="ob-side-account">
-        <Stack
-          direction={railMode ? "column" : "row"}
-          spacing={0.5}
-          alignItems="center"
-          sx={{ width: "100%" }}
-        >
-          <SoundBell />
-          <NoticeBell />
-          {railMode ? null : <span style={{ flex: 1 }} />}
-          <Tip
-            title={mode === "dark" ? "Light mode" : "Dark mode"}
-            placement={railMode ? "right" : "top"}
-          >
-            <IconButton
-              size="small"
-              aria-label={
-                mode === "dark" ? "Switch to light mode" : "Switch to dark mode"
-              }
-              onClick={onToggleTheme}
-            >
-              {mode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
-            </IconButton>
-          </Tip>
-          <Tip title="Account" placement={railMode ? "right" : "top"}>
-            <IconButton
-              ref={accountButton}
-              size="small"
-              aria-label="Account menu"
-              aria-haspopup="menu"
-              aria-expanded={accountOpen}
-              onClick={() => setAccountOpen((open) => !open)}
-            >
-              <MenuIcon />
-            </IconButton>
-          </Tip>
-        </Stack>
-        {railMode ? null : (
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            sx={{ width: "100%", mt: 0.75 }}
-          >
-            <Typography
-              variant="caption"
-              color="textSecondary"
-              sx={{
-                flex: 1,
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {me.email}
-            </Typography>
-            {me.role === "admin" ? (
-              <Chip size="small" variant="outlined">
-                admin
-              </Chip>
-            ) : null}
-          </Stack>
-        )}
-      </Box>
     </>
   )
 
@@ -603,8 +552,37 @@ function Shell({
     if (parsed.route.view === "plugin")
       return <PluginTabView key={parsed.route.tab.key} tab={parsed.route.tab} />
     if (parsed.route.view === "plugin-pending") {
-      // The URL may name a plugin page; the install list is still loading.
-      // Hold this view — no redirect, no fake empty — until tabs resolve.
+      // The URL may name a plugin page. While the install list is in flight
+      // the view is a skeleton; if the first load failed, the URL is held
+      // with a real error and a retry — never a silent redirect to chat.
+      if (pluginsState.status === "error" && tabs.length === 0) {
+        return (
+          <Box className="ob-scroll" sx={{ p: 2 }}>
+            <Stack spacing={2} sx={{ maxWidth: 640, mx: "auto", pt: 4 }}>
+              <Alert severity="error">
+                <Typography variant="subtitle2" component="h1">
+                  Apps could not load
+                </Typography>
+                <Typography variant="body2" color="textSecondary">
+                  {pluginsState.error || "The install list is unreachable."}
+                </Typography>
+              </Alert>
+              <Box>
+                <Button
+                  variant="contained"
+                  startIcon={<RefreshIcon width={18} height={18} />}
+                  onClick={() => void pluginsState.refresh()}
+                >
+                  Retry
+                </Button>
+              </Box>
+              <output className="ob-sr-status">
+                Loading apps failed — retry available
+              </output>
+            </Stack>
+          </Box>
+        )
+      }
       return (
         <Box
           sx={{ height: "100%", p: 2, boxSizing: "border-box" }}
@@ -629,7 +607,9 @@ function Shell({
             sx={{ p: 2, maxWidth: 1200, width: "100%", mx: "auto" }}
           >
             <Stack spacing={0.25}>
-              <Typography variant="h6">Automations</Typography>
+              <Typography variant="h6" component="h1">
+                Automations
+              </Typography>
               <Typography variant="body2" color="textSecondary">
                 Scheduled jobs the desktop agent runs for you — create one,
                 pause it, or read what it did.
@@ -657,59 +637,32 @@ function Shell({
         me={me}
         tab={workspaceTab}
         onTab={(next) => go(workspacePath(next))}
-        onOpenNav={mobile ? () => setNavOpen(true) : undefined}
+        onMeRefreshed={setMe}
       />
     )
   })()
 
   return (
     <Box className="ob-shell">
-      {/* Workspace views carry their own bar with the menu button (it opens
-          this nav drawer through onOpenNav); other views get a slim bar. */}
-      {mobile && parsed.route.view !== "workspace" ? (
-        <Box className="ob-mobile-global-bar">
-          <IconButton
-            ref={navTriggerRef}
-            size="small"
-            aria-label="Open navigation"
-            onClick={() => setNavOpen(true)}
-          >
-            <MenuIcon />
-          </IconButton>
-          <Typography
-            variant="subtitle2"
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {parsed.route.view === "apps"
-              ? "Apps"
-              : parsed.route.view === "config"
-                ? "Settings"
-                : parsed.route.view === "admin"
-                  ? "Admin"
-                  : parsed.route.view === "automations"
-                    ? "Automations"
-                    : parsed.route.view === "plugin"
-                      ? parsed.route.tab.title
-                      : parsed.route.view === "plugin-pending"
-                        ? "Apps"
-                        : workspaceTab === "chat"
-                          ? "open-bot"
-                          : workspaceTab === "desktop"
-                            ? "Desktop"
-                            : workspaceTab === "projects"
-                              ? "Projects"
-                              : "Media"}
-          </Typography>
-          <SoundBell />
-          <NoticeBell />
-        </Box>
-      ) : null}
+      {/* One permanent shell header for every authenticated view: brand,
+          nav control, page context on the left; Profile · Theme ·
+          Notifications · Search on the right (in that exact order). */}
+      <AppHeader
+        me={me}
+        mobile={mobile}
+        pageContext={pageContext}
+        themeMode={mode}
+        onToggleTheme={onToggleTheme}
+        onToggleNav={() => {
+          if (mobile) setNavOpen(true)
+          else setRailPersisted(!rail)
+        }}
+        navCollapsed={mobile ? undefined : rail}
+        appTabs={tabs}
+        onOpenThread={openReply}
+        go={go}
+        onLogout={logout}
+      />
       <Box className="ob-shell-body">
         {mobile ? null : (
           <aside
@@ -717,17 +670,6 @@ function Shell({
             aria-label="Sidebar"
           >
             {sidebar(rail)}
-            {rail ? (
-              <IconButton
-                size="small"
-                aria-label="Expand navigation"
-                aria-expanded={false}
-                onClick={() => setRailPersisted(false)}
-                sx={{ position: "absolute", top: 8, right: 4 }}
-              >
-                <ChevronRightIcon width={18} height={18} />
-              </IconButton>
-            ) : null}
           </aside>
         )}
         <main className="ob-content" key={viewKey}>
@@ -741,75 +683,21 @@ function Shell({
         variant="temporary"
         anchor="left"
         width={300}
+        ref={navPaperRef}
+        aria-label="Navigation"
       >
         <Box
-          ref={navDrawerRef}
-          tabIndex={-1}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Navigation"
           sx={{
             p: 1.25,
             display: "flex",
             flexDirection: "column",
             minHeight: "100%",
             boxSizing: "border-box",
-            outline: "none",
           }}
         >
-          {sidebar(false, false)}
+          {sidebar(false)}
         </Box>
       </Drawer>
-
-      <Menu
-        open={accountOpen}
-        anchorEl={accountButton}
-        onClose={() => {
-          setAccountOpen(false)
-          accountButton.current?.focus()
-        }}
-      >
-        <Box sx={{ px: 1.5, pt: 1, maxWidth: 240 }}>
-          <Typography
-            variant="caption"
-            color="textSecondary"
-            sx={{
-              display: "block",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {me.email}
-          </Typography>
-        </Box>
-        <Divider sx={{ my: 0.5 }} />
-        <Button
-          variant="text"
-          startIcon={mode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
-          onClick={() => {
-            onToggleTheme()
-            setAccountOpen(false)
-          }}
-          sx={{ width: "100%", justifyContent: "flex-start" }}
-        >
-          {mode === "dark" ? "Light mode" : "Dark mode"}
-        </Button>
-        <Button
-          variant="text"
-          color="error"
-          startIcon={<LogoutIcon />}
-          onClick={() => {
-            setAccountOpen(false)
-            void api("/api/auth/logout", { method: "POST" }).then(() =>
-              setMe(null),
-            )
-          }}
-          sx={{ width: "100%", justifyContent: "flex-start" }}
-        >
-          Log out
-        </Button>
-      </Menu>
 
       <AgentNotices onOpen={openReply} />
 

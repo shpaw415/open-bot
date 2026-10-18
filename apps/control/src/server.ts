@@ -330,6 +330,18 @@ function userFrom(req: Request, db: Db) {
   return db.userById(session.userId)
 }
 
+// Why a session cookie failed to resolve to a user — surfaced on the 401 so
+// the dashboard can say something actionable ("cookie not sent — insecure
+// context or blocked cookies") instead of a bare "unauthorized".
+function sessionAuthError(req: Request, db: Db): string {
+  const token = readCookie(req)
+  if (!token) return "no_cookie"
+  const session = db.sessionByHash(sha256(token))
+  if (!session) return "invalid_session"
+  if (session.expiresAt < Date.now()) return "expired_session"
+  return "invalid_user"
+}
+
 function userFromLlmToken(req: Request, db: Db) {
   const header = req.headers.get("authorization") ?? ""
   if (!/^Bearer\s+/i.test(header)) return null
@@ -1152,7 +1164,7 @@ async function api(
       return json({ error: "invalid login" }, 401)
     }
     if (user.disabled) return json({ error: "account disabled" }, 403)
-    return sessionResponse(db, user)
+    return sessionResponse(req, url, db, user)
   }
   if (url.pathname === "/api/auth/register" && req.method === "POST") {
     const body = await readJson(req)
@@ -1177,7 +1189,7 @@ async function api(
     }
     db.createUser(user)
     db.ensureDesktop(freshDesktop(user.id))
-    return sessionResponse(db, user)
+    return sessionResponse(req, url, db, user)
   }
   if (url.pathname === "/api/improvements") {
     const agent = userFromLlmToken(req, db)
@@ -1349,7 +1361,11 @@ async function api(
     }
   }
   const user = userFrom(req, db)
-  if (!user) return json({ error: "unauthorized" }, 401)
+  if (!user)
+    return json(
+      { error: "unauthorized", reason: sessionAuthError(req, db) },
+      401,
+    )
   if (passwordChangeBlocked(user, url.pathname)) {
     return json({ error: "password change required" }, 403)
   }
@@ -3698,7 +3714,26 @@ function publicUser(user: User) {
   }
 }
 
-function sessionResponse(db: Db, user: User) {
+function sessionResponse(req: Request, url: URL, db: Db, user: User) {
+  // With COOKIE_SECURE=1 the browser drops the session cookie on insecure
+  // origins — a login there "succeeds" and then every later request 401s.
+  // Refuse at login time with the actual cause instead (https behind a TLS
+  // terminator arrives with x-forwarded-proto: https).
+  const proto = (
+    req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "")
+  )
+    .split(",")[0]
+    ?.trim()
+  if (cookieSecure && proto !== "https") {
+    return json(
+      {
+        error:
+          "insecure origin — this dashboard sets Secure-only session cookies, so sign-in cannot stick; open it over https",
+        reason: "insecure_origin",
+      },
+      403,
+    )
+  }
   db.ensureDesktop(freshDesktop(user.id))
   const token = randomToken()
   db.createSession({

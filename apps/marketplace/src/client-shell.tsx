@@ -3,6 +3,7 @@ import "frame-master-plugin-cloudflare-update-manager/client"
 import { SSRPropsProvider } from "frame-master-plugin-cloudflare-pages-dynamic-ssr/client/context"
 import type { PropsData } from "frame-master-plugin-cloudflare-pages-dynamic-ssr/provider/utils"
 import { type JSX, StrictMode, useCallback, useRef, useState } from "react"
+import { setNavPath } from "./hooks/usePath"
 
 export default function ClientWrapper({ children }: { children: JSX.Element }) {
   const routeChangePromiseRef = useRef<
@@ -40,6 +41,7 @@ export default function ClientWrapper({ children }: { children: JSX.Element }) {
           onRouteChange={async (match) => {
             matched.current = match
             setPathname(match.pathname)
+            setNavPath(match.pathname)
             if (process.env.NODE_ENV === "development") {
               setDevKey((prev) => prev + 1)
             }

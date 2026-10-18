@@ -211,6 +211,73 @@ export function extractPluginFiles(
   }
 }
 
+// Bun's HTML bundler emits <script src>-derived code as deferred
+// <script type="module"> blocks while inline classic scripts stay in place —
+// and deferred modules always execute after every classic script, no matter
+// where each tag sits. Page code that consumes vendor globals (the classic
+// <script src> library pattern) would therefore run before its dependencies.
+// When both kinds exist, rewrite the classic inline bodies into one module
+// script placed after the last module script: deferred scripts execute in
+// document order, restoring "vendors first, then page code". Classic
+// top-level var/function declarations stay shared across the merged body;
+// non-executable typed scripts (importmap, application/json, ...) and
+// external URL scripts are left untouched.
+export function fixUiScriptOrder(html: string): string {
+  const scriptRe = /<script\b[^>]*\/>|<script\b[^>]*>([\s\S]*?)<\/script>/gi
+  const openRe = /<script\b[^>]*>?/i
+  type Block = {
+    start: number
+    end: number
+    kind: "module" | "classic" | "skip"
+    body: string
+  }
+  const blocks: Block[] = []
+  for (const match of html.matchAll(scriptRe)) {
+    const start = match.index ?? 0
+    const end = start + match[0].length
+    const open = openRe.exec(match[0])?.[0] ?? ""
+    const src = /\ssrc\s*=/i.test(open)
+    const type =
+      /\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+        .exec(open)
+        ?.slice(1)
+        .find((part) => part !== undefined)
+        ?.toLowerCase() ?? ""
+    const body = match[1] ?? ""
+    let kind: Block["kind"] = "skip"
+    if (!src && (type === "" || type === "text/javascript")) {
+      kind = body.trim() === "" ? "skip" : "classic"
+    } else if (!src && type === "module" && body.trim() !== "") {
+      kind = "module"
+    }
+    blocks.push({ start, end, kind, body })
+  }
+  const classics = blocks.filter((block) => block.kind === "classic")
+  const modules = blocks.filter((block) => block.kind === "module")
+  if (classics.length === 0 || modules.length === 0) return html
+  // Rebuild the document without the classic inline blocks, tracking where
+  // the last module script ends — the insertion point for the merged body.
+  let out = ""
+  let insertAt = -1
+  let cursor = 0
+  for (const block of blocks) {
+    if (block.kind === "classic") {
+      out += html.slice(cursor, block.start)
+      cursor = block.end
+      continue
+    }
+    out += html.slice(cursor, block.end)
+    cursor = block.end
+    if (block.kind === "module") insertAt = out.length
+  }
+  out += html.slice(cursor)
+  const merged =
+    `<script type="module">` +
+    classics.map((block) => block.body).join("\n;\n") +
+    `</script>`
+  return out.slice(0, insertAt) + merged + out.slice(insertAt)
+}
+
 // Bundles one frontend entry (inside the unpacked artifact root) into a
 // single self-contained HTML file. Bun inlines every script/stylesheet/asset
 // the entry references by relative path; external URLs stay untouched. The
@@ -261,7 +328,8 @@ function buildPluginUi(root: string, uiSource: string): PluginArtifactFile {
         "ui_build_failed",
       )
     }
-    const content = readFileSync(join(out, produced[0]), "utf8")
+    const built = readFileSync(join(out, produced[0]), "utf8")
+    const content = fixUiScriptOrder(built)
     if (content.length === 0) {
       throw new HttpError(
         502,

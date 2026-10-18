@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import AccessibleDialog, { DialogActions } from "./AccessibleDialog"
 import { ApiHttpError, api } from "./api"
 import { Chip } from "./chip"
-import { useDirtyForm } from "./dirty-form"
+import { useDirtyFlag } from "./dirty-form"
 import { useMobile } from "./hooks"
 import { DeleteIcon, RefreshIcon } from "./icons"
 import { type InstalledPluginInfo, PluginBadges, usePlugins } from "./plugin-ui"
@@ -503,11 +503,28 @@ function InstalledTable({
                     </TableCell>
                     <TableCell>
                       <Stack direction="row" spacing={0.5}>
+                        {/* Activation and health are separate facts: an
+                            enabled plugin can still have failed its setup, so
+                            "on" must never read as "everything is fine". */}
                         <Chip
                           size="small"
-                          color={plugin.enabled ? "success" : undefined}
+                          color={
+                            plugin.enabled
+                              ? plugin.init && !plugin.init.ok
+                                ? "warning"
+                                : "success"
+                              : undefined
+                          }
                           label={plugin.enabled ? "on" : "off"}
                         />
+                        {plugin.init && !plugin.init.ok ? (
+                          <Chip
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            label="setup failed"
+                          />
+                        ) : null}
                         {rowBusy ? <CircularProgress size={1} /> : null}
                       </Stack>
                     </TableCell>
@@ -1568,7 +1585,11 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   const [marketLoading, setMarketLoading] = useState(false)
   const [policyBusy, setPolicyBusy] = useState(false)
   const [originDraft, setOriginDraft] = useState("")
-  const [originDirty, setOriginDirty] = useDirtyForm()
+  // Dirty = the draft differs from the saved origin. Same compare-with-saved
+  // rule as the other settings; the shell registry covers internal nav and
+  // tab close through useDirtyFlag.
+  const originDirty = originDraft.trim() !== publicOrigin.trim()
+  useDirtyFlag(originDirty)
   const [actionId, setActionId] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [error, setError] = useState("")
@@ -1610,8 +1631,8 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
   const [categories, setCategories] = useState<string[]>([])
 
   useEffect(() => {
-    if (!originDirty) setOriginDraft(publicOrigin)
-  }, [publicOrigin, originDirty])
+    setOriginDraft(publicOrigin)
+  }, [publicOrigin])
 
   const loadMarket = useCallback(async (q: string, cat = "") => {
     setMarketLoading(true)
@@ -1774,7 +1795,6 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         method: "PUT",
         body: JSON.stringify({ publicOrigin: originDraft.trim() }),
       })
-      setOriginDirty(false)
       setNotice(
         "public origin updated — ob-plugin endpoint <id> url now reports it",
       )
@@ -1932,7 +1952,6 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
             disabled={policyBusy}
             onChange={(event) => {
               setOriginDraft(event.currentTarget.value)
-              setOriginDirty(true)
             }}
             sx={{ minWidth: 280, maxWidth: 420 }}
           />

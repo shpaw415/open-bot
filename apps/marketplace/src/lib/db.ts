@@ -223,6 +223,126 @@ export async function searchPlugins(
   return (result.results ?? []).map(pluginFromRow)
 }
 
+// ——— Catalogue search (additive extension of the API above) —————————————————
+// Sorting and price filters are applied in SQL BEFORE the LIMIT so pagination
+// and ordering cover the whole catalogue, not just the first page.
+
+export type CatalogSort = "popular" | "name" | "price" | "new"
+export type CatalogPrice = "all" | "free" | "paid"
+
+export type CatalogQuery = {
+  q?: string
+  category?: string
+  price?: CatalogPrice
+  sort?: CatalogSort
+  limit?: number
+  offset?: number
+  includeAll?: boolean
+}
+
+export type CatalogFacet = { category: string; count: number }
+
+export type CatalogResult = {
+  plugins: MarketPlugin[]
+  total: number
+  facets: CatalogFacet[]
+}
+
+const CATALOG_SORTS: Record<CatalogSort, string> = {
+  popular: "downloads DESC, updated_at DESC, name COLLATE NOCASE ASC",
+  name: "name COLLATE NOCASE ASC",
+  price: "COALESCE(price_cents, 0) ASC, name COLLATE NOCASE ASC",
+  new: "created_at DESC, name COLLATE NOCASE ASC",
+}
+
+// Pure SQL builder, exported for tests: the WHERE/ORDER clauses must cover the
+// whole table before LIMIT/OFFSET are applied.
+export function buildCatalogQuery(opts: CatalogQuery): {
+  where: string
+  facetWhere: string
+  params: (string | number)[]
+  facetParams: (string | number)[]
+  order: string
+  limit: number
+  offset: number
+} {
+  const base: string[] = []
+  const baseParams: (string | number)[] = []
+  if (!opts.includeAll) {
+    base.push("status = 'approved'")
+    // Dev-only listings stay out of the public catalogue until a stable
+    // version publishes (same rule as searchPlugins).
+    base.push("latest_version GLOB '[0-9]*' AND latest_version NOT LIKE '%-%'")
+  }
+  const q = opts.q?.trim()
+  if (q) {
+    base.push(
+      "(id LIKE ? OR name LIKE ? OR description LIKE ? OR tags LIKE ? OR author LIKE ?)",
+    )
+    const like = `%${q}%`
+    baseParams.push(like, like, like, like, like)
+  }
+  const price = opts.price ?? "all"
+  if (price === "free") base.push("(price_cents IS NULL OR price_cents <= 0)")
+  if (price === "paid") base.push("(price_cents IS NOT NULL AND price_cents > 0)")
+
+  const filtered = [...base]
+  const filteredParams = [...baseParams]
+  const category = opts.category?.trim().toLowerCase()
+  if (category) {
+    filtered.push("LOWER(category) = ?")
+    filteredParams.push(category)
+  }
+
+  const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? 100)))
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0))
+  const order = CATALOG_SORTS[opts.sort ?? "popular"]
+  return {
+    where: filtered.length > 0 ? `WHERE ${filtered.join(" AND ")}` : "",
+    // Facets ignore the selected category so counts stay stable while
+    // narrowing; they DO respect q + price so they reflect the search.
+    facetWhere: base.length > 0 ? `WHERE ${base.join(" AND ")}` : "",
+    facetParams: baseParams,
+    params: filteredParams,
+    order,
+    limit,
+    offset,
+  }
+}
+
+export async function searchCatalog(
+  db: D1Database,
+  opts: CatalogQuery,
+): Promise<CatalogResult> {
+  const query = buildCatalogQuery(opts)
+  const [rows, totalRow, facets] = await Promise.all([
+    db
+      .prepare(
+        `SELECT * FROM plugins ${query.where} ORDER BY ${query.order} LIMIT ${query.limit} OFFSET ${query.offset}`,
+      )
+      .bind(...query.params)
+      .all<PluginRow>(),
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM plugins ${query.where}`)
+      .bind(...query.params)
+      .first<{ count: number }>(),
+    db
+      .prepare(
+        `SELECT category, COUNT(*) AS count FROM plugins ${query.facetWhere} GROUP BY category ORDER BY count DESC, category ASC`,
+      )
+      .bind(...query.facetParams)
+      .all<CatalogFacet>(),
+  ])
+  return {
+    plugins: (rows.results ?? []).map(pluginFromRow),
+    total: totalRow?.count ?? 0,
+    facets: (facets.results ?? []).filter(
+      (facet): facet is CatalogFacet =>
+        typeof facet.category === "string" && typeof facet.count === "number",
+    ),
+  }
+}
+
 export async function getPluginRow(
   db: D1Database,
   id: string,

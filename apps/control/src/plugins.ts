@@ -1235,9 +1235,9 @@ export function handlePlugins(
         )
     }
     if (what === "setup") {
-      if (agent) {
-        return json({ error: "setup retry requires the dashboard" }, 403)
-      }
+      // Agent-callable on purpose: the LLM token already runs the same
+      // consented root commands at install time, so a CLI retry
+      // (`ob-plugin setup <id>`) is the same surface, not an escalation.
       return retryPluginSetup(db, user, row)
         .then((init) => {
           hub.emit(user.id, { type: "plugins.changed" })

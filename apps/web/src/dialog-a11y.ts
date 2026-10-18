@@ -1,59 +1,134 @@
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 
 const FOCUSABLE =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
 
 /**
- * Keyboard/focus contract for mui-lite Dialogs. The library's Dialog is a
- * plain div + backdrop: no Escape, no focus management. This hook adds, per
- * open dialog:
- * - Escape closes (unless suspended, e.g. while a destructive save is busy),
- * - focus moves to the first focusable element inside the dialog on open,
- *   falling back to the dialog paper itself,
- * - focus returns to whatever element had focus when the dialog opened,
- * - Tab/Shift+Tab stay confined to the dialog while it is open.
- *
- * Pass `paperRef` attached to the <Dialog> element (its ref lands on the
- * Paper that carries role="dialog"). Use `suspendEscape` while a busy or
- * destructive wait state must not be dismissed.
+ * Topmost-only Escape for stacked overlays (dialog over drawer over dialog):
+ * each open overlay registers on a module-level stack and only the top one
+ * handles Escape. Pure bookkeeping, unit-tested without a DOM.
  */
-export function useDialogA11y(
+const overlayStack: symbol[] = []
+
+export function registerOverlay(id: symbol) {
+  overlayStack.push(id)
+}
+
+export function unregisterOverlay(id: symbol) {
+  const index = overlayStack.lastIndexOf(id)
+  if (index !== -1) overlayStack.splice(index, 1)
+}
+
+export function isTopOverlay(id: symbol): boolean {
+  return overlayStack.length > 0 && overlayStack[overlayStack.length - 1] === id
+}
+
+/** Test/visibility helper. */
+export function overlayDepth(): number {
+  return overlayStack.length
+}
+
+/**
+ * A focusable element for Tab confinement: matches the selector and is
+ * actually reachable — not disabled, not aria-hidden, not tabindex=-1, not
+ * a hidden input, not visually hidden. `style` is injected (when a DOM is
+ * available) so the predicate stays honest; the query helper below supplies
+ * computed styles.
+ */
+export function isOverlayFocusable(
+  el: {
+    matches?: (selector: string) => boolean
+    getAttribute: (name: string) => string | null
+    hasAttribute: (name: string) => boolean
+    type?: string
+  },
+  style?: { visibility?: string; display?: string } | null,
+): boolean {
+  if (!el.matches?.(FOCUSABLE)) return false
+  if (el.hasAttribute("disabled")) return false
+  if (el.getAttribute("aria-hidden") === "true") return false
+  if (el.getAttribute("tabindex") === "-1") return false
+  if (el.type === "hidden") return false
+  if (style && (style.visibility === "hidden" || style.display === "none"))
+    return false
+  return true
+}
+
+function overlayFocusables(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => {
+      const computed =
+        typeof window !== "undefined"
+          ? (window.getComputedStyle?.(el) ?? null)
+          : null
+      return isOverlayFocusable(el, computed)
+    },
+  )
+}
+
+/**
+ * Shared keyboard/focus contract for every app overlay — mui-lite's Dialog
+ * and Drawer are plain divs + backdrops: no Escape, no focus management.
+ *
+ * Per open overlay:
+ * - Escape closes, but only when this overlay is the top of the stack, and
+ *   never while `suspendEscape` holds (busy/destructive wait states).
+ * - Focus moves to the first reachable focusable inside `rootRef` (the
+ *   Dialog Paper / Drawer paper), falling back to the container itself.
+ * - Focus returns to the exact element that had focus on open — the real
+ *   trigger, wherever it lives (header hamburger, workspace button…).
+ * - Tab/Shift+Tab stay confined to the overlay, looping when it has
+ *   focusables and staying on the container when it has none.
+ */
+export function useOverlayA11y(
   open: boolean,
   onClose: () => void,
-  paperRef?: React.RefObject<HTMLElement | null>,
+  rootRef?: React.RefObject<HTMLElement | null>,
   suspendEscape?: boolean,
 ) {
+  const idRef = useRef<symbol | null>(null)
   useEffect(() => {
     if (!open) return
-    // Whoever had focus before the dialog (the trigger button) gets it back
-    // on close — captured now, before the dialog takes it.
+    const id = Symbol("overlay")
+    idRef.current = id
+    registerOverlay(id)
+    // Whoever had focus before the overlay (its trigger) gets it back on
+    // close — captured now, before the overlay takes it.
     const previouslyFocused = document.activeElement as HTMLElement | null
     const focusTimer = window.setTimeout(() => {
-      const root = paperRef?.current
+      const root = rootRef?.current
       if (!root) return
-      const first = root.querySelector<HTMLElement>(FOCUSABLE)
+      const first = overlayFocusables(root)[0]
       ;(first ?? root).focus?.()
     }, 0)
     const onKey = (event: KeyboardEvent) => {
+      if (!isTopOverlay(id)) return
       if (event.key === "Escape" && !suspendEscape) {
         event.stopPropagation()
         onClose()
         return
       }
-      const paper = paperRef?.current
-      if (event.key === "Tab" && paper) {
-        // Confine Tab to the dialog's focusables.
-        const focusables = Array.from(
-          paper.querySelectorAll<HTMLElement>(FOCUSABLE),
-        ).filter((el) => !el.hasAttribute("disabled"))
-        if (focusables.length === 0) return
+      const root = rootRef?.current
+      if (event.key === "Tab" && root) {
+        const focusables = overlayFocusables(root)
+        if (focusables.length === 0) {
+          // Nothing tabbable inside: keep focus on the container instead of
+          // letting it fall through to the page behind the modal.
+          event.preventDefault()
+          root.focus()
+          return
+        }
         const first = focusables[0]
         const last = focusables[focusables.length - 1]
         const active = document.activeElement
-        if (event.shiftKey && (active === first || !paper.contains(active))) {
+        if (event.shiftKey && (active === first || !root.contains(active))) {
           event.preventDefault()
           last.focus()
         } else if (!event.shiftKey && active === last) {
+          event.preventDefault()
+          first.focus()
+        } else if (!root.contains(active)) {
+          // Focus escaped (e.g. programmatic move): pull it back in.
           event.preventDefault()
           first.focus()
         }
@@ -62,9 +137,23 @@ export function useDialogA11y(
     window.addEventListener("keydown", onKey, true)
     return () => {
       window.clearTimeout(focusTimer)
+      unregisterOverlay(id)
+      if (idRef.current === id) idRef.current = null
       window.removeEventListener("keydown", onKey, true)
       if (previouslyFocused && document.contains(previouslyFocused))
         previouslyFocused.focus?.()
     }
-  }, [open, onClose, paperRef, suspendEscape])
+  }, [open, onClose, rootRef, suspendEscape])
+}
+
+/**
+ * Back-compat alias: the original Dialog-scoped name. Same contract.
+ */
+export function useDialogA11y(
+  open: boolean,
+  onClose: () => void,
+  paperRef?: React.RefObject<HTMLElement | null>,
+  suspendEscape?: boolean,
+) {
+  useOverlayA11y(open, onClose, paperRef, suspendEscape)
 }

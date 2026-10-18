@@ -144,6 +144,18 @@ page_warn() {
   fi
 }
 
+# Surface failed root setup commands from the install/update response. The
+# install itself succeeds, but the plugin's setup did not run to completion —
+# say so loudly instead of leaving the failure buried in the response JSON.
+init_warn() {
+  if printf '%s' "$1" | jq -e '.plugin.init != null and .plugin.init.ok == false' >/dev/null 2>&1; then
+    id=$(printf '%s' "$1" | jq -r '.plugin.pluginId')
+    detail=$(printf '%s' "$1" | jq -r '.plugin.init.output // ""' | tr '\n\r' '  ' | sed 's/  */ /g' | tail -c 300)
+    echo "ob-plugin: warning: setup commands failed${detail:+: $detail}" >&2
+    echo "  the plugin is installed but its root setup did not finish — re-run: ob-plugin setup $id (log: ~/.open-bot/plugin-init/$id.log)" >&2
+  fi
+}
+
 # Paid premium plugins: the install/update 402 carries the buy pointer.
 # Agents cannot buy — stop with clear instructions instead of retrying.
 purchase_gate() {
@@ -1023,7 +1035,8 @@ EOF
       esac
     fi
     page_warn "$out"
-    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, name: .plugin.name, source: (.plugin.source // "marketplace"), page: (.plugin.page // null)}'
+    init_warn "$out"
+    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, name: .plugin.name, source: (.plugin.source // "marketplace"), page: (.plugin.page // null), setupOk: (.plugin.init.ok // null)}'
     ;;
   list)
     out=$(request GET /api/plugins/installed)
@@ -1059,7 +1072,8 @@ EOF
     purchase_gate "$out"
     fail_on_error "$out"
     page_warn "$out"
-    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, page: (.plugin.page // null)}'
+    init_warn "$out"
+    printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, page: (.plugin.page // null), setupOk: (.plugin.init.ok // null)}'
     ;;
   remove)
     [ $# -eq 1 ] || { usage; exit 2; }
