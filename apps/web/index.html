@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>open-bot</title>
+    <script>
+      // Pre-React theme bootstrap: paint the stored/system theme before the
+      // bundle loads so dark users never flash light. Mirrors theme.tsx.
+      ;(function () {
+        try {
+          var stored = localStorage.getItem("ob-theme")
+          var dark =
+            stored === "dark" ||
+            (stored !== "light" &&
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches)
+          var el = document.documentElement
+          el.dataset.theme = dark ? "dark" : "light"
+          el.style.colorScheme = dark ? "dark" : "light"
+          el.style.background = dark ? "#0e1014" : "#eef0f4"
+        } catch (e) {
+          /* storage blocked — CSS default (dark) applies */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

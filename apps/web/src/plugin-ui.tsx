@@ -3,7 +3,7 @@ import Chip from "@shpaw415/mui-lite/Chip"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useReducer, useRef } from "react"
 import { api } from "./api"
 import { useEventStream } from "./hooks"
 
@@ -113,52 +113,175 @@ export type InstalledResponse = {
   configured: boolean
 }
 
-export function useInstalledPlugins() {
-  const [plugins, setPlugins] = useState<InstalledPluginInfo[]>([])
-  const [policy, setPolicy] = useState<"manual" | "auto">("manual")
-  const [autoUpdate, setAutoUpdate] = useState<"off" | "stable">("off")
-  const [publicOrigin, setPublicOrigin] = useState("")
-  const [configured, setConfigured] = useState(false)
-  const [loaded, setLoaded] = useState(false)
+/**
+ * Load lifecycle of the account-scoped plugin list.
+ *
+ * - `initial` — no authenticated session yet (or never fetched); nothing loaded.
+ * - `loading` — first fetch in flight, no data to show.
+ * - `ready` — last fetch succeeded; `plugins` may legitimately be empty.
+ * - `error` — last fetch failed. `plugins` still holds the last good list
+ *   (possibly empty on first load); the view must offer a retry and must
+ *   never render the failure as "no plugins".
+ *
+ * `refreshing` is true while a background refetch runs on top of `ready`.
+ */
+export type PluginsStatus = "initial" | "loading" | "ready" | "error"
+
+export type InstalledPluginsState = {
+  plugins: InstalledPluginInfo[]
+  policy: "manual" | "auto"
+  autoUpdate: "off" | "stable"
+  publicOrigin: string
+  configured: boolean
+  status: PluginsStatus
+  refreshing: boolean
+  error: string
+  /** Account the current data belongs to; null when signed out. Internal. */
+  identityKey: string | null
+}
+
+export const initialPluginsState: InstalledPluginsState = {
+  plugins: [],
+  policy: "manual",
+  autoUpdate: "off",
+  publicOrigin: "",
+  configured: false,
+  status: "initial",
+  refreshing: false,
+  error: "",
+  identityKey: null,
+}
+
+export type PluginsAction =
+  | { type: "identity"; identity: string | null }
+  | { type: "fetch" }
+  | { type: "success"; body: InstalledResponse }
+  | { type: "failure"; error: string }
+
+/** Normalize a server body into the state's data fields. */
+export function parseInstalledBody(
+  body: InstalledResponse,
+): Pick<
+  InstalledPluginsState,
+  "plugins" | "policy" | "autoUpdate" | "publicOrigin" | "configured"
+> {
+  return {
+    plugins: Array.isArray(body.plugins) ? body.plugins : [],
+    policy: body.policy === "auto" ? "auto" : "manual",
+    autoUpdate: body.autoUpdate === "stable" ? "stable" : "off",
+    publicOrigin:
+      typeof body.publicOrigin === "string" ? body.publicOrigin : "",
+    configured: Boolean(body.configured),
+  }
+}
+
+/**
+ * Pure state machine behind useInstalledPlugins. Identity switches clear the
+ * previous user's data immediately — a private install list must never leak
+ * across accounts, and a fetch fired before login must not be mistaken for
+ * "this account has no plugins".
+ */
+export function pluginsReducer(
+  state: InstalledPluginsState,
+  action: PluginsAction,
+): InstalledPluginsState {
+  switch (action.type) {
+    case "identity": {
+      if (action.identity === null) {
+        // Signed out: drop everything, back to the pre-login state.
+        return { ...initialPluginsState }
+      }
+      if (state.identityKey === action.identity) return state
+      return {
+        ...initialPluginsState,
+        status: "loading",
+        identityKey: action.identity,
+      }
+    }
+    case "fetch": {
+      if (state.status === "ready")
+        return { ...state, refreshing: true, error: "" }
+      return { ...state, status: "loading", error: "" }
+    }
+    case "success":
+      return {
+        ...parseInstalledBody(action.body),
+        status: "ready",
+        refreshing: false,
+        error: "",
+        identityKey: state.identityKey,
+      }
+    case "failure":
+      return {
+        // Keep the last good list; an error must not look like "no plugins".
+        ...state,
+        status: "error",
+        refreshing: false,
+        error: action.error,
+      }
+  }
+}
+
+export function useInstalledPlugins(opts?: {
+  /** True only with an authenticated session; gates the protected fetch. */
+  active?: boolean
+  /** Account id the data belongs to; switching it invalidates and reloads. */
+  identity?: string | null
+}): InstalledPluginsState & { refresh: () => Promise<void> } {
+  const active = opts?.active ?? true
+  const identity = opts?.identity ?? null
+  const [state, dispatch] = useReducer(pluginsReducer, {
+    ...initialPluginsState,
+    // Start in the right phase before the first effect: with a session the
+    // first fetch starts immediately; without one nothing is loaded yet.
+    status: active ? "loading" : "initial",
+    identityKey: active ? identity : null,
+  })
+  const requestedRef = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
+    dispatch({ type: "fetch" })
     try {
       const body = await api<InstalledResponse>("/api/plugins/installed")
-      setPlugins(body.plugins ?? [])
-      setPolicy(body.policy ?? "manual")
-      setAutoUpdate(body.autoUpdate ?? "off")
-      setPublicOrigin(body.publicOrigin ?? "")
-      setConfigured(body.configured ?? false)
-      setLoaded(true)
-    } catch {
-      setLoaded(true)
+      dispatch({ type: "success", body })
+    } catch (caught) {
+      dispatch({
+        type: "failure",
+        error:
+          caught instanceof Error ? caught.message : "failed to load plugins",
+      })
     }
   }, [])
 
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    dispatch({ type: "identity", identity: active ? identity : null })
+  }, [active, identity])
 
-  const { subscribe } = useEventStream(true)
+  useEffect(() => {
+    if (!active) {
+      requestedRef.current = null
+      return
+    }
+    // One request per identity unless a refresh is asked for explicitly.
+    if (requestedRef.current === identity) return
+    requestedRef.current = identity
+    void refresh()
+  }, [active, identity, refresh])
+
+  const { subscribe } = useEventStream(active)
 
   useEffect(
     () =>
       subscribe((event) => {
         if (event.type !== "plugins.changed") return
+        if (!active) return
+        requestedRef.current = identity
         void refresh()
       }),
-    [subscribe, refresh],
+    [subscribe, refresh, active, identity],
   )
 
-  return {
-    plugins,
-    policy,
-    autoUpdate,
-    publicOrigin,
-    configured,
-    loaded,
-    refresh,
-  }
+  return { ...state, refresh }
 }
 
 export function resolveSpecField(

@@ -340,6 +340,8 @@ function InstalledTable({
   plugins,
   totalCount,
   loaded,
+  error,
+  onRetry,
   actionId,
   page,
   rowsPerPage,
@@ -355,6 +357,8 @@ function InstalledTable({
   plugins: InstalledPluginInfo[]
   totalCount: number
   loaded: boolean
+  error: string
+  onRetry: () => void
   actionId: string | null
   page: number
   rowsPerPage: 10 | 25 | 50 | 100
@@ -375,6 +379,16 @@ function InstalledTable({
 
   return (
     <Paper variant="outlined">
+      {error ? (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 1.5 }}>
+          <Typography variant="body2" color="error" sx={{ flex: 1 }}>
+            {error}
+          </Typography>
+          <Button size="small" variant="outlined" onClick={onRetry}>
+            Retry
+          </Button>
+        </Stack>
+      ) : null}
       <TableContainer sx={{ overflowX: "auto" }}>
         <Table size="small" stickyHeader>
           <TableHead>
@@ -397,9 +411,11 @@ function InstalledTable({
               <TableRow>
                 <TableCell colSpan={5}>
                   <Typography variant="body2" color="textSecondary">
-                    {totalCount > 0
-                      ? "No installed plugins match the filters."
-                      : "Nothing installed yet. Ask the agent to build a plugin, or install one from the marketplace below."}
+                    {error
+                      ? "The install list could not be loaded."
+                      : totalCount > 0
+                        ? "No installed plugins match the filters."
+                        : "Nothing installed yet. Ask the agent to build a plugin, or install one from the marketplace below."}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -1546,7 +1562,8 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     autoUpdate,
     publicOrigin,
     configured,
-    loaded,
+    status: pluginsStatus,
+    error: pluginsError,
     refresh,
   } = useInstalledPlugins()
   const [market, setMarket] = useState<MarketPlugin[]>([])
@@ -1990,7 +2007,9 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
       <InstalledTable
         plugins={filteredInstalled}
         totalCount={plugins.length}
-        loaded={loaded}
+        loaded={pluginsStatus === "ready" || pluginsStatus === "error"}
+        error={pluginsError}
+        onRetry={() => void refresh()}
         actionId={actionId}
         page={installedPage}
         rowsPerPage={installedRowsPerPage}

@@ -1,24 +1,21 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Drawer from "@shpaw415/mui-lite/Drawer"
-import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
+import IconButton from "@shpaw415/mui-lite/IconButton"
 import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
-import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import Typography from "@shpaw415/mui-lite/Typography"
-import type { ReactNode } from "react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { api, type Me } from "./api"
 import { Backup } from "./Backup"
 import { ConfigSection } from "./ConfigSection"
-import { CronView } from "./CronView"
 import { CustomSkills } from "./CustomSkills"
 import { Endpoints } from "./Endpoints"
 import { Hardware } from "./Hardware"
 import { useMobile } from "./hooks"
 import { ImageProvider } from "./ImageProvider"
 import {
+  ArrowBackIcon,
   BackupIcon,
   BugReportIcon,
   ChatIcon,
@@ -45,6 +42,7 @@ import { Personalities } from "./Personalities"
 import { Plugins } from "./Plugins"
 import { Providers } from "./Providers"
 import { Reports } from "./Reports"
+import { CONFIG_GROUPS, CONFIG_TAB_LABELS, type ConfigTab } from "./routes"
 import { System1 } from "./System1"
 import { useTeamMode } from "./team"
 import { QuotaMeter } from "./team-quota"
@@ -60,44 +58,44 @@ type Model = {
   variants?: string[]
 }
 
-type ConfigTab =
-  | "providers"
-  | "keys"
-  | "chat"
-  | "memory"
-  | "nav"
-  | "media"
-  | "voice"
-  | "personas"
-  | "skills"
-  | "cron"
-  | "backup"
-  | "plugins"
-  | "mcp"
-  | "endpoints"
-  | "hardware"
-  | "reports"
-  | "security"
+const TAB_ICONS: Record<ConfigTab, React.ReactNode> = {
+  providers: <VpnKeyIcon />,
+  keys: <KeyIcon />,
+  chat: <ChatIcon />,
+  memory: <MemoryIcon />,
+  nav: <NavigationIcon />,
+  media: <ImageIcon />,
+  voice: <MicIcon />,
+  personas: <PersonIcon />,
+  skills: <ExtensionIcon />,
+  plugins: <ExtensionIcon />,
+  mcp: <HubIcon />,
+  endpoints: <PublicIcon />,
+  backup: <BackupIcon />,
+  hardware: <ComputerIcon />,
+  reports: <BugReportIcon />,
+  security: <SecurityIcon />,
+}
 
-const CONFIG_TABS: { value: ConfigTab; label: string; icon: ReactNode }[] = [
-  { value: "providers", label: "Providers", icon: <VpnKeyIcon /> },
-  { value: "keys", label: "Keys", icon: <KeyIcon /> },
-  { value: "chat", label: "Chat", icon: <ChatIcon /> },
-  { value: "memory", label: "Memory", icon: <MemoryIcon /> },
-  { value: "nav", label: "System1 provider", icon: <NavigationIcon /> },
-  { value: "media", label: "Media", icon: <ImageIcon /> },
-  { value: "voice", label: "Voice", icon: <MicIcon /> },
-  { value: "personas", label: "Personas", icon: <PersonIcon /> },
-  { value: "skills", label: "Skills", icon: <ExtensionIcon /> },
-  { value: "cron", label: "Cron", icon: <ScheduleIcon /> },
-  { value: "backup", label: "Backup", icon: <BackupIcon /> },
-  { value: "plugins", label: "Plugins", icon: <ExtensionIcon /> },
-  { value: "mcp", label: "MCP", icon: <HubIcon /> },
-  { value: "endpoints", label: "Endpoints", icon: <PublicIcon /> },
-  { value: "hardware", label: "Hardware", icon: <ComputerIcon /> },
-  { value: "reports", label: "Reports", icon: <BugReportIcon /> },
-  { value: "security", label: "Watchdog", icon: <SecurityIcon /> },
-]
+/** One short line per section — what it decides, not an app inventory. */
+const TAB_DESCRIPTIONS: Record<ConfigTab, string> = {
+  providers: "Which model providers this desktop can use.",
+  keys: "Shared provider keys and per-plugin vault keys.",
+  chat: "Default model and how much the model reasons per reply.",
+  memory: "Embedding and language models behind agent memory.",
+  nav: "The fast decision model the agent uses to steer the browser.",
+  media: "Image, video, and 3D generation providers.",
+  voice: "Speech-to-text and read-aloud for the chat composer.",
+  personas: "Personalities threads can start with.",
+  skills: "Extra instruction packs the agent can load.",
+  plugins: "Installed plugins, the marketplace, and install policy.",
+  mcp: "MCP servers the desktop's opencode connects to.",
+  endpoints: "Public URLs that reach plugin page servers.",
+  backup: "Snapshots and restores for this instance.",
+  hardware: "Disk, memory, and CPU of the desktop container.",
+  reports: "Bug and friction findings the desktop agent files.",
+  security: "The watchdog that monitors model exchanges.",
+}
 
 function DefaultModelSection({
   me,
@@ -118,6 +116,7 @@ function DefaultModelSection({
   )
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const dirtyRef = useRef(false)
 
   const loadModels = useCallback(async () => {
     setError("")
@@ -141,6 +140,16 @@ function DefaultModelSection({
     void loadModels()
   }, [loadModels])
 
+  // Warn before losing an unsaved pick on navigation away.
+  useEffect(() => {
+    const guard = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return
+      event.preventDefault()
+    }
+    window.addEventListener("beforeunload", guard)
+    return () => window.removeEventListener("beforeunload", guard)
+  }, [])
+
   async function save() {
     setError("")
     setSaved(false)
@@ -158,6 +167,7 @@ function DefaultModelSection({
         body: JSON.stringify({ providerID, modelID }),
       })
       setSaved(true)
+      dirtyRef.current = false
       onChanged()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "save failed")
@@ -195,9 +205,10 @@ function DefaultModelSection({
           </Alert>
         ) : null}
         {loading && models.length === 0 ? (
-          <Typography variant="body2" color="textSecondary">
-            Loading models — this starts your desktop if it was asleep…
-          </Typography>
+          <Stack spacing={1} aria-busy="true">
+            <Box className="ob-skeleton" sx={{ height: 40 }} />
+            <output className="ob-sr-status">Loading models</output>
+          </Stack>
         ) : (
           <ModelSelect
             name="default-model"
@@ -209,6 +220,7 @@ function DefaultModelSection({
             onSelect={(value) => {
               setSelected(value)
               setSaved(false)
+              dirtyRef.current = true
             }}
           />
         )}
@@ -224,7 +236,7 @@ function DefaultModelSection({
               disabled={saving || !selected}
               onClick={() => void save()}
             >
-              Save default model
+              {saving ? "Saving…" : "Save default model"}
             </Button>
             <Button
               variant="text"
@@ -359,9 +371,10 @@ function ThinkingEffortSection({
             here.
           </Typography>
         ) : loading && models.length === 0 ? (
-          <Typography variant="body2" color="textSecondary">
-            Loading models — this starts your desktop if it was asleep…
-          </Typography>
+          <Stack spacing={1} aria-busy="true">
+            <Box className="ob-skeleton" sx={{ height: 40 }} />
+            <output className="ob-sr-status">Loading models</output>
+          </Stack>
         ) : options.length === 0 ? (
           <Typography variant="body2" color="textSecondary">
             This model has no thinking variants.
@@ -389,7 +402,7 @@ function ThinkingEffortSection({
             disabled={saving || !selectedKey || options.length === 0}
             onClick={() => void save()}
           >
-            Save thinking effort
+            {saving ? "Saving…" : "Save thinking effort"}
           </Button>
           <Button
             variant="text"
@@ -404,127 +417,190 @@ function ThinkingEffortSection({
   )
 }
 
-export function Config({ me, onChanged }: { me: Me; onChanged: () => void }) {
-  const [tab, setTab] = useState<ConfigTab>("chat")
-  const mobile = useMobile()
-  const team = useTeamMode()
-  const readOnly = team.mode === "team" && me.role !== "admin"
-
-  const header = (
-    <Stack spacing={0.25}>
-      <Typography variant="h6">Configuration</Typography>
-      <Typography variant="body2" color="textSecondary">
-        Chat model providers, shared keys, chat defaults, memory, System 1,
-        media, voice, personas, skills, cron jobs, plugins, MCP servers, public
-        endpoints, hardware, plugin reports, and the security watchdog for this
-        desktop.
-      </Typography>
-    </Stack>
-  )
-
-  const sections = (
-    <>
-      {tab === "providers" ? <Providers /> : null}
-      {tab === "keys" ? (
+function renderSection(
+  tab: ConfigTab,
+  me: Me,
+  onChanged: () => void,
+  readOnly: boolean,
+  lockedModel: boolean,
+) {
+  switch (tab) {
+    case "providers":
+      return <Providers />
+    case "keys":
+      return (
         <>
           <QuotaMeter />
           <KeyVault isAdmin={me.role === "admin"} />
         </>
-      ) : null}
-      {tab === "chat" ? (
+      )
+    case "chat":
+      return (
         <>
           <DefaultModelSection
             me={me}
             onChanged={onChanged}
-            locked={team.lockModelPicker}
+            locked={lockedModel}
           />
           <ThinkingEffortSection me={me} onChanged={onChanged} />
         </>
-      ) : null}
-      {tab === "memory" ? <VikingModels endpoint="/api/viking" /> : null}
-      {tab === "nav" ? <System1 /> : null}
-      {tab === "media" ? <ImageProvider readOnly={readOnly} /> : null}
-      {tab === "media" ? <VideoProvider readOnly={readOnly} /> : null}
-      {tab === "media" ? <Model3dProvider readOnly={readOnly} /> : null}
-      {tab === "voice" ? <VoiceProvider /> : null}
-      {tab === "personas" ? <Personalities /> : null}
-      {tab === "skills" ? <CustomSkills /> : null}
-      {tab === "cron" ? <CronView me={me} /> : null}
-      {tab === "backup" ? <Backup me={me} /> : null}
-      {tab === "plugins" ? <Plugins isAdmin={me.role === "admin"} /> : null}
-      {tab === "mcp" ? <McpView /> : null}
-      {tab === "endpoints" ? <Endpoints /> : null}
-      {tab === "hardware" ? <Hardware /> : null}
-      {tab === "reports" ? <Reports /> : null}
-      {tab === "security" ? <Watchdog /> : null}
-    </>
-  )
+      )
+    case "memory":
+      return <VikingModels endpoint="/api/viking" />
+    case "nav":
+      return <System1 />
+    case "media":
+      return (
+        <>
+          <ImageProvider readOnly={readOnly} />
+          <VideoProvider readOnly={readOnly} />
+          <Model3dProvider readOnly={readOnly} />
+        </>
+      )
+    case "voice":
+      return <VoiceProvider />
+    case "personas":
+      return <Personalities />
+    case "skills":
+      return <CustomSkills />
+    case "backup":
+      return <Backup me={me} />
+    case "plugins":
+      return <Plugins isAdmin={me.role === "admin"} />
+    case "mcp":
+      return <McpView />
+    case "endpoints":
+      return <Endpoints />
+    case "hardware":
+      return <Hardware />
+    case "reports":
+      return <Reports />
+    case "security":
+      return <Watchdog />
+  }
+}
 
-  if (mobile) {
+export function Config({
+  me,
+  tab,
+  onTab,
+  onChanged,
+}: {
+  me: Me
+  /** Active section from the URL; "" only on the mobile group list. */
+  tab: ConfigTab | ""
+  onTab: (next: ConfigTab | "") => void
+  onChanged: () => void
+}) {
+  const mobile = useMobile()
+  const team = useTeamMode()
+  const readOnly = team.mode === "team" && me.role !== "admin"
+  const [group, setGroup] = useState<string>(CONFIG_GROUPS[0]?.key ?? "ai")
+
+  if (mobile && !tab) {
+    // Phone-sized settings: pick a group, then a section — 17 horizontal
+    // tabs never fit a 390 px screen.
     return (
-      <Box className="ob-scroll">
+      <Box className="ob-scroll ob-view-enter">
         <Stack
-          spacing={2}
-          sx={{ p: 1, maxWidth: 1024, mx: "auto", width: "100%" }}
+          spacing={1.5}
+          sx={{ p: 1.5, maxWidth: 640, width: "100%", mx: "auto" }}
         >
-          {header}
-          <Tabs
-            value={tab}
-            variant="scrollable"
-            onChange={(_event, value) => setTab(value as ConfigTab)}
+          <Stack spacing={0.25}>
+            <Typography variant="h6">Settings</Typography>
+            <Typography variant="body2" color="textSecondary">
+              Choose a group, then a section.
+            </Typography>
+          </Stack>
+          <Select
+            name="config-group"
+            label="Group"
+            value={group}
+            onSelect={(value: string) => setGroup(value)}
           >
-            {CONFIG_TABS.map((entry) => (
-              <Tab
-                key={entry.value}
-                label={entry.label}
-                value={entry.value}
-                icon={entry.icon}
-              />
+            {CONFIG_GROUPS.map((entry) => (
+              <option key={entry.key} value={entry.key}>
+                {entry.label}
+              </option>
             ))}
-          </Tabs>
-          {sections}
+          </Select>
+          {(CONFIG_GROUPS.find((entry) => entry.key === group)?.tabs ?? []).map(
+            (entry) =>
+              entry === "cron" ? (
+                <Button
+                  key={entry}
+                  variant="outlined"
+                  startIcon={<ScheduleIcon />}
+                  onClick={() => onTab("cron" as ConfigTab)}
+                  sx={{ justifyContent: "flex-start" }}
+                >
+                  {CONFIG_TAB_LABELS[entry]}
+                </Button>
+              ) : (
+                <Button
+                  key={entry}
+                  variant="outlined"
+                  startIcon={TAB_ICONS[entry]}
+                  onClick={() => onTab(entry)}
+                  sx={{ justifyContent: "flex-start" }}
+                >
+                  <Stack sx={{ alignItems: "flex-start" }}>
+                    <Typography variant="subtitle2" component="span">
+                      {CONFIG_TAB_LABELS[entry]}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      color="textSecondary"
+                      component="span"
+                      sx={{ whiteSpace: "normal", textAlign: "left" }}
+                    >
+                      {TAB_DESCRIPTIONS[entry]}
+                    </Typography>
+                  </Stack>
+                </Button>
+              ),
+          )}
         </Stack>
       </Box>
     )
   }
 
+  const activeTab: ConfigTab = (tab || "chat") as ConfigTab
+
   return (
-    <Box className="ob-scroll">
+    <Box className="ob-scroll ob-view-enter">
       <Stack
         spacing={2}
-        sx={{ p: 2, maxWidth: 1200, mx: "auto", width: "100%" }}
+        sx={{ p: mobile ? 1.5 : 2, maxWidth: 1024, mx: "auto", width: "100%" }}
       >
-        {header}
-        <Stack direction="row" spacing={2} alignItems="flex-start">
-          <Drawer
-            variant="permanent"
-            open
-            anchor="left"
-            width={220}
-            sx={{
-              position: "sticky",
-              top: 8,
-              alignSelf: "flex-start",
-              maxHeight: "calc(100vh - 48px)",
-            }}
-          >
-            <List dense sx={{ p: 1 }}>
-              {CONFIG_TABS.map((entry) => (
-                <ListItemButton
-                  key={entry.value}
-                  selected={tab === entry.value}
-                  onClick={() => setTab(entry.value)}
-                >
-                  {entry.icon}
-                  <ListItemText primary={entry.label} />
-                </ListItemButton>
-              ))}
-            </List>
-          </Drawer>
-          <Stack spacing={2} sx={{ flex: 1, minWidth: 0 }}>
-            {sections}
+        <Stack direction="row" spacing={1} alignItems="center">
+          {mobile ? (
+            <IconButton
+              size="small"
+              aria-label="Back to settings sections"
+              onClick={() => onTab("")}
+            >
+              <ArrowBackIcon />
+            </IconButton>
+          ) : null}
+          <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+            <Typography variant="h6" sx={{ whiteSpace: "nowrap" }}>
+              {mobile ? CONFIG_TAB_LABELS[activeTab] : "Settings"}
+            </Typography>
+            <Typography variant="body2" color="textSecondary">
+              {mobile
+                ? TAB_DESCRIPTIONS[activeTab]
+                : "Pick a section from the sidebar — the address bar keeps your place."}
+            </Typography>
           </Stack>
         </Stack>
+        {renderSection(
+          activeTab,
+          me,
+          onChanged,
+          readOnly,
+          team.lockModelPicker,
+        )}
       </Stack>
     </Box>
   )

@@ -10,7 +10,7 @@ const head = (tag: string, attrs: Record<string, string>) => {
   document.head.appendChild(el)
 }
 
-head("meta", { name: "theme-color", content: "#0b0f14" })
+head("meta", { name: "theme-color", content: "#0e1014" })
 head("link", { rel: "icon", href: "/favicon.ico", sizes: "48x48" })
 head("link", {
   rel: "icon",

@@ -103,11 +103,11 @@ import {
   MoreVertIcon,
   OpenInNewIcon,
   PauseIcon,
-  PhotoLibraryIcon,
   PlayArrowIcon,
   RefreshIcon,
   SendIcon,
   StopIcon,
+  TuneIcon,
   VolumeOffIcon,
   VolumeUpIcon,
 } from "./icons"
@@ -163,6 +163,7 @@ import {
   type SkillSummary,
   type Suggestion,
 } from "./references"
+import type { WorkspaceTab } from "./routes"
 import { expandFolder, parseCollapsedFolders } from "./thread-folders"
 
 // the IDE keeps its own state; memo keeps workspace renders (streaming ticks,
@@ -2329,10 +2330,22 @@ function Composer({
   )
 }
 
-export function Workspace({ me }: { me: Me }) {
+export function Workspace({
+  me,
+  tab,
+  onTab,
+  onOpenNav,
+}: {
+  me: Me
+  /** Active workspace view, owned by the shell's route. */
+  tab: WorkspaceTab
+  /** Move to another workspace view (the shell syncs the URL). */
+  onTab: (next: WorkspaceTab) => void
+  /** Mobile only: open the shell's navigation drawer. */
+  onOpenNav?: () => void
+}) {
   const [phase, setPhase] = useState<Phase>(me.desktop ?? "sleeping")
   const [stopping, setStopping] = useState(false)
-  const [tab, setTab] = useState("chat")
   const [threadDock, setThreadDock] = useState<HTMLDivElement | null>(null)
   const onThreadDock = useCallback((el: HTMLDivElement | null) => {
     setThreadDock((current) => (current === el ? current : el))
@@ -3330,12 +3343,12 @@ export function Workspace({ me }: { me: Me }) {
       setMessages([])
       setMessagesLoading(true)
       setNotifyFocus((current) => ({ sessionId: id, seq: current.seq + 1 }))
-      setTab("chat")
+      onTab("chat")
       if (mobile) setThreadsOpen(false)
     }
     window.addEventListener(OPEN_THREAD_EVENT, onOpen)
     return () => window.removeEventListener(OPEN_THREAD_EVENT, onOpen)
-  }, [mobile])
+  }, [mobile, onTab])
 
   // the composer owns the draft text; track which thread it belongs to so a
   // draft typed before a thread exists can migrate to the first thread
@@ -3756,8 +3769,8 @@ export function Workspace({ me }: { me: Me }) {
     if (mobile) setThreadsOpen(false)
   }
 
-  function goTab(next: string) {
-    setTab(next)
+  function goTab(next: WorkspaceTab) {
+    onTab(next)
     setDrawerOpen(false)
   }
 
@@ -4161,6 +4174,10 @@ export function Workspace({ me }: { me: Me }) {
       : phase === "starting"
         ? "warning"
         : undefined
+  // Activity is only shown while it explains something: starting up or a
+  // turn in flight. The completed state is the chat itself — a permanent
+  // "Done" chip said nothing.
+  const activeActivity = activity && activity !== "done" ? activity : null
   const threadBar = useMemo(
     () => (
       <IdeThreadBar
@@ -4192,15 +4209,17 @@ export function Workspace({ me }: { me: Me }) {
           spacing={1}
           alignItems="center"
           className="ob-mobile-bar ob-workspace-top"
-          sx={{ minHeight: 40, flexShrink: 0 }}
+          sx={{ minHeight: 40, flexShrink: 0, pr: 0.5 }}
         >
-          <IconButton
-            size="small"
-            aria-label="Open workspace menu"
-            onClick={() => setDrawerOpen(true)}
-          >
-            <MenuIcon />
-          </IconButton>
+          {mobile && onOpenNav ? (
+            <IconButton
+              size="small"
+              aria-label="Open navigation"
+              onClick={onOpenNav}
+            >
+              <MenuIcon />
+            </IconButton>
+          ) : null}
           <Typography
             variant="subtitle2"
             sx={{
@@ -4223,6 +4242,53 @@ export function Workspace({ me }: { me: Me }) {
                   ? "Projects"
                   : "Media"}
           </Typography>
+          {mobile ? null : (
+            <>
+              {modelsLoading && models.length === 0 ? (
+                <Box
+                  className="ob-skeleton"
+                  sx={{ width: 230, height: 36, borderRadius: "10px" }}
+                  aria-label="Loading model list"
+                />
+              ) : (
+                <Box sx={{ width: 224, flexShrink: 1, minWidth: 150 }}>
+                  <ModelSelect
+                    name="model-bar"
+                    label="Model"
+                    models={models}
+                    value={model}
+                    disabled={!running || models.length === 0}
+                    userId={me.id}
+                    onSelect={selectModel}
+                  />
+                </Box>
+              )}
+              {running ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={
+                    stopping ? <CircularProgress size={1.2} /> : <PauseIcon />
+                  }
+                  disabled={stopping}
+                  aria-busy={stopping}
+                  onClick={() => void sleep()}
+                >
+                  {stopping ? "Stopping…" : "Sleep"}
+                </Button>
+              ) : (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<PlayArrowIcon />}
+                  disabled={phase === "starting"}
+                  onClick={() => void start()}
+                >
+                  Start
+                </Button>
+              )}
+            </>
+          )}
           <IconButton
             size="small"
             aria-label={tab === "desktop" ? "Back to chat" : "Desktop"}
@@ -4231,6 +4297,15 @@ export function Workspace({ me }: { me: Me }) {
           >
             {tab === "desktop" ? <ChatIcon /> : <ComputerIcon />}
           </IconButton>
+          {mobile ? (
+            <IconButton
+              size="small"
+              aria-label="Desktop and model options"
+              onClick={() => setDrawerOpen(true)}
+            >
+              <TuneIcon />
+            </IconButton>
+          ) : null}
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
             {stopping
               ? "stopping…"
@@ -4365,7 +4440,7 @@ export function Workspace({ me }: { me: Me }) {
                       Stopping the desktop…
                     </Typography>
                   </Stack>
-                ) : activity ? (
+                ) : activeActivity ? (
                   <Stack
                     direction="row"
                     spacing={1}
@@ -4373,26 +4448,15 @@ export function Workspace({ me }: { me: Me }) {
                     className="ob-status-row"
                     sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
                   >
-                    {mobile ? null : (
-                      <Typography variant="caption" color="textSecondary">
-                        Model
-                      </Typography>
-                    )}
                     <Chip
                       size="small"
                       color={
-                        activity === "done"
-                          ? "success"
-                          : activity === "initialize"
-                            ? "warning"
-                            : "primary"
+                        activeActivity === "initialize" ? "warning" : "primary"
                       }
                     >
-                      {ACTIVITY_LABEL[activity]}
+                      {ACTIVITY_LABEL[activeActivity]}
                     </Chip>
-                    {activity === "done" ? null : (
-                      <CircularProgress size={1.2} />
-                    )}
+                    <CircularProgress size={1.2} />
                     {canStop ? (
                       <Button
                         size="small"
@@ -4505,6 +4569,23 @@ export function Workspace({ me }: { me: Me }) {
                             ? `Using ${model}. Ask anything.`
                             : "Pick a model, then ask anything."}
                       </Typography>
+                      {phase !== "starting" && !model ? (
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={() => {
+                            if (mobile) {
+                              setDrawerOpen(true)
+                              return
+                            }
+                            document
+                              .getElementById("ob-model-model-bar")
+                              ?.focus()
+                          }}
+                        >
+                          Choose a model
+                        </Button>
+                      ) : null}
                     </Stack>
                   ) : (
                     <div className="ob-chat-log-inner" ref={attachLogInner}>
@@ -4873,33 +4954,6 @@ export function Workspace({ me }: { me: Me }) {
           <Box
             sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}
           >
-            <Typography variant="subtitle2">Views</Typography>
-            <List dense disablePadding>
-              <ListItemButton
-                selected={tab === "chat"}
-                onClick={() => goTab("chat")}
-              >
-                <ChatIcon />
-                <ListItemText
-                  primary={`Chat${shown.length ? ` (${shown.length})` : ""}`}
-                />
-              </ListItemButton>
-              <ListItemButton
-                selected={tab === "projects"}
-                onClick={() => goTab("projects")}
-              >
-                <FolderIcon />
-                <ListItemText primary="Projects" />
-              </ListItemButton>
-              <ListItemButton
-                selected={tab === "media"}
-                onClick={() => goTab("media")}
-              >
-                <PhotoLibraryIcon />
-                <ListItemText primary="Media" />
-              </ListItemButton>
-            </List>
-            <Divider />
             <Stack direction="row" spacing={1} alignItems="center">
               <Typography variant="subtitle2" sx={{ flex: 1 }}>
                 Desktop

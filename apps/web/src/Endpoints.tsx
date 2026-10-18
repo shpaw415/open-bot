@@ -189,7 +189,7 @@ function EndpointCard({
 }
 
 export function Endpoints() {
-  const { plugins, loaded } = useInstalledPlugins()
+  const { plugins, status: pluginsStatus } = useInstalledPlugins()
   const [status, setStatus] = useState<PagesStatus | null>(null)
   const [error, setError] = useState("")
 
@@ -231,8 +231,10 @@ export function Endpoints() {
         and forwards to the plugin's server.
       </Typography>
       {error ? <Alert severity="error">{error}</Alert> : null}
-      {!loaded ? <CircularProgress size={1} /> : null}
-      {loaded && endpoints.length === 0 ? (
+      {pluginsStatus === "initial" || pluginsStatus === "loading" ? (
+        <CircularProgress size={1} />
+      ) : null}
+      {pluginsStatus === "ready" && endpoints.length === 0 ? (
         <Alert severity="info">
           No plugins expose a public endpoint. Plugins opt in by declaring
           dashboard.pages.public: true in their manifest.

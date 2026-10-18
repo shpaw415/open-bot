@@ -1,4 +1,5 @@
 import Box from "@shpaw415/mui-lite/Box"
+import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
 import Stack from "@shpaw415/mui-lite/Stack"
@@ -19,10 +20,19 @@ import {
   type InstalledPluginInfo,
   type PluginCardSpec,
   PluginCards,
+  type PluginsStatus,
   useInstalledPlugins,
 } from "./plugin-ui"
 
 export { useInstalledPlugins }
+
+/** What the shell's apps view needs to know about the install-list fetch. */
+export type PluginsViewStatus = {
+  status: PluginsStatus
+  error: string
+  refreshing: boolean
+  refresh: () => Promise<void>
+}
 
 export type PluginTab = {
   key: string
@@ -74,11 +84,24 @@ export function filterTabs(tabs: PluginTab[], query: string): PluginTab[] {
 
 // Polls the plugin's page server through the control proxy and feeds the
 // result to the tab's `$.`-bound cards. Static tabs keep an empty object.
-function usePageData(tab: PluginTab): Record<string, unknown> {
+// The last good payload is kept on poll failures — a flaky refresh must not
+// blank a working dashboard; the view shows a quiet "stale" note instead.
+export type PageDataState = {
+  data: Record<string, unknown>
+  loading: boolean
+  error: string
+  reload: () => void
+}
+
+function usePageData(tab: PluginTab): PageDataState {
   const [data, setData] = useState<Record<string, unknown>>({})
+  const [loading, setLoading] = useState(Boolean(tab.dataUrl))
+  const [error, setError] = useState("")
+  const [nonce, setNonce] = useState(0)
   const pollSeconds = tab.dataUrl
     ? Math.min(3600, Math.max(5, tab.pollSeconds ?? 30))
     : 0
+  // biome-ignore lint/correctness/useExhaustiveDependencies: nonce is the manual-retry trigger
   useEffect(() => {
     if (!tab.dataUrl) return
     let alive = true
@@ -87,9 +110,25 @@ function usePageData(tab: PluginTab): Record<string, unknown> {
       if (document.visibilityState !== "visible") return
       api<Record<string, unknown>>(url)
         .then((body) => {
-          if (alive && body && typeof body === "object") setData(body)
+          if (!alive) return
+          if (body && typeof body === "object") {
+            setData(body)
+            setError("")
+          }
         })
-        .catch(() => {})
+        .catch((caught) => {
+          if (!alive) return
+          // First load blocks; later failures keep the last good cards and
+          // surface the message next to them (hasData branch in PageTab).
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "could not reach the app's data",
+          )
+        })
+        .finally(() => {
+          if (alive) setLoading(false)
+        })
     }
     tick()
     if (pollSeconds > 0) {
@@ -102,12 +141,33 @@ function usePageData(tab: PluginTab): Record<string, unknown> {
     return () => {
       alive = false
     }
-  }, [tab.pluginId, tab.dataUrl, pollSeconds])
-  return data
+  }, [tab.pluginId, tab.dataUrl, pollSeconds, nonce])
+  const reload = useMemo(() => () => setNonce((n) => n + 1), [])
+  return { data, loading, error, reload }
+}
+
+function PageTabSkeleton() {
+  return (
+    <Stack spacing={2} aria-busy="true">
+      <Box className="ob-skeleton" sx={{ height: 24, width: 220 }} />
+      <Stack direction="row" spacing={2} sx={{ flexWrap: "wrap", rowGap: 2 }}>
+        {[0, 1, 2].map((i) => (
+          <Box
+            key={i}
+            className="ob-skeleton"
+            sx={{ height: 96, width: 200, borderRadius: "12px" }}
+          />
+        ))}
+      </Stack>
+      <Box className="ob-skeleton" sx={{ height: 120, borderRadius: "12px" }} />
+      <output className="ob-sr-status">Loading app</output>
+    </Stack>
+  )
 }
 
 function PageTab({ tab }: { tab: PluginTab }) {
-  const data = usePageData(tab)
+  const { data, loading, error, reload } = usePageData(tab)
+  const hasData = Object.keys(data).length > 0
   return (
     <Box
       className="ob-scroll"
@@ -115,7 +175,22 @@ function PageTab({ tab }: { tab: PluginTab }) {
     >
       <Stack spacing={2}>
         <Typography variant="h6">{tab.title}</Typography>
-        <PluginCards spec={tab.cards ?? []} data={data} />
+        {loading ? <PageTabSkeleton /> : null}
+        {!loading && error ? (
+          <Stack spacing={1}>
+            <Typography variant="body2" color="error">
+              {hasData
+                ? `Refresh failed — showing the last loaded data. ${error}`
+                : error}
+            </Typography>
+            <Button size="small" variant="outlined" onClick={reload}>
+              Retry
+            </Button>
+          </Stack>
+        ) : null}
+        {!loading && !error ? (
+          <PluginCards spec={tab.cards ?? []} data={data} />
+        ) : null}
       </Stack>
     </Box>
   )
@@ -139,9 +214,57 @@ export function appTabSandbox(isolated: boolean) {
 // fires an immediate HEAD that revives the frame (and the server) at once.
 const APP_TAB_KEEPALIVE_MS = 4 * 60 * 1000
 
+function AppTabSkeleton() {
+  return (
+    <Box
+      sx={{ height: "100%", width: "100%", p: 2, boxSizing: "border-box" }}
+      aria-busy="true"
+    >
+      <Stack spacing={1.5}>
+        <Box className="ob-skeleton" sx={{ height: 28, width: 200 }} />
+        <Box
+          className="ob-skeleton"
+          sx={{ height: "70%", minHeight: 260, borderRadius: "12px" }}
+        />
+        <output className="ob-sr-status">Opening app</output>
+      </Stack>
+    </Box>
+  )
+}
+
+function AppTabError({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry: () => void
+}) {
+  return (
+    <Stack
+      alignItems="center"
+      justifyContent="center"
+      spacing={1.5}
+      sx={{ height: "100%", p: 3, textAlign: "center" }}
+    >
+      <Typography variant="subtitle1">This app did not open</Typography>
+      <Typography variant="body2" color="textSecondary" sx={{ maxWidth: 440 }}>
+        {message}
+      </Typography>
+      <Button variant="outlined" onClick={onRetry}>
+        Retry
+      </Button>
+    </Stack>
+  )
+}
+
 function AppTab({ tab }: { tab: PluginTab }) {
   const [src, setSrc] = useState("")
   const [isolated, setIsolated] = useState(false)
+  const [phase, setPhase] = useState<"minting" | "ready" | "error">("minting")
+  const [error, setError] = useState("")
+  const [reconnecting, setReconnecting] = useState(false)
+  const [nonce, setNonce] = useState(0)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: nonce is the retry trigger for a failed frame mint
   useEffect(() => {
     let alive = true
     let current = ""
@@ -154,8 +277,33 @@ function AppTab({ tab }: { tab: PluginTab }) {
         current = body.frameUrl
         setSrc(body.frameUrl)
         setIsolated(Boolean(body.isolated))
+        setPhase("ready")
+        setError("")
+        setReconnecting(false)
       })
-    mint().catch(() => {})
+    // First mint (or an explicit retry) blocks the pane on a skeleton. A
+    // keep-alive remint failure keeps the last frame on screen and only
+    // raises a soft note — never blank a working app.
+    const run = (soft: boolean) => {
+      if (!soft) {
+        setPhase((prev) => (prev === "ready" ? prev : "minting"))
+        setError("")
+      }
+      return mint().catch((caught) => {
+        if (!alive) return
+        const message =
+          caught instanceof Error
+            ? caught.message
+            : "the app server did not answer"
+        if (soft && current) {
+          setReconnecting(true)
+          return
+        }
+        setPhase("error")
+        setError(message)
+      })
+    }
+    void run(false)
     const check = () => {
       if (!current || document.visibilityState !== "visible") return
       fetch(current, {
@@ -165,7 +313,7 @@ function AppTab({ tab }: { tab: PluginTab }) {
       })
         .then((res) => {
           if (!alive || res.ok || res.status === 502) return
-          return mint().catch(() => {})
+          void run(true)
         })
         .catch(() => {})
     }
@@ -179,10 +327,38 @@ function AppTab({ tab }: { tab: PluginTab }) {
       clearInterval(timer)
       document.removeEventListener("visibilitychange", onVisibility)
     }
-  }, [tab.pluginId, tab.path])
-  if (!src) return null
+  }, [tab.pluginId, tab.path, nonce])
+  if (phase === "minting") return <AppTabSkeleton />
+  if (phase === "error" || !src)
+    return (
+      <AppTabError
+        message={error || "The app server could not be reached."}
+        onRetry={() => setNonce((n) => n + 1)}
+      />
+    )
   return (
-    <Box sx={{ height: "100%", width: "100%" }}>
+    <Box sx={{ height: "100%", width: "100%", position: "relative" }}>
+      {reconnecting ? (
+        <Typography
+          variant="caption"
+          color="textSecondary"
+          sx={{
+            position: "absolute",
+            top: 4,
+            right: 8,
+            zIndex: 2,
+            bgcolor: "rgba(var(--bg-surface, 24, 27, 34), 0.85)",
+            px: 1,
+            borderRadius: 1,
+            pointerEvents: "none",
+          }}
+        >
+          Reconnecting…
+        </Typography>
+      ) : null}
+      {/* The iframe fires `load` for error pages too, so readiness comes from
+          the frame mint above — not from this event. No cross-origin probing
+          happens here: the frame's interior is the plugin's business. */}
       <iframe
         title={tab.title}
         src={src}
@@ -212,10 +388,61 @@ export function PluginTabView({ tab }: { tab: PluginTab }) {
   return <PageTab tab={tab} />
 }
 
+function AppsLoadState({ status }: { status: PluginsViewStatus }) {
+  return (
+    <Stack
+      spacing={2}
+      sx={{ p: 3, maxWidth: 640, width: "100%", mx: "auto" }}
+      aria-busy={status.status !== "ready"}
+    >
+      {status.status === "loading" ? (
+        <>
+          <output className="ob-sr-status">Loading apps</output>
+          <Stack
+            direction="row"
+            spacing={2}
+            sx={{ flexWrap: "wrap", rowGap: 2 }}
+          >
+            {[0, 1, 2, 3].map((i) => (
+              <Stack key={i} spacing={1} sx={{ width: 96 }}>
+                <Box
+                  className="ob-skeleton"
+                  sx={{ width: 96, height: 96, borderRadius: "18px" }}
+                />
+                <Box className="ob-skeleton" sx={{ height: 10, width: 72 }} />
+              </Stack>
+            ))}
+          </Stack>
+        </>
+      ) : null}
+      {status.status === "error" ? (
+        <>
+          <Typography variant="subtitle1">Apps could not load</Typography>
+          <Typography variant="body2" color="textSecondary">
+            {status.error ||
+              "The installed plugin list did not load. Nothing is broken on this page — the request failed."}
+          </Typography>
+          <Box>
+            <Button variant="outlined" onClick={() => void status.refresh()}>
+              Retry
+            </Button>
+          </Box>
+        </>
+      ) : null}
+    </Stack>
+  )
+}
+
 // The main navigation's Apps view. Desktop keeps the side list +
 // pane; mobile renders a phone-style home screen (apps, swipe pages,
 // long-press to move, drop on an entry to create a folder).
-export function PluginAppsView({ tabs }: { tabs: PluginTab[] }) {
+export function PluginAppsView({
+  tabs,
+  status,
+}: {
+  tabs: PluginTab[]
+  status: PluginsViewStatus
+}) {
   const mobile = useMobile()
   const [selected, setSelected] = useState("")
   const [query, setQuery] = useState("")
@@ -229,6 +456,24 @@ export function PluginAppsView({ tabs }: { tabs: PluginTab[] }) {
       setSelected("")
     }
   }, [tabs, selected])
+
+  if (status.status === "loading" || status.status === "error") {
+    return (
+      <Box
+        className="ob-scroll"
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          p: 3,
+          height: "100%",
+          boxSizing: "border-box",
+        }}
+      >
+        <AppsLoadState status={status} />
+      </Box>
+    )
+  }
   if (tabs.length === 0) {
     return (
       <Box
@@ -239,6 +484,15 @@ export function PluginAppsView({ tabs }: { tabs: PluginTab[] }) {
           No plugin apps here yet. Plugins that ship a dashboard page (manifest
           dashboard.pages + tabs) show up here once installed and enabled.
         </Typography>
+        {status.refreshing ? (
+          <Typography
+            variant="caption"
+            color="textSecondary"
+            sx={{ mt: 1, display: "block" }}
+          >
+            Refreshing…
+          </Typography>
+        ) : null}
       </Box>
     )
   }
@@ -444,7 +698,7 @@ export function PluginAppsView({ tabs }: { tabs: PluginTab[] }) {
         </List>
       </Box>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        {current ? <PluginTabView key={current.key} tab={current} /> : null}
+        <PluginTabView key={current.key} tab={current} />
       </Box>
     </Stack>
   )

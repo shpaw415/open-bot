@@ -196,7 +196,8 @@ export function ItemAvatar({
   )
 }
 
-// Loading placeholder matching ConfigItemCard geometry. No spinners in lists.
+// Loading placeholder matching ConfigItemCard geometry. No spinners in lists;
+// the ob-skeleton class carries the shimmer and its reduced-motion off-switch.
 export function GhostCards({ count = 3 }: { count?: number }) {
   return (
     <>
@@ -213,37 +214,27 @@ export function GhostCards({ count = 3 }: { count?: number }) {
       </Box>
       {Array.from({ length: count }, (_, index) => (
         <Paper
-          key={index}
+          key={`ghost-${index}`}
           variant="outlined"
           sx={{ borderRadius: "12px", p: { xs: 1.5, sm: 2 } }}
         >
           <Stack direction="row" spacing={1.5} alignItems="flex-start">
             <Box
-              sx={{
-                ...avatarSx,
-                borderRadius: "50%",
-                bgcolor: "rgba(var(--text-main), 0.08)",
-                animation: "ob-pulse 1.6s ease-in-out infinite",
-              }}
+              className="ob-skeleton"
+              sx={{ ...avatarSx, borderRadius: "50%" }}
             />
             <Box sx={{ flex: 1, pt: 0.5 }}>
               <Box
-                sx={{
-                  height: 14,
-                  width: "40%",
-                  borderRadius: "4px",
-                  bgcolor: "rgba(var(--text-main), 0.08)",
-                  animation: "ob-pulse 1.6s ease-in-out infinite",
-                }}
+                className="ob-skeleton"
+                sx={{ height: 14, width: "40%", borderRadius: "4px" }}
               />
               <Box
+                className="ob-skeleton"
                 sx={{
                   height: 12,
                   width: "70%",
                   borderRadius: "4px",
-                  bgcolor: "rgba(var(--text-main), 0.08)",
                   mt: 1,
-                  animation: "ob-pulse 1.6s ease-in-out infinite",
                 }}
               />
             </Box>
