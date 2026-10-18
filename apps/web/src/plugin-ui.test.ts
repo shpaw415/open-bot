@@ -187,3 +187,120 @@ describe("pluginsReducer — the auth-gated load lifecycle", () => {
     expect(retrying.error).toBe("")
   })
 })
+
+describe("pluginsReducer — stale-response guards", () => {
+  // True hook lifecycle: identity → fetch (seq 1) → answer.
+  const fetchingA = pluginsReducer(
+    pluginsReducer(initialPluginsState, {
+      type: "identity",
+      identity: "user-a",
+    }),
+    { type: "fetch" },
+  )
+  const readyA = pluginsReducer(fetchingA, {
+    type: "success",
+    body: body(),
+    identity: "user-a",
+    seq: 1,
+  })
+
+  test("a success for another account never populates this one", () => {
+    // Account A's request lands after the user switched to B.
+    const loadingB = pluginsReducer(readyA, {
+      type: "identity",
+      identity: "user-b",
+    })
+    const stale = pluginsReducer(loadingB, {
+      type: "success",
+      body: body(),
+      identity: "user-a",
+      seq: 1,
+    })
+    expect(stale).toBe(loadingB)
+    expect(stale.plugins).toEqual([])
+  })
+
+  test("a success after logout is dropped", () => {
+    const signedOut = pluginsReducer(readyA, {
+      type: "identity",
+      identity: null,
+    })
+    const stale = pluginsReducer(signedOut, {
+      type: "success",
+      body: body(),
+      identity: "user-a",
+      seq: 1,
+    })
+    expect(stale).toEqual(initialPluginsState)
+  })
+
+  test("an out-of-order refresh cannot overwrite a newer result", () => {
+    // Two refreshes fire: seq 2 then 3. Their answers land reversed.
+    const fetching2 = pluginsReducer(readyA, { type: "fetch" })
+    const fetching3 = pluginsReducer(fetching2, { type: "fetch" })
+    const newerLandsFirst = pluginsReducer(fetching3, {
+      type: "success",
+      body: body({ plugins: [] }),
+      identity: "user-a",
+      seq: 3,
+    })
+    expect(newerLandsFirst.plugins).toEqual([])
+    const staleLandsLast = pluginsReducer(newerLandsFirst, {
+      type: "success",
+      body: body(),
+      identity: "user-a",
+      seq: 2,
+    })
+    expect(staleLandsLast).toBe(newerLandsFirst)
+    expect(staleLandsLast.plugins).toEqual([])
+  })
+
+  test("a stale error does not clobber a recent success", () => {
+    const fetching = pluginsReducer(readyA, { type: "fetch" })
+    const recovered = pluginsReducer(fetching, {
+      type: "success",
+      body: body(),
+      identity: "user-a",
+      seq: 2,
+    })
+    const staleFailure = pluginsReducer(recovered, {
+      type: "failure",
+      error: "old request died",
+      identity: "user-a",
+      seq: 1,
+    })
+    expect(staleFailure).toBe(recovered)
+    expect(staleFailure.status).toBe("ready")
+    expect(staleFailure.plugins).toHaveLength(1)
+  })
+
+  test("the matching seq still applies its failure", () => {
+    const failed = pluginsReducer(fetchingA, {
+      type: "failure",
+      error: "network down",
+      identity: "user-a",
+      seq: 1,
+    })
+    expect(failed.status).toBe("error")
+    expect(failed.error).toBe("network down")
+  })
+
+  test("actions without identity/seq (legacy callers) still apply", () => {
+    const ready = pluginsReducer(fetchingA, { type: "success", body: body() })
+    expect(ready.status).toBe("ready")
+  })
+
+  test("a refresh marks refreshing on top of ready data and keeps seq pairing", () => {
+    const fetching = pluginsReducer(readyA, { type: "fetch" })
+    expect(fetching.refreshing).toBe(true)
+    expect(fetching.seq).toBe(2)
+    const done = pluginsReducer(fetching, {
+      type: "success",
+      body: body({ policy: "auto" }),
+      identity: "user-a",
+      seq: 2,
+    })
+    expect(done.refreshing).toBe(false)
+    expect(done.policy).toBe("auto")
+  })
+})

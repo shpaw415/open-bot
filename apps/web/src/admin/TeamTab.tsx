@@ -1,12 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Paper from "@shpaw415/mui-lite/Paper"
@@ -24,6 +18,11 @@ import Table, {
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "../AccessibleDialog"
 import {
   fetchTeamAdmin,
   fetchTeamQuotas,
@@ -37,6 +36,7 @@ import {
   type TeamMode,
   type TeamQuotaUser,
 } from "../api"
+import { Chip } from "../chip"
 import {
   formatTokenCount,
   isTeamSecretField,
@@ -633,7 +633,10 @@ export function TeamTab() {
           </Table>
         </TableContainer>
       </Paper>
-      <Dialog open={Boolean(pendingMode)} onClose={() => setPendingMode(null)}>
+      <AccessibleDialog
+        open={Boolean(pendingMode)}
+        onClose={() => setPendingMode(null)}
+      >
         <DialogTitle>
           Switch to {pendingMode ? modeLabel(pendingMode) : ""} mode?
         </DialogTitle>
@@ -656,8 +659,8 @@ export function TeamTab() {
             Switch to {pendingMode ? modeLabel(pendingMode) : ""}
           </Button>
         </DialogActions>
-      </Dialog>
-      <Dialog open={importOpen} onClose={() => setImportOpen(false)}>
+      </AccessibleDialog>
+      <AccessibleDialog open={importOpen} onClose={() => setImportOpen(false)}>
         <DialogTitle>Import your keys as the shared set?</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mt: 0.5 }}>
@@ -678,7 +681,7 @@ export function TeamTab() {
             Import
           </Button>
         </DialogActions>
-      </Dialog>
+      </AccessibleDialog>
     </>
   )
 }

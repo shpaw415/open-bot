@@ -160,3 +160,79 @@ describe("tab coverage", () => {
     expect(new Set(flat).size).toBe(16)
   })
 })
+
+describe("parseRoute — plugin deep links while the install list loads", () => {
+  const empty: PluginTab[] = []
+
+  test("a plugin URL with tabs not yet loaded stays pending, not unknown", () => {
+    const parsed = parseRoute("/stock:grid", empty, {
+      awaitingPlugins: true,
+    })
+    expect(parsed.route).toEqual({ view: "plugin-pending" })
+    expect(parsed.redirect).toBeUndefined()
+  })
+
+  test("a slash-form plugin URL also stays pending", () => {
+    expect(
+      parseRoute("/stock/grid", empty, { awaitingPlugins: true }).route,
+    ).toEqual({ view: "plugin-pending" })
+  })
+
+  test("built-in views never go pending", () => {
+    for (const path of [
+      "/",
+      "/projects",
+      "/media",
+      "/desktop",
+      "/apps",
+      "/config",
+      "/config/plugins",
+      "/automations",
+      "/admin",
+    ]) {
+      const parsed = parseRoute(path, empty, { awaitingPlugins: true })
+      expect(parsed.route).not.toEqual({ view: "plugin-pending" })
+    }
+  })
+
+  test("once tabs resolve, the same URL opens the plugin page", () => {
+    const pending = parseRoute("/stock:grid", empty, { awaitingPlugins: true })
+    expect(pending.route).toEqual({ view: "plugin-pending" })
+    const resolved = parseRoute("/stock:grid", tabs)
+    expect(resolved.route).toEqual({ view: "plugin", tab: tabs[0] })
+    expect(resolved.redirect).toBeUndefined()
+  })
+
+  test("after loading settles (error), a truly unknown path redirects", () => {
+    const parsed = parseRoute("/definitely-not-a-view", empty)
+    expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
+    expect(parsed.redirect).toBe("/")
+  })
+
+  test("a nonexistent plugin page redirects once the list is loaded", () => {
+    const parsed = parseRoute("/no-such-plugin", tabs)
+    expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
+    expect(parsed.redirect).toBe("/")
+  })
+})
+
+describe("parseRoute — malformed URLs never throw", () => {
+  test("a bad percent-encoding falls back instead of crashing", () => {
+    // %E0%A4%A is a truncated UTF-8 sequence; decodeURIComponent throws.
+    expect(() => parseRoute("/%E0%A4%A", tabs)).not.toThrow()
+    const parsed = parseRoute("/%E0%A4%A", tabs)
+    expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
+  })
+
+  test("malformed colon URLs stay renderable with tabs loaded", () => {
+    expect(() => parseRoute("/%E0%A4%A:grid", tabs)).not.toThrow()
+  })
+
+  test("percent-encoded plugin keys still resolve", () => {
+    const encoded = encodeURI("stock:grid")
+    expect(parseRoute(`/${encoded}`, tabs).route).toEqual({
+      view: "plugin",
+      tab: tabs[0],
+    })
+  })
+})

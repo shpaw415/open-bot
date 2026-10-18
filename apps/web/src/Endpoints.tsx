@@ -1,6 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
+import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
 import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Stack from "@shpaw415/mui-lite/Stack"
@@ -8,7 +8,8 @@ import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api } from "./api"
-import { type InstalledPluginInfo, useInstalledPlugins } from "./plugin-ui"
+import { Chip } from "./chip"
+import { type InstalledPluginInfo, usePlugins } from "./plugin-ui"
 
 type PagesStatus = {
   pages: { pluginId: string; running: boolean }[]
@@ -189,11 +190,17 @@ function EndpointCard({
 }
 
 export function Endpoints() {
-  const { plugins, status: pluginsStatus } = useInstalledPlugins()
+  const {
+    plugins,
+    status: pluginsStatus,
+    error: pluginsError,
+    refresh: refreshPlugins,
+  } = usePlugins()
   const [status, setStatus] = useState<PagesStatus | null>(null)
   const [error, setError] = useState("")
 
   const loadStatus = useCallback(() => {
+    setError("")
     api<PagesStatus>("/api/pages")
       .then(setStatus)
       .catch(() => setError("could not load the endpoint status"))
@@ -231,8 +238,22 @@ export function Endpoints() {
         and forwards to the plugin's server.
       </Typography>
       {error ? <Alert severity="error">{error}</Alert> : null}
-      {pluginsStatus === "initial" || pluginsStatus === "loading" ? (
-        <CircularProgress size={1} />
+      {pluginsStatus === "loading" ? (
+        <Box aria-busy="true">
+          <CircularProgress size={1} />
+        </Box>
+      ) : null}
+      {pluginsStatus === "error" ? (
+        <Alert
+          severity="error"
+          action={
+            <Button size="small" onClick={() => void refreshPlugins()}>
+              Retry
+            </Button>
+          }
+        >
+          {pluginsError || "The installed plugin list did not load."}
+        </Alert>
       ) : null}
       {pluginsStatus === "ready" && endpoints.length === 0 ? (
         <Alert severity="info">

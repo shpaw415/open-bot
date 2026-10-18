@@ -2,19 +2,18 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import IconButton from "@shpaw415/mui-lite/IconButton"
-import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import { api } from "./api"
+import { Chip } from "./chip"
 import type { EventStream } from "./hooks"
 import {
   ArrowBackIcon,
@@ -243,7 +242,16 @@ export function MediaVault({
         ) : null}
         {!albumId ? (
           albums === null ? (
-            <CircularProgress />
+            <Stack spacing={1.5} sx={{ maxWidth: 420 }} aria-busy="true">
+              {[0, 1, 2].map((i) => (
+                <Box
+                  key={i}
+                  className="ob-skeleton"
+                  sx={{ height: 56, borderRadius: "10px" }}
+                />
+              ))}
+              <output className="ob-sr-status">Loading albums</output>
+            </Stack>
           ) : albums.length === 0 ? (
             <Typography color="textSecondary">
               No albums yet. Pictures, videos, and 3D models from chat land
@@ -605,7 +613,7 @@ export function MediaVault({
         </Box>
       ) : null}
 
-      <Dialog
+      <AccessibleDialog
         open={Boolean(dropAlbum)}
         onClose={() => !busy && setDropAlbum(null)}
       >
@@ -638,8 +646,8 @@ export function MediaVault({
             Delete
           </Button>
         </DialogActions>
-      </Dialog>
-      <Dialog
+      </AccessibleDialog>
+      <AccessibleDialog
         open={Boolean(dropItem)}
         onClose={() => !busy && setDropItem(null)}
       >
@@ -678,7 +686,7 @@ export function MediaVault({
             Delete
           </Button>
         </DialogActions>
-      </Dialog>
+      </AccessibleDialog>
     </Box>
   )
 }

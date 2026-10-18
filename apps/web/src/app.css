@@ -979,12 +979,34 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
 }
 
 /* Buttons in sentence case (mui-lite ships Material's uppercase default;
-   the redesign calls for calm, normal-case labels everywhere). */
-.MUI_Button,
-.MUI_FloatingActionButton,
-.MUI_Toggle {
+   the redesign calls for calm, normal-case labels everywhere). The doubled
+   class keeps the override winning regardless of stylesheet order in the
+   bundled output — the audit saw the old uppercase rule resurface when a
+   stale/cached bundle loaded first. */
+.MUI_Button.MUI_Button,
+.MUI_FloatingActionButton.MUI_FloatingActionButton,
+.MUI_Toggle.MUI_Toggle {
   text-transform: none;
   letter-spacing: 0.2px;
+}
+
+/* Outlined buttons render their label in --bg-primary (light #3565d4-class
+   blue), which measures ~3.6:1 on the dark ground — below AA for normal
+   text. Action text uses the text-primary accent (#5d8cff on dark ≈ 6:1,
+   #2b55b8 on light ≈ 6.7:1); the border keeps the filled-action blue as a
+   non-text boundary, and the focus ring stays --ob-accent. */
+.MUI_Button_outlined.MUI_Button_outlined {
+  color: rgb(var(--text-primary, 25, 118, 210));
+}
+
+/* ---- Chat reading column ----
+   The message log centers its content so wide monitors get a calm reading
+   column instead of full-bleed text; screen/preview bubbles keep the wider
+   caps from their own max-width rules. */
+.ob-chat-log-inner {
+  max-width: 940px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 /* ---- Loading placeholders ----

@@ -1,10 +1,5 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import { TablePagination } from "@shpaw415/mui-lite/Pagination"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Stack from "@shpaw415/mui-lite/Stack"
@@ -18,6 +13,11 @@ import Table, {
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import { api } from "./api"
 
 type ReportStatus = "open" | "done" | "wontfix"
@@ -184,7 +184,10 @@ export function Improvements() {
           setPage(0)
         }}
       />
-      <Dialog open={Boolean(selected)} onClose={() => setSelected(null)}>
+      <AccessibleDialog
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+      >
         <DialogTitle>{selected?.title}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mb: 1 }}>
@@ -231,7 +234,7 @@ export function Improvements() {
             Done
           </Button>
         </DialogActions>
-      </Dialog>
+      </AccessibleDialog>
     </Paper>
   )
 }

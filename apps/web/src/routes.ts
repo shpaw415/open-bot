@@ -33,6 +33,12 @@ export type Route =
   | { view: "workspace"; tab: WorkspaceTab }
   | { view: "apps" }
   | { view: "plugin"; tab: PluginTab }
+  /**
+   * A URL that may name a plugin page while the install list is still
+   * loading. Pending is not unknown: the shell holds the URL (no redirect)
+   * until the tabs arrive and the route can be decided for real.
+   */
+  | { view: "plugin-pending" }
   | { view: "automations" }
   | { view: "config"; tab: ConfigTab | "" }
   | { view: "admin" }
@@ -129,24 +135,67 @@ function workspaceTab(value: string): WorkspaceTab | null {
     : null
 }
 
+/** decodeURIComponent that never throws; malformed escapes come back raw. */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+/**
+ * True when the path is not a built-in view and could still resolve to a
+ * plugin page once the install list loads: a single custom segment or a
+ * two-segment plugin/tab pair.
+ */
+function looksLikePluginPath(segments: string[]): boolean {
+  if (segments.length === 1) return !isReservedSegment(segments[0])
+  return segments.length === 2 && Boolean(segments[0]) && Boolean(segments[1])
+}
+
+function isReservedSegment(segment: string): boolean {
+  return (
+    segment === "apps" ||
+    segment === "dashboards" ||
+    segment === "automations" ||
+    segment === "admin" ||
+    segment === "config" ||
+    segment === "providers" ||
+    segment === "plugins" ||
+    workspaceTab(segment) !== null
+  )
+}
+
 /**
  * Parse a location.pathname into a route. plugin tabs are matched first so
  * a plugin id that shadows a built-in segment still wins its own page.
+ *
+ * `awaitingPlugins` marks the window where the session/manifests have not
+ * resolved yet: a plugin-looking path parses as `plugin-pending` instead of
+ * falling through to the unknown-route redirect, so a direct link or a
+ * reload on /<pluginId>:<tabId> keeps its URL while the data loads.
  */
-export function parseRoute(pathname: string, tabs: PluginTab[]): ParsedRoute {
+export function parseRoute(
+  pathname: string,
+  tabs: PluginTab[],
+  options?: { awaitingPlugins?: boolean },
+): ParsedRoute {
   const path = pathname.replace(/\/+$/, "") || "/"
   const segments = path.slice(1).split("/")
+  const decodedSegments = segments.map(safeDecode)
 
   if (path === "/") return { route: { view: "workspace", tab: "chat" } }
 
-  // Plugin tab pages: /<pluginId>/<tabId>
+  // Plugin tab pages: /<pluginId>:<tabId> or /<pluginId>/<tabId>
   if (segments.length >= 1 && tabs.length > 0) {
+    const joined = safeDecode(segments.join(":"))
     const found = tabs.find(
       (tab) =>
-        tab.key === decodeURIComponent(segments.join(":")) ||
+        tab.key === joined ||
         (segments.length === 2 &&
-          tab.pluginId === segments[0] &&
-          tab.tabId === segments[1]),
+          tab.pluginId === decodedSegments[0] &&
+          tab.tabId === decodedSegments[1]),
     )
     if (found) return { route: { view: "plugin", tab: found } }
   }
@@ -178,7 +227,7 @@ export function parseRoute(pathname: string, tabs: PluginTab[]): ParsedRoute {
     if (rest === "") return { route: { view: "config", tab: "" } }
     // Deep junk under a known section normalizes to that section; a fully
     // unknown value falls back cleanly to the group list.
-    const head = segments[1] ?? ""
+    const head = decodedSegments[1] ?? ""
     if (isConfigTab(head)) {
       if (head === "cron")
         return { route: { view: "automations" }, redirect: "/automations" }
@@ -193,8 +242,14 @@ export function parseRoute(pathname: string, tabs: PluginTab[]): ParsedRoute {
     }
   }
 
-  const tab = workspaceTab(segments[0])
+  const tab = workspaceTab(decodedSegments[0])
   if (tab && segments.length === 1) return { route: { view: "workspace", tab } }
+
+  // A plugin-shaped URL with the install list still in flight: hold the URL.
+  // The caller re-parses once loading settles (success, empty, or error) and
+  // this same path then resolves to its plugin page or redirects for real.
+  if (options?.awaitingPlugins && looksLikePluginPath(segments))
+    return { route: { view: "plugin-pending" } }
 
   // Anything else lands on the chat.
   return {

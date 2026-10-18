@@ -1,10 +1,19 @@
 import Box from "@shpaw415/mui-lite/Box"
-import Chip from "@shpaw415/mui-lite/Chip"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useReducer, useRef } from "react"
+import {
+  createContext,
+  createElement,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useReducer,
+  useRef,
+} from "react"
 import { api } from "./api"
+import { Chip } from "./chip"
 import { useEventStream } from "./hooks"
 
 export type PluginTextboxManifest = {
@@ -138,6 +147,8 @@ export type InstalledPluginsState = {
   error: string
   /** Account the current data belongs to; null when signed out. Internal. */
   identityKey: string | null
+  /** Monotonic request counter for the current identity. Internal. */
+  seq: number
 }
 
 export const initialPluginsState: InstalledPluginsState = {
@@ -150,13 +161,26 @@ export const initialPluginsState: InstalledPluginsState = {
   refreshing: false,
   error: "",
   identityKey: null,
+  seq: 0,
 }
 
 export type PluginsAction =
   | { type: "identity"; identity: string | null }
   | { type: "fetch" }
-  | { type: "success"; body: InstalledResponse }
-  | { type: "failure"; error: string }
+  | {
+      type: "success"
+      body: InstalledResponse
+      /** Account the request was fired for; required from the hook. */
+      identity?: string | null
+      /** Request counter at dispatch time; required from the hook. */
+      seq?: number
+    }
+  | {
+      type: "failure"
+      error: string
+      identity?: string | null
+      seq?: number
+    }
 
 /** Normalize a server body into the state's data fields. */
 export function parseInstalledBody(
@@ -180,6 +204,11 @@ export function parseInstalledBody(
  * previous user's data immediately — a private install list must never leak
  * across accounts, and a fetch fired before login must not be mistaken for
  * "this account has no plugins".
+ *
+ * Every success/failure can carry the identity and request counter it was
+ * fired for. Results that no longer match the current identity (logout,
+ * account switch, unmount/remount) or an older request (two refreshes of the
+ * same identity resolving out of order) are dropped, never applied.
  */
 export function pluginsReducer(
   state: InstalledPluginsState,
@@ -196,31 +225,63 @@ export function pluginsReducer(
         ...initialPluginsState,
         status: "loading",
         identityKey: action.identity,
+        // Keep the counter monotonic across identities: the hook pairs every
+        // fetch with the value it read, so a reset here would break pairing.
+        seq: state.seq,
       }
     }
     case "fetch": {
       if (state.status === "ready")
-        return { ...state, refreshing: true, error: "" }
-      return { ...state, status: "loading", error: "" }
+        return { ...state, seq: state.seq + 1, refreshing: true, error: "" }
+      return { ...state, seq: state.seq + 1, status: "loading", error: "" }
     }
-    case "success":
+    case "success": {
+      if (
+        (action.identity !== undefined &&
+          action.identity !== state.identityKey) ||
+        (action.seq !== undefined && action.seq !== state.seq)
+      ) {
+        // Stale: signed out, switched accounts, or an older request landed
+        // after a newer one. The current view must not change.
+        return state
+      }
       return {
         ...parseInstalledBody(action.body),
         status: "ready",
         refreshing: false,
         error: "",
         identityKey: state.identityKey,
+        // Adopt the request's counter so the next fetch increments from the
+        // answer that actually landed.
+        seq: action.seq ?? state.seq,
       }
-    case "failure":
+    }
+    case "failure": {
+      if (
+        (action.identity !== undefined &&
+          action.identity !== state.identityKey) ||
+        (action.seq !== undefined && action.seq !== state.seq)
+      ) {
+        return state
+      }
       return {
         // Keep the last good list; an error must not look like "no plugins".
         ...state,
         status: "error",
         refreshing: false,
         error: action.error,
+        seq: action.seq ?? state.seq,
       }
+    }
   }
 }
+
+/**
+ * "No request has been sent yet" — deliberately a unique value so it can
+ * never equal a valid identity, including the null identity of a signed-out
+ * or not-yet-resolved session (the bug behind the permanent skeletons).
+ */
+const NOT_REQUESTED: unique symbol = Symbol("plugins-not-requested")
 
 export function useInstalledPlugins(opts?: {
   /** True only with an authenticated session; gates the protected fetch. */
@@ -230,25 +291,46 @@ export function useInstalledPlugins(opts?: {
 }): InstalledPluginsState & { refresh: () => Promise<void> } {
   const active = opts?.active ?? true
   const identity = opts?.identity ?? null
-  const [state, dispatch] = useReducer(pluginsReducer, {
+  const [state, dispatch] = useReducer(pluginsReducer, undefined, () => ({
     ...initialPluginsState,
     // Start in the right phase before the first effect: with a session the
     // first fetch starts immediately; without one nothing is loaded yet.
-    status: active ? "loading" : "initial",
+    status: (active ? "loading" : "initial") as PluginsStatus,
     identityKey: active ? identity : null,
-  })
-  const requestedRef = useRef<string | null>(null)
+  }))
+  // Tracks the last identity a fetch was (or is being) sent for. NOT_REQUESTED
+  // means "never": it must not compare equal to any identity, so the first
+  // mount always fires its request — even when the identity is still null.
+  const requestedRef = useRef<string | null | typeof NOT_REQUESTED>(
+    NOT_REQUESTED,
+  )
+  // Live view of the session, so a refresh() the UI calls can never fire an
+  // authenticated request for a signed-out or stale account.
+  const activeRef = useRef(active)
+  const identityRef = useRef(identity)
+  activeRef.current = active
+  identityRef.current = identity
+  // Mirrors state.seq: incremented exactly when a "fetch" is dispatched, read
+  // into the matching success/failure so the reducer can reject stale landings.
+  const seqRef = useRef(state.seq)
 
   const refresh = useCallback(async () => {
+    // The refresh exposed to the UI respects authentication too: signed out,
+    // there is no request at all (the identity effect resets on login).
+    if (!activeRef.current) return
+    const forIdentity = identityRef.current
+    const seq = ++seqRef.current
     dispatch({ type: "fetch" })
     try {
       const body = await api<InstalledResponse>("/api/plugins/installed")
-      dispatch({ type: "success", body })
+      dispatch({ type: "success", body, identity: forIdentity, seq })
     } catch (caught) {
       dispatch({
         type: "failure",
         error:
           caught instanceof Error ? caught.message : "failed to load plugins",
+        identity: forIdentity,
+        seq,
       })
     }
   }, [])
@@ -259,7 +341,7 @@ export function useInstalledPlugins(opts?: {
 
   useEffect(() => {
     if (!active) {
-      requestedRef.current = null
+      requestedRef.current = NOT_REQUESTED
       return
     }
     // One request per identity unless a refresh is asked for explicitly.
@@ -274,14 +356,45 @@ export function useInstalledPlugins(opts?: {
     () =>
       subscribe((event) => {
         if (event.type !== "plugins.changed") return
-        if (!active) return
-        requestedRef.current = identity
+        if (!activeRef.current) return
+        requestedRef.current = identityRef.current
         void refresh()
       }),
-    [subscribe, refresh, active, identity],
+    [subscribe, refresh],
   )
 
   return { ...state, refresh }
+}
+
+// ---- Shared per-identity source -------------------------------------------
+// One instance for the whole shell: App fetches once with the session's
+// identity and every consumer (Apps view, Settings → Plugins, Endpoints,
+// chat composer surfaces) reads the same authenticated state. No private
+// caches, so no account A data can survive into account B's view.
+
+type PluginsStore = InstalledPluginsState & { refresh: () => Promise<void> }
+
+const PluginsContext = createContext<PluginsStore | null>(null)
+
+export function PluginsProvider({
+  active,
+  identity,
+  children,
+}: {
+  active: boolean
+  identity: string | null
+  children: ReactNode
+}) {
+  const store = useInstalledPlugins({ active, identity })
+  return createElement(PluginsContext.Provider, { value: store }, children)
+}
+
+/** Read the shell's shared plugin list. Must sit under PluginsProvider. */
+export function usePlugins(): PluginsStore {
+  const store = useContext(PluginsContext)
+  if (!store)
+    throw new Error("usePlugins must be used inside <PluginsProvider>")
+  return store
 }
 
 export function resolveSpecField(

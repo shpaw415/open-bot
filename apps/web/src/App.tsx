@@ -1,7 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
 import Divider from "@shpaw415/mui-lite/Divider"
 import Drawer from "@shpaw415/mui-lite/Drawer"
 import IconButton from "@shpaw415/mui-lite/IconButton"
@@ -14,6 +13,8 @@ import { AgentNotices, NoticeBell, SoundBell } from "./AgentNotices"
 import { api, type Me } from "./api"
 import { Config } from "./Config"
 import { CronView } from "./CronView"
+import { Chip } from "./chip"
+import { dirtyForms } from "./dirty-form"
 import { useMobile } from "./hooks"
 import {
   AdminPanelSettingsIcon,
@@ -37,7 +38,7 @@ import {
   PluginTabView,
   pluginTabs,
 } from "./plugin-tabs"
-import { useInstalledPlugins } from "./plugin-ui"
+import { PluginsProvider, usePlugins } from "./plugin-ui"
 import { ResetApprovals } from "./ResetApprovals"
 import {
   CONFIG_GROUPS,
@@ -100,7 +101,28 @@ const NAV_ENTRIES: NavEntry[] = [
 
 function navActiveKey(route: ReturnType<typeof parseRoute>["route"]): string {
   if (route.view === "workspace") return `workspace:${route.tab}`
+  if (route.view === "plugin" || route.view === "plugin-pending") return "apps"
   return route.view
+}
+
+/** Collapsed-rail preference. Persisted; resize never overwrites the choice. */
+function useRailPreference() {
+  const [rail, setRail] = useState(() => {
+    try {
+      return localStorage.getItem(NAV_RAIL_KEY) === "1"
+    } catch {
+      return false
+    }
+  })
+  const setRailPersisted = useCallback((next: boolean) => {
+    setRail(next)
+    try {
+      localStorage.setItem(NAV_RAIL_KEY, next ? "1" : "0")
+    } catch {
+      // session-only collapse is fine
+    }
+  }, [])
+  return { rail, setRailPersisted }
 }
 
 function NavLink({
@@ -208,43 +230,26 @@ export function App() {
   )
   const mobile = useMobile()
   const { mode, toggle } = useThemeMode()
-  // The install list is account-scoped: only fetch with a session, and
-  // invalidate whenever the signed-in user changes (or on logout).
-  const pluginsState = useInstalledPlugins({
-    active: Boolean(me),
-    identity: me?.id ?? null,
-  })
-  const [rail, setRail] = useState(() => {
-    try {
-      return localStorage.getItem(NAV_RAIL_KEY) === "1"
-    } catch {
-      return false
-    }
-  })
-  const [navOpen, setNavOpen] = useState(false)
-  const [accountOpen, setAccountOpen] = useState(false)
-  const accountButton = useRef<HTMLButtonElement | null>(null)
-
-  const setRailPersisted = useCallback((next: boolean) => {
-    setRail(next)
-    try {
-      localStorage.setItem(NAV_RAIL_KEY, next ? "1" : "0")
-    } catch {
-      // session-only collapse is fine
-    }
-  }, [])
 
   const announce = useCallback(() => {
     window.dispatchEvent(new CustomEvent("ob-navigate"))
   }, [])
 
+  // Internal navigation guards forms with unsaved changes. beforeunload only
+  // covers tab close/refresh — pushState and popstate come through here.
+  const confirmDirty = useCallback(() => {
+    if (!dirtyForms.hasDirty()) return true
+    return window.confirm("You have unsaved changes. Leave this page anyway?")
+  }, [])
+
   const go = useCallback(
     (next: string) => {
+      if (next !== location.pathname && !confirmDirty()) return
       history.pushState({}, "", next)
       setPath(next)
       announce()
     },
-    [announce],
+    [announce, confirmDirty],
   )
 
   const replace = useCallback(
@@ -265,46 +270,21 @@ export function App() {
 
   useEffect(() => {
     const onPop = () => {
+      if (!confirmDirty()) {
+        // Undo the pop: pin the entry back so the view does not change.
+        history.pushState({}, "", path)
+        return
+      }
       setPath(location.pathname)
       announce()
     }
     window.addEventListener("popstate", onPop)
     return () => window.removeEventListener("popstate", onPop)
-  }, [announce])
-
-  const tabs = useMemo(
-    () => pluginTabs(pluginsState.plugins),
-    [pluginsState.plugins],
-  )
-  const parsed = useMemo(() => parseRoute(path, tabs), [path, tabs])
-
-  // Canonicalize legacy/unknown paths so the URL always names the active
-  // destination (back/forward and reload then restore the same view).
-  // On desktop, /config without a section resolves to the first one; on
-  // phones it is the group list, so it stays.
-  useEffect(() => {
-    const target = parsed.redirect
-      ? parsed.redirect
-      : !mobile && parsed.route.view === "config" && parsed.route.tab === ""
-        ? configPath("chat")
-        : null
-    if (!target || location.pathname === target) return
-    replace(target)
-  }, [parsed, mobile, replace])
+  }, [announce, confirmDirty, path])
 
   useEffect(() => {
     setNoticeFocus({ path })
   }, [path])
-
-  const openReply = useCallback(
-    (sessionId: string) => {
-      openNotifiedThread(sessionId)
-      go("/")
-    },
-    [go],
-  )
-
-  const activeKey = navActiveKey(parsed.route)
 
   if (!ready) {
     return (
@@ -332,6 +312,112 @@ export function App() {
   }
   if (!me) return <Login onLogin={setMe} />
   if (me.mustChangePassword) return <SetCredentials me={me} onSaved={setMe} />
+
+  // One shared, authenticated plugin list for the whole shell: the Apps view,
+  // Settings → Plugins, Endpoints, and the chat composer all read this same
+  // account-scoped state instead of each fetching (or not fetching) on their
+  // own.
+  return (
+    <PluginsProvider active={Boolean(me)} identity={me.id}>
+      <Shell
+        me={me}
+        setMe={setMe}
+        path={path}
+        mobile={mobile}
+        go={go}
+        replace={replace}
+        onToggleTheme={toggle}
+        themeMode={mode}
+      />
+    </PluginsProvider>
+  )
+}
+
+function Shell({
+  me,
+  setMe,
+  path,
+  mobile,
+  go,
+  replace,
+  onToggleTheme,
+  themeMode: mode,
+}: {
+  me: Me
+  setMe: (me: Me | null) => void
+  path: string
+  mobile: boolean
+  go: (next: string) => void
+  replace: (next: string) => void
+  onToggleTheme: () => void
+  themeMode: "dark" | "light"
+}) {
+  const pluginsState = usePlugins()
+  const [navOpen, setNavOpen] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
+  const accountButton = useRef<HTMLButtonElement | null>(null)
+  const { rail, setRailPersisted } = useRailPreference()
+  const navTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const navDrawerRef = useRef<HTMLDivElement | null>(null)
+
+  const tabs = useMemo(
+    () => pluginTabs(pluginsState.plugins),
+    [pluginsState.plugins],
+  )
+  // While the install list has never loaded (first fetch in flight), a
+  // plugin-shaped URL stays pending instead of being redirected to chat.
+  // Once loading settles — success, empty, or error — the route is decided
+  // for real; a network error then falls back cleanly like any unknown path.
+  const parsed = useMemo(
+    () =>
+      parseRoute(path, tabs, {
+        awaitingPlugins: pluginsState.status === "loading",
+      }),
+    [path, tabs, pluginsState.status],
+  )
+
+  // Canonicalize legacy/unknown paths so the URL always names the active
+  // destination (back/forward and reload then restore the same view).
+  // On desktop, /config without a section resolves to the first one; on
+  // phones it is the group list, so it stays. Pending plugin routes hold
+  // their URL until the tabs arrive.
+  useEffect(() => {
+    const target = parsed.redirect
+      ? parsed.redirect
+      : !mobile && parsed.route.view === "config" && parsed.route.tab === ""
+        ? configPath("chat")
+        : null
+    if (!target || location.pathname === target) return
+    replace(target)
+  }, [parsed, mobile, replace])
+
+  const openReply = useCallback(
+    (sessionId: string) => {
+      openNotifiedThread(sessionId)
+      go("/")
+    },
+    [go],
+  )
+
+  const activeKey = navActiveKey(parsed.route)
+
+  // The nav drawer is a temporary overlay: Escape closes it, focus moves in
+  // on open and returns to the trigger on close.
+  useEffect(() => {
+    if (!navOpen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNavOpen(false)
+    }
+    window.addEventListener("keydown", onKey)
+    const focusTimer = window.setTimeout(() => {
+      navDrawerRef.current?.focus()
+    }, 0)
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      window.clearTimeout(focusTimer)
+      navTriggerRef.current?.focus()
+    }
+  }, [navOpen])
 
   const pluginsViewStatus: PluginsViewStatus = {
     status: pluginsState.status,
@@ -401,7 +487,27 @@ export function App() {
           />
         ))}
       </nav>
-      {railMode ? null : parsed.route.view === "config" ? (
+      {railMode ? (
+        // Collapsed rail: Settings categories cannot fit, so they stay one
+        // explicit tap away — the nav drawer renders the full sidebar
+        // (categories included) while Settings is open.
+        parsed.route.view === "config" ? (
+          <Box className="ob-side-context" sx={{ flex: 1 }}>
+            <Tip title="Settings sections" placement="right">
+              <IconButton
+                size="small"
+                aria-label="Open Settings sections"
+                aria-haspopup="dialog"
+                onClick={() => setNavOpen(true)}
+              >
+                <SettingsIcon />
+              </IconButton>
+            </Tip>
+          </Box>
+        ) : (
+          <Box className="ob-side-context" sx={{ flex: 1 }} aria-hidden />
+        )
+      ) : parsed.route.view === "config" ? (
         <ConfigCategories
           active={parsed.route.view === "config" ? parsed.route.tab : ""}
           onGo={(next) => {
@@ -412,28 +518,33 @@ export function App() {
       ) : (
         <Box className="ob-side-context" sx={{ flex: 1 }} aria-hidden />
       )}
+      {/* Account cluster: a row in the expanded sidebar, a vertical stack in
+          the 64px rail so every control stays inside the column. */}
       <Box className="ob-side-account">
         <Stack
-          direction="row"
+          direction={railMode ? "column" : "row"}
           spacing={0.5}
           alignItems="center"
           sx={{ width: "100%" }}
         >
           <SoundBell />
           <NoticeBell />
-          <span style={{ flex: 1 }} />
-          <Tip title={mode === "dark" ? "Light mode" : "Dark mode"}>
+          {railMode ? null : <span style={{ flex: 1 }} />}
+          <Tip
+            title={mode === "dark" ? "Light mode" : "Dark mode"}
+            placement={railMode ? "right" : "top"}
+          >
             <IconButton
               size="small"
               aria-label={
                 mode === "dark" ? "Switch to light mode" : "Switch to dark mode"
               }
-              onClick={toggle}
+              onClick={onToggleTheme}
             >
               {mode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
             </IconButton>
           </Tip>
-          <Tip title="Account">
+          <Tip title="Account" placement={railMode ? "right" : "top"}>
             <IconButton
               ref={accountButton}
               size="small"
@@ -491,6 +602,25 @@ export function App() {
       return <PluginAppsView tabs={tabs} status={pluginsViewStatus} />
     if (parsed.route.view === "plugin")
       return <PluginTabView key={parsed.route.tab.key} tab={parsed.route.tab} />
+    if (parsed.route.view === "plugin-pending") {
+      // The URL may name a plugin page; the install list is still loading.
+      // Hold this view — no redirect, no fake empty — until tabs resolve.
+      return (
+        <Box
+          sx={{ height: "100%", p: 2, boxSizing: "border-box" }}
+          aria-busy="true"
+        >
+          <Stack spacing={2} sx={{ maxWidth: 640 }}>
+            <Box className="ob-skeleton" sx={{ height: 24, width: 220 }} />
+            <Box
+              className="ob-skeleton"
+              sx={{ height: 200, borderRadius: "12px" }}
+            />
+            <output className="ob-sr-status">Loading app</output>
+          </Stack>
+        </Box>
+      )
+    }
     if (parsed.route.view === "automations")
       return (
         <Box className="ob-scroll ob-view-enter">
@@ -501,8 +631,8 @@ export function App() {
             <Stack spacing={0.25}>
               <Typography variant="h6">Automations</Typography>
               <Typography variant="body2" color="textSecondary">
-                Scheduled jobs the desktop agent runs for you — the same cron
-                engine as before, with its own door now.
+                Scheduled jobs the desktop agent runs for you — create one,
+                pause it, or read what it did.
               </Typography>
             </Stack>
             <CronView me={me} />
@@ -539,6 +669,7 @@ export function App() {
       {mobile && parsed.route.view !== "workspace" ? (
         <Box className="ob-mobile-global-bar">
           <IconButton
+            ref={navTriggerRef}
             size="small"
             aria-label="Open navigation"
             onClick={() => setNavOpen(true)}
@@ -565,13 +696,15 @@ export function App() {
                     ? "Automations"
                     : parsed.route.view === "plugin"
                       ? parsed.route.tab.title
-                      : workspaceTab === "chat"
-                        ? "open-bot"
-                        : workspaceTab === "desktop"
-                          ? "Desktop"
-                          : workspaceTab === "projects"
-                            ? "Projects"
-                            : "Media"}
+                      : parsed.route.view === "plugin-pending"
+                        ? "Apps"
+                        : workspaceTab === "chat"
+                          ? "open-bot"
+                          : workspaceTab === "desktop"
+                            ? "Desktop"
+                            : workspaceTab === "projects"
+                              ? "Projects"
+                              : "Media"}
           </Typography>
           <SoundBell />
           <NoticeBell />
@@ -610,12 +743,18 @@ export function App() {
         width={300}
       >
         <Box
+          ref={navDrawerRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation"
           sx={{
             p: 1.25,
             display: "flex",
             flexDirection: "column",
             minHeight: "100%",
             boxSizing: "border-box",
+            outline: "none",
           }}
         >
           {sidebar(false, false)}
@@ -649,7 +788,7 @@ export function App() {
           variant="text"
           startIcon={mode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
           onClick={() => {
-            toggle()
+            onToggleTheme()
             setAccountOpen(false)
           }}
           sx={{ width: "100%", justifyContent: "flex-start" }}

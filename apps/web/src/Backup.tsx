@@ -2,20 +2,20 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import { api, type Me } from "./api"
 import { ConfigSection } from "./ConfigSection"
+import { Chip } from "./chip"
 import { useMobile } from "./hooks"
 import { BackupIcon, DeleteIcon, FactoryIcon, RestoreIcon } from "./icons"
 
@@ -366,7 +366,7 @@ function RestoreDialog({
   }
 
   return (
-    <Dialog open onClose={onClose}>
+    <AccessibleDialog open onClose={onClose}>
       <DialogTitle>Restore backup</DialogTitle>
       <DialogContent>
         <Stack spacing={1} sx={{ mt: 0.5 }}>
@@ -451,7 +451,7 @@ function RestoreDialog({
           Restore
         </Button>
       </DialogActions>
-    </Dialog>
+    </AccessibleDialog>
   )
 }
 
@@ -486,7 +486,7 @@ function ResetDesktopDialog({
   }
 
   return (
-    <Dialog open onClose={onClose}>
+    <AccessibleDialog open onClose={onClose}>
       <DialogTitle>Factory reset your desktop?</DialogTitle>
       <DialogContent>
         <Stack spacing={1} sx={{ mt: 0.5 }}>
@@ -521,7 +521,7 @@ function ResetDesktopDialog({
           Reset desktop
         </Button>
       </DialogActions>
-    </Dialog>
+    </AccessibleDialog>
   )
 }
 

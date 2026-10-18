@@ -2,12 +2,6 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
 import Drawer from "@shpaw415/mui-lite/Drawer"
 import IconButton from "@shpaw415/mui-lite/IconButton"
@@ -19,7 +13,6 @@ import Select from "@shpaw415/mui-lite/Select"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import {
   memo,
@@ -34,6 +27,11 @@ import {
 import { createPortal } from "react-dom"
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown"
 import remarkGfm from "remark-gfm"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import {
   api,
   clientId,
@@ -76,6 +74,7 @@ import {
   visibleText,
   vncFrameSrc,
 } from "./chat-view"
+import { Chip } from "./chip"
 import { readDraft, writeDraft } from "./draft"
 import {
   useDebounced,
@@ -105,6 +104,7 @@ import {
   PauseIcon,
   PlayArrowIcon,
   RefreshIcon,
+  SearchIcon,
   SendIcon,
   StopIcon,
   TuneIcon,
@@ -141,11 +141,7 @@ import {
   PreviewOverlay,
   PreviewPane,
 } from "./PreviewView"
-import {
-  type PluginCardSpec,
-  PluginCards,
-  useInstalledPlugins,
-} from "./plugin-ui"
+import { type PluginCardSpec, PluginCards, usePlugins } from "./plugin-ui"
 import {
   ProjectRefLink,
   ProjectRefsContext,
@@ -164,6 +160,7 @@ import {
   type Suggestion,
 } from "./references"
 import type { WorkspaceTab } from "./routes"
+import { Tip } from "./Tip"
 import { expandFolder, parseCollapsedFolders } from "./thread-folders"
 
 // the IDE keeps its own state; memo keeps workspace renders (streaming ticks,
@@ -375,7 +372,7 @@ function AppLauncher({
           }
         }}
       />
-      <ToolTip
+      <Tip
         title={
           suggestions[0]
             ? `Launch ${suggestions[0].name}`
@@ -394,7 +391,7 @@ function AppLauncher({
         >
           Launch
         </Button>
-      </ToolTip>
+      </Tip>
       <Menu
         open={open && suggestions.length > 0}
         anchorEl={anchorRef}
@@ -623,7 +620,7 @@ function IdeThreadBar({
           ]}
         </Select>
       </Box>
-      <ToolTip title="New thread">
+      <Tip title="New thread">
         <IconButton
           size="small"
           aria-label="New thread"
@@ -632,7 +629,7 @@ function IdeThreadBar({
         >
           <AddIcon width={18} height={18} />
         </IconButton>
-      </ToolTip>
+      </Tip>
     </Stack>
   )
 }
@@ -861,7 +858,7 @@ const MessageBubble = memo(function MessageBubble({
           spacing={0.5}
           sx={{ justifyContent: "flex-end", mt: 0.25 }}
         >
-          <ToolTip
+          <Tip
             title={speechKey === bubbleKey ? "Stop reading" : "Read out loud"}
           >
             <span>
@@ -893,7 +890,7 @@ const MessageBubble = memo(function MessageBubble({
                 )}
               </IconButton>
             </span>
-          </ToolTip>
+          </Tip>
         </Stack>
       ) : null}
       {message.sentAt ? (
@@ -958,6 +955,12 @@ const ThreadsPanel = memo(function ThreadsPanel({
     parseCollapsedFolders(localStorage.getItem(FOLDERS_COLLAPSED_KEY)),
   )
   const [dragOver, setDragOver] = useState<string | null>(null)
+  const [threadQuery, setThreadQuery] = useState("")
+  const query = threadQuery.trim().toLowerCase()
+  const matchesQuery = (item: SessionInfo) =>
+    !query ||
+    threadTitle(item).toLowerCase().includes(query) ||
+    personaLabel(item.id).toLowerCase().includes(query)
   const groups = useMemo(() => {
     const sections: {
       key: string
@@ -1111,7 +1114,9 @@ const ThreadsPanel = memo(function ThreadsPanel({
     <Paper
       variant="outlined"
       sx={{
-        width: mobile ? "100%" : 280,
+        // Give the chat room on small laptops: the history column scales
+        // with the viewport instead of eating a fixed 280px at 1024.
+        width: mobile ? "100%" : "clamp(240px, 24vw, 280px)",
         flexShrink: 0,
         minHeight: 0,
         display: mobile && !open ? "none" : "flex",
@@ -1135,7 +1140,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
             <Typography variant="subtitle2" sx={{ flex: 1 }}>
               {selectedIds.size} selected
             </Typography>
-            <ToolTip title="Delete selected">
+            <Tip title="Delete selected">
               <IconButton
                 size="small"
                 aria-label="Delete selected threads"
@@ -1145,8 +1150,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
               >
                 <DeleteIcon width={18} height={18} />
               </IconButton>
-            </ToolTip>
-            <ToolTip title="Cancel selection">
+            </Tip>
+            <Tip title="Cancel selection">
               <IconButton
                 size="small"
                 aria-label="Cancel thread selection"
@@ -1154,14 +1159,14 @@ const ThreadsPanel = memo(function ThreadsPanel({
               >
                 <CloseIcon width={18} height={18} />
               </IconButton>
-            </ToolTip>
+            </Tip>
           </>
         ) : (
           <>
             <Typography variant="subtitle2" sx={{ flex: 1 }}>
               Threads
             </Typography>
-            <ToolTip title="Select threads">
+            <Tip title="Select threads">
               <IconButton
                 size="small"
                 aria-label="Select threads"
@@ -1170,8 +1175,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
               >
                 <ChecklistIcon width={18} height={18} />
               </IconButton>
-            </ToolTip>
-            <ToolTip title="New folder">
+            </Tip>
+            <Tip title="New folder">
               <IconButton
                 size="small"
                 aria-label="New folder"
@@ -1180,8 +1185,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
               >
                 <FolderIcon width={18} height={18} />
               </IconButton>
-            </ToolTip>
-            <ToolTip title="New thread">
+            </Tip>
+            <Tip title="New thread">
               <IconButton
                 size="small"
                 aria-label="New thread"
@@ -1190,10 +1195,60 @@ const ThreadsPanel = memo(function ThreadsPanel({
               >
                 <AddIcon width={18} height={18} />
               </IconButton>
-            </ToolTip>
+            </Tip>
           </>
         )}
       </Stack>
+      {/* Search + new thread live under the header so they are identifiable
+          controls, not small icon-only affordances. The search filters the
+          threads already loaded on this device — it is not a server search. */}
+      {selectMode ? null : (
+        <Box sx={{ px: 1, pt: 0.75, pb: 0.5 }}>
+          <Stack spacing={0.75}>
+            <TextField
+              variant="outlined"
+              value={threadQuery}
+              onChange={(event) => setThreadQuery(event.currentTarget.value)}
+              placeholder="Filter loaded threads"
+              aria-label="Filter loaded threads"
+              startIcon={
+                <Box
+                  Element="span"
+                  sx={{ display: "flex", color: "text.secondary" }}
+                >
+                  <SearchIcon width={14} height={14} />
+                </Box>
+              }
+              endIcon={
+                threadQuery ? (
+                  <IconButton
+                    aria-label="Clear thread filter"
+                    size="small"
+                    onClick={() => setThreadQuery("")}
+                    sx={{ p: 0.25 }}
+                  >
+                    <CloseIcon width={13} height={13} />
+                  </IconButton>
+                ) : undefined
+              }
+              sx={{
+                width: "100%",
+                "& input": { py: 0.7, fontSize: 12.5 },
+              }}
+            />
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<AddIcon width={16} height={16} />}
+              disabled={actionBusy}
+              onClick={actions.create}
+              sx={{ justifyContent: "flex-start" }}
+            >
+              New thread
+            </Button>
+          </Stack>
+        </Box>
+      )}
       <Divider />
       <Box sx={{ flex: 1, overflow: "auto", minHeight: 0 }}>
         {loading && sessions.length === 0 ? (
@@ -1204,7 +1259,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
           </Stack>
         ) : sessions.length === 0 ? (
           <Typography variant="body2" color="textSecondary" sx={{ p: 1.5 }}>
-            No threads yet — send a message or press +.
+            No threads yet — send a message or press New thread.
           </Typography>
         ) : (
           <List dense disablePadding>
@@ -1215,6 +1270,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
                 unread: 0,
                 busy: 0,
               }
+              const visibleItems = group.items.filter(matchesQuery)
+              if (query && visibleItems.length === 0) return null
               return (
                 <Box key={group.key || "unfiled"}>
                   <Stack
@@ -1283,7 +1340,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
                         cursor: "pointer",
                       }}
                     >
-                      {group.label} ({group.items.length})
+                      {group.label} ({visibleItems.length})
                     </Typography>
                     {isCollapsed ? (
                       <>
@@ -1310,7 +1367,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
                     ) : null}
                     {dir ? (
                       <>
-                        <ToolTip title={`New thread in ${dir.name}`}>
+                        <Tip title={`New thread in ${dir.name}`}>
                           <IconButton
                             size="small"
                             aria-label={`New thread in ${dir.name}`}
@@ -1320,8 +1377,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
                           >
                             <AddIcon width={14} height={14} />
                           </IconButton>
-                        </ToolTip>
-                        <ToolTip title={`Folder actions for ${dir.name}`}>
+                        </Tip>
+                        <Tip title={`Folder actions for ${dir.name}`}>
                           <IconButton
                             size="small"
                             aria-label={`Actions for folder ${dir.name}`}
@@ -1332,16 +1389,26 @@ const ThreadsPanel = memo(function ThreadsPanel({
                           >
                             <MoreVertIcon width={14} height={14} />
                           </IconButton>
-                        </ToolTip>
+                        </Tip>
                       </>
                     ) : null}
                   </Stack>
                   {isCollapsed
                     ? null
-                    : group.items.map((item) => renderRow(item))}
+                    : query
+                      ? visibleItems.map((item) => renderRow(item))
+                      : group.items.map((item) => renderRow(item))}
                 </Box>
               )
             })}
+            {query &&
+            groups.every(
+              (group) => group.items.filter(matchesQuery).length === 0,
+            ) ? (
+              <Typography variant="body2" color="textSecondary" sx={{ p: 1.5 }}>
+                No loaded threads match “{threadQuery.trim()}”.
+              </Typography>
+            ) : null}
           </List>
         )}
       </Box>
@@ -1983,9 +2050,7 @@ function Composer({
           >
             <AttachFileIcon />
           </IconButton>
-          <ToolTip
-            title={recording ? "Release to transcribe" : "Hold to speak"}
-          >
+          <Tip title={recording ? "Release to transcribe" : "Hold to speak"}>
             <IconButton
               size="medium"
               aria-label={recording ? "Release to transcribe" : "Hold to speak"}
@@ -2025,7 +2090,7 @@ function Composer({
                 <MicIcon />
               )}
             </IconButton>
-          </ToolTip>
+          </Tip>
           {recording ? (
             <Typography
               variant="caption"
@@ -2035,7 +2100,7 @@ function Composer({
               {Math.floor(recordMs / 1000)}s
             </Typography>
           ) : null}
-          <ToolTip
+          <Tip
             title={
               readAloud
                 ? "Read replies out loud: on"
@@ -2059,7 +2124,7 @@ function Composer({
             >
               {readAloud ? <VolumeUpIcon /> : <VolumeOffIcon />}
             </IconButton>
-          </ToolTip>
+          </Tip>
           <input
             ref={fileInputRef}
             type="file"
@@ -2080,7 +2145,8 @@ function Composer({
             <TextField
               label="Message"
               value={draft}
-              multiline
+              variant="outlined"
+              multiline={{ minRows: mobile ? 1 : 2, maxRows: 10 }}
               ref={messageInputRef}
               disabled={!running || sending || stopping}
               onFocus={() => {
@@ -2375,6 +2441,25 @@ export function Workspace({
   >({})
   const [threadsOpen, setThreadsOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const drawerTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const drawerPanelRef = useRef<HTMLDivElement | null>(null)
+  // The model/desktop drawer is a temporary overlay: Escape closes it, focus
+  // moves into the panel on open and back to the trigger on close.
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDrawerOpen(false)
+    }
+    window.addEventListener("keydown", onKey)
+    const timer = window.setTimeout(() => {
+      drawerPanelRef.current?.focus()
+    }, 0)
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      window.clearTimeout(timer)
+      drawerTriggerRef.current?.focus()
+    }
+  }, [drawerOpen])
   const [personas, setPersonas] = useState<PersonaInfo[]>([])
   const [threadPersona, setThreadPersona] = useState<Record<string, string>>({})
   const [newThreadOpen, setNewThreadOpen] = useState(false)
@@ -2473,7 +2558,7 @@ export function Workspace({
       .then((body) => setReportList(body.plugins ?? []))
       .catch(() => setReportList([]))
   }, [])
-  const { plugins: installedPlugins } = useInstalledPlugins()
+  const { plugins: installedPlugins } = usePlugins()
   const pluginRenderers = useMemo(() => {
     const map = new Map<string, PluginRenderer>()
     for (const plugin of installedPlugins) {
@@ -4299,8 +4384,11 @@ export function Workspace({
           </IconButton>
           {mobile ? (
             <IconButton
+              ref={drawerTriggerRef}
               size="small"
               aria-label="Desktop and model options"
+              aria-haspopup="dialog"
+              aria-expanded={drawerOpen}
               onClick={() => setDrawerOpen(true)}
             >
               <TuneIcon />
@@ -4861,7 +4949,7 @@ export function Workspace({
                 >
                   {held ? "Done" : "Take control"}
                 </Button>
-                <ToolTip title="Reload VNC">
+                <Tip title="Reload VNC">
                   <Button
                     size="small"
                     variant="text"
@@ -4871,8 +4959,8 @@ export function Workspace({
                   >
                     Reload
                   </Button>
-                </ToolTip>
-                <ToolTip title="Open VNC in a new tab">
+                </Tip>
+                <Tip title="Open VNC in a new tab">
                   <Button
                     size="small"
                     variant="text"
@@ -4886,7 +4974,7 @@ export function Workspace({
                   >
                     Pop out
                   </Button>
-                </ToolTip>
+                </Tip>
                 <AppLauncher
                   sessionId={sessionId}
                   disabled={!screen || screen.sessionId !== sessionId}
@@ -4952,7 +5040,18 @@ export function Workspace({
           width={300}
         >
           <Box
-            sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}
+            ref={drawerPanelRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Desktop and model options"
+            sx={{
+              p: 1.5,
+              display: "flex",
+              flexDirection: "column",
+              gap: 1,
+              outline: "none",
+            }}
           >
             <Stack direction="row" spacing={1} alignItems="center">
               <Typography variant="subtitle2" sx={{ flex: 1 }}>
@@ -5006,11 +5105,11 @@ export function Workspace({
               />
             )}
             {modelsError ? (
-              <ToolTip title={modelsError}>
+              <Tip title={modelsError}>
                 <Chip size="small" color="error" variant="outlined">
                   {modelsError}
                 </Chip>
-              </ToolTip>
+              </Tip>
             ) : null}
             {running && !modelsLoading ? (
               <Button
@@ -5166,7 +5265,7 @@ export function Workspace({
         </Menu>
 
         {newThreadOpen ? (
-          <Dialog open onClose={() => setNewThreadOpen(false)}>
+          <AccessibleDialog open onClose={() => setNewThreadOpen(false)}>
             <DialogTitle>New thread</DialogTitle>
             <DialogContent>
               <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
@@ -5229,11 +5328,11 @@ export function Workspace({
                 Start
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
 
         {renameTarget ? (
-          <Dialog open onClose={() => setRenameTarget(null)}>
+          <AccessibleDialog open onClose={() => setRenameTarget(null)}>
             <DialogTitle>Rename thread</DialogTitle>
             <DialogContent>
               <TextField
@@ -5263,11 +5362,11 @@ export function Workspace({
                 Save
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
 
         {deleteTarget ? (
-          <Dialog open onClose={() => setDeleteTarget(null)}>
+          <AccessibleDialog open onClose={() => setDeleteTarget(null)}>
             <DialogTitle>Delete thread?</DialogTitle>
             <DialogContent>
               <Typography variant="body2">
@@ -5289,11 +5388,11 @@ export function Workspace({
                 Delete
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
 
         {batchTarget ? (
-          <Dialog
+          <AccessibleDialog
             open
             onClose={() => {
               if (!batchBusy) setBatchTarget(null)
@@ -5335,10 +5434,10 @@ export function Workspace({
                 Delete
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
         {folderDialog ? (
-          <Dialog open onClose={() => setFolderDialog(null)}>
+          <AccessibleDialog open onClose={() => setFolderDialog(null)}>
             <DialogTitle>
               {folderDialog.mode === "create" ? "New folder" : "Rename folder"}
             </DialogTitle>
@@ -5374,11 +5473,11 @@ export function Workspace({
                 {folderDialog.mode === "create" ? "Create" : "Save"}
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
 
         {folderDeleteTarget ? (
-          <Dialog open onClose={() => setFolderDeleteTarget(null)}>
+          <AccessibleDialog open onClose={() => setFolderDeleteTarget(null)}>
             <DialogTitle>Delete “{folderDeleteTarget.name}”?</DialogTitle>
             <DialogContent>
               <Typography variant="body2">
@@ -5403,7 +5502,7 @@ export function Workspace({
                 Delete folder
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
       </Stack>
     </ProjectRefsContext.Provider>

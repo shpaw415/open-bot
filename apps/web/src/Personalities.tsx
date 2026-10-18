@@ -1,14 +1,13 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Dialog, {
+import Stack from "@shpaw415/mui-lite/Stack"
+import TextField from "@shpaw415/mui-lite/TextField"
+import { useCallback, useEffect, useState } from "react"
+import AccessibleDialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
-import Stack from "@shpaw415/mui-lite/Stack"
-import TextField from "@shpaw415/mui-lite/TextField"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
-import { useCallback, useEffect, useState } from "react"
+} from "./AccessibleDialog"
 import { api } from "./api"
 import {
   ConfigItemCard,
@@ -19,6 +18,7 @@ import {
 } from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
 import { FaceIcon, LockIcon, PersonIcon } from "./icons"
+import { Tip } from "./Tip"
 
 export type PersonaInfo = {
   id: string
@@ -164,11 +164,11 @@ export function Personalities() {
               key={persona.id}
               avatar={
                 persona.builtin ? (
-                  <ToolTip title="Built-in — cannot edit or delete">
+                  <Tip title="Built-in — cannot edit or delete">
                     <ItemAvatar tone="muted">
                       <LockIcon width={20} height={20} />
                     </ItemAvatar>
-                  </ToolTip>
+                  </Tip>
                 ) : (
                   <ItemAvatar tone={persona.plugin ? "secondary" : "primary"}>
                     {initial(persona.name)}
@@ -180,7 +180,7 @@ export function Personalities() {
                 persona.plugin ? (
                   <PluginBadge plugin={persona.plugin} />
                 ) : persona.builtin ? (
-                  <ToolTip title="Built-in — cannot edit or delete">
+                  <Tip title="Built-in — cannot edit or delete">
                     <LockIcon
                       width={16}
                       height={16}
@@ -189,7 +189,7 @@ export function Personalities() {
                         flexShrink: 0,
                       }}
                     />
-                  </ToolTip>
+                  </Tip>
                 ) : undefined
               }
               description={
@@ -229,7 +229,7 @@ export function Personalities() {
           ))
         )}
         {draft ? (
-          <Dialog
+          <AccessibleDialog
             open
             fullWidth
             scroll="paper"
@@ -285,7 +285,7 @@ export function Personalities() {
                 Save personality
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
         <Button
           variant="contained"

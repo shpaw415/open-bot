@@ -1,12 +1,12 @@
 import Avatar from "@shpaw415/mui-lite/Avatar"
 import Box from "@shpaw415/mui-lite/Box"
-import Chip from "@shpaw415/mui-lite/Chip"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Stack from "@shpaw415/mui-lite/Stack"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { ReactNode, RefObject } from "react"
+import { Chip } from "./chip"
 import { ExtensionIcon } from "./icons"
+import { Tip } from "./Tip"
 
 export type PluginOriginInfo = { id: string; name: string }
 
@@ -20,7 +20,7 @@ export function PluginBadge({
   maxWidth?: number
 }) {
   return (
-    <ToolTip title={`Installed by ${plugin.name}`}>
+    <Tip title={`Installed by ${plugin.name}`}>
       <Chip
         size="small"
         icon={
@@ -48,7 +48,7 @@ export function PluginBadge({
       >
         {plugin.name}
       </Chip>
-    </ToolTip>
+    </Tip>
   )
 }
 

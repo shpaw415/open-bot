@@ -1,22 +1,21 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { type ReactNode, useCallback, useEffect, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "../AccessibleDialog"
 import { api } from "../api"
+import { Chip } from "../chip"
 import type { EventStream } from "../hooks"
 import { useMobile } from "../hooks"
 import {
@@ -26,6 +25,7 @@ import {
   FolderIcon,
   RefreshIcon,
 } from "../icons"
+import { Tip } from "../Tip"
 import { Ide } from "./Ide"
 import { groupProjects } from "./project-groups"
 import type { ProjectInfo } from "./types"
@@ -186,7 +186,7 @@ function ProjectCard({
         ) : null}
       </Box>
       <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
-        <ToolTip title={project.name}>
+        <Tip title={project.name}>
           <Typography
             sx={{
               fontSize: 15,
@@ -199,8 +199,8 @@ function ProjectCard({
           >
             {project.name}
           </Typography>
-        </ToolTip>
-        <ToolTip title={project.path}>
+        </Tip>
+        <Tip title={project.path}>
           <Typography
             sx={{
               fontSize: 12,
@@ -215,7 +215,7 @@ function ProjectCard({
           >
             {project.path}
           </Typography>
-        </ToolTip>
+        </Tip>
       </Stack>
       <Stack
         direction="row"
@@ -269,7 +269,7 @@ function ProjectCard({
             },
           }}
         >
-          <ToolTip title="Remove project link">
+          <Tip title="Remove project link">
             <IconButton
               size="small"
               aria-label={`Remove ${project.name}`}
@@ -280,7 +280,7 @@ function ProjectCard({
             >
               <DeleteIcon width={18} height={18} />
             </IconButton>
-          </ToolTip>
+          </Tip>
         </Box>
       </Stack>
     </Box>
@@ -686,7 +686,10 @@ export function Projects({
         )}
       </Stack>
 
-      <Dialog open={createOpen} onClose={() => !busy && setCreateOpen(false)}>
+      <AccessibleDialog
+        open={createOpen}
+        onClose={() => !busy && setCreateOpen(false)}
+      >
         <DialogTitle>New project</DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 0.5 }}>
@@ -741,9 +744,9 @@ export function Projects({
             Create project
           </Button>
         </DialogActions>
-      </Dialog>
+      </AccessibleDialog>
 
-      <Dialog
+      <AccessibleDialog
         open={removing !== null}
         onClose={() => !busy && setRemoving(null)}
       >
@@ -767,7 +770,7 @@ export function Projects({
             Remove
           </Button>
         </DialogActions>
-      </Dialog>
+      </AccessibleDialog>
     </Box>
   )
 }

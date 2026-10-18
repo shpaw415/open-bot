@@ -2,7 +2,6 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import AutoComplete from "@shpaw415/mui-lite/AutoComplete"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
 import {
   List,
   ListItem,
@@ -18,6 +17,7 @@ import Typography from "@shpaw415/mui-lite/Typography"
 import type { Terminal } from "@xterm/xterm"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { api, waitForDesktop } from "./api"
+import { Chip } from "./chip"
 import { useMobile } from "./hooks"
 import {
   CheckCircleIcon,

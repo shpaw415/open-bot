@@ -1,7 +1,6 @@
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Snackbar from "@shpaw415/mui-lite/Snackbar"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "./api"
 import type { ChatMessage } from "./chat-view"
@@ -29,6 +28,7 @@ import {
   readNotifySound,
   writeNotifySound,
 } from "./notify-sound"
+import { Tip } from "./Tip"
 
 type Toast = {
   id: string
@@ -233,7 +233,7 @@ export function SoundBell() {
   const [on, setOn] = useState(() => readNotifySound())
   const label = on ? "Reply sound on" : "Reply sound off"
   return (
-    <ToolTip title={label}>
+    <Tip title={label}>
       <IconButton
         size="small"
         aria-label={label}
@@ -246,7 +246,7 @@ export function SoundBell() {
       >
         {on ? <VolumeUpIcon /> : <VolumeOffIcon />}
       </IconButton>
-    </ToolTip>
+    </Tip>
   )
 }
 
@@ -264,7 +264,7 @@ export function NoticeBell() {
   const label = bellCopy(permission)
   const blocked = permission === "unsupported" || permission === "denied"
   return (
-    <ToolTip title={label}>
+    <Tip title={label}>
       <span>
         <IconButton
           size="small"
@@ -289,6 +289,6 @@ export function NoticeBell() {
           )}
         </IconButton>
       </span>
-    </ToolTip>
+    </Tip>
   )
 }

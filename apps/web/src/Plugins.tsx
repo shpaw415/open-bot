@@ -1,8 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, { DialogActions } from "@shpaw415/mui-lite/Dialog"
 import Divider from "@shpaw415/mui-lite/Divider"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { TablePagination } from "@shpaw415/mui-lite/Pagination"
@@ -21,17 +19,16 @@ import Table, {
   TableRow,
 } from "@shpaw415/mui-lite/Table"
 import TextField from "@shpaw415/mui-lite/TextField"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import AccessibleDialog, { DialogActions } from "./AccessibleDialog"
 import { ApiHttpError, api } from "./api"
+import { Chip } from "./chip"
+import { useDirtyForm } from "./dirty-form"
 import { useMobile } from "./hooks"
 import { DeleteIcon, RefreshIcon } from "./icons"
-import {
-  type InstalledPluginInfo,
-  PluginBadges,
-  useInstalledPlugins,
-} from "./plugin-ui"
+import { type InstalledPluginInfo, PluginBadges, usePlugins } from "./plugin-ui"
+import { Tip } from "./Tip"
 
 type MarketPlugin = {
   id: string
@@ -86,11 +83,11 @@ function PluginHeader({
         {plugin.pluginId} · v{plugin.version}
       </Typography>
       {isDevVersion(plugin.version) ? (
-        <ToolTip title="Development build — reinstall the same version to pick up republished fixes">
+        <Tip title="Development build — reinstall the same version to pick up republished fixes">
           <Chip size="small" color="warning" variant="outlined">
             dev
           </Chip>
-        </ToolTip>
+        </Tip>
       ) : null}
     </Stack>
   )
@@ -216,7 +213,7 @@ function InstallDialog({
     : [{ version: target.version, stability: "stable" }, ...target.versions]
 
   return (
-    <Dialog open onClose={() => !busy && onClose()} fullWidth>
+    <AccessibleDialog open onClose={() => !busy && onClose()} fullWidth>
       <Stack spacing={2} sx={{ p: 3 }}>
         <Typography variant="h6">Install {target.name}?</Typography>
         {busy || checking ? <LinearProgress variant="indeterminate" /> : null}
@@ -332,7 +329,7 @@ function InstallDialog({
                 : "Install"}
         </Button>
       </DialogActions>
-    </Dialog>
+    </AccessibleDialog>
   )
 }
 
@@ -441,7 +438,7 @@ function InstalledTable({
                         </Button>
                       ) : null}
                       {plugin.updateAvailable ? (
-                        <ToolTip
+                        <Tip
                           title={`New stable version available — updates to v${plugin.updateAvailable} (re-runs setup and re-applies every surface)`}
                         >
                           <Button
@@ -454,11 +451,11 @@ function InstalledTable({
                           >
                             update to v{plugin.updateAvailable}
                           </Button>
-                        </ToolTip>
+                        </Tip>
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      <ToolTip title={plugin.description || plugin.pluginId}>
+                      <Tip title={plugin.description || plugin.pluginId}>
                         <Typography
                           variant="body2"
                           color="textSecondary"
@@ -472,7 +469,7 @@ function InstalledTable({
                         >
                           {plugin.description || "—"}
                         </Typography>
-                      </ToolTip>
+                      </Tip>
                       {plugin.mentionClashes?.length ? (
                         <Typography
                           variant="caption"
@@ -488,7 +485,7 @@ function InstalledTable({
                         </Typography>
                       ) : null}
                       {plugin.init && !plugin.init.ok ? (
-                        <ToolTip
+                        <Tip
                           title={`Setup commands failed at install or boot — click to re-run them (log: ~/.open-bot/plugin-init/${plugin.pluginId}.log)`}
                         >
                           <Button
@@ -501,7 +498,7 @@ function InstalledTable({
                           >
                             setup failed — retry
                           </Button>
-                        </ToolTip>
+                        </Tip>
                       ) : null}
                     </TableCell>
                     <TableCell>
@@ -515,13 +512,13 @@ function InstalledTable({
                       </Stack>
                     </TableCell>
                     <TableCell align="center">
-                      <ToolTip title={plugin.enabled ? "Disable" : "Enable"}>
+                      <Tip title={plugin.enabled ? "Disable" : "Enable"}>
                         <Switch
                           checked={plugin.enabled}
                           disabled={rowBusy}
                           onChange={() => onToggle(plugin)}
                         />
-                      </ToolTip>
+                      </Tip>
                     </TableCell>
                     <TableCell align="right">
                       <Stack
@@ -529,7 +526,7 @@ function InstalledTable({
                         spacing={0.5}
                         sx={{ justifyContent: "flex-end" }}
                       >
-                        <ToolTip
+                        <Tip
                           title={
                             plugin.source === "local"
                               ? `Re-install from ${plugin.localPath ?? "the local path"} — re-read the directory and re-run setup`
@@ -546,8 +543,8 @@ function InstalledTable({
                           >
                             <RefreshIcon />
                           </IconButton>
-                        </ToolTip>
-                        <ToolTip title={`Remove ${plugin.name}`}>
+                        </Tip>
+                        <Tip title={`Remove ${plugin.name}`}>
                           <IconButton
                             size="small"
                             aria-label={`Remove ${plugin.name}`}
@@ -567,7 +564,7 @@ function InstalledTable({
                               <DeleteIcon />
                             )}
                           </IconButton>
-                        </ToolTip>
+                        </Tip>
                       </Stack>
                     </TableCell>
                   </TableRow>
@@ -941,7 +938,7 @@ function SettingsDialog({
   }
 
   return (
-    <Dialog open onClose={() => !busy && onClose()} fullWidth>
+    <AccessibleDialog open onClose={() => !busy && onClose()} fullWidth>
       <Stack spacing={2} sx={{ p: 3 }}>
         <Typography variant="h6">
           {plugin.name} {vaultSlugs.length > 0 ? "settings & keys" : "settings"}
@@ -1054,7 +1051,7 @@ function SettingsDialog({
           {busy ? "Saving…" : "Save"}
         </Button>
       </DialogActions>
-    </Dialog>
+    </AccessibleDialog>
   )
 }
 
@@ -1153,7 +1150,7 @@ function MarketTable({
                       <Typography variant="caption" color="textSecondary">
                         {plugin.id} · v{plugin.version}
                       </Typography>
-                      <ToolTip title={plugin.description || plugin.id}>
+                      <Tip title={plugin.description || plugin.id}>
                         <Typography
                           variant="body2"
                           color="textSecondary"
@@ -1167,7 +1164,7 @@ function MarketTable({
                         >
                           {plugin.description || "—"}
                         </Typography>
-                      </ToolTip>
+                      </Tip>
                     </TableCell>
                     <TableCell>
                       <Typography variant="body2">
@@ -1565,13 +1562,13 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     status: pluginsStatus,
     error: pluginsError,
     refresh,
-  } = useInstalledPlugins()
+  } = usePlugins()
   const [market, setMarket] = useState<MarketPlugin[]>([])
   const [query, setQuery] = useState("")
   const [marketLoading, setMarketLoading] = useState(false)
   const [policyBusy, setPolicyBusy] = useState(false)
   const [originDraft, setOriginDraft] = useState("")
-  const [originDirty, setOriginDirty] = useState(false)
+  const [originDirty, setOriginDirty] = useDirtyForm()
   const [actionId, setActionId] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [error, setError] = useState("")
@@ -1649,9 +1646,13 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
     }
   }, [])
 
+  // Load the marketplace only once the install list confirmed the instance
+  // is configured — an unconfigured host would otherwise surface a raw
+  // error banner on every visit to this page.
   useEffect(() => {
+    if (!configured) return
     void loadMarket("")
-  }, [loadMarket])
+  }, [loadMarket, configured])
 
   const installedIds = useMemo(
     () => new Set(plugins.map((plugin) => plugin.pluginId)),
@@ -1870,32 +1871,54 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <Stack spacing={2} sx={{ width: "100%" }}>
-      <Stack direction="row" spacing={1} alignItems="center">
-        <Chip size="small" variant="outlined">{`policy: ${policy}`}</Chip>
-        {isAdmin ? (
-          <ToolTip title="Automatically install newer approved stable versions of installed plugins">
-            <Chip
-              label={`auto-update: ${autoUpdate}`}
+      {/* Policy/marketplace rows reflect server state — hidden while the
+          install list is still loading so defaults never read as facts. */}
+      {pluginsStatus === "ready" ? (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Chip size="small" variant="outlined">{`policy: ${policy}`}</Chip>
+          {isAdmin ? (
+            <Tip title="Automatically install newer approved stable versions of installed plugins">
+              <Chip
+                label={`auto-update: ${autoUpdate}`}
+                size="small"
+                variant="outlined"
+                color={autoUpdate === "stable" ? "primary" : undefined}
+                onClick={() => void toggleAutoUpdate()}
+              />
+            </Tip>
+          ) : null}
+          {isAdmin ? (
+            <Button
               size="small"
-              variant="outlined"
-              color={autoUpdate === "stable" ? "primary" : undefined}
-              onClick={() => void toggleAutoUpdate()}
-            />
-          </ToolTip>
-        ) : null}
-        {isAdmin ? (
-          <Button
-            size="small"
-            variant="text"
-            disabled={policyBusy}
-            startIcon={policyBusy ? <CircularProgress size={1} /> : undefined}
-            onClick={() => void togglePolicy()}
-          >
-            switch to {policy === "auto" ? "manual" : "auto"}
-          </Button>
-        ) : null}
-      </Stack>
-      {isAdmin ? (
+              variant="text"
+              disabled={policyBusy}
+              startIcon={policyBusy ? <CircularProgress size={1} /> : undefined}
+              onClick={() => void togglePolicy()}
+            >
+              switch to {policy === "auto" ? "manual" : "auto"}
+            </Button>
+          ) : null}
+        </Stack>
+      ) : null}
+      {pluginsStatus === "error" ? (
+        <Alert
+          severity="error"
+          action={
+            <Button size="small" onClick={() => void refresh()}>
+              Retry
+            </Button>
+          }
+        >
+          {pluginsError || "The installed plugin list did not load."}
+        </Alert>
+      ) : null}
+      {pluginsStatus === "loading" ? (
+        <Stack spacing={1} aria-busy="true">
+          <Box className="ob-skeleton" sx={{ height: 40, width: 260 }} />
+          <output className="ob-sr-status">Loading installed plugins</output>
+        </Stack>
+      ) : null}
+      {isAdmin && pluginsStatus === "ready" ? (
         <Stack
           direction="row"
           spacing={1}
@@ -1921,14 +1944,14 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
           >
             save
           </Button>
-          <ToolTip title="Shareable origin for plugin webhook URLs: ob-plugin endpoint <id> url prints it instead of the internal control URL. Empty falls back to OPEN_BOT_PUBLIC_URL on the control plane.">
+          <Tip title="Shareable origin for plugin webhook URLs: ob-plugin endpoint <id> url prints it instead of the internal control URL. Empty falls back to OPEN_BOT_PUBLIC_URL on the control plane.">
             <Typography variant="caption" color="text-secondary">
               what ob-plugin endpoint url reports
             </Typography>
-          </ToolTip>
+          </Tip>
         </Stack>
       ) : null}
-      {!configured ? (
+      {!configured && pluginsStatus === "ready" ? (
         <Alert severity="info">
           The marketplace is not configured on this instance. Paste a
           marketplace API key below (admin), or set OPEN_BOT_MARKETPLACE_URL and
@@ -1984,6 +2007,7 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         ))}
         <Select
           name="source"
+          label="Source"
           value={sourceFilter}
           sx={{ minWidth: 160 }}
           onSelect={(next) => {
@@ -2089,127 +2113,134 @@ export function Plugins({ isAdmin }: { isAdmin: boolean }) {
         }
       />
 
-      <Divider />
-      <Typography variant="subtitle2">
-        Marketplace (
-        {marketInstalled !== "all"
-          ? `${shownMarket.length} of ${market.length}`
-          : market.length}
-        )
-      </Typography>
-      <Stack
-        direction="row"
-        spacing={1}
-        alignItems="center"
-        sx={{ flexWrap: "wrap", rowGap: 1 }}
-      >
-        <TextField
-          label="Search plugins"
-          value={query}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") void loadMarket(query, category)
-          }}
-          sx={{ flex: 1, minWidth: 180 }}
-        />
-        <Select
-          name="category"
-          value={category}
-          sx={{ minWidth: 160 }}
-          onSelect={(next) => {
-            setCategory(next)
-            void loadMarket(query, next)
-          }}
-        >
-          {[
-            <option key="all" value="">
-              All categories
-            </option>,
-            ...categories.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            )),
-          ]}
-        </Select>
-        <Button
-          variant="outlined"
-          disabled={marketLoading}
-          startIcon={marketLoading ? <CircularProgress size={1} /> : undefined}
-          onClick={() => void loadMarket(query, category)}
-        >
-          {marketLoading ? "Searching…" : "Search"}
-        </Button>
-        <ToolTip title="Refresh">
-          <IconButton
-            aria-label="Refresh marketplace"
-            disabled={marketLoading}
-            onClick={() => void loadMarket(query, category)}
+      {/* Marketplace listing only exists on a configured instance; the
+          account card and the info alert above explain how to set it up. */}
+      {configured ? (
+        <>
+          <Divider />
+          <Typography variant="subtitle2">
+            Marketplace (
+            {marketInstalled !== "all"
+              ? `${shownMarket.length} of ${market.length}`
+              : market.length}
+            )
+          </Typography>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            sx={{ flexWrap: "wrap", rowGap: 1 }}
           >
-            <RefreshIcon />
-          </IconButton>
-        </ToolTip>
-      </Stack>
-      <Stack direction="row" spacing={1} alignItems="center">
-        {(["all", "missing", "installed"] as const).map((value) => (
-          <Button
-            key={value}
-            size="small"
-            variant={marketInstalled === value ? "contained" : "outlined"}
-            onClick={() => {
-              setMarketInstalled(value)
-              setMarketPage(0)
-            }}
-          >
-            {value === "all"
-              ? "All"
-              : value === "missing"
-                ? "Not installed"
-                : "Installed"}
-          </Button>
-        ))}
-      </Stack>
-      {marketLoading ? <LinearProgress variant="indeterminate" /> : null}
-      <MarketTable
-        market={shownMarket}
-        totalCount={market.length}
-        loading={marketLoading}
-        installingId={installingId}
-        installedIds={installedIds}
-        page={marketPage}
-        rowsPerPage={marketRowsPerPage}
-        onPageChange={setMarketPage}
-        onRowsPerPageChange={setMarketRowsPerPage}
-        onInstall={(target) => void startInstall(target)}
-        onDiscuss={(target) => setDetailId(target.id)}
-      />
-      {!marketLoading && market.length === 0 && configured ? (
-        <Typography variant="body2" color="textSecondary">
-          No plugins found. Agents publish plugins with{" "}
-          <code>ob-plugin publish</code>.
-        </Typography>
-      ) : null}
-
-      {detailId ? (
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Discussion pluginId={detailId} />
-          <Button variant="text" onClick={() => setDetailId(null)}>
-            Close discussion
-          </Button>
-        </Paper>
-      ) : null}
-
-      {installTarget ? (
-        <InstallDialog
-          target={installTarget}
-          onClose={() => setInstallTarget(null)}
-          onInstalled={() => {
-            void refresh()
-            const message = `${installTarget.id} installed`
-            setNotice(message)
-            setToast(message)
-          }}
-        />
+            <TextField
+              label="Search plugins"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void loadMarket(query, category)
+              }}
+              sx={{ flex: 1, minWidth: 180 }}
+            />
+            <Select
+              name="category"
+              label="Category"
+              value={category}
+              sx={{ minWidth: 160 }}
+              onSelect={(next) => {
+                setCategory(next)
+                void loadMarket(query, next)
+              }}
+            >
+              {[
+                <option key="all" value="">
+                  All categories
+                </option>,
+                ...categories.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                )),
+              ]}
+            </Select>
+            <Button
+              variant="outlined"
+              disabled={marketLoading}
+              startIcon={
+                marketLoading ? <CircularProgress size={1} /> : undefined
+              }
+              onClick={() => void loadMarket(query, category)}
+            >
+              {marketLoading ? "Searching…" : "Search"}
+            </Button>
+            <Tip title="Refresh">
+              <IconButton
+                aria-label="Refresh marketplace"
+                disabled={marketLoading}
+                onClick={() => void loadMarket(query, category)}
+              >
+                <RefreshIcon />
+              </IconButton>
+            </Tip>
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="center">
+            {(["all", "missing", "installed"] as const).map((value) => (
+              <Button
+                key={value}
+                size="small"
+                variant={marketInstalled === value ? "contained" : "outlined"}
+                onClick={() => {
+                  setMarketInstalled(value)
+                  setMarketPage(0)
+                }}
+              >
+                {value === "all"
+                  ? "All"
+                  : value === "missing"
+                    ? "Not installed"
+                    : "Installed"}
+              </Button>
+            ))}
+          </Stack>
+          {marketLoading ? <LinearProgress variant="indeterminate" /> : null}
+          <MarketTable
+            market={shownMarket}
+            totalCount={market.length}
+            loading={marketLoading}
+            installingId={installingId}
+            installedIds={installedIds}
+            page={marketPage}
+            rowsPerPage={marketRowsPerPage}
+            onPageChange={setMarketPage}
+            onRowsPerPageChange={setMarketRowsPerPage}
+            onInstall={(target) => void startInstall(target)}
+            onDiscuss={(target) => setDetailId(target.id)}
+          />
+          {!marketLoading && market.length === 0 ? (
+            <Typography variant="body2" color="textSecondary">
+              No plugins found. Agents publish plugins with{" "}
+              <code>ob-plugin publish</code>.
+            </Typography>
+          ) : null}
+          {detailId ? (
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Discussion pluginId={detailId} />
+              <Button variant="text" onClick={() => setDetailId(null)}>
+                Close discussion
+              </Button>
+            </Paper>
+          ) : null}
+          {installTarget ? (
+            <InstallDialog
+              target={installTarget}
+              onClose={() => setInstallTarget(null)}
+              onInstalled={() => {
+                void refresh()
+                const message = `${installTarget.id} installed`
+                setNotice(message)
+                setToast(message)
+              }}
+            />
+          ) : null}
+        </>
       ) : null}
       {settingsFor ? (
         <SettingsDialog

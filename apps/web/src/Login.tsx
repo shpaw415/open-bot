@@ -5,18 +5,18 @@ import Paper from "@shpaw415/mui-lite/Paper"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import TextField from "@shpaw415/mui-lite/TextField"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useState } from "react"
 import { api, type Me } from "./api"
 import { DarkModeIcon, LightModeIcon, LoginIcon, PersonAddIcon } from "./icons"
+import { Tip } from "./Tip"
 import { useThemeMode } from "./theme"
 
 function ThemeToggle() {
   const { mode, toggle } = useThemeMode()
   return (
     <Stack direction="row" justifyContent="flex-end" sx={{ mb: -1 }}>
-      <ToolTip title={mode === "dark" ? "Light mode" : "Dark mode"}>
+      <Tip title={mode === "dark" ? "Light mode" : "Dark mode"}>
         <IconButton
           size="small"
           aria-label={
@@ -26,7 +26,7 @@ function ThemeToggle() {
         >
           {mode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
         </IconButton>
-      </ToolTip>
+      </Tip>
     </Stack>
   )
 }

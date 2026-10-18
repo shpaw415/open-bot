@@ -1,12 +1,6 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Paper from "@shpaw415/mui-lite/Paper"
 import { CircularProgress } from "@shpaw415/mui-lite/Progress"
@@ -14,13 +8,18 @@ import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import { api, type Me } from "./api"
 import { PluginBadge } from "./ConfigList"
+import { Chip } from "./chip"
 import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
   AddIcon,
@@ -33,6 +32,7 @@ import {
 } from "./icons"
 import { ModelSelect } from "./ModelSelect"
 import type { PersonaInfo } from "./Personalities"
+import { Tip } from "./Tip"
 
 export type CronJobInfo = {
   id: string
@@ -359,7 +359,7 @@ export function CronView({ me }: { me: Me }) {
           >
             Add job
           </Button>
-          <ToolTip title="Reload jobs">
+          <Tip title="Reload jobs">
             <IconButton
               size="small"
               aria-label="Reload jobs"
@@ -367,7 +367,7 @@ export function CronView({ me }: { me: Me }) {
             >
               <RefreshIcon />
             </IconButton>
-          </ToolTip>
+          </Tip>
         </Stack>
         <Box className="ob-cron-list">
           {jobs.length === 0 ? (
@@ -552,7 +552,7 @@ export function CronView({ me }: { me: Me }) {
       </Stack>
 
       {addOpen ? (
-        <Dialog open onClose={() => setAddOpen(false)}>
+        <AccessibleDialog open onClose={() => setAddOpen(false)}>
           <DialogTitle>{editId ? "Edit cron job" : "Add cron job"}</DialogTitle>
           <DialogContent>
             <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
@@ -721,11 +721,11 @@ export function CronView({ me }: { me: Me }) {
               {saving ? "…" : editId ? "Save" : "Add"}
             </Button>
           </DialogActions>
-        </Dialog>
+        </AccessibleDialog>
       ) : null}
 
       {deleteTarget ? (
-        <Dialog open onClose={() => setDeleteTarget(null)}>
+        <AccessibleDialog open onClose={() => setDeleteTarget(null)}>
           <DialogTitle>Delete cron job?</DialogTitle>
           <DialogContent>
             <Typography variant="body2">
@@ -747,11 +747,11 @@ export function CronView({ me }: { me: Me }) {
               Delete
             </Button>
           </DialogActions>
-        </Dialog>
+        </AccessibleDialog>
       ) : null}
 
       {result ? (
-        <Dialog open onClose={() => setResult(null)}>
+        <AccessibleDialog open onClose={() => setResult(null)}>
           <DialogTitle>{result.jobName ?? ""}</DialogTitle>
           <DialogContent>
             {result.summary?.trim() ? (
@@ -771,7 +771,7 @@ export function CronView({ me }: { me: Me }) {
               Close
             </Button>
           </DialogActions>
-        </Dialog>
+        </AccessibleDialog>
       ) : null}
     </>
   )

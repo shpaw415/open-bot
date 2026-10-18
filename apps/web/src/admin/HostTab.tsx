@@ -2,19 +2,19 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "../AccessibleDialog"
 import { api } from "../api"
+import { Chip } from "../chip"
 import { FactoryIcon } from "../icons"
 
 function formatBytes(value: number) {
@@ -319,7 +319,10 @@ export function HostTab({
           </Box>
         </Stack>
       </Paper>
-      <Dialog open={factoryOpen} onClose={() => !busy && setFactoryOpen(false)}>
+      <AccessibleDialog
+        open={factoryOpen}
+        onClose={() => !busy && setFactoryOpen(false)}
+      >
         <DialogTitle>Factory reset open-bot?</DialogTitle>
         <DialogContent>
           <Stack spacing={1} sx={{ mt: 0.5 }}>
@@ -380,7 +383,7 @@ export function HostTab({
             Factory reset
           </Button>
         </DialogActions>
-      </Dialog>
+      </AccessibleDialog>
     </>
   )
 }

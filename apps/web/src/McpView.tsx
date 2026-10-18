@@ -1,18 +1,16 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import Select from "@shpaw415/mui-lite/Select"
 import Stack from "@shpaw415/mui-lite/Stack"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
-import ToolTip from "@shpaw415/mui-lite/ToolTip"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import { api } from "./api"
 import {
   ConfigItemCard,
@@ -22,8 +20,10 @@ import {
   PluginBadge,
 } from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
+import { Chip } from "./chip"
 import { useEventStream } from "./hooks"
 import { HubIcon } from "./icons"
+import { Tip } from "./Tip"
 
 type McpServer = {
   name: string
@@ -278,7 +278,7 @@ export function McpView() {
                 title={server.name}
                 badge={
                   <Stack direction="row" spacing={0.5} alignItems="center">
-                    <ToolTip
+                    <Tip
                       title={
                         server.error || `Status: ${meta.label.toLowerCase()}`
                       }
@@ -290,7 +290,7 @@ export function McpView() {
                       >
                         {meta.label}
                       </Chip>
-                    </ToolTip>
+                    </Tip>
                     {server.plugin ? (
                       <PluginBadge plugin={server.plugin} />
                     ) : null}
@@ -300,7 +300,7 @@ export function McpView() {
                 pluginOwned={managed}
                 actions={
                   <>
-                    <ToolTip
+                    <Tip
                       title={
                         managed
                           ? `Managed by the ${server.plugin?.name} plugin — toggle it on the Plugins tab`
@@ -316,7 +316,7 @@ export function McpView() {
                           void toggle(server, event.currentTarget.checked)
                         }
                       />
-                    </ToolTip>
+                    </Tip>
                     <Button
                       size="small"
                       variant="text"
@@ -355,7 +355,7 @@ export function McpView() {
           </Typography>
         ) : null}
         {draft ? (
-          <Dialog
+          <AccessibleDialog
             open
             fullWidth
             scroll="paper"
@@ -469,7 +469,7 @@ export function McpView() {
                 Save server
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
         <Button
           variant="contained"

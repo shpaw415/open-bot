@@ -1,11 +1,5 @@
 import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
-import Chip from "@shpaw415/mui-lite/Chip"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import { ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
@@ -23,6 +17,12 @@ import Table, {
 } from "@shpaw415/mui-lite/Table"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useRef, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "../AccessibleDialog"
+import { Chip } from "../chip"
 import {
   BlockIcon,
   ContentCopyIcon,
@@ -330,7 +330,7 @@ export function PeopleTab({
           </>
         ) : null}
       </Menu>
-      <Dialog
+      <AccessibleDialog
         open={Boolean(pendingDelete)}
         onClose={() => setPendingDelete(null)}
       >
@@ -359,8 +359,8 @@ export function PeopleTab({
             Delete
           </Button>
         </DialogActions>
-      </Dialog>
-      <Dialog
+      </AccessibleDialog>
+      <AccessibleDialog
         open={Boolean(pendingReset)}
         onClose={() => setPendingReset(null)}
       >
@@ -404,7 +404,7 @@ export function PeopleTab({
             Reset desktop
           </Button>
         </DialogActions>
-      </Dialog>
+      </AccessibleDialog>
     </>
   )
 }

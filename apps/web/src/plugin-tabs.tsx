@@ -1,3 +1,4 @@
+import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
@@ -21,10 +22,7 @@ import {
   type PluginCardSpec,
   PluginCards,
   type PluginsStatus,
-  useInstalledPlugins,
 } from "./plugin-ui"
-
-export { useInstalledPlugins }
 
 /** What the shell's apps view needs to know about the install-list fetch. */
 export type PluginsViewStatus = {
@@ -168,6 +166,8 @@ function PageTabSkeleton() {
 function PageTab({ tab }: { tab: PluginTab }) {
   const { data, loading, error, reload } = usePageData(tab)
   const hasData = Object.keys(data).length > 0
+  // First load fails: full error state with retry. A later poll fails while
+  // good data is on screen: the cards stay, the failure is a quiet note.
   return (
     <Box
       className="ob-scroll"
@@ -175,21 +175,26 @@ function PageTab({ tab }: { tab: PluginTab }) {
     >
       <Stack spacing={2}>
         <Typography variant="h6">{tab.title}</Typography>
-        {loading ? <PageTabSkeleton /> : null}
+        {loading && !hasData ? <PageTabSkeleton /> : null}
         {!loading && error ? (
-          <Stack spacing={1}>
-            <Typography variant="body2" color="error">
-              {hasData
-                ? `Refresh failed — showing the last loaded data. ${error}`
-                : error}
-            </Typography>
-            <Button size="small" variant="outlined" onClick={reload}>
-              Retry
-            </Button>
-          </Stack>
+          <Alert severity={hasData ? "warning" : "error"}>
+            {hasData
+              ? `Refresh failed — showing the last loaded data. ${error}`
+              : error}
+            <Box sx={{ mt: 1 }}>
+              <Button size="small" variant="outlined" onClick={reload}>
+                Retry
+              </Button>
+            </Box>
+          </Alert>
         ) : null}
-        {!loading && !error ? (
+        {!loading && (hasData || !error) ? (
           <PluginCards spec={tab.cards ?? []} data={data} />
+        ) : null}
+        {loading && hasData ? (
+          <Typography variant="caption" color="textSecondary">
+            Refreshing…
+          </Typography>
         ) : null}
       </Stack>
     </Box>
@@ -433,6 +438,29 @@ function AppsLoadState({ status }: { status: PluginsViewStatus }) {
   )
 }
 
+/**
+ * Quiet banner shown above the Apps view when a background refresh of the
+ * install list fails: the previously loaded tabs stay usable, the failure
+ * never replaces them.
+ */
+function AppsStaleBanner({ status }: { status: PluginsViewStatus }) {
+  if (status.status !== "error") return null
+  return (
+    <Alert severity="warning" sx={{ m: 1 }}>
+      {status.error || "The installed plugin list could not refresh."}
+      <Box sx={{ mt: 1 }}>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => void status.refresh()}
+        >
+          Retry
+        </Button>
+      </Box>
+    </Alert>
+  )
+}
+
 // The main navigation's Apps view. Desktop keeps the side list +
 // pane; mobile renders a phone-style home screen (apps, swipe pages,
 // long-press to move, drop on an entry to create a folder).
@@ -457,7 +485,10 @@ export function PluginAppsView({
     }
   }, [tabs, selected])
 
-  if (status.status === "loading" || status.status === "error") {
+  // Full-screen load/error states only when there is nothing to show yet.
+  // A failed refresh (or a loading one) with tabs already on screen keeps
+  // the view: the tabs are the last good data, the state becomes a banner.
+  if (tabs.length === 0 && status.status !== "ready") {
     return (
       <Box
         className="ob-scroll"
@@ -529,6 +560,7 @@ export function PluginAppsView({
               </Typography>
             </Box>
           </Stack>
+          <AppsStaleBanner status={status} />
           <Box sx={{ flex: 1, minHeight: 0 }}>
             <PluginTabView key={active.key} tab={active} />
           </Box>
@@ -551,6 +583,7 @@ export function PluginAppsView({
           minHeight: 0,
         }}
       >
+        <AppsStaleBanner status={status} />
         <Box sx={{ px: 1.25, pt: 1, pb: 0.75, flexShrink: 0 }}>
           <Stack
             direction="row"

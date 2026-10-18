@@ -1,17 +1,17 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
 import CheckBox from "@shpaw415/mui-lite/CheckBox"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import Snackbar from "@shpaw415/mui-lite/Snackbar"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useRef, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import { api } from "./api"
 import { useEventStream, useMobile } from "./hooks"
 
@@ -120,7 +120,10 @@ export function ResetApprovals() {
   return (
     <>
       {request ? (
-        <Dialog open onClose={busy ? undefined : () => setRequest(null)}>
+        <AccessibleDialog
+          open
+          onClose={busy ? undefined : () => setRequest(null)}
+        >
           <DialogTitle>Confirm desktop {request.kind}</DialogTitle>
           <DialogContent>
             <Stack spacing={1.5} sx={{ mt: 0.5 }}>
@@ -196,7 +199,7 @@ export function ResetApprovals() {
               </>
             )}
           </DialogActions>
-        </Dialog>
+        </AccessibleDialog>
       ) : null}
       <Snackbar
         open={outcome != null}

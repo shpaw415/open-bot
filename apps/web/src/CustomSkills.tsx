@@ -1,14 +1,14 @@
 import Alert from "@shpaw415/mui-lite/Alert"
 import Button from "@shpaw415/mui-lite/Button"
-import Dialog, {
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-} from "@shpaw415/mui-lite/Dialog"
 import Stack from "@shpaw415/mui-lite/Stack"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
+import AccessibleDialog, {
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+} from "./AccessibleDialog"
 import { api } from "./api"
 import {
   ConfigItemCard,
@@ -224,7 +224,7 @@ export function CustomSkills() {
           ))
         )}
         {draft ? (
-          <Dialog
+          <AccessibleDialog
             open
             fullWidth
             scroll="paper"
@@ -290,7 +290,7 @@ export function CustomSkills() {
                 Save skill
               </Button>
             </DialogActions>
-          </Dialog>
+          </AccessibleDialog>
         ) : null}
         <Button
           variant="contained"

@@ -10,6 +10,8 @@ import { api, type Me } from "./api"
 import { Backup } from "./Backup"
 import { ConfigSection } from "./ConfigSection"
 import { CustomSkills } from "./CustomSkills"
+import { Chip } from "./chip"
+import { useDirtyForm } from "./dirty-form"
 import { Endpoints } from "./Endpoints"
 import { Hardware } from "./Hardware"
 import { useMobile } from "./hooks"
@@ -116,7 +118,18 @@ function DefaultModelSection({
   )
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [dirty, setDirty] = useDirtyForm()
   const dirtyRef = useRef(false)
+
+  // Both flags stay in sync: the ref for the unload guard below, the
+  // registry for the shell's internal-navigation guard.
+  const markDirty = useCallback(
+    (next: boolean) => {
+      dirtyRef.current = next
+      setDirty(next)
+    },
+    [setDirty],
+  )
 
   const loadModels = useCallback(async () => {
     setError("")
@@ -140,7 +153,8 @@ function DefaultModelSection({
     void loadModels()
   }, [loadModels])
 
-  // Warn before losing an unsaved pick on navigation away.
+  // Tab close/refresh guard; in-app navigation is covered by the
+  // useDirtyForm registry the shell consults on pushState/popstate.
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => {
       if (!dirtyRef.current) return
@@ -167,7 +181,7 @@ function DefaultModelSection({
         body: JSON.stringify({ providerID, modelID }),
       })
       setSaved(true)
-      dirtyRef.current = false
+      markDirty(false)
       onChanged()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "save failed")
@@ -220,7 +234,7 @@ function DefaultModelSection({
             onSelect={(value) => {
               setSelected(value)
               setSaved(false)
-              dirtyRef.current = true
+              markDirty(true)
             }}
           />
         )}
@@ -238,6 +252,11 @@ function DefaultModelSection({
             >
               {saving ? "Saving…" : "Save default model"}
             </Button>
+            {dirty && !saving ? (
+              <Chip size="small" variant="outlined" color="warning">
+                unsaved
+              </Chip>
+            ) : null}
             <Button
               variant="text"
               disabled={loading}
@@ -288,7 +307,7 @@ function ThinkingEffortSection({
   const [effort, setEffort] = useState(me.model?.thinkingEffort ?? "")
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-
+  const [effortDirty, setEffortDirty] = useDirtyForm()
   const loadModels = useCallback(async () => {
     setError("")
     setLoading(true)
@@ -337,6 +356,7 @@ function ThinkingEffortSection({
         body: JSON.stringify({ effort }),
       })
       setSaved(true)
+      setEffortDirty(false)
       onChanged()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "save failed")
@@ -387,6 +407,7 @@ function ThinkingEffortSection({
             onSelect={(value: string) => {
               setEffort(value)
               setSaved(false)
+              setEffortDirty(true)
             }}
           >
             {["", ...options].map((variant) => (
@@ -404,6 +425,11 @@ function ThinkingEffortSection({
           >
             {saving ? "Saving…" : "Save thinking effort"}
           </Button>
+          {effortDirty && !saving ? (
+            <Chip size="small" variant="outlined" color="warning">
+              unsaved
+            </Chip>
+          ) : null}
           <Button
             variant="text"
             disabled={loading}
@@ -590,7 +616,7 @@ export function Config({
             <Typography variant="body2" color="textSecondary">
               {mobile
                 ? TAB_DESCRIPTIONS[activeTab]
-                : "Pick a section from the sidebar — the address bar keeps your place."}
+                : `${CONFIG_TAB_LABELS[activeTab]} — ${TAB_DESCRIPTIONS[activeTab]} Pick a section in the sidebar to switch.`}
             </Typography>
           </Stack>
         </Stack>
