@@ -9,6 +9,7 @@ import { api } from "./api"
 import { HomeScreen } from "./home-screen"
 import { useMobile } from "./hooks"
 import {
+  AddIcon,
   AppTileIcon,
   ArrowBackIcon,
   CloseIcon,
@@ -472,9 +473,14 @@ function AppsStaleBanner({ status }: { status: PluginsViewStatus }) {
 export function PluginAppsView({
   tabs,
   status,
+  onAddPlugin,
+  onManagePlugins,
 }: {
   tabs: PluginTab[]
   status: PluginsViewStatus
+  /** Where "Ajouter une application" leads (the extensions manager). */
+  onAddPlugin: () => void
+  onManagePlugins: () => void
 }) {
   const mobile = useMobile()
   const [selected, setSelected] = useState("")
@@ -516,19 +522,31 @@ export function PluginAppsView({
         className="ob-scroll"
         sx={{ p: 3, maxWidth: 640, mx: "auto", width: "100%" }}
       >
-        <Typography variant="body2" color="textSecondary">
-          No plugin apps here yet. Plugins that ship a dashboard page (manifest
-          dashboard.pages + tabs) show up here once installed and enabled.
-        </Typography>
-        {status.refreshing ? (
-          <Typography
-            variant="caption"
-            color="textSecondary"
-            sx={{ mt: 1, display: "block" }}
-          >
-            Refreshing…
+        <Stack spacing={1.5}>
+          <Typography variant="body2" color="textSecondary">
+            Aucune application pour l’instant. Les extensions qui livrent une
+            page de tableau de bord apparaissent ici une fois installées et
+            activées; certaines extensions fonctionnent directement dans les
+            conversations, sans interface.
           </Typography>
-        ) : null}
+          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon width={18} height={18} />}
+              onClick={() => onAddPlugin()}
+            >
+              Ajouter une application
+            </Button>
+            <Button variant="outlined" onClick={() => onManagePlugins()}>
+              Gérer les extensions
+            </Button>
+          </Stack>
+          {status.refreshing ? (
+            <Typography variant="caption" color="textSecondary">
+              Actualisation…
+            </Typography>
+          ) : null}
+        </Stack>
       </Box>
     )
   }

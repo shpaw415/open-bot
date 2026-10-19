@@ -8,14 +8,14 @@ import {
 } from "./chat-controls"
 
 describe("effortLabel", () => {
-  test("maps every known variant to a readable label", () => {
-    expect(effortLabel("none")).toBe("Off")
-    expect(effortLabel("low")).toBe("Low")
-    expect(effortLabel("medium")).toBe("Medium")
-    expect(effortLabel("high")).toBe("High")
-    expect(effortLabel("xhigh")).toBe("Extra high")
-    expect(effortLabel("max")).toBe("Max")
-    expect(effortLabel("thinking")).toBe("Thinking on")
+  test("maps known variants to fr-CA labels", () => {
+    expect(effortLabel("none")).toBe("Désactivée")
+    expect(effortLabel("low")).toBe("Faible")
+    expect(effortLabel("medium")).toBe("Moyenne")
+    expect(effortLabel("high")).toBe("Haute")
+    expect(effortLabel("xhigh")).toBe("Très haute")
+    expect(effortLabel("max")).toBe("Maximale")
+    expect(effortLabel("thinking")).toBe("Réflexion activée")
   })
 
   test("falls back to a capitalized passthrough for unknown variants", () => {

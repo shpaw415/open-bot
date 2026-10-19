@@ -32,12 +32,12 @@ function indexOf(html: string, marker: string): number {
 describe("AppHeader — render", () => {
   test("actions render in the required order: Profile · Theme · Notifications · Search", () => {
     const html = renderToStaticMarkup(<AppHeader {...baseProps} />)
-    const profile = indexOf(html, 'aria-label="Account — casey@example.com"')
-    const theme = indexOf(html, 'aria-label="Switch to light mode"')
+    const profile = indexOf(html, 'aria-label="Compte — casey@example.com"')
+    const theme = indexOf(html, 'aria-label="Passer en mode clair"')
     const notifications = indexOf(html, 'aria-label="Notifications"')
     const search = indexOf(
       html,
-      'aria-label="Search apps, threads and projects"',
+      'aria-label="Rechercher des destinations, applications, conversations et projets"',
     )
     expect(profile).toBeLessThan(theme)
     expect(theme).toBeLessThan(notifications)
@@ -46,39 +46,43 @@ describe("AppHeader — render", () => {
 
   test("exactly one theme control exists anywhere in the header", () => {
     const html = renderToStaticMarkup(<AppHeader {...baseProps} />)
-    expect(html.split('aria-label="Switch to light mode"').length - 1).toBe(1)
+    expect(html.split('aria-label="Passer en mode clair"').length - 1).toBe(1)
     // No sound toggle or native-permission bell duplicates in the header.
-    expect(html).not.toContain("Reply sound")
-    expect(html).not.toContain('aria-label="Turn on notifications"')
+    expect(html).not.toContain("Son de réponse")
+    expect(html).not.toContain(
+      'aria-label="Activer les notifications du navigateur"',
+    )
   })
 
   test("brand uses the normalized mark and stays a link to chat", () => {
     const html = renderToStaticMarkup(<AppHeader {...baseProps} />)
     expect(html).toContain('src="/logo-mark.png"')
     expect(html).toContain("open-bot")
-    expect(html).toContain('aria-label="open-bot — go to chat"')
+    expect(html).toContain('aria-label="open-bot — aller à l’accueil"')
   })
 
   test("the nav toggle mirrors the rail state with aria-expanded", () => {
     const expanded = renderToStaticMarkup(
       <AppHeader {...baseProps} navCollapsed={false} />,
     )
-    expect(expanded).toContain('aria-label="Collapse navigation"')
+    expect(expanded).toContain('aria-label="Replier la navigation"')
     expect(expanded).toContain('aria-expanded="true"')
     const collapsed = renderToStaticMarkup(
       <AppHeader {...baseProps} navCollapsed={true} />,
     )
-    expect(collapsed).toContain('aria-label="Expand navigation"')
+    expect(collapsed).toContain('aria-label="Déplier la navigation"')
     expect(collapsed).toContain('aria-expanded="false"')
   })
 
   test("mobile renders a hamburger that opens navigation, not a collapse toggle", () => {
     const html = renderToStaticMarkup(<AppHeader {...baseProps} mobile />)
-    expect(html).toContain('aria-label="Open navigation"')
-    expect(html).not.toContain("Collapse navigation")
+    expect(html).toContain('aria-label="Ouvrir la navigation"')
+    expect(html).not.toContain("Replier la navigation")
     // The inline search input is replaced by a search button on phones.
-    expect(html).toContain('aria-label="Search"')
-    expect(html).not.toContain('aria-label="Search apps, threads and projects"')
+    expect(html).toContain('aria-label="Recherche"')
+    expect(html).not.toContain(
+      'aria-label="Rechercher des destinations, applications, conversations et projets"',
+    )
   })
 
   test("the page context is announced next to the brand", () => {
@@ -98,7 +102,7 @@ describe("AppHeader — render", () => {
     }
     const html = renderToStaticMarkup(<AppHeader {...baseProps} />)
     expect(html).toContain("9+")
-    expect(html).toContain('aria-label="Notifications, 12 unread"')
+    expect(html).toContain('aria-label="Notifications, 12 non lues"')
     clearNotices()
   })
 
@@ -121,6 +125,6 @@ describe("AppHeader — render", () => {
     const html = renderToStaticMarkup(
       <AppHeader {...baseProps} themeMode="light" />,
     )
-    expect(html).toContain('aria-label="Switch to dark mode"')
+    expect(html).toContain('aria-label="Passer en mode sombre"')
   })
 })

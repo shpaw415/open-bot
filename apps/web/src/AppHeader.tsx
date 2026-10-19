@@ -15,7 +15,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
-import { api, type Me } from "./api"
+import { api, type DesktopStatus, type Me } from "./api"
 import { useOverlayA11y } from "./dialog-a11y"
 import {
   AdminPanelSettingsIcon,
@@ -50,7 +50,7 @@ import {
   writeNotifySound,
 } from "./notify-sound"
 import { openProjectById } from "./open-project"
-import { workspacePath } from "./routes"
+import { HOME_PATH, workspacePath } from "./routes"
 import {
   flattenSearchGroups,
   initialSearchResults,
@@ -65,6 +65,7 @@ import {
 } from "./search"
 import Stack from "./stack"
 import { Tip } from "./Tip"
+import { BRAND, NAV, noMatchText, SEARCH, STATES } from "./texts"
 import { formatAgo } from "./time"
 
 // ---- Search data: account-scoped, cached per identity ----------------------
@@ -75,7 +76,13 @@ type SearchProject = { id: string; name: string }
 type SearchDataState = {
   sessions: SearchSession[]
   projects: SearchProject[]
-  sessionsStatus: "idle" | "loading" | "ready" | "error"
+  sessionsStatus:
+    | "idle"
+    | "loading"
+    | "ready"
+    | "error"
+    /** Desktop asleep: honest unavailability, no wake happened. */
+    | "unavailable"
   projectsStatus: "idle" | "loading" | "ready" | "error"
   sessionsError: string
   projectsError: string
@@ -110,9 +117,12 @@ function cacheFor(identity: string): SearchDataState {
 }
 
 /**
- * Loads conversations + projects for the header search on first need, then
- * stale-while-revalidate on every open. Both endpoints are account-scoped;
- * results live behind the identity key and never mix across accounts.
+ * Loads conversations + projects for the header search when the panel
+ * actually opens, then stale-while-revalidate on every open. Nothing runs
+ * on shell mount: both fetches are user-initiated only, and the
+ * conversation source is phase-aware — a sleeping desktop is reported as
+ * unavailable instead of being woken by a passive search (the session
+ * route starts the desktop server-side).
  */
 function useSearchData(identity: string) {
   const [state, setState] = useState<SearchDataState>(() => cacheFor(identity))
@@ -129,25 +139,27 @@ function useSearchData(identity: string) {
     if (searchDataInflight) return
     searchDataInflight = true
     const seq = ++seqRef.current
-    setState((current) =>
-      current.sessionsStatus === "idle" || current.projectsStatus === "idle"
-        ? {
-            ...current,
-            sessionsStatus:
-              current.sessionsStatus === "idle"
-                ? "loading"
-                : current.sessionsStatus,
-            projectsStatus:
-              current.projectsStatus === "idle"
-                ? "loading"
-                : current.projectsStatus,
-          }
-        : current,
-    )
-    const sessionsPromise = fetch("/api/opencode/session")
-      .then((res) => {
-        if (!res.ok) throw new Error(`sessions ${res.status}`)
-        return res.json()
+    setState((current) => ({
+      ...current,
+      sessionsStatus:
+        current.sessionsStatus === "idle" ||
+        current.sessionsStatus === "unavailable"
+          ? "loading"
+          : current.sessionsStatus === "loading"
+            ? "loading"
+            : current.sessionsStatus,
+      projectsStatus:
+        current.projectsStatus === "idle" ? "loading" : current.projectsStatus,
+    }))
+    // Passive phase probe first: /api/desktop never starts anything.
+    const sessionsPromise = api<DesktopStatus>("/api/desktop")
+      .then((status) => {
+        if (status.phase !== "running")
+          throw new SearchUnavailableError("desktop asleep")
+        return fetch("/api/opencode/session").then((res) => {
+          if (!res.ok) throw new Error(`sessions ${res.status}`)
+          return res.json()
+        })
       })
       .then((list: unknown) =>
         (Array.isArray(list) ? list : [])
@@ -173,6 +185,9 @@ function useSearchData(identity: string) {
         searchDataInflight = false
         if (seq !== seqRef.current) return
         setState((current) => {
+          const asleep =
+            sessions.status === "rejected" &&
+            sessions.reason instanceof SearchUnavailableError
           const next: SearchDataState = {
             sessions:
               sessions.status === "fulfilled"
@@ -185,9 +200,11 @@ function useSearchData(identity: string) {
             sessionsStatus:
               sessions.status === "fulfilled"
                 ? "ready"
-                : current.sessions.length
-                  ? "ready"
-                  : "error",
+                : asleep
+                  ? "unavailable"
+                  : current.sessions.length
+                    ? "ready"
+                    : "error",
             projectsStatus:
               projects.status === "fulfilled"
                 ? "ready"
@@ -197,7 +214,13 @@ function useSearchData(identity: string) {
             sessionsError:
               sessions.status === "fulfilled"
                 ? ""
-                : String(sessions.reason ?? "failed"),
+                : asleep
+                  ? ""
+                  : String(
+                      (sessions.reason as Error | undefined)?.message ??
+                        sessions.reason ??
+                        "failed",
+                    ),
             projectsError:
               projects.status === "fulfilled"
                 ? ""
@@ -219,6 +242,14 @@ function useSearchData(identity: string) {
   }, [identity])
 
   return { state, load }
+}
+
+/** Marks a sessions failure as "desktop asleep", not a network problem. */
+class SearchUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "SearchUnavailableError"
+  }
 }
 
 // ---- Notifications ----------------------------------------------------------
@@ -279,12 +310,12 @@ function NativeNoticeToggle() {
   )
   const label =
     permission === "granted"
-      ? "Browser notifications on"
+      ? "Notifications du navigateur activées"
       : permission === "denied"
-        ? "Browser notifications blocked"
+        ? "Notifications du navigateur bloquées"
         : permission === "unsupported"
-          ? "Browser notifications need HTTPS"
-          : "Turn on browser notifications"
+          ? "Notifications du navigateur nécessitent HTTPS"
+          : "Activer les notifications du navigateur"
   const blocked = permission === "denied" || permission === "unsupported"
   return (
     <Button
@@ -337,7 +368,7 @@ function SoundToggleRow() {
       }}
       sx={{ justifyContent: "flex-start", textTransform: "none" }}
     >
-      {on ? "Reply sound on" : "Reply sound off"}
+      {on ? "Son de réponse activé" : "Son de réponse désactivé"}
     </Button>
   )
 }
@@ -384,7 +415,7 @@ function NoticeBellButton({
         ref={bellRef}
         size="medium"
         aria-label={
-          unread > 0 ? `Notifications, ${unread} unread` : "Notifications"
+          unread > 0 ? `Notifications, ${unread} non lues` : "Notifications"
         }
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -438,11 +469,11 @@ function NoticeBellButton({
                 disabled={unread === 0}
                 onClick={markAllNoticesRead}
               >
-                Mark all read
+                Tout marquer comme lu
               </Button>
               <IconButton
                 size="small"
-                aria-label="Close notifications"
+                aria-label="Fermer les notifications"
                 onClick={close}
               >
                 <CloseIcon width={16} height={16} />
@@ -456,7 +487,8 @@ function NoticeBellButton({
                   color="textSecondary"
                   sx={{ p: 2, textAlign: "center" }}
                 >
-                  Nothing yet — replies, plugin and security alerts land here.
+                  Rien pour l’instant — les réponses et alertes d’extensions
+                  arrivent ici.
                 </Typography>
               ) : (
                 items.map((notice) => (
@@ -477,7 +509,8 @@ function NoticeBellButton({
                 color="textSecondary"
                 sx={{ px: 1 }}
               >
-                History covers this session only and clears when you sign out.
+                L’historique couvre cette session seulement et s’efface à la
+                déconnexion.
               </Typography>
             </Stack>
           </Paper>
@@ -513,11 +546,11 @@ function ProfileButton({
   const initials = useMemo(() => initialsOf(me.email), [me.email])
   return (
     <>
-      <Tip title="Account">
+      <Tip title="Compte">
         <IconButton
           ref={buttonRef}
           size="medium"
-          aria-label={`Account — ${me.email}`}
+          aria-label={`Compte — ${me.email}`}
           aria-haspopup="menu"
           aria-expanded={open}
           onClick={() => setOpen((current) => !current)}
@@ -564,7 +597,7 @@ function ProfileButton({
             }}
             sx={{ width: "100%", justifyContent: "flex-start" }}
           >
-            Admin
+            {NAV.admin}
           </Button>
         ) : null}
         <Button
@@ -577,7 +610,7 @@ function ProfileButton({
           }}
           sx={{ width: "100%", justifyContent: "flex-start" }}
         >
-          Log out
+          Se déconnecter
         </Button>
       </Menu>
     </>
@@ -603,6 +636,8 @@ function SearchResults({
   onHoverIndex,
   data,
   onRetry,
+  onWake,
+  query,
   listboxId,
 }: {
   groups: SearchGroup[]
@@ -612,6 +647,8 @@ function SearchResults({
   onHoverIndex: (index: number) => void
   data: SearchDataState
   onRetry: () => void
+  onWake: () => void
+  query: string
   listboxId: string
 }) {
   let flatIndex = -1
@@ -622,7 +659,7 @@ function SearchResults({
       className="ob-search-results"
       role="listbox"
       id={listboxId}
-      aria-label="Search results"
+      aria-label="Résultats de recherche"
     >
       {loading ? (
         <Typography
@@ -630,7 +667,7 @@ function SearchResults({
           color="textSecondary"
           sx={{ px: 2, py: 1, display: "block" }}
         >
-          Loading conversations and projects…
+          {SEARCH.loading}
         </Typography>
       ) : null}
       {groups.map((group) => (
@@ -667,14 +704,34 @@ function SearchResults({
           })}
         </Box>
       ))}
-      {flat.length === 0 && !loading ? (
+      {flat.length === 0 && !loading && query.trim() ? (
         <Typography
           variant="body2"
           color="textSecondary"
           sx={{ p: 2, textAlign: "center" }}
         >
-          No match.
+          {noMatchText(query.trim())}
         </Typography>
+      ) : null}
+      {data.sessionsStatus === "unavailable" ? (
+        <Stack
+          spacing={0.5}
+          sx={{
+            px: 1.5,
+            py: 1,
+            borderTop: "1px solid",
+            borderColor: "divider",
+          }}
+        >
+          <Typography variant="caption" color="textSecondary">
+            {SEARCH.conversationsAsleep}
+          </Typography>
+          <Box>
+            <Button size="small" variant="outlined" onClick={onWake}>
+              {SEARCH.wake}
+            </Button>
+          </Box>
+        </Stack>
       ) : null}
       {data.sessionsStatus === "error" || data.projectsStatus === "error" ? (
         <Stack
@@ -690,12 +747,12 @@ function SearchResults({
         >
           <Typography variant="caption" color="textSecondary" sx={{ flex: 1 }}>
             {data.sessionsStatus === "error"
-              ? "Conversations unavailable. "
+              ? `${SEARCH.conversationsUnavailable} `
               : ""}
-            {data.projectsStatus === "error" ? "Projects unavailable." : ""}
+            {data.projectsStatus === "error" ? SEARCH.projectsUnavailable : ""}
           </Typography>
           <Button size="small" variant="text" onClick={onRetry}>
-            Retry
+            {STATES.retry}
           </Button>
         </Stack>
       ) : null}
@@ -763,12 +820,23 @@ function SearchControl({
 
   useEffect(() => {
     if (isOpen) {
+      // Opening the panel is the user action that justifies the data load —
+      // the shell never preloads it on mount (a sleeping desktop must not
+      // be woken by a passive search).
+      onRetry()
       const timer = window.setTimeout(() => inputRef.current?.focus(), 0)
       return () => window.clearTimeout(timer)
     }
     setQuery("")
     setActiveIndex(-1)
-  }, [isOpen])
+  }, [isOpen, onRetry])
+
+  // Explicit wake from the "desktop asleep" row: start, then reload.
+  const wake = useCallback(() => {
+    void api("/api/desktop/start", { method: "POST" })
+      .then(() => onRetry())
+      .catch(() => onRetry())
+  }, [onRetry])
 
   const entries = useSearchEntries(me, appTabs, data)
   const trimmed = query.trim()
@@ -833,10 +901,8 @@ function SearchControl({
           if (!mobile) setOpen(true)
         }}
         onKeyDown={onKeyDown}
-        placeholder={
-          mobile ? "Search apps, threads, projects…" : "Search — Ctrl K"
-        }
-        aria-label="Search apps, threads and projects"
+        placeholder={mobile ? SEARCH.placeholderMobile : SEARCH.placeholder}
+        aria-label={SEARCH.ariaLabel}
         aria-controls={SEARCH_RESULTS_ID}
         aria-activedescendant={
           activeIndex >= 0
@@ -852,11 +918,11 @@ function SearchControl({
   if (mobile) {
     return (
       <>
-        <Tip title="Search">
+        <Tip title="Recherche">
           <IconButton
             ref={triggerRef as React.RefObject<HTMLButtonElement | null>}
             size="medium"
-            aria-label="Search"
+            aria-label="Recherche"
             aria-haspopup="dialog"
             aria-expanded={Boolean(forcedOpen)}
             onClick={() => onOpenChange?.(true)}
@@ -870,7 +936,7 @@ function SearchControl({
             tabIndex={-1}
             role="dialog"
             aria-modal="true"
-            aria-label="Search"
+            aria-label="Recherche"
             className="ob-search-sheet"
           >
             <Stack
@@ -882,7 +948,7 @@ function SearchControl({
               {searchInput(true)}
               <IconButton
                 size="small"
-                aria-label="Close search"
+                aria-label="Fermer la recherche"
                 onClick={close}
               >
                 <CloseIcon width={18} height={18} />
@@ -897,6 +963,8 @@ function SearchControl({
                 onHoverIndex={setActiveIndex}
                 data={data}
                 onRetry={onRetry}
+                onWake={wake}
+                query={query}
                 listboxId={SEARCH_RESULTS_ID}
               />
               <Typography
@@ -904,8 +972,7 @@ function SearchControl({
                 color="textSecondary"
                 sx={{ px: 2, py: 1, display: "block" }}
               >
-                Searches destinations, apps, conversation titles and projects —
-                not message contents.
+                {SEARCH.scope}
               </Typography>
             </Box>
           </Box>
@@ -934,8 +1001,8 @@ function SearchControl({
             }}
             onFocus={() => setOpen(true)}
             onKeyDown={onKeyDown}
-            placeholder="Search — Ctrl K"
-            aria-label="Search apps, threads and projects"
+            placeholder={SEARCH.placeholder}
+            aria-label={SEARCH.ariaLabel}
             aria-controls={SEARCH_RESULTS_ID}
             aria-activedescendant={
               open && activeIndex >= 0
@@ -949,7 +1016,7 @@ function SearchControl({
             <button
               type="button"
               className="ob-search-clear"
-              aria-label="Clear search"
+              aria-label={SEARCH.clear}
               onClick={() => {
                 setQuery("")
                 setActiveIndex(-1)
@@ -970,6 +1037,8 @@ function SearchControl({
               onHoverIndex={setActiveIndex}
               data={data}
               onRetry={onRetry}
+              onWake={wake}
+              query={query}
               listboxId={SEARCH_RESULTS_ID}
             />
             <Typography
@@ -977,8 +1046,7 @@ function SearchControl({
               color="textSecondary"
               sx={{ px: 2, py: 1, display: "block" }}
             >
-              Destinations, apps, conversation titles and projects — not message
-              contents.
+              {SEARCH.scope}
             </Typography>
           </Paper>
         ) : null}
@@ -1038,13 +1106,8 @@ export function AppHeader({
     return () => window.removeEventListener("keydown", onKey)
   }, [mobile])
 
-  useEffect(() => {
-    // Preload search data once the shell is interactive.
-    load()
-  }, [load])
-
   const themeLabel =
-    themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"
+    themeMode === "dark" ? "Passer en mode clair" : "Passer en mode sombre"
 
   return (
     <header className="ob-header">
@@ -1052,7 +1115,7 @@ export function AppHeader({
         {mobile ? (
           <IconButton
             size="medium"
-            aria-label="Open navigation"
+            aria-label="Ouvrir la navigation"
             aria-haspopup="dialog"
             onClick={onToggleNav}
           >
@@ -1060,13 +1123,15 @@ export function AppHeader({
           </IconButton>
         ) : (
           <Tip
-            title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
+            title={
+              navCollapsed ? "Déplier la navigation" : "Replier la navigation"
+            }
             placement="bottom"
           >
             <IconButton
               size="medium"
               aria-label={
-                navCollapsed ? "Expand navigation" : "Collapse navigation"
+                navCollapsed ? "Déplier la navigation" : "Replier la navigation"
               }
               aria-expanded={!navCollapsed}
               onClick={onToggleNav}
@@ -1077,11 +1142,11 @@ export function AppHeader({
         )}
         <a
           className="ob-header-brand"
-          href="/"
-          aria-label="open-bot — go to chat"
+          href={HOME_PATH}
+          aria-label={BRAND.logoLabel}
           onClick={(event) => {
             event.preventDefault()
-            go("/")
+            go(HOME_PATH)
           }}
         >
           <img src="/logo-mark.png" alt="" width={30} height={30} />

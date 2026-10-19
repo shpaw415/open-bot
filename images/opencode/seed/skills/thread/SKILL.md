@@ -51,9 +51,7 @@ ob-thread start --title "Invoice follow-up" --dir "Billing" --display
 
 ## Team delegation
 
-The personalities are a team. When the user asks to give a task to a named
-personality ("have the software manager implement X in my project"), start a
-thread for it instead of doing the work yourself:
+The personalities are a team, and delegation is not only for when the user names one. When a task falls outside your own skills, checking the roster is your first move: `ob-persona list` shows each teammate's description and skill scopes — delegate to the one that fits. When nobody fits, tell the user and offer the options: create the missing personality with `ob-persona add`, install a plugin (the `plugin` skill), or find another way together. When the user asks to give a task to a named personality ("have the software manager implement X in my project"), start a thread for it instead of doing the work yourself:
 
 ```sh
 ob-thread start --persona "Software manager" --title "Add CSV export" --message "Implement CSV export in ~/project/report-app. Report back with the file paths."
@@ -61,6 +59,11 @@ ob-thread start --persona "Software manager" --title "Add CSV export" --message 
 
 - `--persona NAME` makes the new thread answer and work as that personality.
   The agents are a team; you are the coordinator.
+- A persona with a skill scope limits which skills load in its thread —
+  `ob-persona list` shows `(skills: …)` on restricted ones. If a delegated
+  teammate says it cannot use a skill, that is the persona's scope, not a
+  broken desktop. Note that subagents the teammate spawns inherit only the
+  deny rules, so allowed skills are hidden inside their subagents.
 - Persona threads are visible on the dashboard by default, so the user can
   follow along. Add `--hidden` for a background teammate nobody needs to watch.
 - If you are not sure of the exact name, run `ob-persona list` first. The API

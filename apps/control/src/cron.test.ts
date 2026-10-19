@@ -18,7 +18,9 @@ import {
   scriptBlocksAgent,
   scriptJobError,
   scriptThreadText,
+  sessionCreateBody,
 } from "./cron"
+import { skillRuleset } from "./personas"
 
 const T = (iso: string) => Date.parse(iso)
 
@@ -340,6 +342,41 @@ describe("cron model and personality", () => {
       scriptExit: 1,
     })
     expect(body.parts[0]?.text).toContain("exit 1")
+  })
+
+  test("the session-create body carries a persona skill ruleset", () => {
+    const persona = {
+      id: "p1",
+      name: "Chef",
+      instruction: "cook",
+      builtin: false,
+      skills: ["research", "media"],
+      skillsExtra: null,
+      skillsEffective: ["research", "media"],
+      mcp: null,
+      mcpExtra: null,
+      mcpEffective: null,
+    }
+    const scoped = sessionCreateBody(
+      "cron-run: nightly",
+      "root-1",
+      skillRuleset(persona),
+    )
+    expect(scoped).toEqual({
+      title: "cron-run: nightly",
+      parentID: "root-1",
+      permission: [
+        { permission: "skill", pattern: "*", action: "deny" },
+        { permission: "skill", pattern: "research", action: "allow" },
+        { permission: "skill", pattern: "media", action: "allow" },
+      ],
+    })
+    // unrestricted personas add no permission key
+    expect(sessionCreateBody("t", "root-1", null)).toEqual({
+      title: "t",
+      parentID: "root-1",
+    })
+    expect(sessionCreateBody("t")).toEqual({ title: "t" })
   })
 })
 

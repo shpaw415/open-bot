@@ -424,6 +424,8 @@ function publicInstalled(
     setupCommands,
     init: row.applied?.init ?? null,
     mentionClashes: row.applied?.mentionClashes ?? [],
+    warnings: row.applied?.warnings ?? [],
+    mcp: row.applied?.mcp ?? null,
     settings,
     updateAvailable:
       row.source !== "local" &&
@@ -1356,12 +1358,18 @@ export function handlePlugins(
           db.deletePluginSetting(user.id, pluginId, key)
         }
         let deferred = false
+        let syncNote: string | null = null
         try {
           await reapplyPluginConfig(db, user, row)
         } catch (error) {
-          if (!(error instanceof Error && error.message.includes("deferred")))
-            throw error
-          deferred = true
+          // The settings rows are already saved; reapplyPluginConfig marked
+          // the sync pending either way. Never fail the save (and never hang
+          // the caller) on a stalled desktop — the pending queue flushes at
+          // the next desktop-up.
+          deferred =
+            error instanceof Error && error.message.includes("deferred")
+          syncNote =
+            error instanceof Error ? error.message : "config sync failed"
         }
         // A restart guarantees the page server observes the new settings —
         // but the save request itself rides on that server, so defer it past
@@ -1375,10 +1383,11 @@ export function handlePlugins(
             manifest,
             db.pluginSettings(user.id, pluginId),
           ),
-          ...(deferred
+          ...(syncNote
             ? {
-                configSync:
-                  "deferred — desktop asleep; the file syncs when the desktop starts",
+                configSync: deferred
+                  ? "deferred — desktop asleep; the file syncs when the desktop starts"
+                  : `pending — ${syncNote}; the file syncs when the desktop next comes up`,
               }
             : {}),
         })
@@ -1486,12 +1495,18 @@ export function handlePlugins(
           baseUrl,
         })
         let vaultDeferred = false
+        let vaultSyncNote: string | null = null
         try {
           await reapplyPluginConfig(db, user, row)
         } catch (error) {
-          if (!(error instanceof Error && error.message.includes("deferred")))
-            throw error
-          vaultDeferred = true
+          // The key is already saved in the vault; reapplyPluginConfig marked
+          // the sync pending either way. Never fail (or hang) the write on a
+          // stalled desktop — the pending queue flushes at the next
+          // desktop-up.
+          vaultDeferred =
+            error instanceof Error && error.message.includes("deferred")
+          vaultSyncNote =
+            error instanceof Error ? error.message : "config sync failed"
         }
         if (manifest.dashboard?.pages) {
           schedulePluginPageRestart(db, user.id, row, hub)
@@ -1499,10 +1514,11 @@ export function handlePlugins(
         return json({
           ok: true,
           slug,
-          ...(vaultDeferred
+          ...(vaultSyncNote
             ? {
-                configSync:
-                  "deferred — desktop asleep; the file syncs when the desktop starts",
+                configSync: vaultDeferred
+                  ? "deferred — desktop asleep; the file syncs when the desktop starts"
+                  : `pending — ${vaultSyncNote}; the file syncs when the desktop next comes up`,
               }
             : {}),
         })

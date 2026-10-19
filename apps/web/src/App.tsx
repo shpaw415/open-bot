@@ -11,14 +11,18 @@ import { AppHeader } from "./AppHeader"
 import { api, type Me } from "./api"
 import { Config } from "./Config"
 import { CronView } from "./CronView"
+import { Dashboard } from "./Dashboard"
 import { useOverlayA11y } from "./dialog-a11y"
 import { dirtyForms } from "./dirty-form"
+import { Help } from "./Help"
 import { useMobile } from "./hooks"
 import {
   AdminPanelSettingsIcon,
   AppsIcon,
   ChatIcon,
   FolderIcon,
+  HelpIcon,
+  HomeIcon,
   PhotoLibraryIcon,
   RefreshIcon,
   ScheduleIcon,
@@ -37,16 +41,20 @@ import {
 import { PluginsProvider, pluginsAwaitingRoute, usePlugins } from "./plugin-ui"
 import { ResetApprovals } from "./ResetApprovals"
 import {
+  CHAT_PATH,
   CONFIG_GROUPS,
   CONFIG_TAB_LABELS,
   type ConfigTab,
   configPath,
+  HELP_PATH,
+  HOME_PATH,
   parseRoute,
   type WorkspaceTab,
   workspacePath,
 } from "./routes"
 import Stack from "./stack"
 import { Tip } from "./Tip"
+import { NAV } from "./texts"
 import { useThemeMode } from "./theme"
 import { Workspace } from "./Workspace"
 
@@ -58,47 +66,67 @@ type NavEntry = {
   label: string
   icon: React.ReactNode
   roles?: "admin"
+  /** Secondary zone (Settings, Help, Admin) sits under a divider. */
+  secondary?: boolean
 }
 
 const NAV_ENTRIES: NavEntry[] = [
-  { view: "workspace:chat", path: "/", label: "Chat", icon: <ChatIcon /> },
+  { view: "home", path: HOME_PATH, label: NAV.home, icon: <HomeIcon /> },
+  {
+    view: "workspace:chat",
+    path: CHAT_PATH,
+    label: NAV.chat,
+    icon: <ChatIcon />,
+  },
+  { view: "apps", path: "/apps", label: NAV.apps, icon: <AppsIcon /> },
+  {
+    view: "automations",
+    path: "/automations",
+    label: NAV.automations,
+    icon: <ScheduleIcon />,
+  },
   {
     view: "workspace:projects",
     path: "/projects",
-    label: "Projects",
+    label: NAV.projects,
     icon: <FolderIcon />,
   },
   {
     view: "workspace:media",
     path: "/media",
-    label: "Media",
+    label: NAV.media,
     icon: <PhotoLibraryIcon />,
-  },
-  { view: "apps", path: "/apps", label: "Apps", icon: <AppsIcon /> },
-  {
-    view: "automations",
-    path: "/automations",
-    label: "Automations",
-    icon: <ScheduleIcon />,
   },
   {
     view: "config",
     path: "/config",
-    label: "Settings",
+    label: NAV.settings,
     icon: <SettingsIcon />,
+    secondary: true,
+  },
+  {
+    view: "help",
+    path: HELP_PATH,
+    label: NAV.help,
+    icon: <HelpIcon />,
+    secondary: true,
   },
   {
     view: "admin",
     path: "/admin",
-    label: "Admin",
+    label: NAV.admin,
     icon: <AdminPanelSettingsIcon />,
     roles: "admin",
+    secondary: true,
   },
 ]
 
 function navActiveKey(route: ReturnType<typeof parseRoute>["route"]): string {
+  if (route.view === "home") return "home"
+  if (route.view === "help") return "help"
   if (route.view === "workspace") return `workspace:${route.tab}`
   if (route.view === "plugin" || route.view === "plugin-pending") return "apps"
+  if (route.view === "not-found") return ""
   return route.view
 }
 
@@ -447,20 +475,16 @@ function Shell({
     [path, tabs, pluginsState.status],
   )
 
-  // Canonicalize legacy/unknown paths so the URL always names the active
+  // Canonicalize legacy alias paths so the URL always names the active
   // destination (back/forward and reload then restore the same view).
-  // On desktop, /config without a section resolves to the first one; on
-  // phones it is the group list, so it stays. Pending plugin routes hold
-  // their URL until the tabs arrive.
+  // /config without a section is the goal-oriented summary on every size —
+  // no automatic hop to a specific section anymore. Pending plugin routes
+  // hold their URL until the tabs arrive.
   useEffect(() => {
     const target = parsed.redirect
-      ? parsed.redirect
-      : !mobile && parsed.route.view === "config" && parsed.route.tab === ""
-        ? configPath("chat")
-        : null
     if (!target || location.pathname === target) return
     replace(target)
-  }, [parsed, mobile, replace])
+  }, [parsed, replace])
 
   const openReply = useCallback(
     (sessionId: string) => {
@@ -468,7 +492,7 @@ function Shell({
       // notice, wherever the open came from.
       markNoticesForSession(sessionId)
       openNotifiedThread(sessionId)
-      go("/")
+      go(CHAT_PATH)
     },
     [go],
   )
@@ -504,31 +528,36 @@ function Shell({
     parsed.route.view === "workspace" ? parsed.route.tab : "chat"
 
   const pageContext = (() => {
+    if (parsed.route.view === "home") return NAV.home
+    if (parsed.route.view === "help") return NAV.help
     if (parsed.route.view === "workspace")
       return {
-        chat: "Chat",
-        desktop: "Desktop",
-        projects: "Projects",
-        media: "Media",
+        chat: NAV.chat,
+        desktop: "Bureau",
+        projects: NAV.projects,
+        media: NAV.media,
       }[parsed.route.tab]
     if (parsed.route.view === "apps" || parsed.route.view === "plugin-pending")
-      return "Apps"
+      return NAV.apps
     if (parsed.route.view === "plugin") return parsed.route.tab.title
-    if (parsed.route.view === "automations") return "Automations"
-    if (parsed.route.view === "admin") return "Admin"
+    if (parsed.route.view === "automations") return NAV.automations
+    if (parsed.route.view === "admin") return NAV.admin
     if (parsed.route.view === "config")
       return parsed.route.tab
-        ? `Settings · ${CONFIG_TAB_LABELS[parsed.route.tab]}`
-        : "Settings"
+        ? `${NAV.settings} · ${CONFIG_TAB_LABELS[parsed.route.tab]}`
+        : NAV.settings
     return ""
   })()
+
+  // The tab title names the screen — reload and history read like the app.
+  useEffect(() => {
+    document.title = pageContext ? `${pageContext} · open-bot` : "open-bot"
+  }, [pageContext])
 
   const sidebar = (railMode: boolean) => (
     <>
       <nav className="ob-side-nav" aria-label="Main">
-        {NAV_ENTRIES.filter(
-          (entry) => entry.roles !== "admin" || me.role === "admin",
-        ).map((entry) => (
+        {NAV_ENTRIES.filter((entry) => !entry.secondary).map((entry) => (
           <NavLink
             key={entry.view}
             entry={entry}
@@ -537,6 +566,22 @@ function Shell({
             badge={
               entry.view === "apps" && tabs.length > 0 ? tabs.length : undefined
             }
+            onGo={(next) => {
+              go(next)
+              setNavOpen(false)
+            }}
+          />
+        ))}
+        <Box Element="hr" className="ob-nav-divider" />
+        {NAV_ENTRIES.filter(
+          (entry) =>
+            entry.secondary && (entry.roles !== "admin" || me.role === "admin"),
+        ).map((entry) => (
+          <NavLink
+            key={entry.view}
+            entry={entry}
+            rail={railMode}
+            active={activeKey === entry.view}
             onGo={(next) => {
               go(next)
               setNavOpen(false)
@@ -584,12 +629,52 @@ function Shell({
         <Admin meId={me.id} />
       ) : (
         <Box className="ob-scroll" sx={{ p: 2 }}>
-          <Alert severity="error">Admin only</Alert>
+          <Alert severity="error">Administration réservée aux admins</Alert>
+        </Box>
+      )
+    }
+    if (parsed.route.view === "home")
+      return <Dashboard me={me} tabs={tabs} go={go} onOpenThread={openReply} />
+    if (parsed.route.view === "help") return <Help go={go} />
+    if (parsed.route.view === "not-found") {
+      return (
+        <Box className="ob-scroll ob-view-enter" sx={{ flex: 1, minHeight: 0 }}>
+          <Stack
+            spacing={2}
+            sx={{ p: { xs: 1.5, sm: 3 }, maxWidth: 640, mx: "auto" }}
+          >
+            <Typography variant="h5" component="h1">
+              Cette page n’est pas disponible
+            </Typography>
+            <Typography variant="body2" color="textSecondary">
+              L’adresse <Box Element="code">{parsed.route.path}</Box> ne
+              correspond à aucune page. Le lien est peut-être ancien, ou
+              l’application a été désinstallée.
+            </Typography>
+            <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+              <Button variant="contained" onClick={() => go(HOME_PATH)}>
+                {NAV.home}
+              </Button>
+              <Button variant="outlined" onClick={() => go("/apps")}>
+                {NAV.apps}
+              </Button>
+              <Button variant="text" onClick={() => history.back()}>
+                Retour
+              </Button>
+            </Stack>
+          </Stack>
         </Box>
       )
     }
     if (parsed.route.view === "apps")
-      return <PluginAppsView tabs={tabs} status={pluginsViewStatus} />
+      return (
+        <PluginAppsView
+          tabs={tabs}
+          status={pluginsViewStatus}
+          onAddPlugin={() => go("/config/plugins")}
+          onManagePlugins={() => go("/config/plugins")}
+        />
+      )
     if (parsed.route.view === "plugin")
       return <PluginTabView key={parsed.route.tab.key} tab={parsed.route.tab} />
     if (parsed.route.view === "plugin-pending") {
@@ -649,11 +734,11 @@ function Shell({
           >
             <Stack spacing={0.25}>
               <Typography variant="h6" component="h1">
-                Automations
+                {NAV.automations}
               </Typography>
               <Typography variant="body2" color="textSecondary">
-                Scheduled jobs the desktop agent runs for you — create one,
-                pause it, or read what it did.
+                Des tâches exécutées par l’assistant selon un horaire — créez-en
+                une, mettez-la en pause, ou consultez son résultat.
               </Typography>
             </Stack>
             <CronView me={me} />
@@ -713,7 +798,12 @@ function Shell({
             {sidebar(rail)}
           </aside>
         )}
-        <main className="ob-content" key={viewKey}>
+        {/* Keyboard escape hatch: first tab stop lands past the chrome. */}
+        <a href="#ob-main" className="ob-skip-link">
+          Aller au contenu
+        </a>
+        {/* biome-ignore lint/correctness/useUniqueElementIds: the skip link href must name the same static anchor */}
+        <main className="ob-content" key={viewKey} id="ob-main" tabIndex={-1}>
           {content}
         </main>
       </Box>

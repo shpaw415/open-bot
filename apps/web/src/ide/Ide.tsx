@@ -12,6 +12,8 @@ import {
   useState,
 } from "react"
 import { api } from "../api"
+import { useDirtyFlag } from "../dirty-form"
+import { confirmDiscard } from "../discard-guard"
 import { type EventStream, useDebounced, useMobile } from "../hooks"
 import {
   ArrowBackIcon,
@@ -409,6 +411,11 @@ export function Ide({
   }, [draft, saved])
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  const hasDirty = useMemo(() => Object.values(dirty).some(Boolean), [dirty])
+  // Every modified file joins the shell's global guard: leaving through the
+  // sidebar, the browser Back button, or a tab close all warn the same way
+  // as closeTab does. Unmount clears it automatically.
+  useDirtyFlag(hasDirty)
   const pinnedRef = useRef(pinned)
   pinnedRef.current = pinned
   const orderedTabs = useMemo(() => {
@@ -617,6 +624,13 @@ export function Ide({
     )
   }, [])
 
+  // Leaving the editor for the project list is guarded like closing a tab:
+  // modified files ask first; cancel keeps the file and the focus right here.
+  const requestBack = useCallback(() => {
+    if (hasDirty && !confirmDiscard()) return
+    onBack()
+  }, [hasDirty, onBack])
+
   const ensureQuickFiles = useCallback(async () => {
     if (quickFiles) return
     try {
@@ -789,7 +803,7 @@ export function Ide({
             gap: 1,
           }}
         >
-          <TitleBarIcon label="Back to projects" onClick={onBack}>
+          <TitleBarIcon label="Back to projects" onClick={requestBack}>
             <ArrowBackIcon width={18} height={18} />
           </TitleBarIcon>
           <TitleBarIcon
@@ -1630,9 +1644,14 @@ function TitleBarIcon({
 }) {
   const vscode = useVscode()
   return (
+    // A native button: screen readers announce a real control and
+    // Enter/Space work without role patches.
     <Box
+      Element="button"
+      type="button"
       title={label}
       aria-label={label}
+      aria-pressed={active}
       onClick={onClick}
       sx={{
         display: "flex",
@@ -1643,8 +1662,15 @@ function TitleBarIcon({
         borderRadius: "5px",
         cursor: "pointer",
         color: active ? vscode.activityBarActiveFg : vscode.titleBarFg,
-        backgroundColor: active ? vscode.hoverOverlay : undefined,
+        backgroundColor: active ? vscode.hoverOverlay : "transparent",
+        border: "none",
+        padding: 0,
         "&:hover": { backgroundColor: vscode.hoverOverlay },
+        "&:focus-visible": {
+          outline: "2px solid",
+          outlineColor: vscode.activityBarActiveFg,
+          outlineOffset: 1,
+        },
       }}
     >
       {children}
@@ -1666,6 +1692,8 @@ function PanelTabButton({
   const vscode = useVscode()
   return (
     <Box
+      Element="button"
+      type="button"
       role="tab"
       aria-selected={active}
       aria-label={label}
@@ -1681,7 +1709,16 @@ function PanelTabButton({
         fontSize: 13,
         color: active ? vscode.tabActiveFg : vscode.tabFg,
         borderTop: `2px solid ${active ? vscode.statusBg : "transparent"}`,
+        borderLeft: "none",
+        borderRight: "none",
+        borderBottom: "none",
+        backgroundColor: "transparent",
         "&:hover": { color: vscode.tabActiveFg },
+        "&:focus-visible": {
+          outline: "2px solid",
+          outlineColor: vscode.statusBg,
+          outlineOffset: -2,
+        },
       }}
     >
       {children}
@@ -1704,8 +1741,11 @@ function ActivityIcon({
   const vscode = useVscode()
   return (
     <Box
+      Element="button"
+      type="button"
       title={label}
       aria-label={label}
+      aria-pressed={active}
       onClick={onClick}
       sx={{
         display: "flex",
@@ -1715,8 +1755,16 @@ function ActivityIcon({
         height: 48,
         cursor: "pointer",
         color: active ? vscode.activityBarActiveFg : vscode.activityBarFg,
+        border: "none",
         borderLeft: `2px solid ${active ? vscode.activityBarActiveFg : "transparent"}`,
+        backgroundColor: "transparent",
+        padding: 0,
         "&:hover": { color: vscode.activityBarActiveFg },
+        "&:focus-visible": {
+          outline: "2px solid",
+          outlineColor: vscode.activityBarActiveFg,
+          outlineOffset: -2,
+        },
       }}
     >
       {children}
@@ -1736,8 +1784,14 @@ function TabAction({
   children: ReactNode
 }) {
   const vscode = useVscode()
+  if (hidden)
+    // Layout slot only: a hidden action is not focusable markup pretending
+    // to be disabled.
+    return <Box sx={{ width: 22, height: 22, flexShrink: 0 }} aria-hidden />
   return (
     <Box
+      Element="button"
+      type="button"
       title={label}
       aria-label={label}
       onClick={(event) => {
@@ -1746,7 +1800,6 @@ function TabAction({
       }}
       onDoubleClick={(event) => event.stopPropagation()}
       sx={{
-        visibility: hidden ? "hidden" : "visible",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -1754,7 +1807,17 @@ function TabAction({
         height: 22,
         flexShrink: 0,
         borderRadius: "5px",
+        border: "none",
+        padding: 0,
+        backgroundColor: "transparent",
+        color: "inherit",
+        cursor: "pointer",
         "&:hover": { backgroundColor: vscode.hoverOverlay },
+        "&:focus-visible": {
+          outline: "2px solid",
+          outlineColor: vscode.statusBg,
+          outlineOffset: 1,
+        },
       }}
     >
       {children}
@@ -1774,6 +1837,8 @@ function IconAction({
   const vscode = useVscode()
   return (
     <Box
+      Element="button"
+      type="button"
       title={label}
       aria-label={label}
       onClick={(event) => {
@@ -1789,7 +1854,15 @@ function IconAction({
         borderRadius: "4px",
         cursor: "pointer",
         color: vscode.sidebarFg,
+        border: "none",
+        padding: 0,
+        backgroundColor: "transparent",
         "&:hover": { backgroundColor: vscode.hoverOverlay },
+        "&:focus-visible": {
+          outline: "2px solid",
+          outlineColor: vscode.statusBg,
+          outlineOffset: 1,
+        },
       }}
     >
       {children}

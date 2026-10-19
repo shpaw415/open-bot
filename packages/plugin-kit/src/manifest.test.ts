@@ -1013,3 +1013,122 @@ describe("validateConfigValue", () => {
     })
   })
 })
+
+describe("persona skill scopes", () => {
+  test("accepts a valid allowlist, trims, and dedupes", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      personas: [
+        {
+          name: "Meteorologist",
+          instruction: "Talk weather.",
+          skills: [" weather ", "weather", "research"],
+        },
+      ],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.personas?.[0]?.skills).toEqual([
+        "weather",
+        "research",
+      ])
+      expect(pluginPermissionSummary(result.manifest)).toContain(
+        'Limits persona "Meteorologist" to skills: weather, research',
+      )
+    }
+  })
+
+  test("rejects glob characters and bad entries", () => {
+    for (const skills of [["*"], ["weather*"], [""], [42], "weather"]) {
+      const result = validatePluginManifest({
+        ...valid,
+        personas: [
+          { name: "Meteorologist", instruction: "Talk weather.", skills },
+        ],
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(manifestIssuesText(result.issues)).toContain("persona.skills")
+    }
+  })
+
+  test("rejects more than 64 entries and keeps valid personas when others fail", () => {
+    const tooMany = validatePluginManifest({
+      ...valid,
+      personas: [
+        {
+          name: "Big",
+          instruction: "x",
+          skills: Array.from({ length: 65 }, (_, i) => `skill-${i}`),
+        },
+      ],
+    })
+    expect(tooMany.ok).toBe(false)
+    const result = validatePluginManifest({
+      ...valid,
+      personas: [
+        { name: "Scoped", instruction: "x", skills: ["research"] },
+        { name: "Open", instruction: "y" },
+      ],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.personas?.[0]?.skills).toEqual(["research"])
+      expect(result.manifest.personas?.[1]?.skills).toBeUndefined()
+    }
+  })
+})
+
+describe("persona mcp scopes", () => {
+  test("accepts server names, trims, and dedupes", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      personas: [
+        {
+          name: "Trader",
+          instruction: "Talk markets.",
+          mcp: [" Stock.Data ", "stock", "files"],
+        },
+      ],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.personas?.[0]?.mcp).toEqual([
+        "Stock.Data",
+        "stock",
+        "files",
+      ])
+      expect(pluginPermissionSummary(result.manifest)).toContain(
+        'Limits persona "Trader" to MCP servers: Stock.Data, stock, files',
+      )
+    }
+  })
+
+  test("an empty mcp list is a block-all declaration and is preserved", () => {
+    const result = validatePluginManifest({
+      ...valid,
+      personas: [{ name: "Airgapped", instruction: "No tools.", mcp: [] }],
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.manifest.personas?.[0]?.mcp).toEqual([])
+  })
+
+  test("rejects globs, bad entries, and more than 16", () => {
+    for (const mcp of [
+      ["*"],
+      ["stock*"],
+      [""],
+      [42],
+      "stock",
+      Array.from({ length: 17 }, (_, i) => `srv-${i}`),
+    ]) {
+      const result = validatePluginManifest({
+        ...valid,
+        personas: [{ name: "Trader", instruction: "x", mcp }],
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok)
+        expect(manifestIssuesText(result.issues)).toContain("persona.mcp")
+    }
+  })
+})

@@ -82,22 +82,22 @@ const TAB_ICONS: Record<ConfigTab, React.ReactNode> = {
 
 /** One short line per section — what it decides, not an app inventory. */
 const TAB_DESCRIPTIONS: Record<ConfigTab, string> = {
-  providers: "Which model providers this desktop can use.",
-  keys: "Shared provider keys and per-plugin vault keys.",
-  chat: "Default model and how much the model reasons per reply.",
-  memory: "Embedding and language models behind agent memory.",
-  nav: "The fast decision model the agent uses to steer the browser.",
-  media: "Image, video, and 3D generation providers.",
-  voice: "Speech-to-text and read-aloud for the chat composer.",
-  personas: "Personalities threads can start with.",
-  skills: "Extra instruction packs the agent can load.",
-  plugins: "Installed plugins, the marketplace, and install policy.",
-  mcp: "MCP servers the desktop's opencode connects to.",
-  endpoints: "Public URLs that reach plugin page servers.",
-  backup: "Snapshots and restores for this instance.",
-  hardware: "Disk, memory, and CPU of the desktop container.",
-  reports: "Bug and friction findings the desktop agent files.",
-  security: "The watchdog that monitors model exchanges.",
+  providers: "Les services de modèles que cet environnement peut utiliser.",
+  keys: "Clés partagées des services et clés des extensions.",
+  chat: "Modèle par défaut et profondeur de réflexion de chaque réponse.",
+  memory: "Modèles de mémoire de l’assistant (embeddings et langue).",
+  nav: "Le modèle de décision rapide qui guide le navigateur.",
+  media: "Services de génération d’images, vidéos et modèles 3D.",
+  voice: "Dictée vocale et lecture à voix haute dans les conversations.",
+  personas: "Personnalités avec lesquelles les conversations démarrent.",
+  skills: "Packs d’instructions supplémentaires pour l’assistant.",
+  plugins: "Extensions installées, marketplace et politique d’installation.",
+  mcp: "Serveurs MCP auxquels l’assistant se connecte.",
+  endpoints: "URL publiques qui joignent les pages des extensions.",
+  backup: "Instantanés et restauration de cette instance.",
+  hardware: "Disque, mémoire et processeur de l’environnement.",
+  reports: "Bogues et frictions signalés par l’assistant.",
+  security: "La protection qui surveille les échanges du modèle.",
 }
 
 function DefaultModelSection({
@@ -493,9 +493,10 @@ export function Config({
   const readOnly = team.mode === "team" && me.role !== "admin"
   const [group, setGroup] = useState<string>(CONFIG_GROUPS[0]?.key ?? "ai")
 
-  if (mobile && !tab) {
-    // Phone-sized settings: pick a group, then a section — 17 horizontal
-    // tabs never fit a 390 px screen.
+  if (!tab) {
+    // The goal-oriented summary on every screen size: pick a group, then a
+    // section — 16 flat entries never help anyone choose. Direct section
+    // URLs keep working and the desktop sidebar mirrors these groups.
     return (
       <Box className="ob-scroll ob-view-enter">
         <Stack
@@ -504,15 +505,15 @@ export function Config({
         >
           <Stack spacing={0.25}>
             <Typography variant="h6" component="h1">
-              Settings
+              Paramètres
             </Typography>
             <Typography variant="body2" color="textSecondary">
-              Choose a group, then a section.
+              Choisissez un groupe, puis une section.
             </Typography>
           </Stack>
           <Select
             name="config-group"
-            label="Group"
+            label="Groupe"
             value={group}
             onSelect={(value: string) => setGroup(value)}
           >
@@ -575,7 +576,7 @@ export function Config({
           {mobile ? (
             <IconButton
               size="small"
-              aria-label="Back to settings sections"
+              aria-label="Retour aux sections des paramètres"
               onClick={() => onTab("")}
             >
               <ArrowBackIcon />
@@ -587,12 +588,10 @@ export function Config({
               component="h1"
               sx={{ whiteSpace: "nowrap" }}
             >
-              {mobile ? CONFIG_TAB_LABELS[activeTab] : "Settings"}
+              {CONFIG_TAB_LABELS[activeTab]}
             </Typography>
             <Typography variant="body2" color="textSecondary">
-              {mobile
-                ? TAB_DESCRIPTIONS[activeTab]
-                : `${CONFIG_TAB_LABELS[activeTab]} — ${TAB_DESCRIPTIONS[activeTab]} Pick a section in the sidebar to switch.`}
+              {TAB_DESCRIPTIONS[activeTab]}
             </Typography>
           </Stack>
         </Stack>

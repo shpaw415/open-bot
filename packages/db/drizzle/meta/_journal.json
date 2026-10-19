@@ -106,6 +106,20 @@
       "when": 1792197443400,
       "tag": "0014_mute_red_skull",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1792354750514,
+      "tag": "0015_melted_arclight",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1792366148081,
+      "tag": "0016_clammy_prima",
+      "breakpoints": true
     }
   ]
 }

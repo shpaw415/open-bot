@@ -667,7 +667,17 @@ function CapabilitiesPanel({ manifest }: { manifest: PluginManifest }) {
     rows.push({
       icon: icons.user,
       label: `Personas (${personas.length})`,
-      detail: personas.map((p) => p.name).join(", "),
+      detail: personas
+        .map((p) =>
+          p.skills?.length && p.mcp?.length
+            ? `${p.name} (skills: ${p.skills.join(", ")}; mcp: ${p.mcp.join(", ")})`
+            : p.skills?.length
+              ? `${p.name} (skills: ${p.skills.join(", ")})`
+              : p.mcp?.length
+                ? `${p.name} (mcp: ${p.mcp.join(", ")})`
+                : p.name,
+        )
+        .join(", "),
     })
   if (manifest.cron?.length)
     rows.push({

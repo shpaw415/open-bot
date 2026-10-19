@@ -22,7 +22,11 @@ const me = {
 
 const sessions = [
   { id: "s1", title: "Plan the week", updatedAt: Date.now() - 3600_000 },
-  { id: "s2", title: "Marketplace review notes", updatedAt: Date.now() - 7200_000 },
+  {
+    id: "s2",
+    title: "Marketplace review notes",
+    updatedAt: Date.now() - 7200_000,
+  },
   { id: "s3", title: "GPIO firmware pass", updatedAt: Date.now() - 86_400_000 },
 ]
 

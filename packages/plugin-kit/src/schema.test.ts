@@ -6,6 +6,7 @@ import {
   COMMAND_PATTERN,
   FILE_NAME_PATTERN,
   GITHUB_REPO_PATTERN,
+  MCP_NAME_PATTERN,
   PLUGIN_CONFIG_TYPES,
   PLUGIN_HOOK_EVENTS,
   PLUGIN_ID_PATTERN,
@@ -48,6 +49,12 @@ describe("plugin schema", () => {
     const slug = SLUG_PATTERN.source
     expect(top.permissions.properties.vaultRead.items.pattern).toBe(slug)
     expect(top.skills.items.properties.name.pattern).toBe(slug)
+    expect(top.personas.items.properties.skills.items.pattern).toBe(slug)
+    expect(top.personas.items.properties.skills.maxItems).toBe(64)
+    expect(top.personas.items.properties.mcp.items.pattern).toBe(
+      MCP_NAME_PATTERN.source,
+    )
+    expect(top.personas.items.properties.mcp.maxItems).toBe(16)
     expect(top.tools.items.properties.name.pattern).toBe(slug)
     expect(top.configs.items.properties.key.pattern).toBe(slug)
     expect(top.dashboard.properties.tabs.items.properties.id.pattern).toBe(slug)
@@ -99,6 +106,7 @@ describe("plugin schema", () => {
     expect(top.skills.items.properties.description.maxLength).toBe(1024)
     expect(top.skills.items.properties.body.maxLength).toBe(65536)
     expect(top.personas.items.properties.instruction.maxLength).toBe(2000)
+    expect(top.personas.items.properties.skills.maxItems).toBe(64)
     expect(top.cron.items.properties.message.maxLength).toBe(8000)
     expect(top.cron.items.properties.run.enum).toEqual([
       "prompt",

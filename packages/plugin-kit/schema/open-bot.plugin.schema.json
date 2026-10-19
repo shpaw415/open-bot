@@ -142,7 +142,29 @@
         "required": ["name", "instruction"],
         "properties": {
           "name": { "type": "string", "minLength": 1, "maxLength": 48 },
-          "instruction": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          "instruction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "skills": {
+            "type": "array",
+            "maxItems": 64,
+            "description": "Optional skill allowlist: only these skills load in threads running this persona. Skill-name slugs only — glob characters (* ? [ ]) are rejected because a stray pattern would re-open the whole allowlist. Users can extend the list per install with skillsExtra; an absent list means all skills.",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            }
+          },
+          "mcp": {
+            "type": "array",
+            "maxItems": 16,
+            "description": "Optional MCP server allowlist: threads running this persona see only these servers' tools. Server names only (letters, digits, dots, hyphens, underscores) — glob characters are rejected because a stray pattern would re-open the whole allowlist. Users can extend the list per install with mcpExtra; an absent list means all servers.",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$"
+            }
+          }
         }
       }
     },
@@ -250,7 +272,7 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\]{1,200}$",
-            "description": "Repo-relative path inside the release tarball: 1-8 safe segments, no leading /, no .. segments, no backslashes. Text files only. The security review reads the first 128,000 chars per file and 512,000 chars total; payloads past that window are rejected at publish. Keep each path segment under 99 chars (longer paths cannot be matched in the review tarball)."
+            "description": "Repo-relative path inside the release tarball: 1-8 safe segments, no leading /, no .. segments, no backslashes. Text files only. The security review reads the first 1,000,000 chars per file and 2,000,000 chars total; payloads past that window are rejected at publish. Keep each path segment under 99 chars (longer paths cannot be matched in the review tarball)."
           },
           "exec": {
             "type": "boolean",

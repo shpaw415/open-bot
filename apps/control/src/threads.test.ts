@@ -58,13 +58,24 @@ const effortDb = {
   setThreadPersona: () => {},
 } as unknown as Db
 
-function personaDb(bound: string[][]) {
+function personaDb(bound: string[][], scoped = false) {
   return {
     desktop: (id: string) =>
       id === "user-1" ? { opencodePassword: "pw" } : null,
     personas: (userId: string) =>
       userId === "user-1"
-        ? [{ id: "p1", name: "Software manager", instruction: "run the team" }]
+        ? [
+            {
+              id: "p1",
+              name: "Software manager",
+              instruction: "run the team",
+              ...(scoped
+                ? { skills: ["research"], skillsExtra: null }
+                : { skills: null, skillsExtra: null }),
+              mcp: null,
+              mcpExtra: null,
+            },
+          ]
         : [],
     installedPlugins: () => [],
     setThreadPersona: (
@@ -294,6 +305,105 @@ describe("POST /api/threads", () => {
       system: expect.stringContaining("answer as Software manager"),
     })
     expect(bound).toEqual([["user-1", "ses_1", "p1"]])
+  })
+
+  test("a skill-scoped persona rides the session-create permission rules", async () => {
+    installFetch()
+    const bound: string[][] = []
+    const res = await post(
+      {
+        title: "Research run",
+        message: "Check prices",
+        persona: "software manager",
+      },
+      personaDb(bound, true),
+    )
+    expect(res.status).toBe(201)
+    const create = calls.find(
+      (call) =>
+        call.url.endsWith("/session") &&
+        (call.init as RequestInit | undefined)?.method === "POST",
+    )
+    expect(create).toBeDefined()
+    expect(JSON.parse(String(create?.init?.body))).toEqual({
+      title: "worker:Research run",
+      permission: [
+        { permission: "skill", pattern: "*", action: "deny" },
+        { permission: "skill", pattern: "research", action: "allow" },
+      ],
+    })
+    const body = (await res.json()) as {
+      persona?: { skills?: { allowed: number } }
+    }
+    expect(body.persona?.skills).toEqual({ allowed: 1 })
+  })
+
+  test("an unrestricted persona sends no permission key", async () => {
+    installFetch()
+    const res = await post(
+      { title: "Job", persona: "software manager" },
+      personaDb([]),
+    )
+    expect(res.status).toBe(201)
+    const create = calls.find(
+      (call) =>
+        call.url.endsWith("/session") &&
+        (call.init as RequestInit | undefined)?.method === "POST",
+    )
+    const body = JSON.parse(String(create?.init?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(body.permission).toBeUndefined()
+    const reported = (await res.json()) as {
+      persona?: { skills?: unknown }
+    }
+    expect(reported.persona?.skills).toBeUndefined()
+  })
+
+  test("applyPersonaScope PATCHes the exact ruleset and skips null", async () => {
+    installFetch()
+    const { applyPersonaScope } = await import("./personas")
+    const headers = { authorization: "Basic dGVzdA==" }
+    await applyPersonaScope(
+      "user-1",
+      "http://opencode:4096",
+      headers,
+      "ses_9",
+      {
+        id: "p1",
+        name: "Scoped",
+        instruction: "x",
+        builtin: false,
+        skills: ["research"],
+        skillsExtra: null,
+        skillsEffective: ["research"],
+        mcp: null,
+        mcpExtra: null,
+        mcpEffective: null,
+      },
+    )
+    const patch = calls.find(
+      (call) =>
+        call.url.endsWith("/session/ses_9") &&
+        (call.init as RequestInit | undefined)?.method === "PATCH",
+    )
+    expect(patch).toBeDefined()
+    expect(JSON.parse(String(patch?.init?.body))).toEqual({
+      permission: [
+        { permission: "skill", pattern: "*", action: "deny" },
+        { permission: "skill", pattern: "research", action: "allow" },
+      ],
+    })
+    const before = calls.length
+    await applyPersonaScope(
+      "user-1",
+      "http://opencode:4096",
+      headers,
+      "ses_9",
+      null,
+    )
+    expect(calls.length).toBe(before)
   })
 
   test("tolerates a typo in the persona name and reports the match", async () => {

@@ -296,7 +296,48 @@ export type Persona = {
   userId: string
   name: string
   instruction: string
+  // Optional skill allowlist (null = all skills). skillsExtra extends the
+  // base list of a plugin-owned persona without touching the base. mcp /
+  // mcpExtra are the same model for MCP server names (null = all servers).
+  skills: string[] | null
+  skillsExtra: string[] | null
+  mcp: string[] | null
+  mcpExtra: string[] | null
   createdAt: number
+}
+
+// Persona skill lists are stored as JSON TEXT columns (nullable). A stored
+// value that is not a string array reads back as null (all skills).
+function toJsonList(value: string[] | null | undefined): string | null {
+  return value === null || value === undefined ? null : JSON.stringify(value)
+}
+
+type PersonaRow = typeof personas.$inferSelect
+
+function mapPersona(row: PersonaRow): Persona {
+  return {
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    instruction: row.instruction,
+    skills: fromJsonList(row.skills),
+    skillsExtra: fromJsonList(row.skillsExtra),
+    mcp: fromJsonList(row.mcp),
+    mcpExtra: fromJsonList(row.mcpExtra),
+    createdAt: row.createdAt,
+  }
+}
+
+function fromJsonList(value: string | null | undefined): string[] | null {
+  if (value === null || value === undefined) return null
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!Array.isArray(parsed)) return null
+    if (parsed.some((item) => typeof item !== "string")) return null
+    return parsed as string[]
+  } catch {
+    return null
+  }
 }
 
 export type ThreadPersona = {
@@ -410,6 +451,13 @@ export type PluginAppliedLog = {
   // Mention slugs this plugin declared that another enabled plugin already
   // owns. First enabled install wins; the loser keeps the warning.
   mentionClashes?: { section: string; owner: string }[]
+  // Non-blocking install notes, e.g. persona skill names that did not
+  // resolve against the live skill catalog.
+  warnings?: string[]
+  // Per-server MCP connect status from the install/enable apply: "connected"
+  // means the tools are already live in new threads; anything else says why
+  // not and when the merged config loads.
+  mcp?: Record<string, string>
 }
 
 export type InstalledPluginSource = "marketplace" | "local"
@@ -1436,34 +1484,60 @@ export function openDatabase(path: string) {
         .all()
     },
     createPersona(persona: Persona) {
-      orm.insert(personas).values(persona).run()
+      orm
+        .insert(personas)
+        .values({
+          ...persona,
+          skills: toJsonList(persona.skills),
+          skillsExtra: toJsonList(persona.skillsExtra),
+          mcp: toJsonList(persona.mcp),
+          mcpExtra: toJsonList(persona.mcpExtra),
+        })
+        .run()
     },
-    personas(userId: string) {
+    personas(userId: string): Persona[] {
       return orm
         .select()
         .from(personas)
         .where(eq(personas.userId, userId))
         .orderBy(personas.createdAt)
         .all()
+        .map(mapPersona)
     },
-    personaById(id: string, userId: string) {
-      return (
-        orm
-          .select()
-          .from(personas)
-          .where(and(eq(personas.id, id), eq(personas.userId, userId)))
-          .get() ?? null
-      )
+    personaById(id: string, userId: string): Persona | null {
+      const row = orm
+        .select()
+        .from(personas)
+        .where(and(eq(personas.id, id), eq(personas.userId, userId)))
+        .get()
+      return row ? mapPersona(row) : null
     },
     updatePersona(
       id: string,
       userId: string,
-      changes: { name: string; instruction: string },
+      changes: {
+        name?: string
+        instruction?: string
+        skills?: string[] | null
+        skillsExtra?: string[] | null
+        mcp?: string[] | null
+        mcpExtra?: string[] | null
+      },
     ) {
       if (!this.personaById(id, userId)) return null
+      const set: Record<string, unknown> = {}
+      if (changes.name !== undefined) set.name = changes.name
+      if (changes.instruction !== undefined)
+        set.instruction = changes.instruction
+      if (changes.skills !== undefined) set.skills = toJsonList(changes.skills)
+      if (changes.skillsExtra !== undefined)
+        set.skillsExtra = toJsonList(changes.skillsExtra)
+      if (changes.mcp !== undefined) set.mcp = toJsonList(changes.mcp)
+      if (changes.mcpExtra !== undefined)
+        set.mcpExtra = toJsonList(changes.mcpExtra)
       orm
         .update(personas)
-        .set(changes)
+        .set(set)
         .where(and(eq(personas.id, id), eq(personas.userId, userId)))
         .run()
       return this.personaById(id, userId)
@@ -1611,6 +1685,16 @@ export function openDatabase(path: string) {
           ),
         )
         .run()
+    },
+    /** Newest titled threads first — the passive home/search summary source. */
+    recentThreadTitles(userId: string, limit: number) {
+      return orm
+        .select()
+        .from(threadTitles)
+        .where(eq(threadTitles.userId, userId))
+        .orderBy(desc(threadTitles.createdAt))
+        .limit(limit)
+        .all()
     },
     threadDirs(userId: string) {
       return orm

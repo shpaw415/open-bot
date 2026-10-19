@@ -3,7 +3,12 @@ import { desktopPhase, endpoint, opencodeScript, startDesktop } from "./docker"
 import { applyThinkingEffort } from "./effort"
 import type { EventHub } from "./events"
 import { resolveDesktopProviders } from "./key-vault"
-import { personaSystem, resolvePersona } from "./personas"
+import {
+  personaScope,
+  personaSystem,
+  resolvePersona,
+  type ScopeRule,
+} from "./personas"
 import { ensureThreadScreen, stopThreadScreen } from "./screens"
 
 const MINUTE_MS = 60_000
@@ -569,15 +574,29 @@ async function opencodeJson(
   return res
 }
 
+// Session-create POST body. Kept pure so tests can assert the exact wire
+// shape (permission is the persona skill ruleset; array replaces, null clears).
+export function sessionCreateBody(
+  title: string,
+  parentID?: string,
+  permission?: ScopeRule[] | null,
+) {
+  const body: Record<string, unknown> = { title }
+  if (parentID) body.parentID = parentID
+  if (permission && permission.length > 0) body.permission = permission
+  return body
+}
+
 export async function createSession(
   base: string,
   headers: Record<string, string>,
   title: string,
   parentID?: string,
+  permission?: ScopeRule[] | null,
 ) {
   const created = await opencodeJson(`${base}/session`, headers, {
     method: "POST",
-    body: JSON.stringify(parentID ? { parentID, title } : { title }),
+    body: JSON.stringify(sessionCreateBody(title, parentID, permission)),
   })
   if (!created.ok) throw new Error(`session create failed (${created.status})`)
   const body = (await created.json()) as { id?: string }
@@ -874,10 +893,12 @@ export async function fireCronJob(
     }
     if (!error && runAgent) {
       let personaLine: string | null = null
+      let personaRuleset: ScopeRule[] | null = null
       if (job.personaId) {
         const persona = resolvePersona(db, job.userId, job.personaId)
         if (!persona) throw new Error("personality not found")
         personaLine = personaSystem(persona)
+        personaRuleset = await personaScope(job.userId, persona)
       }
       // The run session is a child of the delivery thread; children share the
       // parent's screen (same convention as the chat prompt path). Ensuring
@@ -890,6 +911,7 @@ export async function fireCronJob(
         headers,
         `${CRON_RUN_TITLE} ${job.name}`,
         rootSessionId,
+        personaRuleset,
       )
       const screen = await ensureThreadScreen(db, job.userId, rootSessionId)
       const runBody = cronRunBody({

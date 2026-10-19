@@ -364,6 +364,72 @@ async function providerError(
   return `${label} failed (${response.status})${detail ? `: ${detail}` : ""}`
 }
 
+// Label the two failure modes an HTTP status cannot describe: the request
+// never left (network) or never got an answer (timeout).
+async function providerFetch(
+  fetchImpl: FetchImpl,
+  label: string,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  try {
+    return await fetchImpl(url, {
+      ...init,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      throw new Error(
+        `${label} did not answer within ${Math.round(timeoutMs / 1000)}s`,
+      )
+    }
+    const cause =
+      error instanceof Error && error.cause instanceof Error
+        ? `: ${error.cause.message}`
+        : ""
+    throw new Error(`could not reach ${label}${cause}`)
+  }
+}
+
+// Parse a provider's JSON body, naming the provider when the body is not JSON
+// (a proxy or captive portal answering with HTML would surface a bare
+// SyntaxError otherwise).
+async function providerJson<T>(response: Response, label: string): Promise<T> {
+  try {
+    return (await response.json()) as T
+  } catch {
+    throw new Error(`${label} returned a malformed response`)
+  }
+}
+
+// The Workers AI REST API can answer HTTP 200 with a rejected-request
+// envelope — treat it as the error it is instead of "no transcription".
+function cloudflareEnvelopeError(body: {
+  success?: unknown
+  errors?: unknown
+}): string | null {
+  const messages = (Array.isArray(body.errors) ? body.errors : [])
+    .map((item) => {
+      if (typeof item === "string") return item.trim()
+      if (item && typeof item === "object") {
+        const message = (item as { message?: unknown }).message
+        if (typeof message === "string") return message.trim()
+      }
+      return ""
+    })
+    .filter((text) => text !== "")
+  if (body.success === false || messages.length > 0) {
+    return messages.length > 0
+      ? messages.join("; ")
+      : "the request was rejected"
+  }
+  return null
+}
+
 // Workers AI models are path segments like "@cf/openai/whisper": keep the
 // slashes, encode the rest.
 function modelPath(model: string): string {
@@ -402,7 +468,9 @@ export async function runStt(input: SttInput): Promise<string> {
       if (language) payload.language = language
       payload.vad_filter = true
     }
-    const response = await fetchImpl(
+    const response = await providerFetch(
+      fetchImpl,
+      "Cloudflare Workers AI",
       `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(model)}`,
       {
         method: "POST",
@@ -411,18 +479,23 @@ export async function runStt(input: SttInput): Promise<string> {
           "content-type": "application/json",
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(60_000),
       },
+      60_000,
     )
     if (!response.ok)
       throw new Error(
         await providerError(response, "Cloudflare Workers AI", "stt"),
       )
-    const body = (await response.json()) as {
+    const body = await providerJson<{
       result?: { text?: unknown; transcription_info?: { text?: unknown } }
       errors?: unknown
-    }
+      success?: unknown
+    }>(response, "Cloudflare Workers AI")
+    const envelope = cloudflareEnvelopeError(body)
+    if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
     const text = body.result?.text ?? body.result?.transcription_info?.text
+    if (text === undefined)
+      throw new Error("Cloudflare Workers AI returned no transcription")
     return typeof text === "string" ? text.trim() : ""
   }
   if (input.providerId === "deepgram-stt") {
@@ -434,7 +507,9 @@ export async function runStt(input: SttInput): Promise<string> {
     }
     const language = languageCode(input.language)
     if (language) payload.language = language
-    const response = await fetchImpl(
+    const response = await providerFetch(
+      fetchImpl,
+      "Cloudflare Workers AI",
       `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(model)}`,
       {
         method: "POST",
@@ -443,14 +518,14 @@ export async function runStt(input: SttInput): Promise<string> {
           "content-type": "application/json",
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(60_000),
       },
+      60_000,
     )
     if (!response.ok)
       throw new Error(
         await providerError(response, "Cloudflare Workers AI", "stt"),
       )
-    const body = (await response.json()) as {
+    const body = await providerJson<{
       result?: {
         results?: {
           channels?: {
@@ -458,9 +533,15 @@ export async function runStt(input: SttInput): Promise<string> {
           }[]
         }
       }
-    }
+      errors?: unknown
+      success?: unknown
+    }>(response, "Cloudflare Workers AI")
+    const envelope = cloudflareEnvelopeError(body)
+    if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
     const transcript =
       body.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript
+    if (transcript === undefined)
+      throw new Error("Cloudflare Workers AI returned no transcription")
     return typeof transcript === "string" ? transcript.trim() : ""
   }
   const endpoints: Record<string, string> = {
@@ -469,6 +550,8 @@ export async function runStt(input: SttInput): Promise<string> {
   }
   const endpoint = endpoints[input.providerId]
   if (!endpoint) throw new Error("unsupported speech provider")
+  const label =
+    voiceProviderById(input.providerId)?.label ?? "the speech provider"
   const form = new FormData()
   const bytes = new Uint8Array(input.audio)
   form.append(
@@ -481,22 +564,23 @@ export async function runStt(input: SttInput): Promise<string> {
   form.append("model", input.model)
   const language = languageCode(input.language)
   if (language) form.append("language", language)
-  const response = await fetchImpl(endpoint, {
-    method: "POST",
-    headers: { authorization: `Bearer ${input.apiKey}` },
-    body: form,
-    signal: AbortSignal.timeout(60_000),
-  })
+  const response = await providerFetch(
+    fetchImpl,
+    label,
+    endpoint,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${input.apiKey}` },
+      body: form,
+    },
+    60_000,
+  )
   if (!response.ok) {
-    throw new Error(
-      await providerError(
-        response,
-        voiceProviderById(input.providerId)?.label ?? "the speech provider",
-        "stt",
-      ),
-    )
+    throw new Error(await providerError(response, label, "stt"))
   }
-  const body = (await response.json()) as { text?: unknown }
+  const body = await providerJson<{ text?: unknown }>(response, label)
+  if (body.text === undefined)
+    throw new Error(`${label} returned no transcription`)
   return typeof body.text === "string" ? body.text.trim() : ""
 }
 
@@ -518,28 +602,27 @@ export async function runTts(input: TtsInput): Promise<TtsAudio> {
   const text = input.text.slice(0, TTS_MAX_CHARS)
   if (text.trim() === "") throw new Error("text is required")
   if (input.providerId === "openai-tts") {
-    const response = await fetchImpl("https://api.openai.com/v1/audio/speech", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${input.apiKey}`,
-        "content-type": "application/json",
+    const response = await providerFetch(
+      fetchImpl,
+      "OpenAI",
+      "https://api.openai.com/v1/audio/speech",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${input.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: input.model || "gpt-4o-mini-tts",
+          input: text,
+          voice: input.voice || "alloy",
+          response_format: "mp3",
+        }),
       },
-      body: JSON.stringify({
-        model: input.model || "gpt-4o-mini-tts",
-        input: text,
-        voice: input.voice || "alloy",
-        response_format: "mp3",
-      }),
-      signal: AbortSignal.timeout(120_000),
-    })
+      120_000,
+    )
     if (!response.ok)
-      throw new Error(
-        await providerError(
-          response,
-          voiceProviderById(input.providerId)?.label ?? "the speech provider",
-          "tts",
-        ),
-      )
+      throw new Error(await providerError(response, "OpenAI", "tts"))
     return {
       bytes: new Uint8Array(await response.arrayBuffer()),
       mime: "audio/mpeg",
@@ -547,34 +630,35 @@ export async function runTts(input: TtsInput): Promise<TtsAudio> {
   }
   if (input.providerId === "xai-tts") {
     const language = languageCode(input.language) || "en"
-    const response = await fetchImpl("https://api.x.ai/v1/tts", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${input.apiKey}`,
-        "content-type": "application/json",
+    const response = await providerFetch(
+      fetchImpl,
+      "xAI",
+      "https://api.x.ai/v1/tts",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${input.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          voice_id: input.voice || "eve",
+          language,
+        }),
       },
-      body: JSON.stringify({
-        text,
-        voice_id: input.voice || "eve",
-        language,
-      }),
-      signal: AbortSignal.timeout(120_000),
-    })
+      120_000,
+    )
     if (!response.ok)
-      throw new Error(
-        await providerError(
-          response,
-          voiceProviderById(input.providerId)?.label ?? "the speech provider",
-          "tts",
-        ),
-      )
+      throw new Error(await providerError(response, "xAI", "tts"))
     return {
       bytes: new Uint8Array(await response.arrayBuffer()),
       mime: response.headers.get("content-type")?.split(";")[0] || "audio/wav",
     }
   }
   if (input.providerId === "workers-ai-tts") {
-    const response = await fetchImpl(
+    const response = await providerFetch(
+      fetchImpl,
+      "Cloudflare Workers AI",
       `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(input.model || "@cf/myshell-ai/melotts")}`,
       {
         method: "POST",
@@ -586,23 +670,23 @@ export async function runTts(input: TtsInput): Promise<TtsAudio> {
           prompt: text,
           lang: languageCode(input.language) || "en",
         }),
-        signal: AbortSignal.timeout(120_000),
       },
+      120_000,
     )
     if (!response.ok)
       throw new Error(
-        await providerError(
-          response,
-          voiceProviderById(input.providerId)?.label ?? "the speech provider",
-          "tts",
-        ),
+        await providerError(response, "Cloudflare Workers AI", "tts"),
       )
-    const body = (await response.json()) as {
+    const body = await providerJson<{
       result?: { audio?: unknown }
-    }
+      errors?: unknown
+      success?: unknown
+    }>(response, "Cloudflare Workers AI")
+    const envelope = cloudflareEnvelopeError(body)
+    if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
     const audio =
       typeof body.result?.audio === "string" ? body.result.audio : ""
-    if (!audio) throw new Error("tts provider returned no audio")
+    if (!audio) throw new Error("Cloudflare Workers AI returned no audio")
     return {
       bytes: new Uint8Array(Buffer.from(audio, "base64")),
       mime: "audio/mp3",

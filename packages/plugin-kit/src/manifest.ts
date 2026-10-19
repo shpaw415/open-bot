@@ -5,6 +5,10 @@ export const PLUGIN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/
 // app-tab frame tokens); plugins must not shadow them.
 export const RESERVED_PLUGIN_IDS = new Set(["frame"])
 export const SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/
+// MCP server names (matches the control plane's mcp.ts NAME_RE): letters,
+// digits, dots, dashes, underscores. Every char is glob-safe — a name can
+// never smuggle a minimatch wildcard into a permission rule pattern.
+export const MCP_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/
 export const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\dA-Za-z.-]+)?$/
 // Development tags (beta-1, staging.2, rc) for stress-testing before a stable
@@ -82,6 +86,12 @@ export type PluginSkill = {
 export type PluginPersona = {
   name: string
   instruction: string
+  // Optional skill allowlist for the persona: only these skills load in
+  // threads running it. Entries are skill-name slugs — never globs.
+  skills?: string[]
+  // Optional MCP server allowlist: threads running this persona see only
+  // these servers' tools. Entries are MCP server names — never globs.
+  mcp?: string[]
 }
 
 export type PluginCron = {
@@ -408,8 +418,8 @@ const MAX_MANIFEST = 512 * 1024
 // the publish-route rejection, doctor warnings, and doc-drift tests). Payload
 // bytes and manifest JSON past these windows are NOT reviewed: the publish
 // path must fail closed instead of silently truncating.
-export const REVIEW_PAYLOAD_FILE_CHARS = 128000
-export const REVIEW_PAYLOAD_TOTAL_CHARS = 512000
+export const REVIEW_PAYLOAD_FILE_CHARS = 1000000
+export const REVIEW_PAYLOAD_TOTAL_CHARS = 2000000
 export const REVIEW_MANIFEST_CHARS = 150000
 // Paths longer than this cannot be matched by the review tar parser's 100-char
 // name field (no long-name extension support).
@@ -442,6 +452,16 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push("Installs agent skills")
   if (perms.personas || manifest.personas?.length)
     summary.push("Creates personalities")
+  for (const persona of manifest.personas ?? []) {
+    if (persona.skills?.length)
+      summary.push(
+        `Limits persona "${persona.name}" to skills: ${persona.skills.join(", ")}`,
+      )
+    if (persona.mcp?.length)
+      summary.push(
+        `Limits persona "${persona.name}" to MCP servers: ${persona.mcp.join(", ")}`,
+      )
+  }
   if (manifest.cron?.length) summary.push("Creates scheduled jobs")
   if (manifest.configs?.length) summary.push("Adds settings")
   if (perms.vaultRead?.length)
@@ -821,6 +841,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
   }
 
   const personas = input.personas === undefined ? [] : input.personas
+  const normalizedPersonas: PluginPersona[] = []
   if (!Array.isArray(personas) || personas.length > 32) {
     issues.push({
       path: "personas",
@@ -842,6 +863,64 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
           message: "persona.instruction is required (max 2000)",
         })
       }
+      let personaSkills: string[] | undefined
+      if (persona?.skills !== undefined && persona?.skills !== null) {
+        const raw = persona.skills
+        if (!Array.isArray(raw) || raw.length > 64) {
+          issues.push({
+            path: `personas[${index}].skills`,
+            message: "persona.skills must be a list (max 64)",
+          })
+        } else {
+          personaSkills = []
+          for (const entry of raw) {
+            const name = typeof entry === "string" ? entry.trim() : ""
+            if (!name || !SLUG_PATTERN.test(name)) {
+              issues.push({
+                path: `personas[${index}].skills`,
+                message:
+                  "persona.skills entries must be skill-name slugs (lowercase letters, digits, hyphens, underscores — never glob characters)",
+              })
+              continue
+            }
+            if (!personaSkills.includes(name)) personaSkills.push(name)
+          }
+        }
+      }
+      let personaMcp: string[] | undefined
+      if (persona?.mcp !== undefined && persona?.mcp !== null) {
+        const raw = persona.mcp
+        if (!Array.isArray(raw) || raw.length > 16) {
+          issues.push({
+            path: `personas[${index}].mcp`,
+            message: "persona.mcp must be a list (max 16)",
+          })
+        } else {
+          personaMcp = []
+          for (const entry of raw) {
+            const name = typeof entry === "string" ? entry.trim() : ""
+            if (!name || !MCP_NAME_PATTERN.test(name)) {
+              issues.push({
+                path: `personas[${index}].mcp`,
+                message:
+                  "persona.mcp entries must be MCP server names (letters, digits, dots, hyphens, underscores — never glob characters)",
+              })
+              continue
+            }
+            if (!personaMcp.includes(name)) personaMcp.push(name)
+          }
+        }
+      }
+      normalizedPersonas.push({
+        name: personaName ?? "",
+        instruction: instruction ?? "",
+        ...(personaSkills && personaSkills.length > 0
+          ? { skills: personaSkills }
+          : {}),
+        // An empty mcp list is meaningful (block every server); skills use
+        // the two-state model where empty means all and is dropped.
+        ...(personaMcp ? { mcp: personaMcp } : {}),
+      })
     }
   }
 
@@ -1556,7 +1635,7 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
         isRecord(permissions) && permissions.notifications === true,
     },
     skills: skills as PluginSkill[],
-    personas: personas as PluginPersona[],
+    personas: normalizedPersonas,
     cron: cron as PluginCron[],
     tools: tools as PluginTool[],
     files: files as PluginFile[],

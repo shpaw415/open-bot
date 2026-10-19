@@ -16,6 +16,7 @@ import { Chip } from "./chip"
 import type { EventStream } from "./hooks"
 import {
   ArrowBackIcon,
+  ChatIcon,
   ChevronRightIcon,
   DeleteIcon,
   DescriptionIcon,
@@ -56,11 +57,11 @@ type Item = {
 }
 
 const FILTERS: { key: Filter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "image", label: "Pictures" },
+  { key: "all", label: "Tout" },
+  { key: "image", label: "Images" },
   { key: "model3d", label: "3D" },
-  { key: "video", label: "Video" },
-  { key: "file", label: "Other" },
+  { key: "video", label: "Vidéos" },
+  { key: "file", label: "Autres" },
 ]
 
 function kindIcon(kind: Kind) {
@@ -77,8 +78,11 @@ function formatBytes(value: number) {
 
 export function MediaVault({
   subscribe,
+  onOpenChat,
 }: {
   subscribe?: EventStream["subscribe"]
+  /** Shell navigation to Conversations (the empty-state CTA). */
+  onOpenChat?: () => void
 }) {
   const [albums, setAlbums] = useState<Album[] | null>(null)
   const [albumId, setAlbumId] = useState("")
@@ -91,15 +95,17 @@ export function MediaVault({
   const albumTitleId = useId()
   const itemTitleId = useId()
   const [dropItem, setDropItem] = useState<Item | null>(null)
-  const [dropSource, setDropSource] = useState(true)
+  // Deleting only the vault copy is the default; touching the desktop
+  // original is always an explicit choice, reset for every dialog.
+  const [dropSource, setDropSource] = useState(false)
 
   function askDeleteAlbum(row: Album) {
-    setDropSource(true)
+    setDropSource(false)
     setDropAlbum(row)
   }
 
   function askDeleteItem(row: Item) {
-    setDropSource(true)
+    setDropSource(false)
     setDropItem(row)
   }
 
@@ -247,11 +253,11 @@ export function MediaVault({
             {/* The Media workspace tab has no other title (the top bar only
                 carries thread context) — this is the page heading. */}
             <Typography variant="h6" component="h1">
-              Media vault
+              Coffre à médias
             </Typography>
             <Typography variant="caption" color="textSecondary">
-              Saved copies of your pictures, videos, and 3D models. Chat media
-              lands here by itself.
+              Copies enregistrées de vos images, vidéos et modèles 3D. Les
+              médias des conversations arrivent ici automatiquement.
             </Typography>
             {albums === null ? (
               <Stack spacing={1.5} sx={{ maxWidth: 420 }} aria-busy="true">
@@ -262,13 +268,24 @@ export function MediaVault({
                     sx={{ height: 56, borderRadius: "10px" }}
                   />
                 ))}
-                <output className="ob-sr-status">Loading albums</output>
+                <output className="ob-sr-status">Chargement des albums</output>
               </Stack>
             ) : albums.length === 0 ? (
-              <Typography color="textSecondary">
-                No albums yet. Pictures, videos, and 3D models from chat land
-                here. The agent can also file other files into a named album.
-              </Typography>
+              <Stack spacing={1.5} sx={{ maxWidth: 480 }}>
+                <Typography color="textSecondary">
+                  Vos images, vidéos et modèles 3D créés dans les conversations
+                  apparaîtront ici après leur enregistrement. L’assistant peut
+                  aussi classer d’autres fichiers dans un album nommé.
+                </Typography>
+                <Button
+                  variant="outlined"
+                  startIcon={<ChatIcon width={18} height={18} />}
+                  onClick={() => onOpenChat?.()}
+                  sx={{ alignSelf: "flex-start" }}
+                >
+                  Ouvrir une conversation
+                </Button>
+              </Stack>
             ) : (
               <Stack spacing={1}>
                 {albums.map((row) => (
@@ -345,8 +362,8 @@ export function MediaVault({
                           {row.name}
                         </Typography>
                         <Typography variant="caption" color="textSecondary">
-                          {row.count} {row.count === 1 ? "item" : "items"}
-                          {row.sessionId ? " · thread" : ""}
+                          {row.count} {row.count === 1 ? "élément" : "éléments"}
+                          {row.sessionId ? " · conversation" : ""}
                         </Typography>
                       </Stack>
                     </Box>
@@ -370,7 +387,7 @@ export function MediaVault({
             <Stack direction="row" spacing={1} alignItems="center">
               <IconButton
                 size="small"
-                aria-label="Back to albums"
+                aria-label="Retour aux albums"
                 onClick={() => {
                   setAlbumId("")
                   setViewerId("")
@@ -392,7 +409,7 @@ export function MediaVault({
                 disabled={!album}
                 onClick={() => album && askDeleteAlbum(album)}
               >
-                Delete album
+                Supprimer l’album
               </Button>
             </Stack>
             <Stack
@@ -416,7 +433,7 @@ export function MediaVault({
             </Stack>
             {shown.length === 0 ? (
               <Typography color="textSecondary">
-                Nothing in this view.
+                Rien dans cette vue.
               </Typography>
             ) : (
               <Box
@@ -506,7 +523,7 @@ export function MediaVault({
           >
             <IconButton
               size="small"
-              aria-label="Close viewer"
+              aria-label="Fermer la visionneuse"
               onClick={() => setViewerId("")}
             >
               <ArrowBackIcon />
@@ -528,7 +545,7 @@ export function MediaVault({
             <a
               href={current.url}
               download={current.name}
-              aria-label={`Download ${current.name}`}
+              aria-label={`Télécharger ${current.name}`}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -551,7 +568,7 @@ export function MediaVault({
             alignItems="stretch"
           >
             <IconButton
-              aria-label="Previous"
+              aria-label="Précédent"
               disabled={viewerIndex <= 0}
               onClick={() => {
                 const prev = shown[viewerIndex - 1]
@@ -616,7 +633,7 @@ export function MediaVault({
               )}
             </Box>
             <IconButton
-              aria-label="Next"
+              aria-label="Suivant"
               disabled={viewerIndex >= shown.length - 1}
               onClick={() => {
                 const next = shown[viewerIndex + 1]
@@ -635,10 +652,10 @@ export function MediaVault({
         onClose={() => !busy && setDropAlbum(null)}
         aria-labelledby={albumTitleId}
       >
-        <DialogTitle id={albumTitleId}>Delete album</DialogTitle>
+        <DialogTitle id={albumTitleId}>Supprimer l’album</DialogTitle>
         <DialogContent>
           <Typography>
-            Delete {dropAlbum?.name} and its saved copies?
+            Supprimer {dropAlbum?.name} et ses copies enregistrées?
           </Typography>
           <FormControlLabel
             sx={{ mt: 1 }}
@@ -648,20 +665,20 @@ export function MediaVault({
                 onChange={(event) => setDropSource(event.currentTarget.checked)}
               />
             }
-            label="Also delete the files on the desktop"
+            label="Supprimer aussi les fichiers originaux du bureau"
           />
           <Typography variant="caption" color="textSecondary" sx={{ mt: 0.5 }}>
             {dropSource
-              ? "Frees desktop disk space. The saved copies are removed too."
-              : "Only the saved copies are removed; files stay on the desktop."}
+              ? "Libère l’espace disque du bureau. Les copies enregistrées sont aussi supprimées."
+              : "Seules les copies enregistrées sont retirées; les fichiers restent sur le bureau."}
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button disabled={busy} onClick={() => setDropAlbum(null)}>
-            Cancel
+            Annuler
           </Button>
           <Button disabled={busy} onClick={() => void removeAlbum()}>
-            Delete
+            Supprimer
           </Button>
         </DialogActions>
       </AccessibleDialog>
@@ -670,9 +687,9 @@ export function MediaVault({
         onClose={() => !busy && setDropItem(null)}
         aria-labelledby={itemTitleId}
       >
-        <DialogTitle id={itemTitleId}>Delete item</DialogTitle>
+        <DialogTitle id={itemTitleId}>Supprimer l’élément</DialogTitle>
         <DialogContent>
-          <Typography>Remove this saved copy?</Typography>
+          <Typography>Retirer cette copie enregistrée?</Typography>
           <FormControlLabel
             sx={{ mt: 1 }}
             control={
@@ -681,7 +698,7 @@ export function MediaVault({
                 onChange={(event) => setDropSource(event.currentTarget.checked)}
               />
             }
-            label="Also delete the file on the desktop"
+            label="Supprimer aussi le fichier original du bureau"
           />
           {dropItem?.sourcePath ? (
             <Typography
@@ -699,10 +716,10 @@ export function MediaVault({
         </DialogContent>
         <DialogActions>
           <Button disabled={busy} onClick={() => setDropItem(null)}>
-            Cancel
+            Annuler
           </Button>
           <Button disabled={busy} onClick={() => void removeItem()}>
-            Delete
+            Supprimer
           </Button>
         </DialogActions>
       </AccessibleDialog>

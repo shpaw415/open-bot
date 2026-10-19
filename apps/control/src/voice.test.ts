@@ -404,6 +404,130 @@ describe("voice providers", () => {
     expect(rejected?.message).toContain("rejected the speech-to-text API key")
   })
 
+  test("runStt reports a 200 rejected-request envelope from workers ai", async () => {
+    const err = await runStt({
+      providerId: "workers-ai-stt",
+      apiKey: "k".repeat(40),
+      accountId: "b".repeat(32),
+      model: "",
+      language: "",
+      audio: new Uint8Array([1]),
+      mime: "audio/webm",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ message: "bad account" }],
+          }),
+          { status: 200 },
+        ),
+    }).then(
+      () => null,
+      (caught: Error) => caught,
+    )
+    expect(err?.message).toContain("Cloudflare Workers AI failed")
+    expect(err?.message).toContain("bad account")
+  })
+
+  test("runStt labels network failures and timeouts with the provider", async () => {
+    const network = new TypeError("fetch failed", {
+      cause: new Error("getaddrinfo ENOTFOUND api.cloudflare.com"),
+    })
+    const unreachable = await runStt({
+      providerId: "workers-ai-stt",
+      apiKey: "k".repeat(40),
+      accountId: "b".repeat(32),
+      model: "",
+      language: "",
+      audio: new Uint8Array([1]),
+      mime: "audio/webm",
+      fetchImpl: async () => {
+        throw network
+      },
+    }).then(
+      () => null,
+      (caught: Error) => caught,
+    )
+    expect(unreachable?.message).toBe(
+      "could not reach Cloudflare Workers AI: getaddrinfo ENOTFOUND api.cloudflare.com",
+    )
+
+    const timeout = new Error("The operation timed out.")
+    timeout.name = "TimeoutError"
+    const timedOut = await runStt({
+      providerId: "openai-stt",
+      apiKey: "k".repeat(40),
+      accountId: "",
+      model: "whisper-1",
+      language: "",
+      audio: new Uint8Array([1]),
+      mime: "audio/webm",
+      fetchImpl: async () => {
+        throw timeout
+      },
+    }).then(
+      () => null,
+      (caught: Error) => caught,
+    )
+    expect(timedOut?.message).toBe("OpenAI (Whisper) did not answer within 60s")
+  })
+
+  test("runStt names the provider on a malformed or empty 200 body", async () => {
+    const malformed = await runStt({
+      providerId: "openai-stt",
+      apiKey: "k".repeat(40),
+      accountId: "",
+      model: "whisper-1",
+      language: "",
+      audio: new Uint8Array([1]),
+      mime: "audio/webm",
+      fetchImpl: async () =>
+        new Response("<html>gateway</html>", { status: 200 }),
+    }).then(
+      () => null,
+      (caught: Error) => caught,
+    )
+    expect(malformed?.message).toBe(
+      "OpenAI (Whisper) returned a malformed response",
+    )
+
+    const empty = await runStt({
+      providerId: "groq-stt",
+      apiKey: "k".repeat(40),
+      accountId: "",
+      model: "whisper-large-v3",
+      language: "",
+      audio: new Uint8Array([1]),
+      mime: "audio/webm",
+      fetchImpl: async () => new Response("{}", { status: 200 }),
+    }).then(
+      () => null,
+      (caught: Error) => caught,
+    )
+    expect(empty?.message).toBe("Groq (Whisper) returned no transcription")
+  })
+
+  test("runTts reports a 200 rejected-request envelope from workers ai", async () => {
+    const err = await runTts({
+      providerId: "workers-ai-tts",
+      apiKey: "k".repeat(40),
+      accountId: "b".repeat(32),
+      model: "@cf/myshell-ai/melotts",
+      voice: "",
+      language: "",
+      text: "hello",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ success: false, errors: ["no quota"] }), {
+          status: 200,
+        }),
+    }).then(
+      () => null,
+      (caught: Error) => caught,
+    )
+    expect(err?.message).toContain("Cloudflare Workers AI failed")
+    expect(err?.message).toContain("no quota")
+  })
+
   test("runTts truncates to the character cap", async () => {
     expect(ttsMaxChars("abcdef")).toBe("abcdef")
     expect(ttsMaxChars("x".repeat(5000)).length).toBe(4000)

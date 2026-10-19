@@ -30,6 +30,8 @@ export type LegacyConfigTab = "cron"
 export type AnyConfigTab = ConfigTab | LegacyConfigTab
 
 export type Route =
+  | { view: "home" }
+  | { view: "help" }
   | { view: "workspace"; tab: WorkspaceTab }
   | { view: "apps" }
   | { view: "plugin"; tab: PluginTab }
@@ -42,13 +44,18 @@ export type Route =
   | { view: "automations" }
   | { view: "config"; tab: ConfigTab | "" }
   | { view: "admin" }
+  /**
+   * A loaded, real answer that this address names nothing. Never a silent
+   * redirect: the page explains and offers Home / Apps / Back.
+   */
+  | { view: "not-found"; path: string }
 
 export type ParsedRoute = {
   route: Route
   /**
-   * Canonical URL when the given path is a legacy alias or an unknown
-   * variant; the shell replace-states to it so the address bar and the
-   * active destination always agree. Undefined when the path is canonical.
+   * Canonical URL when the given path is a legacy alias; the shell
+   * replace-states to it so the address bar and the active destination
+   * always agree. Undefined when the path is canonical.
    */
   redirect?: string
 }
@@ -80,23 +87,23 @@ export const CONFIG_TABS: ConfigTab[] = [
 ]
 
 export const CONFIG_TAB_LABELS: Record<AnyConfigTab, string> = {
-  providers: "Providers",
-  keys: "Keys",
-  chat: "Chat & thinking",
-  memory: "Memory",
-  nav: "System1",
-  media: "Media generation",
-  voice: "Voice",
-  personas: "Personas",
-  skills: "Skills",
-  plugins: "Plugins",
-  mcp: "MCP",
-  endpoints: "Public endpoints",
-  backup: "Backup",
-  hardware: "Hardware",
-  reports: "Reports",
-  security: "Watchdog",
-  cron: "Automations",
+  providers: "Services IA",
+  keys: "Clés d'accès",
+  chat: "Modèle et réflexion",
+  memory: "Mémoire",
+  nav: "Assistant de navigation",
+  media: "Génération de médias",
+  voice: "Voix",
+  personas: "Assistants personnalisés",
+  skills: "Compétences",
+  plugins: "Extensions",
+  mcp: "Connexions avancées (MCP)",
+  endpoints: "Points d'accès publics",
+  backup: "Sauvegarde",
+  hardware: "Matériel",
+  reports: "Rapports",
+  security: "Protection de l'agent",
+  cron: "Automatisations",
 }
 
 export type ConfigGroup = {
@@ -105,22 +112,22 @@ export type ConfigGroup = {
   tabs: (ConfigTab | LegacyConfigTab)[]
 }
 
-/** Settings grouped by usage; `cron` routes to the Automations view. */
+/** Settings grouped by goal; `cron` routes to the Automations view. */
 export const CONFIG_GROUPS: ConfigGroup[] = [
   {
-    key: "ai",
-    label: "AI",
-    tabs: ["providers", "keys", "chat", "memory", "nav", "media", "voice"],
-  },
-  { key: "behavior", label: "Behavior", tabs: ["personas", "skills"] },
-  {
-    key: "integrations",
-    label: "Integrations",
-    tabs: ["plugins", "mcp", "endpoints"],
+    key: "assistant",
+    label: "Assistant",
+    tabs: ["chat", "personas", "memory", "skills"],
   },
   {
-    key: "ops",
-    label: "Operations",
+    key: "connexions",
+    label: "Connexions",
+    tabs: ["providers", "keys", "plugins", "mcp", "endpoints"],
+  },
+  { key: "preferences", label: "Préférences", tabs: ["media", "voice", "nav"] },
+  {
+    key: "avance",
+    label: "Avancé",
     tabs: ["cron", "backup", "hardware", "reports", "security"],
   },
 ]
@@ -163,6 +170,8 @@ function isReservedSegment(segment: string): boolean {
     segment === "config" ||
     segment === "providers" ||
     segment === "plugins" ||
+    segment === "dashboard" ||
+    segment === "help" ||
     workspaceTab(segment) !== null
   )
 }
@@ -173,8 +182,8 @@ function isReservedSegment(segment: string): boolean {
  *
  * `awaitingPlugins` marks the window where the session/manifests have not
  * resolved yet: a plugin-looking path parses as `plugin-pending` instead of
- * falling through to the unknown-route redirect, so a direct link or a
- * reload on /<pluginId>:<tabId> keeps its URL while the data loads.
+ * falling through to the not-found page, so a direct link or a reload on
+ * /<pluginId>:<tabId> keeps its URL while the data loads.
  */
 export function parseRoute(
   pathname: string,
@@ -185,7 +194,9 @@ export function parseRoute(
   const segments = path.slice(1).split("/")
   const decodedSegments = segments.map(safeDecode)
 
-  if (path === "/") return { route: { view: "workspace", tab: "chat" } }
+  // Home is the app's default destination; /dashboard is a friendly alias.
+  if (path === "/") return { route: { view: "home" } }
+  if (path === "/dashboard") return { route: { view: "home" }, redirect: "/" }
 
   // Plugin tab pages: /<pluginId>:<tabId> or /<pluginId>/<tabId>
   if (segments.length >= 1 && tabs.length > 0) {
@@ -207,6 +218,8 @@ export function parseRoute(
     }
 
   if (segments[0] === "automations") return { route: { view: "automations" } }
+
+  if (segments[0] === "help") return { route: { view: "help" } }
 
   if (segments[0] === "admin") return { route: { view: "admin" } }
 
@@ -247,21 +260,23 @@ export function parseRoute(
 
   // A plugin-shaped URL with the install list still in flight: hold the URL.
   // The caller re-parses once loading settles (success, empty, or error) and
-  // this same path then resolves to its plugin page or redirects for real.
+  // this same path then resolves to its plugin page or lands on not-found.
   if (options?.awaitingPlugins && looksLikePluginPath(segments))
     return { route: { view: "plugin-pending" } }
 
-  // Anything else lands on the chat.
-  return {
-    route: { view: "workspace", tab: "chat" },
-    redirect: path === "/" ? undefined : "/",
-  }
+  // Anything else is a real answer: this address names nothing. The shell
+  // renders the not-found page for the attempted path — no silent redirect.
+  return { route: { view: "not-found", path } }
 }
 
-/** URL for a workspace tab ("chat" lives at "/"). */
+/** URL for a workspace tab; Conversations live at /chat (Home owns /). */
 export function workspacePath(tab: WorkspaceTab): string {
-  return tab === "chat" ? "/" : `/${tab}`
+  return `/${tab}`
 }
+
+export const HOME_PATH = "/"
+export const CHAT_PATH = workspacePath("chat")
+export const HELP_PATH = "/help"
 
 export function configPath(tab: ConfigTab | ""): string {
   return tab ? `/config/${tab}` : "/config"

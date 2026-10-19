@@ -33,7 +33,7 @@ describe("search — sources", () => {
       title: "Fix the login flow",
       sessionId: "s1",
     })
-    expect(entries[1].title).toBe("New thread")
+    expect(entries[1].title).toBe("Nouvelle conversation")
   })
 
   test("apps expose their plugin route and projects their view", () => {

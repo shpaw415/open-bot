@@ -104,7 +104,7 @@ export default function PublishDocs() {
             <Code>open-bot.plugin.json</Code>.
           </p>
 
-    <section id="capabilities" className="mt-12 scroll-mt-24">
+          <section id="capabilities" className="mt-12 scroll-mt-24">
             <SectionHeading
               label="What a plugin can do"
               sub="One manifest, nine surfaces."
@@ -124,7 +124,7 @@ export default function PublishDocs() {
             </div>
           </section>
 
-    <section id="flow" className="mt-12 scroll-mt-24">
+          <section id="flow" className="mt-12 scroll-mt-24">
             <SectionHeading label="The flow" />
             <ol className="mt-4 space-y-2">
               {[
@@ -151,7 +151,7 @@ export default function PublishDocs() {
             </p>
           </section>
 
-    <section id="review" className="mt-12 scroll-mt-24">
+          <section id="review" className="mt-12 scroll-mt-24">
             <SectionHeading label="Review" />
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
               {REVIEW_STEPS.map((step) => (
@@ -174,7 +174,7 @@ export default function PublishDocs() {
             </p>
           </section>
 
-    <section id="rules" className="mt-12 scroll-mt-24">
+          <section id="rules" className="mt-12 scroll-mt-24">
             <SectionHeading label="Rules" />
             <div className="mt-4 divide-y divide-line rounded-[12px] border border-line bg-white shadow-[0_1px_2px_rgba(26,35,51,0.05)]">
               {RULES.map((rule, index) => (

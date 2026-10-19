@@ -106,8 +106,10 @@ import {
 import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords"
 import {
   ASSISTANT_ID,
+  applyPersonaScope,
   handlePersonas,
   mergeSystem,
+  personaScope,
   personaSystem,
   resolvePersona,
 } from "./personas"
@@ -173,7 +175,12 @@ import {
 } from "./team"
 import { handleThreadDirs } from "./thread-dirs"
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
-import { cleanupDeletedThread, handleThreads, isThreadRequest } from "./threads"
+import {
+  cleanupDeletedThread,
+  handleThreads,
+  isThreadRequest,
+  visibleRecentThreads,
+} from "./threads"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
 import {
   videoAuthReady,
@@ -520,6 +527,15 @@ async function createOpencodeSession(
   const rest = { ...raw }
   delete rest.personaId
   delete rest.dirId
+  // Persona skill scopes ride the session-create body as opencode permission
+  // rules — one write, no restart, persisted in opencode.db.
+  if (personaId && personaId !== ASSISTANT_ID) {
+    const ruleset = await personaScope(
+      userId,
+      resolvePersona(db, userId, personaId),
+    )
+    if (ruleset && ruleset.length > 0) rest.permission = ruleset
+  }
   const headers = new Headers(auth)
   headers.set("content-type", "application/json")
   const upstream = await fetch(new URL("/session", base), {
@@ -1383,6 +1399,15 @@ async function api(
     const handled = handleThreadDirs(req, url, db, user, hub)
     if (handled) return handled
     return json({ error: "not found" }, 404)
+  }
+  // Passive home/search summary: titled threads from the control-plane DB.
+  // Deliberately NO ensure/start — a sleeping desktop stays asleep. Titles
+  // arrive as the agent (or the user) names threads, so this is a summary of
+  // named conversations, not the full live list.
+  if (url.pathname === "/api/threads/recent" && req.method === "GET") {
+    return json({
+      threads: visibleRecentThreads(db.recentThreadTitles(user.id, 12)),
+    })
   }
   if (isCouncilsPath) {
     const handled = handleCouncils(req, url, db, user, hub)
@@ -2931,18 +2956,30 @@ async function api(
       const outbound = prepared.body
       const text = promptText(body)
       const root = await resolveRootSession(base, auth, promptedId)
+      // The persona is resolved here for the system line anyway; the same
+      // binding re-applies the skill ruleset (PATCH, fire-and-forget) so
+      // persona edits, opencode restarts, and binding moves stay scoped
+      // without a config write. One local ms-level call on persona-bound
+      // threads only.
+      const boundPersona = resolvePersona(
+        db,
+        user.id,
+        db.threadPersona(user.id, promptedId)?.personaId ?? ASSISTANT_ID,
+      )
+      if (boundPersona && boundPersona.id !== ASSISTANT_ID)
+        void applyPersonaScope(
+          user.id,
+          base,
+          basic(desktop.opencodePassword),
+          promptedId,
+          boundPersona,
+        )
       const screen = await Promise.race([
         ensureThreadScreen(db, user.id, root).catch(() => null),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
       ])
       const line = [
-        personaSystem(
-          resolvePersona(
-            db,
-            user.id,
-            db.threadPersona(user.id, promptedId)?.personaId ?? ASSISTANT_ID,
-          ),
-        ),
+        personaSystem(boundPersona),
         screen?.system ??
           `This thread's screen id is ${root}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
         screen &&

@@ -605,12 +605,12 @@ export function Projects({
         >
           <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="h6" component="h1">
-              Projects
+              Projets
             </Typography>
             <Typography variant="caption" sx={{ color: META }}>
               {loading
-                ? "Loading workspaces…"
-                : `${total} workspace${total === 1 ? "" : "s"}`}
+                ? "Chargement des espaces de travail…"
+                : `Un projet regroupe des fichiers dans l’espace Open-bot — ${total} espace${total === 1 ? "" : "s"}`}
             </Typography>
           </Stack>
           <Button
@@ -618,7 +618,7 @@ export function Projects({
             startIcon={<AddIcon width={18} height={18} />}
             onClick={() => setCreateOpen(true)}
           >
-            New project
+            Nouveau projet
           </Button>
         </Stack>
         {mobile ? null : <Divider sx={{ mt: 2, mb: 0.5 }} />}
@@ -640,15 +640,15 @@ export function Projects({
         ) : loadError ? (
           <StatePanel
             glyph={<RefreshIcon width={40} height={40} />}
-            title="Couldn't load projects"
-            body="Check the connection and try again."
+            title="Impossible de charger les projets"
+            body="Vérifiez la connexion et réessayez."
             action={
               <Button
                 variant="outlined"
                 startIcon={<RefreshIcon width={18} height={18} />}
                 onClick={load}
               >
-                Retry
+                Réessayer
               </Button>
             }
           />
@@ -657,8 +657,8 @@ export function Projects({
             glyph={
               <FolderIcon width={44} height={44} style={{ opacity: 0.7 }} />
             }
-            title="No projects yet"
-            body="Create a workspace folder to open it in the IDE and mention it with @projects in chat. Plugin workspaces are grouped under Plugins."
+            title="Aucun projet"
+            body="Créez un dossier de travail pour l’ouvrir dans l’éditeur et le référencer avec @projects dans une conversation. Les espaces des extensions sont regroupés sous Extensions. Retirer un projet ne supprime jamais ses fichiers."
             action={
               <Button
                 variant="outlined"

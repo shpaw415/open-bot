@@ -92,17 +92,26 @@ request() {
   method="$1"
   path="$2"
   body="${3:-}"
+  # Default 300s: installs can legitimately run minutes (skill indexing).
+  # Short, deliberate writes pass their own timeout so a stalled desktop
+  # surfaces as a clean error instead of a multi-minute silence.
+  timeout="${4:-300}"
   attempt=0
   while :; do
     attempt=$((attempt + 1))
     if [ -n "$body" ]; then
-      out=$(curl -sS -m 300 -X "$method" -H "Authorization: Bearer $TOKEN" \
-        -H "content-type: application/json" -d "$body" "$BASE$path" 2>&1) &&
-        { printf '%s' "$out"; return 0; }
+      out=$(curl -sS -m "$timeout" -X "$method" -H "Authorization: Bearer $TOKEN" \
+        -H "content-type: application/json" -d "$body" "$BASE$path" 2>&1)
+      rc=$?
     else
-      out=$(curl -sS -m 300 -X "$method" -H "Authorization: Bearer $TOKEN" \
-        "$BASE$path" 2>&1) &&
-        { printf '%s' "$out"; return 0; }
+      out=$(curl -sS -m "$timeout" -X "$method" -H "Authorization: Bearer $TOKEN" \
+        "$BASE$path" 2>&1)
+      rc=$?
+    fi
+    [ "$rc" -eq 0 ] && { printf '%s' "$out"; return 0; }
+    if [ "$rc" -eq 28 ]; then
+      echo "ob-plugin: control plane did not answer within ${timeout}s (timed out) — the desktop may be stalled; check the dashboard and retry" >&2
+      return 1
     fi
     if [ "$attempt" -ge 4 ]; then
       echo "ob-plugin: control plane unreachable after $attempt attempts ($out)" >&2
@@ -156,6 +165,28 @@ init_warn() {
   fi
 }
 
+# Report per-server MCP connect status from the install/update response. The
+# control plane hot-connects each declared opencode.mcp server into the
+# running OpenCode daemon, so "connected" means the tools are already usable
+# in new threads; anything else says when the merged config loads.
+mcp_warn() {
+  printf '%s' "$1" | jq -r '.plugin.mcp // {} | to_entries[]? | "\(.key): \(.value)"' 2>/dev/null |
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *": connected")
+        echo "mcp: $line — tools are live in new threads" >&2
+        ;;
+      *asleep*)
+        echo "ob-plugin: note: mcp $line" >&2
+        ;;
+      *)
+        echo "ob-plugin: warning: mcp $line — a desktop restart retries it at boot" >&2
+        ;;
+    esac
+  done
+}
+
 # Paid premium plugins: the install/update 402 carries the buy pointer.
 # Agents cannot buy — stop with clear instructions instead of retrying.
 purchase_gate() {
@@ -182,8 +213,8 @@ urlencode() {
 # release are cut — and payload/manifest sizes must fit the security-review
 # windows. Window constants mirror packages/plugin-kit (REVIEW_*); the
 # plugin-kit drift test asserts this text stays in sync.
-REVIEW_PAYLOAD_FILE_CHARS=128000
-REVIEW_PAYLOAD_TOTAL_CHARS=512000
+REVIEW_PAYLOAD_FILE_CHARS=1000000
+REVIEW_PAYLOAD_TOTAL_CHARS=2000000
 REVIEW_MANIFEST_CHARS=150000
 REVIEW_TAR_PATH_MAX=99
 local_payload_checks() {
@@ -360,12 +391,20 @@ const data = (await res.json()) as { pong: number }
 if (status) status.textContent = "pong " + data.pong
 EOF
     cat > "$stage/server/styles.css" <<EOF
+/* Follow the dashboard theme (it defaults to the OS setting): light default
+   plus prefers-color-scheme overrides — never ship your own theme toggle. */
 body {
   font-family: system-ui, sans-serif;
   margin: 0;
   padding: 24px;
-  background: #111;
-  color: #eee;
+  background: #eef0f4;
+  color: #171a20;
+}
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #0e1014;
+    color: #f3f4f6;
+  }
 }
 EOF
     cat > "$stage/smoke.test.ts" <<'EOF'
@@ -444,7 +483,7 @@ logic and exports.
 
 Manifest quick reference:
 - skills[]: {name, description, body} — installed into the desktop's OpenViking
-- personas[]: {name, instruction} — personalities the thread picker can choose
+- personas[]: {name, instruction, skills?: [...], mcp?: [...]} — personalities the thread picker can choose; skills is an optional allowlist (max 64 skill-name slugs, never globs) limiting which skills load in threads running that persona; mcp is the same model for MCP server names (max 16, letters/digits/dots/hyphens/underscores) limiting which servers' tools load; users extend either per install with skillsExtra/mcpExtra
 - cron[]: {name, message, everySeconds | cronExpr, run?: prompt|script|both|auto, script?} — scheduled jobs (run=script/both/auto needs script, max 16k chars)
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
 - files[]: {name, source, exec} — text payloads fetched from the reviewed release tarball and installed next to tools; every frontend file the page server references (index.html, app.ts, styles.css) must be declared here; omitted exec means executable
@@ -1036,6 +1075,7 @@ EOF
     fi
     page_warn "$out"
     init_warn "$out"
+    mcp_warn "$out"
     printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, name: .plugin.name, source: (.plugin.source // "marketplace"), page: (.plugin.page // null), setupOk: (.plugin.init.ok // null)}'
     ;;
   list)
@@ -1073,6 +1113,7 @@ EOF
     fail_on_error "$out"
     page_warn "$out"
     init_warn "$out"
+    mcp_warn "$out"
     printf '%s' "$out" | jq '{pluginId: .plugin.pluginId, version: .plugin.version, page: (.plugin.page // null), setupOk: (.plugin.init.ok // null)}'
     ;;
   remove)
@@ -1234,7 +1275,7 @@ EOF
       fi
     done
     body=$(jq -n --argjson s "$settings" --argjson c "$clears" '{settings: $s, clear: $c}')
-    out=$(request PUT "/api/plugins/installed/$(urlencode "$id")/settings" "$body")
+    out=$(request PUT "/api/plugins/installed/$(urlencode "$id")/settings" "$body" 45)
     fail_on_error "$out"
     echo "updated settings for $id"
     ;;
@@ -1267,7 +1308,7 @@ EOF
     done
     body=$(jq -n --arg s "$slug" --arg k "$value" --arg a "$account" --arg u "$url" \
       '{slug: $s, value: {apiKey: $k, accountId: $a, baseUrl: $u}}')
-    out=$(request POST "/api/plugins/installed/$(urlencode "$id")/vault" "$body")
+    out=$(request POST "/api/plugins/installed/$(urlencode "$id")/vault" "$body" 45)
     fail_on_error "$out"
     echo "vault $slug saved for $id"
     ;;

@@ -199,7 +199,7 @@ export default function Home() {
         setRefreshing(false)
       })
     return () => controller.abort()
-    }, [ready, state, retryTick])
+  }, [ready, state, retryTick])
 
   // Search input commits after a short debounce; clearing commits instantly.
   const onInput = useCallback((value: string) => {

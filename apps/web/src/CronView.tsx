@@ -8,7 +8,7 @@ import Select from "@shpaw415/mui-lite/Select"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useId, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useState } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import AccessibleDialog, {
@@ -19,6 +19,7 @@ import AccessibleDialog, {
 import { api, type Me } from "./api"
 import { PluginBadge } from "./ConfigList"
 import { Chip } from "./chip"
+import { formatFrAgo, formatFrWhen, type JobLike } from "./dashboard-data"
 import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
@@ -29,33 +30,28 @@ import {
   PlayArrowIcon,
   RefreshIcon,
   ScheduleIcon,
+  SettingsIcon,
 } from "./icons"
 import { ModelSelect } from "./ModelSelect"
 import type { PersonaInfo } from "./Personalities"
 import Stack from "./stack"
 import { Tip } from "./Tip"
 
-export type CronJobInfo = {
-  id: string
-  name: string
+export type CronJobInfo = JobLike & {
   message: string
   kind: "cron" | "every" | "at"
   cronExpr: string | null
   everySeconds: number | null
   atMs: number | null
-  enabled: boolean
   sessionId: string | null
   createdAt: number
   lastRunAt: number | null
-  nextRunAt: number | null
   runCount: number
-  lastError: string | null
   providerId: string | null
   modelId: string | null
   personaId: string | null
   runKind?: "prompt" | "script" | "both" | "auto"
   script?: string | null
-  plugin?: { id: string; name: string }
 }
 
 type CronNotice = {
@@ -67,35 +63,67 @@ type CronNotice = {
   viewedAt: number | null
 }
 
-type CronKind = "every" | "cron" | "at"
+/** Simple schedule picker values; cron stays available under Advanced. */
+type ScheduleKind = "once" | "interval" | "cron"
+type IntervalUnit = "minutes" | "hours" | "days"
 
 type Model = { providerID: string; modelID: string; name?: string }
 
-function formatAgo(ts: number): string {
-  if (!ts) return ""
-  const minutes = Math.round((Date.now() - ts) / 60_000)
-  if (minutes < 1) return "just now"
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 48) return `${hours}h ago`
-  return `${Math.round(hours / 24)}d ago`
+const MIN_EVERY_SECONDS = 60
+const MAX_EVERY_SECONDS = 31_536_000
+
+const UNIT_SECONDS: Record<IntervalUnit, number> = {
+  minutes: 60,
+  hours: 3600,
+  days: 86_400,
 }
 
-function formatWhen(ts: number | null): string {
-  if (!ts) return "—"
-  return new Date(ts).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
+/**
+ * Bounded value+unit → everySeconds. 0 (or a value below one minute) is an
+ * invalid state the caller reports; the cap matches the server contract.
+ */
+export function everySecondsFrom(
+  value: string,
+  unit: IntervalUnit,
+): number | null {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  const seconds = Math.round(parsed * UNIT_SECONDS[unit])
+  if (seconds < MIN_EVERY_SECONDS || seconds > MAX_EVERY_SECONDS) return null
+  return seconds
+}
+
+/** Inverse: express seconds with the largest honest unit, or null. */
+export function intervalFromSeconds(
+  seconds: number | null | undefined,
+): { value: string; unit: IntervalUnit } | null {
+  if (!seconds || seconds <= 0) return null
+  if (seconds % UNIT_SECONDS.days === 0)
+    return { value: String(seconds / UNIT_SECONDS.days), unit: "days" }
+  if (seconds % UNIT_SECONDS.hours === 0)
+    return { value: String(seconds / UNIT_SECONDS.hours), unit: "hours" }
+  if (seconds % UNIT_SECONDS.minutes === 0)
+    return { value: String(seconds / UNIT_SECONDS.minutes), unit: "minutes" }
+  // Not a whole minute: only the advanced seconds field can represent it.
+  return null
+}
+
+/** "Tous les 2 jours" / "Toutes les heures" — real French, no "les 1". */
+export function intervalLabel(seconds: number): string {
+  const interval = intervalFromSeconds(seconds)
+  if (!interval) return `Toutes les ${seconds} secondes`
+  const n = Number(interval.value)
+  if (interval.unit === "days")
+    return n > 1 ? `Tous les ${n} jours` : "Tous les jours"
+  const unit = interval.unit === "hours" ? "heures" : "minutes"
+  return n > 1 ? `Toutes les ${n} ${unit}` : `Toutes les ${unit}`
 }
 
 function cronRunLabel(kind: CronJobInfo["runKind"]): string {
   if (kind === "script") return "script"
-  if (kind === "both") return "script + prompt"
-  if (kind === "auto") return "script + agent if flagged"
-  return "prompt"
+  if (kind === "both") return "script puis instruction"
+  if (kind === "auto") return "script, agent si sollicité"
+  return "instruction"
 }
 
 function cronModelValue(job: {
@@ -106,7 +134,7 @@ function cronModelValue(job: {
 }
 
 function cronModelLabel(job: CronJobInfo, models: Model[]): string {
-  if (!job.providerId || !job.modelId) return "default model"
+  if (!job.providerId || !job.modelId) return "modèle par défaut"
   const match = models.find(
     (item) =>
       item.providerID === job.providerId && item.modelID === job.modelId,
@@ -114,27 +142,25 @@ function cronModelLabel(job: CronJobInfo, models: Model[]): string {
   return match?.name ?? `${job.providerId}/${job.modelId}`
 }
 
-function editingSchedule(jobs: CronJobInfo[], id: string): string {
-  const job = jobs.find((item) => item.id === id)
-  return job ? cronSchedule(job) : "as created"
-}
-
 function cronDisplayName(job: CronJobInfo): string {
   return job.plugin ? job.name.replace(/^plugin:[^:]+:/, "") : job.name
 }
 
-function cronSchedule(job: CronJobInfo): string {
-  if (job.kind === "cron") return job.cronExpr ?? ""
-  if (job.kind === "every") {
-    const seconds = job.everySeconds ?? 0
-    if (seconds >= 86400 && seconds % 86400 === 0)
-      return `every ${seconds / 86400}d`
-    if (seconds >= 3600 && seconds % 3600 === 0)
-      return `every ${seconds / 3600}h`
-    if (seconds >= 60 && seconds % 60 === 0) return `every ${seconds / 60}m`
-    return `every ${seconds}s`
-  }
-  return `once at ${formatWhen(job.atMs)}`
+/**
+ * Human schedule summary. The engine runs cron in UTC and intervals as
+ * durations — the label says exactly that, with the zone named for dates.
+ */
+export function cronScheduleLabel(job: CronJobInfo): string {
+  if (job.kind === "cron")
+    return `Expression cron (UTC) : ${job.cronExpr ?? ""}`
+  if (job.kind === "every") return intervalLabel(job.everySeconds ?? 0)
+  return `Une seule fois, le ${formatFrWhen(job.atMs)}`
+}
+
+/** Full, accessible date for the summary line. */
+function formatFrFull(ts: number | null): string {
+  if (!ts) return "—"
+  return formatFrWhen(ts)
 }
 
 export function CronView({ me }: { me: Me }) {
@@ -142,6 +168,8 @@ export function CronView({ me }: { me: Me }) {
   const { subscribe } = useEventStream(true)
   const [jobs, setJobs] = useState<CronJobInfo[]>([])
   const [notices, setNotices] = useState<CronNotice[]>([])
+  const [loadError, setLoadError] = useState("")
+  const [noticesError, setNoticesError] = useState("")
   const [busyId, setBusyId] = useState("")
   const [addOpen, setAddOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -151,8 +179,10 @@ export function CronView({ me }: { me: Me }) {
   const resultTitleId = useId()
   const [name, setName] = useState("")
   const [message, setMessage] = useState("")
-  const [kind, setKind] = useState<CronKind>("every")
-  const [every, setEvery] = useState("3600")
+  const [kind, setKind] = useState<ScheduleKind>("interval")
+  const [everyValue, setEveryValue] = useState("1")
+  const [everyUnit, setEveryUnit] = useState<IntervalUnit>("hours")
+  const [everySecondsRaw, setEverySecondsRaw] = useState("3600")
   const [expr, setExpr] = useState("0 9 * * *")
   const [at, setAt] = useState("")
   const [model, setModel] = useState("")
@@ -161,8 +191,10 @@ export function CronView({ me }: { me: Me }) {
     "prompt",
   )
   const [script, setScript] = useState("")
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [formError, setFormError] = useState("")
   const [editId, setEditId] = useState<string | null>(null)
-  // The form as it opened: closing asks before dropping real edits.
+  /** The job as it opened: closing asks before dropping real edits. */
   const [pristine, setPristine] = useState<Record<string, unknown> | null>(null)
   const [result, setResult] = useState<CronNotice | null>(null)
   const [error, setError] = useState("")
@@ -173,8 +205,13 @@ export function CronView({ me }: { me: Me }) {
     try {
       const body = await api<CronJobInfo[]>("/api/cron")
       setJobs(Array.isArray(body) ? body : [])
-    } catch {
-      // transient — the next poll retries
+      setLoadError("")
+    } catch (caught) {
+      // A failed load keeps the last good list and says so — never a fake
+      // "no automations".
+      setLoadError(
+        caught instanceof Error ? caught.message : "chargement impossible",
+      )
     }
   }, [])
 
@@ -182,8 +219,11 @@ export function CronView({ me }: { me: Me }) {
     try {
       const body = await api<CronNotice[]>("/api/cron/notices")
       setNotices(Array.isArray(body) ? body : [])
-    } catch {
-      return
+      setNoticesError("")
+    } catch (caught) {
+      setNoticesError(
+        caught instanceof Error ? caught.message : "chargement impossible",
+      )
     }
   }, [])
 
@@ -221,8 +261,21 @@ export function CronView({ me }: { me: Me }) {
     return {
       name: job?.name ?? "",
       message: job?.message ?? "",
-      kind: job?.kind ?? "every",
-      every: String(job?.everySeconds ?? 3600),
+      kind: job
+        ? job.kind === "at"
+          ? ("once" as ScheduleKind)
+          : job.kind === "cron"
+            ? ("cron" as ScheduleKind)
+            : ("interval" as ScheduleKind)
+        : ("interval" as ScheduleKind),
+      everyValue: intervalFromSeconds(job?.everySeconds)?.value ?? "1",
+      everyUnit:
+        intervalFromSeconds(job?.everySeconds)?.unit ??
+        ("hours" as IntervalUnit),
+      everySecondsRaw:
+        job?.everySeconds != null && !intervalFromSeconds(job.everySeconds)
+          ? String(job.everySeconds)
+          : "3600",
       expr: job?.cronExpr ?? "0 9 * * *",
       at: "",
       model: job ? cronModelValue(job) : "",
@@ -237,14 +290,25 @@ export function CronView({ me }: { me: Me }) {
     setEditId(job?.id ?? null)
     setName(next.name as string)
     setMessage(next.message as string)
-    setKind(next.kind as CronKind)
-    setEvery(next.every as string)
+    setKind(next.kind as ScheduleKind)
+    setEveryValue(next.everyValue as string)
+    setEveryUnit(next.everyUnit as IntervalUnit)
+    setEverySecondsRaw(next.everySecondsRaw as string)
     setExpr(next.expr as string)
     setAt("")
     setModel(next.model as string)
     setPersona(next.persona as string)
     setRunKind(next.runKind as "prompt" | "script" | "both" | "auto")
     setScript(next.script as string)
+    // Advanced jobs (scripts, cron) open with the technical controls
+    // visible so their real values are editable, never converted away.
+    const isAdvanced =
+      job &&
+      (job.kind === "cron" ||
+        (job.runKind && job.runKind !== "prompt") ||
+        !intervalFromSeconds(job.everySeconds))
+    setAdvancedOpen(Boolean(isAdvanced))
+    setFormError("")
     setPristine(next)
     setAddOpen(true)
   }
@@ -256,7 +320,9 @@ export function CronView({ me }: { me: Me }) {
       name,
       message,
       kind,
-      every,
+      everyValue,
+      everyUnit,
+      everySecondsRaw,
       expr,
       at,
       model,
@@ -289,12 +355,86 @@ export function CronView({ me }: { me: Me }) {
     if (notice) openNotice(notice)
   }
 
+  /** Interval form state → wire seconds; null = invalid (caller reports). */
+  function currentEverySeconds(): number | null {
+    const picked = everySecondsFrom(everyValue, everyUnit)
+    if (picked) return picked
+    // A job whose exact seconds are not a whole minute keeps them unless
+    // the picker itself holds a valid value (the raw field is visible in
+    // the advanced options).
+    const raw = Number(everySecondsRaw)
+    if (
+      Number.isFinite(raw) &&
+      raw >= MIN_EVERY_SECONDS &&
+      raw <= MAX_EVERY_SECONDS &&
+      !everySecondsFrom(everyValue, everyUnit)
+    )
+      return raw
+    return null
+  }
+
+  /** Honest one-line summary of what will be saved. */
+  const scheduleSummary = useMemo(() => {
+    if (kind === "once") {
+      if (!at) return "Choisissez une date et une heure."
+      const ts = new Date(at).getTime()
+      if (!Number.isFinite(ts)) return "Date invalide."
+      if (ts <= Date.now()) return "La date choisie est dans le passé."
+      return `Une seule exécution, le ${formatFrFull(ts)} (heure de votre environnement).`
+    }
+    if (kind === "interval") {
+      const picked = everySecondsFrom(everyValue, everyUnit)
+      const raw = Number(everySecondsRaw)
+      const seconds =
+        picked ??
+        (Number.isFinite(raw) &&
+        raw >= MIN_EVERY_SECONDS &&
+        raw <= MAX_EVERY_SECONDS
+          ? raw
+          : null)
+      if (!seconds) return "Intervalle invalide — entre 1 minute et 1 an."
+      return `${intervalLabel(seconds)} — l’intervalle est une durée; il ne suit pas une heure fixe locale.`
+    }
+    if (expr.trim().split(/\s+/).length !== 5)
+      return "L’expression cron doit compter 5 champs."
+    return `Expression cron (UTC) : ${expr.trim()} — « 0 9 * * * » signifie 9 h UTC, pas 9 h locale.`
+  }, [kind, at, everyValue, everyUnit, everySecondsRaw, expr])
+
   async function saveJob() {
     if (saving) return
-    setError("")
+    setFormError("")
     const split = model.indexOf("/")
     const providerID = split > 0 ? model.slice(0, split) : null
     const modelID = split > 0 ? model.slice(split + 1) : null
+
+    // Schedule validation happens near the field, before the request.
+    let schedule: Record<string, unknown>
+    if (kind === "once") {
+      const ts = new Date(at).getTime()
+      if (!at || !Number.isFinite(ts)) {
+        setFormError("Choisissez une date et une heure valides.")
+        return
+      }
+      if (ts <= Date.now()) {
+        setFormError("La date choisie est dans le passé.")
+        return
+      }
+      schedule = { kind: "at", atMs: ts }
+    } else if (kind === "interval") {
+      const seconds = currentEverySeconds()
+      if (!seconds) {
+        setFormError("L’intervalle doit être entre 1 minute et 1 an.")
+        return
+      }
+      schedule = { kind: "every", everySeconds: seconds }
+    } else {
+      if (expr.trim().split(/\s+/).length !== 5) {
+        setFormError("L’expression cron doit compter 5 champs.")
+        return
+      }
+      schedule = { kind: "cron", cronExpr: expr.trim() }
+    }
+
     const fields = {
       name: name.trim(),
       message: message.trim(),
@@ -307,34 +447,28 @@ export function CronView({ me }: { me: Me }) {
     setSaving(true)
     try {
       if (editId) {
+        // The PATCH contract accepts schedule changes — editing never asks
+        // to recreate the job, and the server recomputes the next run.
         await api(`/api/cron/${editId}`, {
           method: "PATCH",
-          body: JSON.stringify(fields),
+          body: JSON.stringify({ ...fields, ...schedule }),
         })
       } else {
         await api("/api/cron", {
           method: "POST",
-          body: JSON.stringify({
-            ...fields,
-            kind,
-            ...(kind === "every"
-              ? { everySeconds: Number(every) }
-              : kind === "cron"
-                ? { cronExpr: expr.trim() }
-                : { atMs: new Date(at).getTime() }),
-          }),
+          body: JSON.stringify({ ...fields, ...schedule }),
         })
       }
       setPristine(null)
       setAddOpen(false)
       await loadJobs()
     } catch (caught) {
-      setError(
+      setFormError(
         caught instanceof Error
           ? caught.message
           : editId
-            ? "job update failed"
-            : "job create failed",
+            ? "échec de la modification"
+            : "échec de la création",
       )
     } finally {
       setSaving(false)
@@ -351,7 +485,7 @@ export function CronView({ me }: { me: Me }) {
       })
       await loadJobs()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "update failed")
+      setError(caught instanceof Error ? caught.message : "échec")
     } finally {
       setBusyId("")
     }
@@ -365,7 +499,7 @@ export function CronView({ me }: { me: Me }) {
       await api(`/api/cron/${job.id}/run`, { method: "POST" })
       await loadJobs()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "run failed")
+      setError(caught instanceof Error ? caught.message : "échec")
     } finally {
       setBusyId("")
     }
@@ -380,7 +514,7 @@ export function CronView({ me }: { me: Me }) {
       setDeleteTarget(null)
       await loadJobs()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "delete failed")
+      setError(caught instanceof Error ? caught.message : "échec")
     } finally {
       setBusyId("")
     }
@@ -390,10 +524,21 @@ export function CronView({ me }: { me: Me }) {
     <>
       <Stack spacing={1.5}>
         {error ? <Alert severity="error">{error}</Alert> : null}
+        {loadError ? (
+          <Alert severity="error">
+            <Typography variant="body2">
+              Impossible de charger les automatisations : {loadError}
+            </Typography>
+            <Button size="small" onClick={() => void loadJobs()}>
+              Réessayer
+            </Button>
+          </Alert>
+        ) : null}
         <Stack direction="row" spacing={1} alignItems="center">
           <Typography variant="caption" color="textSecondary" sx={{ flex: 1 }}>
-            Prompt runs the agent. Script posts command output. Script then
-            prompt gives that output to the agent.
+            Une instruction fait travailler l’assistant. Un script exécute une
+            commande; « script puis instruction » donne son résultat à
+            l’assistant.
           </Typography>
           <Button
             size="small"
@@ -401,12 +546,12 @@ export function CronView({ me }: { me: Me }) {
             startIcon={<AddIcon />}
             onClick={() => openForm()}
           >
-            Add job
+            Nouvelle automatisation
           </Button>
-          <Tip title="Reload jobs">
+          <Tip title="Recharger les automatisations">
             <IconButton
               size="small"
-              aria-label="Reload jobs"
+              aria-label="Recharger les automatisations"
               onClick={() => void loadJobs()}
             >
               <RefreshIcon />
@@ -414,7 +559,7 @@ export function CronView({ me }: { me: Me }) {
           </Tip>
         </Stack>
         <Box className="ob-cron-list">
-          {jobs.length === 0 ? (
+          {jobs.length === 0 && !loadError ? (
             <Stack
               alignItems="center"
               justifyContent="center"
@@ -422,10 +567,10 @@ export function CronView({ me }: { me: Me }) {
               spacing={1}
             >
               <ScheduleIcon width={40} height={40} style={{ opacity: 0.5 }} />
-              <Typography variant="subtitle1">No scheduled jobs</Typography>
+              <Typography variant="subtitle1">Aucune automatisation</Typography>
               <Typography variant="body2" color="textSecondary">
-                Add one with the button above, or ask the agent to schedule work
-                with ob-cron.
+                Créez-en une avec le bouton ci-dessus, ou demandez à l’assistant
+                de programmer une tâche récurrente.
               </Typography>
             </Stack>
           ) : (
@@ -450,7 +595,11 @@ export function CronView({ me }: { me: Me }) {
                     <Switch
                       size="small"
                       checked={job.enabled}
-                      aria-label={`Toggle ${job.name}`}
+                      aria-label={
+                        job.enabled
+                          ? `Mettre en pause ${job.name}`
+                          : `Réactiver ${job.name}`
+                      }
                       onChange={() => void toggleJob(job)}
                     />
                   )}
@@ -468,11 +617,11 @@ export function CronView({ me }: { me: Me }) {
                     (notice) => notice.jobId === job.id && !notice.viewedAt,
                   ) ? (
                     <Chip size="small" color="primary">
-                      new result
+                      nouveau résultat
                     </Chip>
                   ) : null}
                   <Chip size="small" variant="outlined">
-                    {cronSchedule(job)}
+                    {cronScheduleLabel(job)}
                   </Chip>
                   <Chip size="small" variant="outlined">
                     {cronRunLabel(job.runKind)}
@@ -505,8 +654,8 @@ export function CronView({ me }: { me: Me }) {
                   }}
                 >
                   {job.enabled
-                    ? `Next run ${formatWhen(job.nextRunAt)}`
-                    : "Paused"}{" "}
+                    ? `Prochaine exécution ${formatFrWhen(job.nextRunAt)}`
+                    : "En pause — ne s’exécute pas"}{" "}
                   • {cronModelLabel(job, models)} •{" "}
                   {personaName(job.personaId ?? undefined)}
                 </Typography>
@@ -536,10 +685,10 @@ export function CronView({ me }: { me: Me }) {
                     }
                   >
                     {job.lastError
-                      ? "error"
+                      ? "échec"
                       : job.lastRunAt
-                        ? `ran ${formatAgo(job.lastRunAt)}`
-                        : "never ran"}
+                        ? `exécutée ${formatFrAgo(job.lastRunAt)}`
+                        : "jamais exécutée"}
                   </Chip>
                   <Box sx={{ flex: 1 }} />
                   <Button
@@ -549,17 +698,19 @@ export function CronView({ me }: { me: Me }) {
                     disabled={Boolean(busyId)}
                     onClick={() => openForm(job)}
                   >
-                    Edit
+                    Modifier
                   </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    startIcon={<PlayArrowIcon />}
-                    disabled={Boolean(busyId)}
-                    onClick={() => void runJob(job)}
-                  >
-                    Run now
-                  </Button>
+                  <Tip title="Exécute une fois maintenant, sans changer l’horaire.">
+                    <Button
+                      size="small"
+                      variant="text"
+                      startIcon={<PlayArrowIcon />}
+                      disabled={Boolean(busyId)}
+                      onClick={() => void runJob(job)}
+                    >
+                      Exécuter
+                    </Button>
+                  </Tip>
                   {notices.some((notice) => notice.jobId === job.id) ? (
                     <Button
                       size="small"
@@ -568,12 +719,12 @@ export function CronView({ me }: { me: Me }) {
                       disabled={Boolean(busyId)}
                       onClick={() => openJobResult(job)}
                     >
-                      Result
+                      Résultat
                     </Button>
                   ) : null}
                   <IconButton
                     size="small"
-                    aria-label={`Delete ${job.name}`}
+                    aria-label={`Supprimer ${job.name}`}
                     disabled={Boolean(busyId)}
                     onClick={() => setDeleteTarget(job)}
                   >
@@ -593,6 +744,11 @@ export function CronView({ me }: { me: Me }) {
             ))
           )}
         </Box>
+        {noticesError ? (
+          <Typography variant="caption" color="textSecondary">
+            Résultats indisponibles : {noticesError}
+          </Typography>
+        ) : null}
       </Stack>
 
       {addOpen ? (
@@ -602,156 +758,205 @@ export function CronView({ me }: { me: Me }) {
           aria-labelledby={addTitleId}
         >
           <DialogTitle id={addTitleId}>
-            {editId ? "Edit cron job" : "Add cron job"}
+            {editId ? "Modifier l’automatisation" : "Nouvelle automatisation"}
           </DialogTitle>
           <DialogContent>
             <Stack spacing={1.5} sx={{ mt: 1, minWidth: mobile ? 260 : 380 }}>
               <TextField
-                label="Name"
+                label="Nom"
                 value={name}
                 autoFocus
                 onChange={(event) => setName(event.currentTarget.value)}
               />
-              <Select
-                name="run"
-                label="Run as"
-                value={runKind}
-                onSelect={(value) =>
-                  setRunKind(value as "prompt" | "script" | "both" | "auto")
-                }
-              >
-                <option value="prompt">Prompt</option>
-                <option value="script">Script</option>
-                <option value="both">Script then prompt</option>
-                <option value="auto">Script, agent only if flagged</option>
-              </Select>
               {runKind !== "script" ? (
                 <TextField
-                  label="Message sent to the agent"
+                  label="Que doit faire Open-bot?"
                   value={message}
                   multiline
                   rows={3}
                   onChange={(event) => setMessage(event.currentTarget.value)}
                 />
               ) : null}
-              {runKind !== "prompt" ? (
-                <TextField
-                  label="Script"
-                  value={script}
-                  multiline
-                  rows={4}
-                  placeholder="bash /home/agent/workspace/check.sh"
-                  onChange={(event) => setScript(event.currentTarget.value)}
-                />
-              ) : null}
-              {runKind === "auto" ? (
-                <Typography variant="caption" color="textSecondary">
-                  The script runs first; the agent wakes only when a line of its
-                  output starts with [cron-agent]. Silent runs post nothing.
-                </Typography>
-              ) : null}
-              {editId ? (
-                <Typography variant="caption" color="textSecondary">
-                  Schedule stays {editingSchedule(jobs, editId)}.
-                </Typography>
-              ) : (
-                <>
+              <Select
+                name="schedule-kind"
+                label="Quand?"
+                value={kind}
+                onSelect={(value) => setKind(value as ScheduleKind)}
+              >
+                <option value="interval">À intervalle régulier</option>
+                <option value="once">Une seule fois</option>
+                <option value="cron">Expression avancée (cron, UTC)</option>
+              </Select>
+              {kind === "interval" ? (
+                <Stack direction="row" spacing={1}>
+                  <TextField
+                    label="Toutes les"
+                    value={everyValue}
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      setEveryValue(event.currentTarget.value)
+                    }
+                    sx={{ flex: 1 }}
+                  />
                   <Select
-                    name="schedule"
-                    label="Schedule"
-                    value={kind}
-                    onSelect={(value) => setKind(value as CronKind)}
+                    name="every-unit"
+                    label="Unité"
+                    value={everyUnit}
+                    onSelect={(value) => setEveryUnit(value as IntervalUnit)}
+                    sx={{ flex: 1 }}
                   >
-                    <option value="every">Interval</option>
-                    <option value="cron">Cron expression (UTC)</option>
-                    <option value="at">One time</option>
+                    <option value="minutes">minutes</option>
+                    <option value="hours">heures</option>
+                    <option value="days">jours</option>
                   </Select>
-                  {kind === "every" ? (
-                    <TextField
-                      label="Every (seconds, min 60)"
-                      value={every}
-                      inputMode="numeric"
-                      onChange={(event) => setEvery(event.currentTarget.value)}
-                    />
-                  ) : kind === "cron" ? (
-                    <TextField
-                      label="Cron expression"
-                      value={expr}
-                      placeholder="0 9 * * 1-5"
-                      onChange={(event) => setExpr(event.currentTarget.value)}
-                    />
-                  ) : (
-                    <TextField
-                      label="Run at"
-                      value={at}
-                      type="datetime-local"
-                      onChange={(event) => setAt(event.currentTarget.value)}
-                    />
-                  )}
-                </>
-              )}
-              {runKind !== "script" ? (
-                <ModelSelect
-                  name="cron-model"
-                  label="Model"
-                  models={models}
-                  value={model}
-                  disabled={models.length === 0 && !model}
-                  userId={me.id}
-                  leading={{ id: "", title: "Desktop default" }}
-                  onSelect={setModel}
+                </Stack>
+              ) : kind === "once" ? (
+                <TextField
+                  label="Date et heure"
+                  value={at}
+                  type="datetime-local"
+                  onChange={(event) => setAt(event.currentTarget.value)}
+                  helpText={`Fuseau de votre environnement : ${
+                    Intl.DateTimeFormat().resolvedOptions().timeZone ?? "local"
+                  }`}
                 />
-              ) : null}
-              {runKind !== "script" ? (
-                <Select
-                  name="cron-persona"
-                  label="Personality"
-                  value={persona}
-                  onSelect={setPersona}
-                >
-                  {[
-                    ...(personas.length
-                      ? personas
-                      : [
-                          {
-                            id: "assistant",
-                            name: "Assistant",
-                            instruction: "",
-                            builtin: true,
-                          },
-                        ]
-                    ).map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name}
-                      </option>
-                    )),
-                    ...(persona &&
-                    !personas.some((item) => item.id === persona) &&
-                    persona !== "assistant"
-                      ? [
-                          <option key={persona} value={persona}>
-                            {personaName(persona)}
-                          </option>,
-                        ]
-                      : []),
-                  ]}
-                </Select>
-              ) : null}
+              ) : (
+                <TextField
+                  label="Expression cron (UTC)"
+                  value={expr}
+                  placeholder="0 9 * * 1-5"
+                  onChange={(event) => setExpr(event.currentTarget.value)}
+                  helpText="5 champs : minute, heure, jour du mois, mois, jour de semaine — en UTC."
+                />
+              )}
               <Typography variant="caption" color="textSecondary">
-                {runKind === "script"
-                  ? "Runs on the desktop in /home/agent/workspace. Output is posted to this job's thread."
-                  : runKind === "both"
-                    ? "The script runs first. Its output is added to the prompt. The agent's result is posted to this job's thread."
-                    : "The model and personality run the temporary session. The result is still posted to this job's thread."}
-                {runKind !== "script" && models.length === 0
-                  ? " Start the desktop to choose a model other than the desktop default."
-                  : ""}
+                {scheduleSummary}
               </Typography>
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<SettingsIcon width={16} height={16} />}
+                onClick={() => setAdvancedOpen((current) => !current)}
+                sx={{ alignSelf: "flex-start" }}
+                aria-expanded={advancedOpen}
+              >
+                {advancedOpen
+                  ? "Masquer les options avancées"
+                  : "Options avancées"}
+              </Button>
+              {advancedOpen ? (
+                <Stack spacing={1.5}>
+                  {kind === "interval" ? (
+                    <TextField
+                      label="Secondes exactes (contrat serveur)"
+                      value={everySecondsRaw}
+                      inputMode="numeric"
+                      disabled={kind !== "interval"}
+                      onChange={(event) =>
+                        setEverySecondsRaw(event.currentTarget.value)
+                      }
+                      helpText="Utilisé tel quel s’il n’est pas un multiple d’une minute."
+                    />
+                  ) : null}
+                  <Select
+                    name="run"
+                    label="Exécution"
+                    value={runKind}
+                    onSelect={(value) =>
+                      setRunKind(value as "prompt" | "script" | "both" | "auto")
+                    }
+                  >
+                    <option value="prompt">Instruction (assistant)</option>
+                    <option value="script">Script</option>
+                    <option value="both">Script puis instruction</option>
+                    <option value="auto">Script, agent si sollicité</option>
+                  </Select>
+                  {runKind !== "prompt" ? (
+                    <TextField
+                      label="Script"
+                      value={script}
+                      multiline
+                      rows={4}
+                      placeholder="bash /home/agent/workspace/check.sh"
+                      onChange={(event) => setScript(event.currentTarget.value)}
+                    />
+                  ) : null}
+                  {runKind === "auto" ? (
+                    <Typography variant="caption" color="textSecondary">
+                      Le script s’exécute d’abord; l’agent ne se réveille que si
+                      une ligne de sa sortie commence par [cron-agent]. Les
+                      exécutions silencieuses ne publient rien.
+                    </Typography>
+                  ) : null}
+                  {runKind !== "script" ? (
+                    <ModelSelect
+                      name="cron-model"
+                      label="Modèle"
+                      models={models}
+                      value={model}
+                      disabled={models.length === 0 && !model}
+                      userId={me.id}
+                      leading={{ id: "", title: "Modèle par défaut" }}
+                      onSelect={setModel}
+                    />
+                  ) : null}
+                  {runKind !== "script" ? (
+                    <Select
+                      name="cron-persona"
+                      label="Assistant personnalisé"
+                      value={persona}
+                      onSelect={setPersona}
+                    >
+                      {[
+                        ...(personas.length
+                          ? personas
+                          : [
+                              {
+                                id: "assistant",
+                                name: "Assistant",
+                                instruction: "",
+                                builtin: true,
+                              },
+                            ]
+                        ).map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        )),
+                        ...(persona &&
+                        !personas.some((item) => item.id === persona) &&
+                        persona !== "assistant"
+                          ? [
+                              <option key={persona} value={persona}>
+                                {personaName(persona)}
+                              </option>,
+                            ]
+                          : []),
+                      ]}
+                    </Select>
+                  ) : null}
+                  <Typography variant="caption" color="textSecondary">
+                    {runKind === "script"
+                      ? "S’exécute sur le bureau dans /home/agent/workspace. La sortie est publiée dans le fil de cette automatisation."
+                      : runKind === "both"
+                        ? "Le script s’exécute d’abord; sa sortie est ajoutée à l’instruction, et le résultat de l’agent est publié dans le fil."
+                        : "Le modèle et l’assistant personnalisé exécutent une session temporaire; le résultat est publié dans le fil."}
+                    {runKind !== "script" && models.length === 0
+                      ? " Démarrez le bureau pour choisir un modèle autre que celui par défaut."
+                      : ""}
+                  </Typography>
+                </Stack>
+              ) : null}
+              {formError ? (
+                <Typography variant="caption" color="error" role="alert">
+                  {formError}
+                </Typography>
+              ) : null}
             </Stack>
           </DialogContent>
           <DialogActions>
             <Button variant="text" onClick={requestCloseForm}>
-              Cancel
+              Annuler
             </Button>
             <Button
               variant="contained"
@@ -759,16 +964,11 @@ export function CronView({ me }: { me: Me }) {
                 saving ||
                 !name.trim() ||
                 (runKind !== "script" && !message.trim()) ||
-                (runKind !== "prompt" && !script.trim()) ||
-                (!editId &&
-                  ((kind === "every" && !(Number(every) >= 60)) ||
-                    (kind === "cron" &&
-                      expr.trim().split(/\s+/).length !== 5) ||
-                    (kind === "at" && !at)))
+                (runKind !== "prompt" && !script.trim())
               }
               onClick={() => void saveJob()}
             >
-              {saving ? "…" : editId ? "Save" : "Add"}
+              {saving ? "…" : editId ? "Enregistrer" : "Créer"}
             </Button>
           </DialogActions>
         </AccessibleDialog>
@@ -780,16 +980,18 @@ export function CronView({ me }: { me: Me }) {
           onClose={() => setDeleteTarget(null)}
           aria-labelledby={deleteTitleId}
         >
-          <DialogTitle id={deleteTitleId}>Delete cron job?</DialogTitle>
+          <DialogTitle id={deleteTitleId}>
+            Supprimer cette automatisation?
+          </DialogTitle>
           <DialogContent>
             <Typography variant="body2">
-              Deletes “{deleteTarget?.name ?? ""}” and its past results. It will
-              never run again. This cannot be undone.
+              Supprime « {deleteTarget?.name ?? ""} » et ses résultats passés.
+              Elle ne s’exécutera plus jamais. Cette action est irréversible.
             </Typography>
           </DialogContent>
           <DialogActions>
             <Button variant="text" onClick={() => setDeleteTarget(null)}>
-              Cancel
+              Annuler
             </Button>
             <Button
               color="error"
@@ -798,7 +1000,7 @@ export function CronView({ me }: { me: Me }) {
               startIcon={<DeleteIcon />}
               onClick={() => void removeJob()}
             >
-              Delete
+              Supprimer
             </Button>
           </DialogActions>
         </AccessibleDialog>
@@ -811,7 +1013,7 @@ export function CronView({ me }: { me: Me }) {
           aria-labelledby={resultTitleId}
         >
           <DialogTitle id={resultTitleId}>
-            {result.jobName ?? "Last run result"}
+            {result.jobName ?? "Résultat de la dernière exécution"}
           </DialogTitle>
           <DialogContent>
             {result.summary?.trim() ? (
@@ -822,13 +1024,13 @@ export function CronView({ me }: { me: Me }) {
               </div>
             ) : (
               <Typography variant="body2" color="textSecondary">
-                No output.
+                Aucune sortie.
               </Typography>
             )}
           </DialogContent>
           <DialogActions>
             <Button variant="text" onClick={() => setResult(null)}>
-              Close
+              Fermer
             </Button>
           </DialogActions>
         </AccessibleDialog>

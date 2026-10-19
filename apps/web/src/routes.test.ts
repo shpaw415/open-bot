@@ -24,11 +24,24 @@ function tab(pluginId: string, tabId: string): PluginTab {
 
 const tabs = [tab("stock", "grid"), tab("home", "main")]
 
-describe("parseRoute — workspace", () => {
-  test("/ is the chat", () => {
+describe("parseRoute — home, chat, and workspace", () => {
+  test("/ is Home — the default destination (intentional change)", () => {
     const parsed = parseRoute("/", tabs)
+    expect(parsed.route).toEqual({ view: "home" })
+    expect(parsed.redirect).toBeUndefined()
+  })
+  test("/dashboard is an alias of Home with a canonical redirect", () => {
+    const parsed = parseRoute("/dashboard", tabs)
+    expect(parsed.route).toEqual({ view: "home" })
+    expect(parsed.redirect).toBe("/")
+  })
+  test("/chat is Conversations", () => {
+    const parsed = parseRoute("/chat", tabs)
     expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
     expect(parsed.redirect).toBeUndefined()
+  })
+  test("/help parses as its own view", () => {
+    expect(parseRoute("/help", tabs).route).toEqual({ view: "help" })
   })
   for (const t of ["desktop", "projects", "media"] as const) {
     test(`/${t} maps to its workspace tab`, () => {
@@ -38,10 +51,13 @@ describe("parseRoute — workspace", () => {
       })
     })
   }
-  test("unknown paths fall back to the chat with a redirect", () => {
+  test("unknown paths answer a real not-found page, no silent redirect", () => {
     const parsed = parseRoute("/definitely-not-a-view", tabs)
-    expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
-    expect(parsed.redirect).toBe("/")
+    expect(parsed.route).toEqual({
+      view: "not-found",
+      path: "/definitely-not-a-view",
+    })
+    expect(parsed.redirect).toBeUndefined()
   })
   test("trailing slashes do not change the view", () => {
     expect(parseRoute("/projects/", tabs).route).toEqual({
@@ -57,7 +73,7 @@ describe("parseRoute — apps and plugin pages", () => {
     expect(parsed.route).toEqual({ view: "apps" })
     expect(parsed.redirect).toBeUndefined()
   })
-  test("legacy /dashboards redirects to /apps", () => {
+  test("legacy /dashboards redirects to /apps — never to the new Home", () => {
     const parsed = parseRoute("/dashboards", tabs)
     expect(parsed.route).toEqual({ view: "apps" })
     expect(parsed.redirect).toBe("/apps")
@@ -89,7 +105,7 @@ describe("parseRoute — config", () => {
     expect(parsed.route).toEqual({ view: "config", tab: "plugins" })
     expect(parsed.redirect).toBe("/config/plugins")
   })
-  test("/config keeps an empty tab (mobile group list)", () => {
+  test("/config keeps its summary on every size (no automatic hop)", () => {
     const parsed = parseRoute("/config", tabs)
     expect(parsed.route).toEqual({ view: "config", tab: "" })
     expect(parsed.redirect).toBeUndefined()
@@ -128,10 +144,17 @@ describe("config tab helpers", () => {
       for (const entry of group.tabs) expect(isConfigTab(entry)).toBe(true)
     }
   })
-  test("cron only exists as a redirect target, not a config view", () => {
-    const views = CONFIG_GROUPS.flatMap((group) => group.tabs)
-    expect(views).toContain("cron")
-    expect(Object.keys(configPath("chat")).length).toBeGreaterThan(0)
+  test("the four groups are goal-oriented and cover the 16 sections once", () => {
+    expect(CONFIG_GROUPS.map((group) => group.key)).toEqual([
+      "assistant",
+      "connexions",
+      "preferences",
+      "avance",
+    ])
+    const flat = CONFIG_GROUPS.flatMap((group) =>
+      group.tabs.filter((entry): entry is ConfigTab => entry !== "cron"),
+    )
+    expect(new Set(flat).size).toBe(16)
   })
   test("configPath builds canonical URLs", () => {
     expect(configPath("chat")).toBe("/config/chat")
@@ -140,8 +163,8 @@ describe("config tab helpers", () => {
 })
 
 describe("workspacePath", () => {
-  test("chat lives at the root", () => {
-    expect(workspacePath("chat")).toBe("/")
+  test("Conversations live at /chat — Home owns /", () => {
+    expect(workspacePath("chat")).toBe("/chat")
     expect(workspacePath("media")).toBe("/media")
   })
 })
@@ -149,15 +172,6 @@ describe("workspacePath", () => {
 describe("parseRoute — admin", () => {
   test("/admin parses; the shell gates it by role", () => {
     expect(parseRoute("/admin", tabs).route).toEqual({ view: "admin" })
-  })
-})
-
-describe("tab coverage", () => {
-  test("all 16 sections appear exactly once across groups", () => {
-    const flat = CONFIG_GROUPS.flatMap((group) =>
-      group.tabs.filter((entry): entry is ConfigTab => entry !== "cron"),
-    )
-    expect(new Set(flat).size).toBe(16)
   })
 })
 
@@ -181,6 +195,7 @@ describe("parseRoute — plugin deep links while the install list loads", () => 
   test("built-in views never go pending", () => {
     for (const path of [
       "/",
+      "/chat",
       "/projects",
       "/media",
       "/desktop",
@@ -188,6 +203,8 @@ describe("parseRoute — plugin deep links while the install list loads", () => 
       "/config",
       "/config/plugins",
       "/automations",
+      "/help",
+      "/dashboard",
       "/admin",
     ]) {
       const parsed = parseRoute(path, empty, { awaitingPlugins: true })
@@ -203,16 +220,30 @@ describe("parseRoute — plugin deep links while the install list loads", () => 
     expect(resolved.redirect).toBeUndefined()
   })
 
-  test("after loading settles (error), a truly unknown path redirects", () => {
+  test("after loading settles (error), a truly unknown path lands on not-found", () => {
     const parsed = parseRoute("/definitely-not-a-view", empty)
-    expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
-    expect(parsed.redirect).toBe("/")
+    expect(parsed.route).toEqual({
+      view: "not-found",
+      path: "/definitely-not-a-view",
+    })
+    expect(parsed.redirect).toBeUndefined()
   })
 
-  test("a nonexistent plugin page redirects once the list is loaded", () => {
+  test("a nonexistent plugin page explains itself once the list is loaded", () => {
     const parsed = parseRoute("/no-such-plugin", tabs)
-    expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
-    expect(parsed.redirect).toBe("/")
+    expect(parsed.route).toEqual({ view: "not-found", path: "/no-such-plugin" })
+    expect(parsed.redirect).toBeUndefined()
+  })
+
+  test("new reserved segments never masquerade as plugin ids", () => {
+    for (const path of ["/chat", "/dashboard", "/help"]) {
+      const parsed = parseRoute(path, empty, { awaitingPlugins: false })
+      expect(parsed.route).not.toEqual({ view: "plugin-pending" })
+      expect(parsed.route).not.toEqual({
+        view: "not-found",
+        path: `/${path.slice(1)}`,
+      })
+    }
   })
 })
 
@@ -221,7 +252,7 @@ describe("parseRoute — malformed URLs never throw", () => {
     // %E0%A4%A is a truncated UTF-8 sequence; decodeURIComponent throws.
     expect(() => parseRoute("/%E0%A4%A", tabs)).not.toThrow()
     const parsed = parseRoute("/%E0%A4%A", tabs)
-    expect(parsed.route).toEqual({ view: "workspace", tab: "chat" })
+    expect(parsed.route).toEqual({ view: "not-found", path: "/%E0%A4%A" })
   })
 
   test("malformed colon URLs stay renderable with tabs loaded", () => {

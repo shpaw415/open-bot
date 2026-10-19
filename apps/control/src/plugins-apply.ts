@@ -26,6 +26,13 @@ import {
 import { HttpError } from "./http-error"
 import { keyVaultSpecById } from "./key-vault"
 import {
+  connectMcpServers,
+  disconnectMcpServers,
+  readMcpConfig,
+  validateMcpMap,
+} from "./mcp"
+import { skillCatalog } from "./personas"
+import {
   extractPluginFiles,
   fetchPluginArtifact,
   PLUGIN_UI_FILE_NAME,
@@ -34,6 +41,7 @@ import {
   readLocalPluginConfigGuide,
   readLocalPluginFiles,
 } from "./plugin-local"
+import { pluginOwnership } from "./plugin-ownership"
 import {
   type PluginPageStartStatus,
   pluginPageRuntime,
@@ -46,6 +54,47 @@ import { createVikingSkills } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
 const INIT_OUTPUT_LIMIT = 8 * 1024
+
+// Non-blocking apply-time check: a declared persona skill name that resolves
+// nowhere (desktop seed dir, OpenViking, or a plugin-installed skill), or an
+// MCP server name that is not configured on the desktop, lands in
+// applied.warnings on the install log. Never blocks — the name may be meant
+// for a skill or server the user installs later.
+async function personaSkillScopeWarnings(
+  db: Db,
+  user: User,
+  manifest: PluginManifest,
+): Promise<string[]> {
+  const declared = (manifest.personas ?? []).filter(
+    (persona) => persona.skills?.length || persona.mcp?.length,
+  )
+  if (declared.length === 0) return []
+  const catalog = await skillCatalog(db, user.id)
+  const known = new Set(catalog.skills.map((skill) => skill.name))
+  for (const name of pluginOwnership(db, user.id).skillByName.keys())
+    known.add(name)
+  const warnings: string[] = []
+  for (const persona of declared) {
+    for (const name of persona.skills ?? []) {
+      if (!known.has(name))
+        warnings.push(
+          `persona "${persona.name}" allows unknown skill "${name}"`,
+        )
+    }
+    if (persona.mcp?.length) {
+      const servers = new Set(
+        Object.keys(await readMcpConfig(user.id).catch(() => ({}))),
+      )
+      for (const name of persona.mcp) {
+        if (!servers.has(name))
+          warnings.push(
+            `persona "${persona.name}" allows unknown MCP server "${name}"`,
+          )
+      }
+    }
+  }
+  return warnings
+}
 
 // OpenViking pathlocks are held briefly by a previous op; an immediate
 // follow-up (remove → reinstall) can hit "lock acquire timed out". Retry the
@@ -316,11 +365,35 @@ export async function applyPluginInstall(
       applied.keys.push(slug)
     }
 
+    const personaSkillWarnings = await personaSkillScopeWarnings(
+      db,
+      user,
+      manifest,
+    ).catch(() => [] as string[])
+
     for (const persona of manifest.personas ?? []) {
       const match = db
         .personas(user.id)
         .find((row) => row.name.toLowerCase() === persona.name.toLowerCase())
       if (match) {
+        // Refresh the base lists only when this install created the persona
+        // row: a name match can adopt a foreign persona, and its allowlists
+        // are not ours to rewrite. skillsExtra/mcpExtra are the user's —
+        // never touched here in either path.
+        const owned = previous?.personaIds.includes(match.id)
+        if (owned) {
+          const current = db.personaById(match.id, user.id)
+          if (
+            persona.skills &&
+            JSON.stringify(current?.skills) !== JSON.stringify(persona.skills)
+          )
+            db.updatePersona(match.id, user.id, { skills: persona.skills })
+          if (
+            persona.mcp &&
+            JSON.stringify(current?.mcp) !== JSON.stringify(persona.mcp)
+          )
+            db.updatePersona(match.id, user.id, { mcp: persona.mcp })
+        }
         reusedPersonaIds.push(match.id)
         continue
       }
@@ -330,10 +403,15 @@ export async function applyPluginInstall(
         userId: user.id,
         name: persona.name,
         instruction: persona.instruction,
+        skills: persona.skills ?? null,
+        skillsExtra: null,
+        mcp: persona.mcp ?? null,
+        mcpExtra: null,
         createdAt: Date.now(),
       })
       applied.personaIds.push(id)
     }
+    if (personaSkillWarnings.length > 0) applied.warnings = personaSkillWarnings
 
     for (const job of manifest.cron ?? []) {
       const name = `plugin:${manifest.id}:${job.name}`
@@ -521,6 +599,7 @@ export async function applyPluginInstall(
       await syncPluginAgentsMd(user.id, manifest.id, opencode.agentsMd)
       applied.agentsMd = true
     }
+    let mcpStatus: Record<string, string> = {}
     if (
       opencode &&
       (opencode.plugin?.length ||
@@ -528,10 +607,14 @@ export async function applyPluginInstall(
         opencode.agents ||
         opencode.agentTools)
     ) {
+      // Same entry rules the dashboard's MCP tab enforces — a bad manifest
+      // shape fails the install with a clear error instead of merging a dead
+      // entry into opencode.json.
+      const mcpServers = validateMcpMap(opencode.mcp)
       await syncOpencodePlugin(user.id, {
         addPlugins: opencode.plugin ?? [],
         removePlugins: [],
-        addMcp: (opencode.mcp ?? {}) as Record<string, unknown>,
+        addMcp: mcpServers,
         removeMcp: [],
         addAgents: opencode.agents ?? {},
         removeAgents: [],
@@ -539,6 +622,11 @@ export async function applyPluginInstall(
         removeAgentTools: {},
       })
       applied.opencode = true
+      // Hot-connect the new servers into the running daemon: tools go live in
+      // new threads immediately, without waiting for a restart the installing
+      // agent's own busy turn would keep deferred.
+      mcpStatus = await connectMcpServers(db, user.id, mcpServers)
+      if (Object.keys(mcpStatus).length > 0) applied.mcp = mcpStatus
     }
     if (applied.agentsMd || applied.opencode) {
       if (applied.agentsMd) {
@@ -551,7 +639,16 @@ export async function applyPluginInstall(
           removeInstructions: [],
         })
       }
-      await restartOpencode(user.id, { db }).catch(() => {})
+      // An MCP-only patch that fully live-connected skips the restart — the
+      // daemon already runs the new servers, and the deferred kill would only
+      // risk aborting the installing agent's turn for nothing.
+      const restartNeeded =
+        applied.agentsMd ||
+        (opencode?.plugin?.length ?? 0) > 0 ||
+        Object.keys(opencode?.agents ?? {}).length > 0 ||
+        Object.keys(opencode?.agentTools ?? {}).length > 0 ||
+        Object.values(mcpStatus).some((status) => status !== "connected")
+      if (restartNeeded) await restartOpencode(user.id, { db }).catch(() => {})
     }
   } catch (error) {
     // A failed fresh install must leave nothing behind. A failed upgrade can
@@ -667,16 +764,20 @@ async function revertApplied(
     const manifest = db.installedPlugin(user.id, pluginId)?.manifest as
       | PluginManifest
       | undefined
+    const mcpNames = Object.keys((manifest?.opencode?.mcp ?? {}) as object)
     await syncOpencodePlugin(user.id, {
       addPlugins: [],
       removePlugins: manifest?.opencode?.plugin ?? [],
       addMcp: {},
-      removeMcp: Object.keys((manifest?.opencode?.mcp ?? {}) as object),
+      removeMcp: mcpNames,
       addAgents: {},
       removeAgents: Object.keys(manifest?.opencode?.agents ?? {}),
       addAgentTools: {},
       removeAgentTools: manifest?.opencode?.agentTools ?? {},
     }).catch(() => {})
+    // A running daemon keeps removed MCP servers until its next restart —
+    // drop them live so uninstall stops the tools immediately.
+    await disconnectMcpServers(db, user.id, mcpNames).catch(() => {})
   }
   if (applied.agentsMd) {
     await syncOpencodePlugin(user.id, {
@@ -910,31 +1011,57 @@ export async function setPluginEnabled(
             },
       )
     }
+    let mcpStatus: Record<string, string> = {}
     if (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools) {
-      const patch = enable
-        ? {
-            addPlugins: oc.plugin ?? [],
-            removePlugins: [],
-            addMcp: (oc.mcp ?? {}) as Record<string, unknown>,
-            removeMcp: [],
-            addAgents: oc.agents ?? {},
-            removeAgents: [],
-            addAgentTools: oc.agentTools ?? {},
-            removeAgentTools: {},
-          }
-        : {
-            addPlugins: [],
-            removePlugins: oc.plugin ?? [],
-            addMcp: {},
-            removeMcp: Object.keys((oc.mcp ?? {}) as object),
-            addAgents: {},
-            removeAgents: Object.keys(oc.agents ?? {}),
-            addAgentTools: {},
-            removeAgentTools: oc.agentTools ?? {},
-          }
-      await syncOpencodePlugin(user.id, patch)
+      if (enable) {
+        const mcpServers = validateMcpMap(oc.mcp)
+        await syncOpencodePlugin(user.id, {
+          addPlugins: oc.plugin ?? [],
+          removePlugins: [],
+          addMcp: mcpServers,
+          removeMcp: [],
+          addAgents: oc.agents ?? {},
+          removeAgents: [],
+          addAgentTools: oc.agentTools ?? {},
+          removeAgentTools: {},
+        })
+        mcpStatus = await connectMcpServers(db, user.id, mcpServers)
+      } else {
+        const mcpNames = Object.keys((oc.mcp ?? {}) as object)
+        await syncOpencodePlugin(user.id, {
+          addPlugins: [],
+          removePlugins: oc.plugin ?? [],
+          addMcp: {},
+          removeMcp: mcpNames,
+          addAgents: {},
+          removeAgents: Object.keys(oc.agents ?? {}),
+          addAgentTools: {},
+          removeAgentTools: oc.agentTools ?? {},
+        })
+        // A running daemon keeps removed servers until its next restart —
+        // drop them live so disable stops the tools immediately.
+        await disconnectMcpServers(db, user.id, mcpNames).catch(() => {})
+      }
     }
-    await restartOpencode(user.id, { db }).catch(() => {})
+    if (Object.keys(mcpStatus).length > 0) {
+      db.setInstalledPluginApplied(user.id, pluginId, {
+        ...row.applied,
+        mcp: mcpStatus,
+      })
+    }
+    // Skip the restart only for a pure enable whose MCP entries all went live
+    // through the runtime connect above; everything else still needs one.
+    const mcpFullyLive =
+      enable &&
+      Object.keys(mcpStatus).length > 0 &&
+      Object.values(mcpStatus).every((status) => status === "connected")
+    const otherSurfaces =
+      (oc.plugin?.length ?? 0) > 0 ||
+      Object.keys(oc.agents ?? {}).length > 0 ||
+      Object.keys(oc.agentTools ?? {}).length > 0
+    if (oc.agentsMd || otherSurfaces || !mcpFullyLive) {
+      await restartOpencode(user.id, { db }).catch(() => {})
+    }
   }
 
   refreshMentionClashes(db, user.id)

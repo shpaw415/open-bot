@@ -5,14 +5,14 @@
 // contract — no local-only selection that never reaches the engine.
 
 const EFFORT_LABELS: Record<string, string> = {
-  none: "Off",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-  thinking: "Thinking on",
+  none: "Désactivée",
+  minimal: "Minimale",
+  low: "Faible",
+  medium: "Moyenne",
+  high: "Haute",
+  xhigh: "Très haute",
+  max: "Maximale",
+  thinking: "Réflexion activée",
 }
 
 export function effortLabel(variant: string): string {

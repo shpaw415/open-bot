@@ -284,11 +284,11 @@ export function ComposerPickers({
         className="ob-composer-picker"
         title={
           noVariants
-            ? "Not available for this model"
-            : "Thinking effort — applies to the next message in every thread"
+            ? "Indisponible pour ce modèle"
+            : "Réflexion — s’applique à votre prochain message dans toutes les conversations"
         }
-        aria-label={`Thinking effort: ${
-          noVariants ? "default" : effort ? effortLabel(effort) : "default"
+        aria-label={`Réflexion : ${
+          noVariants ? "défaut" : effort ? effortLabel(effort) : "défaut"
         }`}
         sx={{
           maxWidth: mobile ? 130 : 190,
@@ -298,7 +298,9 @@ export function ComposerPickers({
         }}
       >
         <Box Element="span" className="ob-composer-picker-label">
-          {noVariants ? "Default" : effort ? effortLabel(effort) : "Default"}
+          {noVariants
+            ? "Réflexion : défaut"
+            : `Réflexion : ${effort ? effortLabel(effort).toLowerCase() : "défaut"}`}
         </Box>
       </Button>
       <Menu
@@ -320,12 +322,12 @@ export function ComposerPickers({
               }}
             >
               <ListItemText
-                primary={value === "" ? "Model default" : effortLabel(value)}
+                primary={value === "" ? "Défaut du modèle" : effortLabel(value)}
                 secondary={
                   value === ""
-                    ? "Let the model decide"
+                    ? "Laisser le modèle décider"
                     : value === effort
-                      ? "Current"
+                      ? "Actuel"
                       : undefined
                 }
               />
@@ -333,11 +335,11 @@ export function ComposerPickers({
           ))}
           {noVariants ? (
             <ListItemButton disabled>
-              <ListItemText primary="Not available for this model" />
+              <ListItemText primary="Indisponible pour ce modèle" />
             </ListItemButton>
           ) : null}
           <Box Element="p" className="ob-composer-menu-note">
-            Applies to the next message in every thread.
+            S’applique à votre prochain message dans toutes les conversations.
           </Box>
         </Box>
       </Menu>

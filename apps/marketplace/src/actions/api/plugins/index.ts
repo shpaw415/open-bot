@@ -13,12 +13,9 @@ export async function onRequestGet(context: EventContext<Env, never, never>) {
   const result = await searchCatalog(context.env.DB, {
     q: url.searchParams.get("q") ?? undefined,
     category: url.searchParams.get("category") ?? undefined,
-    price:
-      priceParam === "free" || priceParam === "paid" ? priceParam : "all",
+    price: priceParam === "free" || priceParam === "paid" ? priceParam : "all",
     sort:
-      sortParam === "name" ||
-      sortParam === "price" ||
-      sortParam === "new"
+      sortParam === "name" || sortParam === "price" || sortParam === "new"
         ? sortParam
         : "popular",
     limit: Number.isFinite(limitParam) ? limitParam : undefined,

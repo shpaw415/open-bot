@@ -762,6 +762,10 @@ describe("cron store", () => {
       userId: "a",
       name: "Chef",
       instruction: "cook",
+      skills: null,
+      skillsExtra: null,
+      mcp: null,
+      mcpExtra: null,
       createdAt: 1,
     })
     db.setThreadPersona("a", "ses", "p1")
@@ -783,6 +787,10 @@ describe("personas", () => {
       userId: "a",
       name: "Chef",
       instruction: "cook simply",
+      skills: null,
+      skillsExtra: null,
+      mcp: null,
+      mcpExtra: null,
       createdAt: 1,
     })
     db.setThreadPersona("a", "ses", "p1")
@@ -797,6 +805,65 @@ describe("personas", () => {
     expect(db.deletePersona("p1", "a")).toBe(true)
     expect(db.personaById("p1", "a")).toBeNull()
     expect(db.threadPersona("a", "ses")).toBeNull()
+  })
+
+  test("skill allowlists roundtrip and an update keeps extras", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createPersona({
+      id: "p1",
+      userId: "a",
+      name: "Chef",
+      instruction: "cook simply",
+      skills: ["research", "media"],
+      skillsExtra: ["preview"],
+      mcp: null,
+      mcpExtra: null,
+      createdAt: 1,
+    })
+    expect(db.personaById("p1", "a")?.skills).toEqual(["research", "media"])
+    expect(db.personaById("p1", "a")?.skillsExtra).toEqual(["preview"])
+    // present-set update: replacing skills keeps the untouched extras
+    db.updatePersona("p1", "a", { skills: ["research"] })
+    const updated = db.personaById("p1", "a")
+    expect(updated?.skills).toEqual(["research"])
+    expect(updated?.skillsExtra).toEqual(["preview"])
+    // null clears a list back to unrestricted
+    db.updatePersona("p1", "a", { skillsExtra: null })
+    expect(db.personaById("p1", "a")?.skillsExtra).toBeNull()
+    db.updatePersona("p1", "a", { skills: null })
+    expect(db.personaById("p1", "a")?.skills).toBeNull()
+  })
+
+  test("mcp allowlists roundtrip like skills", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createPersona({
+      id: "p1",
+      userId: "a",
+      name: "Trader",
+      instruction: "cook",
+      skills: null,
+      skillsExtra: null,
+      mcp: ["Stock.Data"],
+      mcpExtra: ["files"],
+      createdAt: 1,
+    })
+    expect(db.personaById("p1", "a")?.mcp).toEqual(["Stock.Data"])
+    expect(db.personaById("p1", "a")?.mcpExtra).toEqual(["files"])
+    db.updatePersona("p1", "a", { mcp: ["stock"] })
+    expect(db.personaById("p1", "a")?.mcp).toEqual(["stock"])
+    expect(db.personaById("p1", "a")?.mcpExtra).toEqual(["files"])
+    db.updatePersona("p1", "a", { mcp: null, mcpExtra: null })
+    expect(db.personaById("p1", "a")?.mcp).toBeNull()
+    expect(db.personaById("p1", "a")?.mcpExtra).toBeNull()
+    // an explicitly empty list is the block-all state and survives storage
+    db.updatePersona("p1", "a", { mcp: [] })
+    expect(db.personaById("p1", "a")?.mcp).toEqual([])
   })
 })
 
@@ -867,6 +934,66 @@ describe("thread dirs", () => {
     db.resetDesktopState("a")
     expect(db.threadDirs("a")).toHaveLength(0)
     expect(db.threadDirAssignments("a")).toHaveLength(0)
+  })
+})
+
+describe("recent thread titles", () => {
+  test("newest first, per user, capped by the limit", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    db.setThreadTitle({
+      userId: "a",
+      sessionId: "s1",
+      title: "Ancienne",
+      author: "ob",
+      createdAt: 100,
+    })
+    db.setThreadTitle({
+      userId: "a",
+      sessionId: "s2",
+      title: "Récente",
+      author: "user",
+      createdAt: 200,
+    })
+    db.setThreadTitle({
+      userId: "b",
+      sessionId: "s3",
+      title: "Autre compte",
+      author: "ob",
+      createdAt: 300,
+    })
+    const out = db.recentThreadTitles("a", 1)
+    expect(out.map((row) => row.sessionId)).toEqual(["s2"])
+    expect(db.recentThreadTitles("b", 8).map((row) => row.title)).toEqual([
+      "Autre compte",
+    ])
+  })
+
+  test("a title update moves the row by its new timestamp", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.setThreadTitle({
+      userId: "a",
+      sessionId: "s1",
+      title: "Brouillon",
+      author: "ob",
+      createdAt: 100,
+    })
+    db.setThreadTitle({
+      userId: "a",
+      sessionId: "s1",
+      title: "Nom final",
+      author: "user",
+      createdAt: 500,
+    })
+    const out = db.recentThreadTitles("a", 8)
+    expect(out).toHaveLength(1)
+    expect(out[0].title).toBe("Nom final")
   })
 })
 

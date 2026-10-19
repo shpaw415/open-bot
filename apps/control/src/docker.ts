@@ -1647,7 +1647,10 @@ export async function syncPluginAuth(
       "/opt/open-bot/apply-plugin-auth.sh",
     ],
     JSON.stringify({ file: `plugin-${pluginId}.json`, data: data ?? null }),
-    120_000,
+    // A small file write through docker exec answers in well under a second;
+    // a longer stall means the desktop is wedged, and the caller should hear
+    // about it fast instead of holding the CLI past its own timeouts.
+    30_000,
   )
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim()

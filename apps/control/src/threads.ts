@@ -12,6 +12,7 @@ import {
   ASSISTANT_ID,
   findPersona,
   type PersonaMatch,
+  personaScope,
   personaSystem,
 } from "./personas"
 import { stopThreadScreen } from "./screens"
@@ -37,6 +38,36 @@ export function isThreadRequest(pathname: string, method: string): boolean {
     pathname === "/api/threads" &&
     (method === "GET" || method === "POST" || method === "DELETE")
   )
+}
+
+/** Shape of GET /api/threads/recent rows — the passive home/search summary. */
+export type RecentThreadSummary = {
+  sessionId: string
+  title: string
+  createdAt: number
+}
+
+/**
+ * Drop hidden-prefix titles and cap the list. Same visibility rule as the
+ * dashboard thread list: worker:/cron-run: sessions never surface. Exported
+ * so the passive endpoint's contract has a test without booting the server.
+ */
+export function visibleRecentThreads(
+  rows: { sessionId: string; title: string; createdAt: number }[],
+  limit = 8,
+): RecentThreadSummary[] {
+  return rows
+    .filter(
+      (row) =>
+        !row.title.startsWith(WORKER_TITLE_PREFIX) &&
+        !row.title.startsWith(CRON_TITLE_PREFIX),
+    )
+    .slice(0, limit)
+    .map((row) => ({
+      sessionId: row.sessionId,
+      title: row.title,
+      createdAt: row.createdAt,
+    }))
 }
 
 export function sanitizeThreadTitle(raw: unknown): string | null {
@@ -199,9 +230,16 @@ async function startThread(req: Request, db: Db, agent: User) {
   const { base, headers } = resolved
 
   const effectiveTitle = effectiveVisible ? title : hiddenThreadTitle(title)
+  const ruleset = await personaScope(agent.id, persona?.persona ?? null)
   let sessionId: string
   try {
-    sessionId = await createSession(base, headers, effectiveTitle)
+    sessionId = await createSession(
+      base,
+      headers,
+      effectiveTitle,
+      undefined,
+      ruleset,
+    )
   } catch (error) {
     return json(
       {
@@ -253,12 +291,18 @@ async function startThread(req: Request, db: Db, agent: User) {
     title: effectiveTitle,
     display: effectiveVisible,
   }
-  if (persona)
-    result.persona = {
+  if (persona) {
+    const personaInfo: Record<string, unknown> = {
       id: persona.persona.id,
       name: persona.persona.name,
       matched: persona.matched,
     }
+    const allowed = persona.persona.skillsEffective
+    if (allowed) personaInfo.skills = { allowed: allowed.length }
+    const mcpAllowed = persona.persona.mcpEffective
+    if (mcpAllowed) personaInfo.mcp = { allowed: mcpAllowed.length }
+    result.persona = personaInfo
+  }
   if (dir) result.dir = dir
   if (council) result.council = council
   if (warning) result.warning = warning

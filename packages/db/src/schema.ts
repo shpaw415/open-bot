@@ -147,6 +147,13 @@ export const personas = sqliteTable(
     userId: text("user_id").notNull(),
     name: text("name").notNull(),
     instruction: text("instruction").notNull(),
+    // Optional skill allowlists (JSON string arrays). skills null = all
+    // skills; skills_extra extends a plugin-owned base list. mcp/mcp_extra
+    // are the same model for MCP server names (null = all servers).
+    skills: text("skills"),
+    skillsExtra: text("skills_extra"),
+    mcp: text("mcp"),
+    mcpExtra: text("mcp_extra"),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("personas_user").on(table.userId)],

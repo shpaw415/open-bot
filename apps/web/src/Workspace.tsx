@@ -79,6 +79,7 @@ import {
 } from "./chat-view"
 import { Chip } from "./chip"
 import { ComposerPickers } from "./composer-controls"
+import { consumeComposerSeed, consumeNewThreadIntent } from "./dashboard-data"
 import { useOverlayA11y } from "./dialog-a11y"
 import { readDraft, writeDraft } from "./draft"
 import {
@@ -572,7 +573,14 @@ function threadCreated(session: SessionInfo): number {
 }
 
 function threadTitle(session: SessionInfo): string {
-  return session.title?.trim() || "New thread"
+  return session.title?.trim() || "Nouvelle conversation"
+}
+
+/** Sleep ends the whole environment; name the cost before cutting live work. */
+function sleepBusyConfirmText(count: number): string {
+  return `L’environnement complet sera mis en veille. ${count} conversation${
+    count > 1 ? "s sont" : " est"
+  } en cours de traitement — mettre en veille quand même?`
 }
 
 function Dock({
@@ -635,10 +643,10 @@ function IdeThreadBar({
           ]}
         </Select>
       </Box>
-      <Tip title="New thread">
+      <Tip title="Nouvelle conversation">
         <IconButton
           size="small"
-          aria-label="New thread"
+          aria-label="Nouvelle conversation"
           disabled={actionBusy}
           onClick={onCreate}
         >
@@ -925,6 +933,8 @@ const ThreadsPanel = memo(function ThreadsPanel({
   sessions,
   sessionId,
   loading,
+  loadError,
+  onRetryLoad,
   mobile,
   mid,
   open,
@@ -942,6 +952,9 @@ const ThreadsPanel = memo(function ThreadsPanel({
   sessions: SessionInfo[]
   sessionId: string
   loading: boolean
+  /** Last load failure; a failed load never renders as "no threads". */
+  loadError: string
+  onRetryLoad: () => void
   /** Phone: the history takes the full width. */
   mobile: boolean
   /** Mid-width desktop: overlay panel with a capped width. */
@@ -1210,10 +1223,10 @@ const ThreadsPanel = memo(function ThreadsPanel({
                 <FolderIcon width={18} height={18} />
               </IconButton>
             </Tip>
-            <Tip title="New thread">
+            <Tip title="Nouvelle conversation">
               <IconButton
                 size="small"
-                aria-label="New thread"
+                aria-label="Nouvelle conversation"
                 disabled={actionBusy}
                 onClick={actions.create}
               >
@@ -1273,9 +1286,20 @@ const ThreadsPanel = memo(function ThreadsPanel({
             <Skeleton height={36} />
             <Skeleton height={36} />
           </Stack>
+        ) : loadError && sessions.length === 0 ? (
+          <Stack spacing={1} sx={{ p: 1.5 }}>
+            <Typography variant="body2" color="textSecondary">
+              Impossible de charger vos conversations. Vos échanges n’ont pas
+              été supprimés — l’environnement est peut-être en veille.
+            </Typography>
+            <Button size="small" variant="outlined" onClick={onRetryLoad}>
+              Réessayer
+            </Button>
+          </Stack>
         ) : sessions.length === 0 ? (
           <Typography variant="body2" color="textSecondary" sx={{ p: 1.5 }}>
-            No threads yet — send a message or press New thread.
+            Aucune conversation pour l’instant — envoyez un message ou créez-en
+            une.
           </Typography>
         ) : (
           <List dense disablePadding>
@@ -1569,6 +1593,12 @@ function Composer({
       writeDraft(localStorage, sessionId, migrateDraft)
       return migrateDraft
     }
+    // a blank conversation can be seeded by an example chosen on Home —
+    // consumed once, and never over a draft the user already has
+    if (!sessionId) {
+      const seed = consumeComposerSeed()
+      if (seed) return seed
+    }
     return ""
   })
   const [caret, setCaret] = useState(0)
@@ -1634,12 +1664,18 @@ function Composer({
         new File([blob], "speech.webm", { type: blob.type || "audio/webm" }),
       )
       const response = await fetch("/api/stt", { method: "POST", body: form })
-      const body = (await response.json().catch(() => ({}))) as {
-        text?: string
-        error?: string
+      const raw = await response.text().catch(() => "")
+      let body: { text?: string; error?: string } = {}
+      try {
+        if (raw) body = JSON.parse(raw) as { text?: string; error?: string }
+      } catch {
+        body = {}
       }
       if (!response.ok) {
-        throw new Error(body.error ?? "transcription failed")
+        throw new Error(
+          body.error ||
+            `transcription failed (HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""})`,
+        )
       }
       const transcript = (body.text ?? "").trim()
       if (!transcript) {
@@ -1652,7 +1688,13 @@ function Composer({
       updateDraft(next)
       messageInputRef.current?.focus()
     } catch (caught) {
-      onError(caught instanceof Error ? caught.message : "transcription failed")
+      onError(
+        caught instanceof TypeError
+          ? "could not reach the server — check your connection and try again"
+          : caught instanceof Error
+            ? caught.message
+            : "transcription failed",
+      )
     } finally {
       setTranscribing(false)
     }
@@ -2296,7 +2338,7 @@ function Composer({
           <Box className="ob-composer-row">
             <IconButton
               size="medium"
-              aria-label="Attach file"
+              aria-label="Ajouter un contexte"
               disabled={!running || sending || stopping}
               onClick={(event) => {
                 joinAnchor.current = event.currentTarget
@@ -2505,7 +2547,29 @@ function Composer({
           }}
         >
           <AttachFileIcon />
-          <ListItemText primary="Join a file" />
+          <ListItemText primary="Joindre un fichier" />
+        </ListItemButton>
+        <ListItemButton
+          onClick={() => {
+            setJoinOpen(false)
+            // Reuses the existing @mention contract: insert the trigger and
+            // hand the pickers back to the composer, no new binding.
+            const at =
+              caret >= 0 && caret <= draft.length ? caret : draft.length
+            const next = `${draft.slice(0, at)}@${draft.slice(at)}`
+            updateDraft(next)
+            const pos = at + 1
+            setCaret(pos)
+            window.setTimeout(() => {
+              messageInputRef.current?.focus()
+              messageInputRef.current?.setSelectionRange(pos, pos)
+            }, 0)
+          }}
+        >
+          <ListItemText
+            primary="Référencer un projet (@)"
+            secondary="Ouvre la liste des éléments disponibles"
+          />
         </ListItemButton>
       </Menu>
     </>
@@ -2566,6 +2630,7 @@ export function Workspace({
   const [receipts, setReceipts] = useState<LocalReceipt[]>([])
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [threadsError, setThreadsError] = useState("")
   const [sessionStatus, setSessionStatus] = useState<
     Record<string, SessionStatus>
   >({})
@@ -3193,6 +3258,7 @@ export function Workspace({
   }
 
   const loadThreads = useCallback(async () => {
+    setThreadsError("")
     try {
       const [
         list,
@@ -3202,8 +3268,17 @@ export function Workspace({
         dirsBody,
         dirAssignBody,
       ] = await Promise.all([
-        fetch("/api/opencode/session").then((res) => res.json()),
-        fetch("/api/opencode/session/status").then((res) => res.json()),
+        // The desktop routes start the desktop server-side (ensure), so a
+        // failed poll here means "unavailable right now" — never an empty
+        // list. The status is kept per-source and surfaced with a retry.
+        fetch("/api/opencode/session").then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        }),
+        fetch("/api/opencode/session/status").then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        }),
         api<{ personas?: PersonaInfo[] }>("/api/personas").catch(() => ({
           personas: [],
         })),
@@ -3245,8 +3320,12 @@ export function Workspace({
         if (row.sessionId && row.dirId) dirAssigned[row.sessionId] = row.dirId
       }
       setThreadDirMap(dirAssigned)
-    } catch {
-      // desktop may have gone to sleep; the next tick retries
+    } catch (caught) {
+      // desktop may have gone to sleep; the next tick retries — but the
+      // failure is never rendered as "no conversations".
+      setThreadsError(
+        caught instanceof Error ? caught.message : "chargement impossible",
+      )
     } finally {
       setSessionsLoading(false)
     }
@@ -3267,6 +3346,10 @@ export function Workspace({
 
   async function sleep() {
     if (stoppingRef.current) return
+    // Sleep stops the whole desktop — a busy conversation would be cut
+    // mid-task. The scope is stated and confirmed only when work is live.
+    if (busyIds.size > 0 && !window.confirm(sleepBusyConfirmText(busyIds.size)))
+      return
     stoppingRef.current = true
     setStopping(true)
     setError("")
@@ -3569,6 +3652,15 @@ export function Workspace({
 
   useEffect(() => {
     if (!running || restoredRef.current || sessionsLoading) return
+    // "Nouvelle conversation" from Home: the next chat view is a blank
+    // composer, not the restored last thread. Consumed once per mount.
+    if (consumeNewThreadIntent()) {
+      restoredRef.current = true
+      setSessionId("")
+      setMessages([])
+      setMessagesLoading(false)
+      return
+    }
     restoredRef.current = true
     const stored = localStorage.getItem(THREAD_KEY)
     if (stored && !sessionId && sessions.some((item) => item.id === stored)) {
@@ -4516,7 +4608,7 @@ export function Workspace({
               ? activeThread
                 ? threadTitle(activeThread)
                 : sessionId
-                  ? "New thread"
+                  ? "Nouvelle conversation"
                   : ""
               : ""}
           </Typography>
@@ -4531,7 +4623,7 @@ export function Workspace({
               aria-busy={stopping}
               onClick={() => void sleep()}
             >
-              {stopping ? "Stopping…" : "Sleep"}
+              {stopping ? "Mise en veille…" : "Mettre en veille"}
             </Button>
           ) : (
             <Button
@@ -4541,7 +4633,7 @@ export function Workspace({
               disabled={phase === "starting"}
               onClick={() => void start()}
             >
-              Start
+              Démarrer
             </Button>
           )}
           <IconButton
@@ -4565,10 +4657,12 @@ export function Workspace({
           ) : null}
           <Chip size="small" color={phaseColor} sx={{ flexShrink: 0 }}>
             {stopping
-              ? "stopping…"
+              ? "mise en veille…"
               : phase === "starting"
-                ? "starting…"
-                : phase}
+                ? "démarrage…"
+                : phase === "running"
+                  ? "prêt"
+                  : "en veille"}
           </Chip>
           {phase === "starting" || stopping ? (
             <CircularProgress size={1.2} />
@@ -4623,8 +4717,8 @@ export function Workspace({
                 {activeThread
                   ? personaName(threadPersona[activeThread.id])
                   : sessionId
-                    ? "New thread"
-                    : "No thread selected"}
+                    ? "Nouvelle conversation"
+                    : "Aucune conversation sélectionnée"}
               </Typography>
             </Stack>
           ) : null}
@@ -4643,6 +4737,8 @@ export function Workspace({
                 sessions={sessions}
                 sessionId={sessionId}
                 loading={sessionsLoading}
+                loadError={threadsError}
+                onRetryLoad={() => void loadThreads()}
                 mobile={mobile}
                 mid={midWidth && !mobile}
                 open={threadsOpen}
@@ -5220,7 +5316,7 @@ export function Workspace({
             flexDirection: "column",
           }}
         >
-          <MediaVault subscribe={subscribe} />
+          <MediaVault subscribe={subscribe} onOpenChat={() => onTab("chat")} />
         </Box>
 
         <Drawer
@@ -5246,10 +5342,12 @@ export function Workspace({
               </Typography>
               <Chip size="small" color={phaseColor}>
                 {stopping
-                  ? "stopping…"
+                  ? "mise en veille…"
                   : phase === "starting"
-                    ? "starting…"
-                    : phase}
+                    ? "démarrage…"
+                    : phase === "running"
+                      ? "prêt"
+                      : "en veille"}
               </Chip>
             </Stack>
             {running ? (
@@ -5263,7 +5361,7 @@ export function Workspace({
                 disabled={stopping}
                 aria-busy={stopping}
               >
-                {stopping ? "Stopping…" : "Sleep"}
+                {stopping ? "Mise en veille…" : "Mettre en veille"}
               </Button>
             ) : (
               <Button

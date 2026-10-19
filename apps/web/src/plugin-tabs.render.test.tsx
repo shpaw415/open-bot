@@ -34,7 +34,12 @@ const errorStatus: PluginsViewStatus = {
 describe("PluginAppsView — render", () => {
   test("first load renders skeletons, not a fake empty state", () => {
     const html = renderToStaticMarkup(
-      <PluginAppsView tabs={[]} status={{ ...ready, status: "loading" }} />,
+      <PluginAppsView
+        tabs={[]}
+        status={{ ...ready, status: "loading" }}
+        onAddPlugin={() => {}}
+        onManagePlugins={() => {}}
+      />,
     )
     expect(html).toContain("ob-skeleton")
     expect(html).toContain("Loading apps")
@@ -42,16 +47,26 @@ describe("PluginAppsView — render", () => {
 
   test("first-load error offers Retry and never reads as 'no apps'", () => {
     const html = renderToStaticMarkup(
-      <PluginAppsView tabs={[]} status={errorStatus} />,
+      <PluginAppsView
+        tabs={[]}
+        status={errorStatus}
+        onAddPlugin={() => {}}
+        onManagePlugins={() => {}}
+      />,
     )
     expect(html).toContain("Retry")
     expect(html).toContain("network down")
-    expect(html).not.toContain("No plugin apps here yet")
+    expect(html).not.toContain("Aucune application pour l’instant")
   })
 
   test("an error after tabs loaded keeps the app list on screen", () => {
     const html = renderToStaticMarkup(
-      <PluginAppsView tabs={[tab("grid")]} status={errorStatus} />,
+      <PluginAppsView
+        tabs={[tab("grid")]}
+        status={errorStatus}
+        onAddPlugin={() => {}}
+        onManagePlugins={() => {}}
+      />,
     )
     // The last good tabs stay usable…
     expect(html).toContain("grid")
@@ -63,9 +78,16 @@ describe("PluginAppsView — render", () => {
 
   test("an empty ready state is a real empty, not an error", () => {
     const html = renderToStaticMarkup(
-      <PluginAppsView tabs={[]} status={ready} />,
+      <PluginAppsView
+        tabs={[]}
+        status={ready}
+        onAddPlugin={() => {}}
+        onManagePlugins={() => {}}
+      />,
     )
-    expect(html).toContain("No plugin apps here yet")
+    expect(html).toContain("Aucune application pour l’instant")
+    expect(html).toContain("Ajouter une application")
+    expect(html).toContain("Gérer les extensions")
     expect(html).not.toContain("Retry")
   })
 
@@ -74,7 +96,12 @@ describe("PluginAppsView — render", () => {
     // keys off :placeholder-shown), so the filter must be the same native
     // control as the threads filter: real placeholder attribute + label.
     const html = renderToStaticMarkup(
-      <PluginAppsView tabs={[tab("grid")]} status={ready} />,
+      <PluginAppsView
+        tabs={[tab("grid")]}
+        status={ready}
+        onAddPlugin={() => {}}
+        onManagePlugins={() => {}}
+      />,
     )
     expect(html).toContain('placeholder="Filter apps"')
     expect(html).toContain('aria-label="Filter apps"')

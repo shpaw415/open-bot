@@ -1729,3 +1729,37 @@ body.ob-home-dragging iframe {
     animation: none;
   }
 }
+
+/* Secondary nav zone divider (Settings / Help / Admin under the main view
+   links). */
+.ob-nav-divider {
+  border: none;
+  border-top: 1px solid var(--ob-border, rgba(128, 128, 128, 0.3));
+  width: 100%;
+  margin: 6px 0;
+}
+
+.ob-rail .ob-nav-divider {
+  margin: 6px 4px;
+}
+
+/* Keyboard escape hatch: visually hidden until focused, then the first
+   stop in the tab order right before the content. */
+.ob-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 2000;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--ob-accent-btn, #3565d4);
+  color: var(--ob-accent-btn-text, #fff);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ob-skip-link:focus {
+  left: 8px;
+  top: 8px;
+}

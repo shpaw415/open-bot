@@ -284,7 +284,8 @@ export function buildCatalogQuery(opts: CatalogQuery): {
   }
   const price = opts.price ?? "all"
   if (price === "free") base.push("(price_cents IS NULL OR price_cents <= 0)")
-  if (price === "paid") base.push("(price_cents IS NOT NULL AND price_cents > 0)")
+  if (price === "paid")
+    base.push("(price_cents IS NOT NULL AND price_cents > 0)")
 
   const filtered = [...base]
   const filteredParams = [...baseParams]
