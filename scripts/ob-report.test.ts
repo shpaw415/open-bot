@@ -312,7 +312,7 @@ test("bad input is rejected", async () => {
   ).toBe(2)
   expect((await run(home, ["show", "../../etc/passwd"])).code).toBe(1)
   expect((await run(home, ["done", "missing-id"])).stderr).toContain(
-    "report not found",
+    "no report matches missing-id",
   )
   expect(reportFiles(home)).toHaveLength(0)
 })
@@ -372,4 +372,57 @@ test("secrets in title and detail are redacted", async () => {
   expect(body).not.toContain("eyJabc")
   expect(body).not.toContain("sk-abcdef123456")
   expect(body).toContain("[redacted]")
+})
+
+test("show and status accept an unambiguous id prefix", async () => {
+  const home = freshDir()
+  const dir = join(home, "reports")
+  const fullA = "3764a31d670d8454"
+  const fullB = "3764ffff00001111"
+  for (const [id, title] of [
+    [fullA, "first report body"],
+    [fullB, "second report body"],
+  ] as const) {
+    await Bun.write(
+      join(dir, `${id}.json`),
+      JSON.stringify({
+        id,
+        status: "open",
+        kind: "bug",
+        plugin: "demo",
+        title,
+        detail: "d",
+        hits: 1,
+        fingerprint: id,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      }),
+    )
+  }
+
+  const exact = await run(home, ["show", fullA])
+  expect(exact.code).toBe(0)
+  expect(exact.stdout).toContain(fullA)
+
+  const unique = await run(home, ["show", "3764a31d"])
+  expect(unique.code).toBe(0)
+  expect(unique.stdout).toContain(fullA)
+  expect(unique.stdout).not.toContain(fullB)
+
+  const dead = await run(home, ["show", "zzzz"])
+  expect(dead.code).toBe(1)
+  expect(dead.stderr).toContain("no report matches zzzz")
+
+  const ambiguous = await run(home, ["show", "3764"])
+  expect(ambiguous.code).toBe(1)
+  expect(ambiguous.stderr).toContain("ambiguous prefix 3764")
+  expect(ambiguous.stderr).toContain(fullA)
+  expect(ambiguous.stderr).toContain(fullB)
+
+  const done = await run(home, ["done", "3764a31d", "--note", "shipped"])
+  expect(done.code).toBe(0)
+  expect(done.stdout).toBe(`done ${fullA}\n`)
+  const row = JSON.parse(readFileSync(join(dir, `${fullA}.json`), "utf8"))
+  expect(row.status).toBe("done")
+  expect(row.note).toBe("shipped")
 })

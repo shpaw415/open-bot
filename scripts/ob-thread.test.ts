@@ -485,3 +485,66 @@ test("wait validates the timeout and id before calling curl", async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+function fakeCurlWithFlakyStatus(home: string) {
+  const bin = join(home, "bin")
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+n=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)
+n=$((n+1))
+printf '%s' "$n" > "$FAKE_COUNT"
+if [ "$n" -le 1 ]; then
+  printf '%s\\n' '{"id":"t1","running":true,"state":"busy"}'
+elif [ "$n" -eq 2 ]; then
+  printf '%s\\n' '{"error":"desktop is not running"}'
+elif [ "$n" -eq 3 ]; then
+  printf '%s\\n' '{"id":"t1","running":true,"state":"starting"}'
+else
+  printf '%s\\n' '{"id":"t1","running":false,"state":"idle"}'
+fi
+`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+}
+
+test("wait rides out the transient desktop-boot error and the starting state", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithFlakyStatus(home)
+    const result = await run(home, ["wait", "t1", "--timeout", "1"], {
+      FAKE_COUNT: join(home, "count"),
+    })
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      id: "t1",
+      running: false,
+      state: "idle",
+      timeout: false,
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}, 45_000)
+
+test("wait still fails fast on a hard status error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/bin/sh
+printf '%s\\n' '{"error":"only worker: or persona-bound threads can be managed"}'
+`,
+    )
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, ["wait", "t2", "--timeout", "1"])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("only worker: or persona-bound threads")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

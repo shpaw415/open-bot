@@ -30,8 +30,10 @@ mock.module("./docker", () => ({
 
 const {
   WORKER_TITLE_PREFIX,
+  handleOpencodeRead,
   handleThreads,
   hiddenThreadTitle,
+  isOpencodeReadRequest,
   isThreadRequest,
   sanitizeThreadTitle,
   threadTitleError,
@@ -224,7 +226,7 @@ describe("POST /api/threads", () => {
     expect(body.display).toBe(true)
   })
 
-  test("posts the first message into the new thread", async () => {
+  test("posts the first message into the new thread with the screen line", async () => {
     installFetch()
     const res = await post({
       title: "Scrape prices",
@@ -236,6 +238,9 @@ describe("POST /api/threads", () => {
     expect(prompt?.url).toBe("http://opencode:4096/session/ses_1/prompt_async")
     expect(JSON.parse(String(prompt?.init?.body))).toEqual({
       parts: [{ type: "text", text: "Fetch prices now" }],
+      // the screen ensure fails on the mocked desktop; the fallback line
+      // still names the session id so the agent is never screen-blind
+      system: expect.stringContaining("screen id"),
     })
     const body = (await res.json()) as { warning?: string }
     expect(body.warning).toBeUndefined()
@@ -257,6 +262,7 @@ describe("POST /api/threads", () => {
     const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
     expect(JSON.parse(String(prompt?.init?.body))).toEqual({
       parts: [{ type: "text", text: "Go deep" }],
+      system: expect.stringContaining("screen id"),
       variant: "high",
     })
   })
@@ -305,7 +311,9 @@ describe("POST /api/threads", () => {
     const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
     expect(JSON.parse(String(prompt?.init?.body))).toEqual({
       parts: [{ type: "text", text: "Implement CSV export" }],
-      system: expect.stringContaining("answer as Software manager"),
+      system: expect.stringMatching(
+        /answer as Software manager[\s\S]*screen id/,
+      ),
     })
     expect(bound).toEqual([["user-1", "ses_1", "p1"]])
   })
@@ -442,6 +450,7 @@ describe("POST /api/threads", () => {
     const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
     expect(JSON.parse(String(prompt?.init?.body))).toEqual({
       parts: [{ type: "text", text: "go" }],
+      system: expect.stringContaining("screen id"),
     })
     expect(bound).toEqual([])
   })
@@ -1079,7 +1088,7 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
     } as unknown as Db
   }
 
-  function installManageFetch() {
+  function installManageFetch(messages: Record<string, unknown[]> = {}) {
     globalThis.fetch = (async (
       input: RequestInfo | URL,
       options?: RequestInit,
@@ -1088,6 +1097,13 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
       const init = options
       calls.push({ url, init })
       if (url.endsWith("/session/status")) return Response.json(statuses)
+      const message = url.match(/\/session\/([^/]+)\/message$/)
+      if (message && (!init?.method || init.method === "GET")) {
+        const rows = messages[message[1] ?? ""]
+        return rows
+          ? Response.json(rows)
+          : new Response("nope", { status: 500 })
+      }
       const session = url.match(/\/session\/([^/]+)$/)
       if (session && (!init?.method || init.method === "GET")) {
         const id = session[1]
@@ -1155,31 +1171,36 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
     })
   })
 
-  test("status treats a missing status entry as idle and refuses unmanaged threads", async () => {
+  test("status reports a starting session instead of faking idle", async () => {
     installManageFetch()
     statuses = {}
-    const idle = await manage(
+    const starting = await manage(
       "/api/threads/w1/status",
       undefined,
       undefined,
       "GET",
     )
-    expect(await idle.json()).toEqual({
+    expect(await starting.json()).toEqual({
       id: "w1",
-      running: false,
-      state: "idle",
+      running: true,
+      state: "starting",
     })
-    for (const id of ["u1", "c1"]) {
-      expect(
-        (await manage(`/api/threads/${id}/status`, undefined, undefined, "GET"))
-          .status,
-      ).toBe(403)
-    }
+  })
+
+  test("status keeps 404 when the missing entry is a gone session", async () => {
+    installManageFetch()
+    statuses = {}
     for (const id of ["sub", "missing"]) {
       expect(
         (await manage(`/api/threads/${id}/status`, undefined, undefined, "GET"))
           .status,
       ).toBe(404)
+    }
+    for (const id of ["u1", "c1"]) {
+      expect(
+        (await manage(`/api/threads/${id}/status`, undefined, undefined, "GET"))
+          .status,
+      ).toBe(403)
     }
   })
 
@@ -1274,5 +1295,77 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
       (await manage("/api/threads/w1/post", { message: "hi" })).status,
     ).toBe(409)
     expect(calls).toHaveLength(0)
+  })
+
+  function read(path: string, useDb: Db = managedDb(["p1"])) {
+    return handleOpencodeRead(
+      new Request(`http://control${path}`),
+      new URL(`http://control${path}`),
+      useDb,
+      agent,
+    )
+  }
+
+  test("read returns trimmed messages for a worker thread", async () => {
+    installManageFetch({
+      w1: [
+        { info: { role: "user" }, parts: [{ type: "text", text: "go" }] },
+        {
+          info: { role: "assistant" },
+          parts: [
+            { type: "text", text: "done" },
+            { type: "tool", state: { output: "x".repeat(9000) } },
+          ],
+        },
+      ],
+    })
+    const res = await read("/api/opencode/session/w1/message")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      info?: { role?: string }
+      parts?: { type: string; state?: { output?: string } }[]
+    }[]
+    expect(body).toHaveLength(2)
+    expect(body[0]?.info?.role).toBe("user")
+    const tool = body[1]?.parts?.find((part) => part.type === "tool")
+    expect(tool?.state?.output).toContain("[truncated —")
+    const upstream = calls.find((call) =>
+      call.url.endsWith("/session/w1/message"),
+    )
+    expect(upstream).toBeDefined()
+  })
+
+  test("read refuses plain chats, cron jobs, and unknown ids", async () => {
+    installManageFetch()
+    expect((await read("/api/opencode/session/u1/message")).status).toBe(403)
+    expect((await read("/api/opencode/session/c1/message")).status).toBe(403)
+    expect((await read("/api/opencode/session/missing/message")).status).toBe(
+      404,
+    )
+  })
+
+  test("read allows a persona-bound thread and reports upstream failures", async () => {
+    installManageFetch({
+      p1: [{ info: { role: "user" }, parts: [{ type: "text", text: "hi" }] }],
+    })
+    const ok = await read("/api/opencode/session/p1/message")
+    expect(ok.status).toBe(200)
+    expect(((await ok.json()) as unknown[]).length).toBe(1)
+    const bad = await read("/api/opencode/session/w1/message")
+    expect(bad.status).toBe(502)
+  })
+
+  test("isOpencodeReadRequest matches only the agent message read", () => {
+    expect(
+      isOpencodeReadRequest("/api/opencode/session/s1/message", "GET"),
+    ).toBe(true)
+    expect(
+      isOpencodeReadRequest("/api/opencode/session/s1/message", "POST"),
+    ).toBe(false)
+    expect(isOpencodeReadRequest("/api/opencode/session/s1", "GET")).toBe(false)
+    expect(
+      isOpencodeReadRequest("/api/opencode/session/s1/prompt", "GET"),
+    ).toBe(false)
+    expect(isOpencodeReadRequest("/api/opencode/session", "GET")).toBe(false)
   })
 })

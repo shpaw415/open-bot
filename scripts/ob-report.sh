@@ -19,6 +19,8 @@ Usage:
   ob-report wontfix ID [--note TEXT]
   ob-report open ID [--note TEXT]
 
+ID may be the full report id or any unambiguous prefix of one.
+
 Files one plugin report. A matching open report increments its hit count.
 Reports live in ~/.open-bot/reports on this desktop and are visible from the
 dashboard Reports view and to any session thread here via this command.
@@ -83,6 +85,44 @@ valid_status() {
 
 valid_id() {
   printf '%s' "$1" | grep -qE '^[A-Za-z0-9_-]{1,64}$'
+}
+
+# RESOLVED is set to the report id: the argument itself when exact, else the
+# unique id starting with it. A dead or ambiguous prefix dies here (never in a
+# command substitution — die must exit the script).
+resolve_id() {
+  id="$1"
+  if [ -f "$DIR/$id.json" ]; then
+    RESOLVED="$id"
+    return 0
+  fi
+  matches=""
+  count=0
+  for f in "$DIR"/*.json; do
+    [ -f "$f" ] || continue
+    rid=$(basename "$f" .json)
+    case "$rid" in
+      "$id"*)
+        if [ -n "$matches" ]; then
+          matches="$matches
+$rid"
+        else
+          matches="$rid"
+        fi
+        count=$(( count + 1 ))
+        ;;
+    esac
+  done
+  if [ "$count" -eq 1 ]; then
+    RESOLVED="$matches"
+    return 0
+  fi
+  if [ "$count" -eq 0 ]; then
+    die "no report matches $id"
+  fi
+  echo "ob-report: ambiguous prefix $id matches:" >&2
+  printf '%s\n' "$matches" | sed 's/^/  /' >&2
+  exit 1
 }
 
 new_id() {
@@ -245,8 +285,8 @@ cmd_list() {
 cmd_show() {
   [ $# -eq 1 ] || { usage; exit 2; }
   valid_id "$1" || die "bad report id"
-  path="$DIR/$1.json"
-  [ -f "$path" ] || die "report not found"
+  resolve_id "$1"
+  path="$DIR/$RESOLVED.json"
   jq -r '"- [\(.status) \(.kind)/\(.plugin)] \(.title) (hits \(.hits)) id=\(.id)",
     (if .session then "session \(.session)" else empty end),
     .detail,
@@ -268,8 +308,9 @@ cmd_status() {
   [ -n "$id" ] || { usage; exit 2; }
   valid_id "$id" || die "bad report id"
   [ ${#note} -le 2000 ] || die "note must be at most 2000 characters"
+  resolve_id "$id"
+  id="$RESOLVED"
   path="$DIR/$id.json"
-  [ -f "$path" ] || die "report not found"
   now=$(now_ms)
   if [ "$note_set" -eq 1 ]; then
     jq --arg status "$_status" --arg note "$note" --argjson now "$now" '

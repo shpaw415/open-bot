@@ -351,13 +351,19 @@ case "$cmd" in
       if [ -n "$out" ]; then
         state=$(printf '%s' "$out" | jq -r '.state // empty' 2>/dev/null) || state=""
         if [ -z "$state" ]; then
-          fail_on_error "$out"
+          # A booting desktop transiently answers "desktop is not running";
+          # the next poll succeeds, so ride the same retry budget as hiccups.
+          errmsg=$(printf '%s' "$out" | jq -r '.error // empty' 2>/dev/null) || errmsg=""
+          case "$errmsg" in
+            "desktop is not running"|"desktop is not reachable") ;;
+            *) fail_on_error "$out" ;;
+          esac
         fi
       fi
       if [ -n "$state" ]; then
         errors=0
         now=$(date +%s)
-        if [ "$state" != "busy" ]; then
+        if [ "$state" != "busy" ] && [ "$state" != "starting" ]; then
           printf '%s' "$out" | jq --argjson waited "$((now - started))" \
             '. + {waitedSeconds: $waited, timeout: false}'
           exit 0

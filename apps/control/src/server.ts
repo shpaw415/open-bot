@@ -193,7 +193,9 @@ import { handleThreadDirs } from "./thread-dirs"
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
 import {
   cleanupDeletedThread,
+  handleOpencodeRead,
   handleThreads,
+  isOpencodeReadRequest,
   isThreadRequest,
   type RecentThreadSummary,
   recentRowFromSession,
@@ -1340,6 +1342,7 @@ async function api(
   const isMedia = isMediaRequest(url.pathname, req.method)
   const isThreadPath = isThreadRequest(url.pathname, req.method)
   const isKeysPath = isKeysRequest(url.pathname, req.method)
+  const isOpencodeRead = isOpencodeReadRequest(url.pathname, req.method)
   if (
     isCronPath ||
     isPersonaPath ||
@@ -1350,7 +1353,8 @@ async function api(
     isProjectManage ||
     isMedia ||
     isThreadPath ||
-    isKeysPath
+    isKeysPath ||
+    isOpencodeRead
   ) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
@@ -1394,6 +1398,7 @@ async function api(
       }
       if (isCronPath) return handleCron(req, url, db, agent, hub, holdOpen)
       if (isThreadPath) return handleThreads(req, url, db, agent)
+      if (isOpencodeRead) return handleOpencodeRead(req, url, db, agent)
       if (isKeysPath) {
         const handled = handleKeys(url, db, agent)
         if (handled) return handled

@@ -9,6 +9,7 @@ import { createSession } from "./cron"
 import { recordDelegation, resolveDelegationCreator } from "./delegations"
 import { desktopPhase, endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
+import { trimDashboardMessages } from "./messages-trim"
 import {
   ASSISTANT_ID,
   findPersona,
@@ -16,7 +17,7 @@ import {
   personaScope,
   personaSystem,
 } from "./personas"
-import { stopThreadScreen } from "./screens"
+import { ensureThreadScreen, stopThreadScreen } from "./screens"
 import {
   findOrCreateThreadDir,
   sanitizeDirName,
@@ -182,6 +183,47 @@ export async function handleThreads(
     return threadStatus(id, db, agent)
   }
   return json({ error: "not found" }, 404)
+}
+
+/** The one opencode passthrough the agent's LLM token may use: reading a
+ * managed thread's messages for `ob-thread read`. */
+export function isOpencodeReadRequest(
+  pathname: string,
+  method: string,
+): boolean {
+  return (
+    method === "GET" &&
+    /^\/api\/opencode\/session\/[^/]+\/message$/.test(pathname)
+  )
+}
+
+// `ob-thread read` on the agent token: the same manageable scope as
+// wait/post/stop, trimmed like the dashboard's message-list route so the
+// CLI's jq sees the identical shape across both auth paths.
+export async function handleOpencodeRead(
+  req: Request,
+  url: URL,
+  db: Db,
+  agent: User,
+): Promise<Response> {
+  const ref = url.pathname.match(/^\/api\/opencode\/session\/([^/]+)\/message$/)
+  if (!ref || req.method !== "GET") return json({ error: "not found" }, 404)
+  const id = decodeURIComponent(ref[1] ?? "")
+  if (!id) return json({ error: "not found" }, 404)
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const allowed = await manageableThread(id, base, headers, db, agent)
+  if (!("session" in allowed)) return allowed
+  const upstream = await fetch(
+    `${base}/session/${encodeURIComponent(id)}/message`,
+    { headers, signal: AbortSignal.timeout(30_000) },
+  ).catch(() => null)
+  if (!upstream || !upstream.ok)
+    return json({ error: "message list failed" }, 502)
+  const parsed: unknown = await upstream.json().catch(() => null)
+  if (!Array.isArray(parsed)) return json({ error: "message list failed" }, 502)
+  return json(trimDashboardMessages(parsed))
 }
 
 // Runs after opencode confirms a session deletion: drops the control-plane
@@ -352,11 +394,30 @@ async function startThread(req: Request, db: Db, agent: User) {
     )
   }
   if (message) {
+    // Same raced ensure the dashboard prompt path runs: agent-started threads
+    // (ob-thread start, council members, persona teammates) carry the screen
+    // id line from the first prompt, so the browser CLIs work immediately. A
+    // failed ensure never fails the thread — the fallback line covers it.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const screen = await Promise.race([
+      ensureThreadScreen(db, agent.id, sessionId).catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 4000)
+      }),
+    ])
+    clearTimeout(timer)
     const promptBody: Record<string, unknown> = {
       parts: [{ type: "text", text: message }],
     }
     const personaLine = personaSystem(persona?.persona ?? null)
-    if (personaLine) promptBody.system = personaLine
+    const line = [
+      personaLine,
+      screen?.system ??
+        `This thread's screen id (also your session id, for ob-thread --from) is ${sessionId}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
+    ]
+      .filter((item): item is string => Boolean(item))
+      .join("\n\n")
+    if (line) promptBody.system = line
     await applyThinkingEffort(db, agent.id, promptBody)
     const posted = await fetch(
       `${base}/session/${encodeURIComponent(sessionId)}/prompt_async`,
@@ -543,7 +604,19 @@ async function threadStatus(id: string, db: Db, agent: User) {
   if (!body || typeof body !== "object")
     return json({ error: "status failed" }, 502)
   const entry = body[id]
-  const state = entry && typeof entry.type === "string" ? entry.type : "idle"
+  if (!entry) {
+    // A session absent from the status map has not registered a turn yet —
+    // one session read separates a just-created row (still starting, so
+    // `ob-thread wait` must keep polling) from a just-deleted one, which
+    // keeps the 404 contract instead of faking a done idle.
+    const probe = await fetch(`${base}/session/${encodeURIComponent(id)}`, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null)
+    if (!probe || !probe.ok) return json({ error: "session not found" }, 404)
+    return json({ id, running: true, state: "starting" })
+  }
+  const state = typeof entry.type === "string" ? entry.type : "idle"
   return json({ id, running: state !== "idle", state })
 }
 
