@@ -869,3 +869,34 @@ describe("FRAME_STORAGE_SHIM — media bridge", () => {
     expect(FRAME_STORAGE_SHIM).toContain('type:"midi-send"')
   })
 })
+
+describe("FRAME_STORAGE_SHIM — executable script", () => {
+  test("the shim parses as JavaScript — a broken shim dies silently per frame load", () => {
+    // Regression: the media-bridge message listener once ended with `)` before
+    // the handler's own closing `}`, so the whole <script> failed to parse and
+    // never ran — opaque-origin frames crashed on their first storage read
+    // (Bun's HMR client included) while the containment tests stayed green.
+    const inner = FRAME_STORAGE_SHIM.slice(
+      "<script>".length,
+      -"</script>".length,
+    )
+    expect(inner.startsWith("(function(){")).toBe(true)
+    expect(() => new Function(inner)).not.toThrow()
+  })
+
+  test("the shim precedes Bun dev-server injected scripts in framed HTML", () => {
+    // Bun --hot rewrites the served head: a classic visibility beacon plus the
+    // deferred module chunk that reads sessionStorage at top level. The shim
+    // is a classic head script, so document order alone must guard the module.
+    const page =
+      `<!doctype html><html><head><title>T</title>` +
+      `<script>((a)=>{document.addEventListener('visibilitychange',a)})(1)</script>` +
+      `<script type="module" crossorigin src="/_bun/client/index-00000000197a601f.js" data-bun-dev-server-script></script>` +
+      `</head><body><p>x</p></body></html>`
+    const framed = rewritePreviewHtml(page, "/api/pages/_frame/tok", true)
+    const shimAt = framed.indexOf(FRAME_STORAGE_SHIM)
+    expect(shimAt).toBeGreaterThanOrEqual(0)
+    expect(shimAt).toBeLessThan(framed.indexOf("visibilitychange"))
+    expect(shimAt).toBeLessThan(framed.indexOf("data-bun-dev-server-script"))
+  })
+})
