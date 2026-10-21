@@ -155,13 +155,16 @@ fi
 # Ownership check: another live session may already run on this display (it
 # would not have been listed while its screen-up was starting). Refuse instead
 # of tearing its Xvfb down — the caller reports "display in use" and the next
-# prompt picks a free display.
+# prompt picks a free display. A claim only counts while a live Xvfb actually
+# holds the display: a crashed owner (SIGKILLed container, OOM) leaves a stale
+# run_dir and socket behind, and the takeover below reclaims those safely.
 for claim in /run/open-bot/screens/*/display; do
   [ -f "$claim" ] || continue
   owner=$(basename "$(dirname "$claim")")
   [ "$owner" = "$session" ] && continue
   if [ "$(cat "$claim" 2>/dev/null)" = "$display" ] \
-    && [ -S "/tmp/.X11-unix/X$display" ]; then
+    && [ -S "/tmp/.X11-unix/X$display" ] \
+    && pgrep -f "^Xvfb :$display " >/dev/null 2>&1; then
     audit refused "owner:$owner"
     echo "display $display is in use by another session" >&2
     exit 1

@@ -48,7 +48,10 @@ case "$port" in
     ;;
 esac
 display=$((port - 9222))
-if "$list" 2>/dev/null | awk '{print $2}' | grep -qx "$display"; then
+# Only a DIFFERENT live session may hold the display: closing the last tab
+# kills Chromium while this session's own Xvfb is still listed, and its own
+# row must never block its own heal (screen-up relaunches the browser below).
+if "$list" 2>/dev/null | grep -v "^$session " | awk '{print $2}' | grep -qx "$display"; then
   audit refused "display:$display"
   echo "the screen for $session is gone and display $display is taken by another session. It returns on the next prompt." >&2
   exit 1
