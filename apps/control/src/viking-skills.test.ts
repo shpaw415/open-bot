@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { HttpError } from "./http-error"
-import { assertSkillInput, createVikingSkills } from "./viking-skills"
+import {
+  assertSkillInput,
+  createVikingSkills,
+  unwrapVikingResult,
+  vikingSkillList,
+} from "./viking-skills"
 
 const skill = {
   name: "search-web",
@@ -419,5 +424,71 @@ describe("viking skills", () => {
     expect(() => assertSkillInput({ ...skill, body: "  " })).toThrow(
       "skill body is required",
     )
+  })
+})
+
+describe("viking response shapes", () => {
+  test("unwrapVikingResult unwraps the result envelope only", () => {
+    expect(unwrapVikingResult({ status: "ok", result: { a: 1 } })).toEqual({
+      a: 1,
+    })
+    expect(unwrapVikingResult({ skills: [] })).toEqual({ skills: [] })
+    expect(unwrapVikingResult(null)).toBeNull()
+  })
+
+  test("vikingSkillList reads the current envelope", () => {
+    expect(
+      vikingSkillList({
+        status: "ok",
+        result: {
+          root_uris: ["viking://user/agent/skills"],
+          skills: [
+            {
+              name: "search-web",
+              uri: "viking://user/agent/skills/search-web",
+            },
+          ],
+          total: 1,
+        },
+      }),
+    ).toEqual([
+      { name: "search-web", uri: "viking://user/agent/skills/search-web" },
+    ])
+  })
+
+  test("vikingSkillList accepts the legacy bare shapes", () => {
+    expect(vikingSkillList({ skills: [{ name: "a" }] })).toEqual([
+      { name: "a" },
+    ])
+    expect(vikingSkillList([{ name: "a" }])).toEqual([{ name: "a" }])
+  })
+
+  test("vikingSkillList answers empty for junk instead of throwing", () => {
+    expect(vikingSkillList(null)).toEqual([])
+    expect(vikingSkillList(undefined)).toEqual([])
+    expect(vikingSkillList({})).toEqual([])
+    expect(vikingSkillList({ result: "not-an-object" })).toEqual([])
+    expect(
+      vikingSkillList({ status: "ok", result: { skills: "nope" } }),
+    ).toEqual([])
+  })
+
+  test("list() sees skills riding the envelope", async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: "ok",
+      result: {
+        skills: [
+          {
+            name: "search-web",
+            description: "Search the web",
+            uri: "viking://user/agent/skills/search-web",
+          },
+        ],
+      },
+    }))
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl)
+    await expect(skills.list()).resolves.toEqual([
+      { name: "search-web", description: "Search the web" },
+    ])
   })
 })

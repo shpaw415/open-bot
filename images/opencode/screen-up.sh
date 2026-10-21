@@ -83,6 +83,16 @@ start_group() {
   echo $! >"$run_dir/$name.pid"
 }
 
+# A tight cgroup kills renderers ("Aw Snap") once usage closes on the cap;
+# cap the renderer process count so one heavy tab storm cannot exhaust the
+# whole budget. Only bites under a <=6 GiB memory.max.
+renderer_limit=""
+mem_max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+case "$mem_max" in
+  "" | max | *[!0-9]*) ;;
+  *) [ "$mem_max" -le 6442450944 ] && renderer_limit="--renderer-process-limit=6" ;;
+esac
+
 start_chromium() {
   if [ -x /opt/google/chrome/google-chrome ]; then
     start_group chromium /opt/google/chrome/google-chrome \
@@ -100,6 +110,7 @@ start_chromium() {
       --disable-search-engine-choice-screen \
       --window-size=1920,1200 \
       --force-device-scale-factor=1 \
+      $renderer_limit \
       --user-data-dir="$profile" \
       about:blank
   else
@@ -117,6 +128,7 @@ start_chromium() {
       --remote-allow-origins=* \
       --window-size=1920,1200 \
       --force-device-scale-factor=1 \
+      $renderer_limit \
       --user-data-dir="$profile" \
       about:blank
   fi

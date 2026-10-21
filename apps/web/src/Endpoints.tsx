@@ -14,6 +14,7 @@ import Stack from "./stack"
 type PagesStatus = {
   pages: { pluginId: string; running: boolean }[]
   desktop: "starting" | "running" | "sleeping"
+  pagesOrigin: boolean
 }
 
 type WebhookState = { enabled: boolean; secured: boolean; path: string }
@@ -239,6 +240,13 @@ export function Endpoints() {
         Each URL is reachable from the internet, wakes the desktop on request,
         and forwards to the plugin's server.
       </Typography>
+      {status && !status.pagesOrigin ? (
+        <Alert severity="info">
+          Plugin app tabs cannot use the microphone/camera: no dedicated pages
+          origin is configured. Set OPEN_BOT_PAGES_ORIGIN to an https host that
+          reaches this control plane to enable device access.
+        </Alert>
+      ) : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
       {pluginsStatus === "loading" ? (
         <Box aria-busy="true">

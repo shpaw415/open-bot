@@ -382,3 +382,31 @@ test("ob-plugin publish stops with a clear message when no marketplace is config
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("ob-plugin comments renders millisecond createdAt as a sane UTC date", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-comments-"))
+  try {
+    const bin = fakeCurl(
+      home,
+      JSON.stringify({
+        comments: [
+          {
+            id: "c1",
+            createdAt: 1760000000000,
+            author: "security-bot",
+            body: "concern: readable secrets",
+          },
+        ],
+      }),
+    )
+    const result = await run(home, ["comments", "totp-vault"], bin)
+    expect(result.code).toBe(0)
+    // 1760000000000 ms is 2025-10-09 — a raw jq todate (seconds) would print
+    // year 57718-ish here.
+    expect(result.stdout.trim()).toMatch(
+      /^2025-10-09T\d{2}:\d{2}:\d{2}Z security-bot: concern: readable secrets$/,
+    )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

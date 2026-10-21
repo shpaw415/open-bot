@@ -15,7 +15,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
-import { api, type DesktopStatus, type Me } from "./api"
+import { api, type Me } from "./api"
 import { useOverlayA11y } from "./dialog-a11y"
 import {
   AdminPanelSettingsIcon,
@@ -27,6 +27,7 @@ import {
   FolderIcon,
   LightModeIcon,
   LogoutIcon,
+  MemoryIcon,
   MenuIcon,
   NotificationsIcon,
   NotificationsNoneIcon,
@@ -151,15 +152,14 @@ function useSearchData(identity: string) {
       projectsStatus:
         current.projectsStatus === "idle" ? "loading" : current.projectsStatus,
     }))
-    // Passive phase probe first: /api/desktop never starts anything.
-    const sessionsPromise = api<DesktopStatus>("/api/desktop")
-      .then((status) => {
-        if (status.phase !== "running")
-          throw new SearchUnavailableError("desktop asleep")
-        return fetch("/api/opencode/session").then((res) => {
-          if (!res.ok) throw new Error(`sessions ${res.status}`)
-          return res.json()
-        })
+    // One guaranteed-passive call: the server refuses (503 desktop_asleep)
+    // instead of starting anything, so there is no probe→list race where
+    // the phase changes between two requests.
+    const sessionsPromise = fetch("/api/opencode/session?passive=1")
+      .then((res) => {
+        if (res.status === 503) throw new SearchUnavailableError("asleep")
+        if (!res.ok) throw new Error(`sessions ${res.status}`)
+        return res.json()
       })
       .then((list: unknown) =>
         (Array.isArray(list) ? list : [])
@@ -270,6 +270,7 @@ const NOTICE_ICONS: Record<NoticeItem["kind"], React.ReactNode> = {
   reply: <ChatIcon width={16} height={16} />,
   plugin: <ExtensionIcon width={16} height={16} />,
   security: <AdminPanelSettingsIcon width={16} height={16} />,
+  hardware: <MemoryIcon width={16} height={16} />,
 }
 
 function NoticeRow({
@@ -426,7 +427,6 @@ function NoticeBellButton({
         ) : (
           <NotificationsNoneIcon width={20} height={20} />
         )}
-        {badge ? <span className="ob-header-badge">{badge}</span> : null}
       </IconButton>
     </Tip>
   )
@@ -443,6 +443,13 @@ function NoticeBellButton({
         }}
       >
         {bell}
+        {/* Outside the IconButton: mui-lite's child rule forces font-size on
+            direct button children, which bloated the count pill over the bell. */}
+        {badge ? (
+          <span className="ob-header-badge" aria-hidden="true">
+            {badge}
+          </span>
+        ) : null}
         {open ? (
           <Paper
             ref={panelRef}
@@ -785,6 +792,7 @@ function SearchControl({
   data,
   onRetry,
   onOpenThread,
+  onNewThread,
   go,
   mobile,
   open: forcedOpen,
@@ -796,6 +804,7 @@ function SearchControl({
   data: SearchDataState
   onRetry: () => void
   onOpenThread: (sessionId: string) => void
+  onNewThread: () => void
   go: (path: string) => void
   mobile: boolean
   /** Mobile: the shell owns the sheet state (button / Ctrl+K). */
@@ -852,14 +861,18 @@ function SearchControl({
       const entry = flat[index]
       if (!entry) return
       close()
-      if (entry.sessionId) onOpenThread(entry.sessionId)
+      if (entry.newThread) {
+        // Same shell intent as Home/Help/the thread list: a blank composer,
+        // nothing created server-side until the first send.
+        onNewThread()
+      } else if (entry.sessionId) onOpenThread(entry.sessionId)
       else if (entry.projectId) {
         // A named project opens that project, not just the Projects view.
         go(entry.path ?? workspacePath("projects"))
         openProjectById(entry.projectId)
       } else if (entry.path) go(entry.path)
     },
-    [flat, close, go, onOpenThread],
+    [flat, close, go, onOpenThread, onNewThread],
   )
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -1069,6 +1082,8 @@ export type AppHeaderProps = {
   navCollapsed?: boolean
   appTabs: { key: string; title: string; pluginName: string }[]
   onOpenThread: (sessionId: string) => void
+  /** The shell's "Nouvelle conversation" intent (blank composer). */
+  onNewThread: () => void
   go: (path: string) => void
   onLogout: () => void
 }
@@ -1083,6 +1098,7 @@ export function AppHeader({
   navCollapsed,
   appTabs,
   onOpenThread,
+  onNewThread,
   go,
   onLogout,
 }: AppHeaderProps) {
@@ -1185,6 +1201,7 @@ export function AppHeader({
           data={data}
           onRetry={load}
           onOpenThread={onOpenThread}
+          onNewThread={onNewThread}
           go={go}
           mobile={mobile}
           open={searchOpen}

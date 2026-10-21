@@ -20,6 +20,9 @@ mock.module("./docker", () => ({
   opencodeScript: () => {
     throw new Error("not mocked")
   },
+  restartOpencode: async () => {
+    throw new Error("not mocked")
+  },
   startDesktop: async () => {
     throw new Error("not mocked")
   },
@@ -657,6 +660,201 @@ describe("POST /api/threads councils", () => {
   })
 })
 
+describe("POST /api/threads delegation watches", () => {
+  function watchDb(withPersona = false) {
+    const watches: Record<string, unknown>[] = []
+    const councils: { id: string; userId: string; name: string }[] = []
+    const members: Record<string, unknown>[] = []
+    const mock = {
+      desktop: (id: string) =>
+        id === "user-1" ? { opencodePassword: "pw" } : null,
+      personas: () =>
+        withPersona
+          ? [
+              {
+                id: "p1",
+                name: "Software manager",
+                instruction: "run the team",
+                skills: null,
+                skillsExtra: null,
+                mcp: null,
+                mcpExtra: null,
+              },
+            ]
+          : [],
+      installedPlugins: () => [],
+      setThreadPersona: () => {},
+      councilByName: (userId: string, name: string) =>
+        councils.find(
+          (row) =>
+            row.userId === userId &&
+            row.name.toLowerCase() === name.toLowerCase(),
+        ) ?? null,
+      createCouncil: (row: { id: string; userId: string; name: string }) => {
+        councils.push(row)
+      },
+      setCouncilMember: (row: Record<string, unknown>) => {
+        members.push(row)
+      },
+      createDelegationWatch: (row: Record<string, unknown>) => {
+        watches.push(row)
+      },
+    } as unknown as Db
+    return { mock, watches, councils }
+  }
+
+  function installDelegationFetch(options?: {
+    status?: Record<string, { type: string }>
+    sessions?: unknown[]
+    rows?: Record<string, unknown>
+  }) {
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith("/session/status"))
+        return Response.json(options?.status ?? {})
+      if (url.endsWith("/session") && (!init?.method || init.method === "GET"))
+        return Response.json(options?.sessions ?? [])
+      const session = url.match(/\/session\/([^/]+)$/)
+      if (session && (!init?.method || init.method === "GET")) {
+        const row = options?.rows?.[session[1] ?? ""]
+        return row ? Response.json(row) : new Response("nope", { status: 404 })
+      }
+      return Response.json({ id: "ses_1" })
+    }) as unknown as typeof fetch
+  }
+
+  test("a valid --from arms a council wake and records the watch row", async () => {
+    installDelegationFetch({
+      rows: { chat1: { id: "chat1", title: "My chat" } },
+    })
+    const { mock, watches, councils } = watchDb()
+    const res = await post(
+      { title: "Research", council: "review", from: "chat1" },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      wake?: { armed: boolean; creator: string | null }
+    }
+    expect(body.wake).toEqual({ armed: true, creator: "chat1" })
+    expect(watches).toHaveLength(1)
+    expect(watches[0]).toMatchObject({
+      kind: "council",
+      creatorSessionId: "chat1",
+      subjectSessionId: "ses_1",
+      councilId: councils[0]?.id,
+      wokenAt: null,
+      pending: false,
+    })
+  })
+
+  test("without --from the one busy top-level chat is inferred as the creator", async () => {
+    installDelegationFetch({
+      status: { chat1: { type: "busy" }, w1: { type: "busy" } },
+      sessions: [
+        { id: "chat1", title: "My chat" },
+        { id: "w1", title: "worker:other" },
+      ],
+    })
+    const { mock, watches } = watchDb()
+    const res = await post({ title: "Research", council: "review" }, mock)
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      wake?: { armed: boolean; creator: string | null }
+      warning?: string
+    }
+    expect(body.wake).toEqual({ armed: true, creator: "chat1" })
+    expect(body.warning).toBeUndefined()
+    expect(watches[0]).toMatchObject({
+      kind: "council",
+      creatorSessionId: "chat1",
+    })
+  })
+
+  test("an ambiguous desktop infers no creator and says the wake is unarmed", async () => {
+    installDelegationFetch({
+      status: { chat1: { type: "busy" }, chat2: { type: "busy" } },
+      sessions: [
+        { id: "chat1", title: "Chat one" },
+        { id: "chat2", title: "Chat two" },
+      ],
+    })
+    const { mock, watches } = watchDb()
+    const res = await post({ title: "Research", council: "review" }, mock)
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      wake?: { armed: boolean; creator: string | null }
+    }
+    expect(body.wake).toEqual({ armed: false, creator: null })
+    expect(watches).toHaveLength(0)
+  })
+
+  test("an invalid --from falls back to inference and warns", async () => {
+    installDelegationFetch({
+      rows: { w1: { id: "w1", title: "worker:job" } },
+      status: {},
+    })
+    const { mock, watches } = watchDb()
+    const res = await post(
+      { title: "Research", council: "review", from: "w1" },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      wake?: { armed: boolean; creator: string | null }
+      warning?: string
+    }
+    expect(body.wake).toEqual({ armed: false, creator: null })
+    expect(body.warning).toMatch(/--from ignored/)
+    expect(watches).toHaveLength(0)
+  })
+
+  test("a persona teammate records a persona watch row", async () => {
+    installDelegationFetch({
+      rows: { chat1: { id: "chat1", title: "My chat" } },
+    })
+    const { mock, watches } = watchDb(true)
+    const res = await post(
+      {
+        title: "Add export",
+        persona: "software manager",
+        from: "chat1",
+        message: "Implement CSV export",
+      },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    expect(watches).toHaveLength(1)
+    expect(watches[0]).toMatchObject({
+      kind: "persona",
+      creatorSessionId: "chat1",
+      subjectSessionId: "ses_1",
+      councilId: null,
+    })
+  })
+
+  test("plain hidden threads record nothing and report no wake", async () => {
+    installDelegationFetch()
+    const { mock, watches } = watchDb()
+    const res = await post({ title: "Scrape prices" }, mock)
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { wake?: unknown }
+    expect(body.wake).toBeUndefined()
+    expect(watches).toHaveLength(0)
+  })
+
+  test("a non-string from is refused", async () => {
+    installDelegationFetch()
+    const { mock } = watchDb()
+    expect((await post({ title: "Job", from: 42 }, mock)).status).toBe(400)
+    expect(calls).toHaveLength(0)
+  })
+})
+
 describe("GET /api/threads", () => {
   test("lists the hidden agent threads", async () => {
     installFetch()
@@ -756,6 +954,15 @@ describe("DELETE /api/threads", () => {
       clearCouncilMember: (_userId: string, sessionId: string) => {
         cleanupLog.push(`council:${sessionId}`)
       },
+      deleteDelegationWatches: (_userId: string, sessionId: string) => {
+        cleanupLog.push(`watch-subject:${sessionId}`)
+      },
+      deleteDelegationWatchesByCreator: (
+        _userId: string,
+        sessionId: string,
+      ) => {
+        cleanupLog.push(`watch-creator:${sessionId}`)
+      },
       workspaceMediaForSession: () => [],
       deleteWorkspaceMedia: () => {},
       clearThreadScreen: () => {},
@@ -791,6 +998,8 @@ describe("DELETE /api/threads", () => {
       "title:s1",
       "dir:s1",
       "council:s1",
+      "watch-subject:s1",
+      "watch-creator:s1",
     ])
     const del = calls.find(
       (call) =>
@@ -821,6 +1030,8 @@ describe("DELETE /api/threads", () => {
       "title:s1",
       "dir:s1",
       "council:s1",
+      "watch-subject:s1",
+      "watch-creator:s1",
     ])
   })
 
@@ -852,5 +1063,216 @@ describe("DELETE /api/threads", () => {
       ids: Array.from({ length: 101 }, (_, index) => `s${index}`),
     })
     expect(res.status).toBe(400)
+  })
+})
+
+describe("POST /api/threads/:id/stop|post + GET status", () => {
+  let abortFails = false
+  let statuses: Record<string, { type: string }>
+
+  function managedDb(personaBound: string[] = []) {
+    return {
+      desktop: (id: string) =>
+        id === "user-1" ? { opencodePassword: "pw" } : null,
+      threadPersona: (_userId: string, sessionId: string) =>
+        personaBound.includes(sessionId) ? { personaId: "p1" } : null,
+    } as unknown as Db
+  }
+
+  function installManageFetch() {
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      options?: RequestInit,
+    ) => {
+      const url = String(input)
+      const init = options
+      calls.push({ url, init })
+      if (url.endsWith("/session/status")) return Response.json(statuses)
+      const session = url.match(/\/session\/([^/]+)$/)
+      if (session && (!init?.method || init.method === "GET")) {
+        const id = session[1]
+        const rows: Record<string, unknown> = {
+          w1: { id: "w1", title: "worker:job" },
+          p1: { id: "p1", title: "Plugin teammate" },
+          u1: { id: "u1", title: "User chat" },
+          c1: { id: "c1", title: "cron-run:nightly" },
+          sub: { id: "sub", title: "worker:sub", parentID: "w1" },
+        }
+        const row = rows[id ?? ""]
+        return row ? Response.json(row) : new Response("nope", { status: 404 })
+      }
+      if (url.endsWith("/abort")) {
+        if (abortFails) return new Response("nope", { status: 500 })
+        return Response.json({})
+      }
+      return Response.json({})
+    }) as unknown as typeof fetch
+  }
+
+  function manage(
+    path: string,
+    body?: unknown,
+    useDb: Db = managedDb(["p1"]),
+    method: "POST" | "GET" = "POST",
+  ) {
+    return handleThreads(
+      new Request(`http://control${path}`, {
+        method,
+        headers: { "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }),
+      new URL(`http://control${path}`),
+      useDb,
+      agent,
+    )
+  }
+
+  test("status reports the thread's running state", async () => {
+    installManageFetch()
+    statuses = { w1: { type: "busy" }, p1: { type: "idle" } }
+    const busy = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    expect(busy.status).toBe(200)
+    expect(await busy.json()).toEqual({
+      id: "w1",
+      running: true,
+      state: "busy",
+    })
+    const idle = await manage(
+      "/api/threads/p1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    expect(await idle.json()).toEqual({
+      id: "p1",
+      running: false,
+      state: "idle",
+    })
+  })
+
+  test("status treats a missing status entry as idle and refuses unmanaged threads", async () => {
+    installManageFetch()
+    statuses = {}
+    const idle = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    expect(await idle.json()).toEqual({
+      id: "w1",
+      running: false,
+      state: "idle",
+    })
+    for (const id of ["u1", "c1"]) {
+      expect(
+        (await manage(`/api/threads/${id}/status`, undefined, undefined, "GET"))
+          .status,
+      ).toBe(403)
+    }
+    for (const id of ["sub", "missing"]) {
+      expect(
+        (await manage(`/api/threads/${id}/status`, undefined, undefined, "GET"))
+          .status,
+      ).toBe(404)
+    }
+  })
+
+  test("status reports a sleeping desktop before any call", async () => {
+    installManageFetch()
+    statuses = {}
+    phase = "sleeping"
+    expect(
+      (await manage("/api/threads/w1/status", undefined, undefined, "GET"))
+        .status,
+    ).toBe(409)
+    expect(calls).toHaveLength(0)
+  })
+
+  test("isThreadRequest matches the manage routes only", () => {
+    expect(isThreadRequest("/api/threads/s1/stop", "POST")).toBe(true)
+    expect(isThreadRequest("/api/threads/s1/post", "POST")).toBe(true)
+    expect(isThreadRequest("/api/threads/s1/status", "GET")).toBe(true)
+    expect(isThreadRequest("/api/threads/s1/status", "POST")).toBe(false)
+    expect(isThreadRequest("/api/threads/s1/stop", "GET")).toBe(false)
+    expect(isThreadRequest("/api/threads/s1/pause", "POST")).toBe(false)
+    expect(isThreadRequest("/api/threads//stop", "POST")).toBe(false)
+  })
+
+  test("stop aborts a worker thread", async () => {
+    installManageFetch()
+    const res = await manage("/api/threads/w1/stop")
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ id: "w1", stopped: true })
+    const abort = calls.find((call) => call.url.endsWith("/session/w1/abort"))
+    expect(abort?.init?.method).toBe("POST")
+  })
+
+  test("stop refuses user chats, cron jobs, and subagents", async () => {
+    installManageFetch()
+    for (const id of ["u1", "c1"]) {
+      expect((await manage(`/api/threads/${id}/stop`)).status).toBe(403)
+    }
+    // subagents are not threads at all, like unknown ids
+    for (const id of ["sub", "missing"]) {
+      expect((await manage(`/api/threads/${id}/stop`)).status).toBe(404)
+    }
+    expect(calls.some((call) => call.url.endsWith("/abort"))).toBeFalse()
+  })
+
+  test("stop allows a persona-bound visible thread and reports failures", async () => {
+    installManageFetch()
+    const res = await manage(
+      "/api/threads/p1/stop",
+      undefined,
+      managedDb(["p1"]),
+    )
+    expect(res.status).toBe(200)
+    abortFails = true
+    const bad = await manage("/api/threads/p1/stop")
+    expect(bad.status).toBe(502)
+  })
+
+  test("post sends a follow-up prompt into a persona-bound thread", async () => {
+    installManageFetch()
+    const res = await manage("/api/threads/p1/post", {
+      message: "Stop editing; report what you changed",
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ id: "p1", posted: true })
+    const prompt = calls.find((call) =>
+      call.url.endsWith("/session/p1/prompt_async"),
+    )
+    expect(prompt).toBeDefined()
+    expect(JSON.parse(String(prompt?.init?.body))).toEqual({
+      parts: [{ type: "text", text: "Stop editing; report what you changed" }],
+    })
+  })
+
+  test("post validates the message and refuses unmanaged threads", async () => {
+    installManageFetch()
+    expect((await manage("/api/threads/p1/post", {})).status).toBe(400)
+    expect((await manage("/api/threads/p1/post", { message: "" })).status).toBe(
+      400,
+    )
+    expect(
+      (await manage("/api/threads/u1/post", { message: "hi" })).status,
+    ).toBe(403)
+    expect(calls.some((call) => call.url.includes("prompt_async"))).toBeFalse()
+  })
+
+  test("manage routes report a sleeping desktop before any call", async () => {
+    installManageFetch()
+    phase = "sleeping"
+    expect((await manage("/api/threads/w1/stop")).status).toBe(409)
+    expect(
+      (await manage("/api/threads/w1/post", { message: "hi" })).status,
+    ).toBe(409)
+    expect(calls).toHaveLength(0)
   })
 })

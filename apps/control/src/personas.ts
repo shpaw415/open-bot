@@ -1,9 +1,15 @@
 import type { Db, User } from "@open-bot/db"
 import { MCP_NAME_PATTERN, SLUG_PATTERN } from "@open-bot/plugin-kit"
+import { type CatalogDirView, catalogDirView } from "./catalog-dirs"
 import { endpoint, isRunning, opencodeExec } from "./docker"
 import { names } from "./env"
 import { pluginMcpOwners, readMcpConfig } from "./mcp"
-import { type PluginOrigin, pluginOwnership } from "./plugin-ownership"
+import {
+  type PluginOrigin,
+  pluginOwnership,
+  pluginSkillGroups,
+} from "./plugin-ownership"
+import { vikingSkillList } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
 export const ASSISTANT_ID = "assistant"
@@ -444,35 +450,100 @@ export async function applyPersonaScope(
 // desktop disk plus every OpenViking skill, deduped) and the configured MCP
 // server names with their plugin owners. Follows the MCP tab down-pattern —
 // a sleeping desktop answers empty lists with live: false instead of
-// throwing.
+// throwing. Entries carry what the grouped picker needs: description (search),
+// plugin owner + manifest group label ("From <plugin>" sections), and the
+// user directory membership (batch-allow by directory).
 export type ScopeCatalog = {
-  skills: { name: string }[]
-  mcp: { name: string; plugin: string | null }[]
+  skills: {
+    name: string
+    description: string
+    plugin: PluginOrigin | null
+    group: string | null
+    dirId: string | null
+    /** Desktop seed skill (read-only on disk, fileable into directories). */
+    seed: boolean
+  }[]
+  mcp: { name: string; plugin: string | null; dirId: string | null }[]
+  dirs: {
+    skill: CatalogDirView[]
+    mcp: CatalogDirView[]
+  }
   live: boolean
+}
+
+// Seed skills living on the desktop disk (~/.config/opencode/skills), with
+// folded frontmatter descriptions. Shared by the persona picker's catalog
+// and the Skills tab (where they are listed read-only so every picker entry
+// can be organized into a directory).
+export async function seedSkillDescriptions(
+  userId: string,
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>()
+  try {
+    // The description probe folds multi-line YAML values (seed skills write
+    // `description: >-` blocks) — name-only search would hide exactly the
+    // text the grouped picker's search box is for. Best-effort: a skill
+    // whose frontmatter defeats the awk still lists with an empty
+    // description.
+    const disk = await opencodeExec(userId, [
+      "sh",
+      "-c",
+      `for f in "$HOME"/.config/opencode/skills/*/SKILL.md; do
+  [ -f "$f" ] || continue
+  n=$(sed -n 's/^name:[[:space:]]*//p' "$f" | head -n 1)
+  d=$(awk '/^---[[:space:]]*$/ { fm = !fm; if (seen && fm) exit; next }
+    !fm { next }
+    seen && /^[A-Za-z_-]+:/ { exit }
+    /^description:/ { sub(/^description:[[:space:]]*/, ""); buf = $0; seen = 1; next }
+    seen && /^[ \\t]/ { gsub(/^[ \\t]+/, ""); buf = buf " " $0 }
+    END { if (seen) { sub(/^[|>]+-?[ \\t]*/, "", buf); gsub(/^"+|"+$/, "", buf); print buf } }' "$f")
+  printf '%s\\t%s\\n' "$n" "$d"
+done`,
+    ])
+    if (disk.code === 0) {
+      for (const line of disk.stdout.split("\n")) {
+        const tab = line.indexOf("\t")
+        const name = (tab === -1 ? line : line.slice(0, tab)).trim()
+        if (!name) continue
+        const description =
+          tab === -1
+            ? ""
+            : line
+                .slice(tab + 1)
+                .trim()
+                .slice(0, 300)
+        found.set(name, description)
+      }
+    }
+  } catch {
+    // the disk listing is best-effort
+  }
+  return found
 }
 
 export async function skillCatalog(
   db: Db,
   userId: string,
 ): Promise<ScopeCatalog> {
-  if (!(await isRunning(names(userId).opencode)))
-    return { skills: [], mcp: [], live: false }
-  const found = new Set<string>()
-  try {
-    const disk = await opencodeExec(userId, [
-      "sh",
-      "-c",
-      `for f in "$HOME"/.config/opencode/skills/*/SKILL.md; do [ -f "$f" ] && sed -n 's/^name:[[:space:]]*//p' "$f"; done`,
-    ])
-    if (disk.code === 0) {
-      for (const line of disk.stdout.split("\n")) {
-        const name = line.trim()
-        if (name) found.add(name)
-      }
-    }
-  } catch {
-    // the disk listing is best-effort
+  const dirLists = {
+    skill: db.catalogDirs(userId, "skill").map(catalogDirView),
+    mcp: db.catalogDirs(userId, "mcp").map(catalogDirView),
   }
+  const dirOf = (kind: "skill" | "mcp") =>
+    new Map(
+      db.catalogDirItems(userId, kind).map((row) => [row.name, row.dirId]),
+    )
+  const skillDirs = dirOf("skill")
+  const mcpDirs = dirOf("mcp")
+  if (!(await isRunning(names(userId).opencode)))
+    return { skills: [], mcp: [], dirs: dirLists, live: false }
+  const ownership = pluginOwnership(db, userId)
+  const skillGroups = pluginSkillGroups(db, userId)
+  const found = await seedSkillDescriptions(userId)
+  // Names from the disk probe are seed skills; the OpenViking merge below
+  // only adds user/plugin skills, so the seed set is exactly what was on
+  // disk before it runs.
+  const seedNames = new Set(found.keys())
   try {
     const desktop = db.desktop(userId)
     if (desktop?.vikingKey) {
@@ -482,23 +553,25 @@ export async function skillCatalog(
         signal: AbortSignal.timeout(10_000),
       })
       if (res.ok) {
-        const body = (await res.json().catch(() => null)) as unknown
-        const list =
-          body &&
-          typeof body === "object" &&
-          Array.isArray((body as { skills?: unknown }).skills)
-            ? (body as { skills: unknown[] }).skills
-            : Array.isArray(body)
-              ? body
-              : []
+        // The list rides the {status:"ok", result:{skills:[...]}} envelope —
+        // parse it through the shared unwrap or the merge silently reads
+        // nothing and the picker shows seed skills only.
+        const list = vikingSkillList(await res.json().catch(() => null))
         for (const item of list) {
-          const name =
-            item &&
-            typeof item === "object" &&
-            typeof (item as { name?: unknown }).name === "string"
-              ? (item as { name: string }).name.trim()
-              : ""
-          if (name) found.add(name)
+          if (!(item && typeof item === "object")) continue
+          const name = (item as { name?: unknown }).name
+          if (typeof name !== "string" || !name.trim()) continue
+          if (!found.has(name.trim()))
+            found.set(
+              name.trim(),
+              typeof (item as { description?: unknown }).description ===
+                "string"
+                ? (item as { description: string }).description
+                    .split("\n")[0]
+                    .trim()
+                    .slice(0, 300)
+                : "",
+            )
         }
       }
     }
@@ -506,16 +579,31 @@ export async function skillCatalog(
     // the OpenViking listing is best-effort
   }
   const owners = pluginMcpOwners(db, userId)
-  const mcp: { name: string; plugin: string | null }[] = []
+  const mcp: { name: string; plugin: string | null; dirId: string | null }[] =
+    []
   try {
     for (const name of Object.keys(await readMcpConfig(userId)))
-      mcp.push({ name, plugin: owners.get(name)?.name ?? null })
+      mcp.push({
+        name,
+        plugin: owners.get(name)?.name ?? null,
+        dirId: mcpDirs.get(name) ?? null,
+      })
   } catch {
     // the mcp config read is best-effort; the picker still works for skills
   }
   return {
-    skills: [...found].sort().map((name) => ({ name })),
+    skills: [...found.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, description]) => ({
+        name,
+        description,
+        plugin: ownership.skillByName.get(name) ?? null,
+        group: skillGroups.get(name) ?? null,
+        dirId: skillDirs.get(name) ?? null,
+        seed: seedNames.has(name),
+      })),
     mcp: mcp.sort((a, b) => a.name.localeCompare(b.name)),
+    dirs: dirLists,
     live: true,
   }
 }

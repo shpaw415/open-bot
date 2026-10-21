@@ -50,6 +50,7 @@ import {
 } from "./CouncilView"
 import type { CronJobInfo } from "./CronView"
 import { orbState } from "./chat-controls"
+import { ChatLink } from "./chat-link"
 import {
   ACTIVITY_LABEL,
   applyMessageDelta,
@@ -78,10 +79,23 @@ import {
   vncFrameSrc,
 } from "./chat-view"
 import { Chip } from "./chip"
+import { MarkdownCodeBlock } from "./code-copy"
 import { ComposerPickers } from "./composer-controls"
-import { consumeComposerSeed, consumeNewThreadIntent } from "./dashboard-data"
+import {
+  clearComposerSeed,
+  consumeComposerSeed,
+  formatFrAgo,
+  peekComposerSeed,
+} from "./dashboard-data"
 import { useOverlayA11y } from "./dialog-a11y"
-import { readDraft, writeDraft } from "./draft"
+import {
+  blankDraftKey,
+  clearBlankDraft,
+  readBlankDraft,
+  readDraft,
+  writeBlankDraft,
+  writeDraft,
+} from "./draft"
 import {
   useDebounced,
   useEventStream,
@@ -93,6 +107,7 @@ import {
   AddIcon,
   AttachFileIcon,
   BlockIcon,
+  BoltIcon,
   ChatIcon,
   CheckCircleIcon,
   ChecklistIcon,
@@ -113,6 +128,7 @@ import {
   SearchIcon,
   SendIcon,
   StopIcon,
+  TimerIcon,
   TuneIcon,
   VolumeOffIcon,
   VolumeUpIcon,
@@ -121,10 +137,11 @@ import { Projects } from "./ide/Projects"
 import {
   type JoinedFile,
   joinedImage,
-  joinFileError,
+  pickJoinableFiles,
   promptParts,
   readJoinedFile,
 } from "./join-file"
+import { createLatestGuard } from "./latest-guard"
 import { MediaDownloadButton, MediaFullscreenButton } from "./MediaDownload"
 import { MediaVault } from "./MediaVault"
 import { Model3dView } from "./Model3dView"
@@ -133,6 +150,14 @@ import {
   getCachedMessages,
   putCachedMessages,
 } from "./message-cache"
+import {
+  dropQueuedHead,
+  enqueueQueued,
+  MAX_QUEUED_MESSAGES,
+  promoteQueued,
+  type QueuedMessage,
+  removeQueuedItem,
+} from "./message-queue"
 import {
   createSettingsSaver,
   type MeLike,
@@ -172,6 +197,7 @@ import {
 import type { WorkspaceTab } from "./routes"
 import Stack from "./stack"
 import { Tip } from "./Tip"
+import { STATES, THREAD, THREADS_UI } from "./texts"
 import { expandFolder, parseCollapsedFolders } from "./thread-folders"
 
 // the IDE keeps its own state; memo keeps workspace renders (streaming ticks,
@@ -228,7 +254,13 @@ type LocalReceipt = SendReceipt & { sessionId: string }
 
 function SendMark({ mark }: { mark: SendStatus }) {
   const label =
-    mark === "sending" ? "Sending" : mark === "sent" ? "Sent" : "Not sent"
+    mark === "sending"
+      ? "Sending"
+      : mark === "sent"
+        ? "Sent"
+        : mark === "queued"
+          ? THREADS_UI.queued
+          : "Not sent"
   return (
     <span
       className={`ob-send-mark${mark === "sent" ? " ob-send-mark-sent" : ""}${mark === "failed" ? " ob-send-mark-failed" : ""}`}
@@ -240,6 +272,8 @@ function SendMark({ mark }: { mark: SendStatus }) {
         <CircularProgress size={1} />
       ) : mark === "sent" ? (
         <CheckCircleIcon width={16} height={16} />
+      ) : mark === "queued" ? (
+        <TimerIcon width={16} height={16} />
       ) : (
         <BlockIcon width={16} height={16} />
       )}
@@ -366,8 +400,8 @@ function AppLauncher({
       sx={{ display: "flex", gap: 0.5, alignItems: "center" }}
     >
       <TextField
-        placeholder="Open app…"
-        aria-label="Open app"
+        placeholder="Ouvrir une application…"
+        aria-label="Ouvrir l’application"
         value={query}
         disabled={disabled || busy}
         sx={{ width: 170 }}
@@ -392,7 +426,7 @@ function AppLauncher({
         title={
           suggestions[0]
             ? `Launch ${suggestions[0].name}`
-            : "Type to pick an app"
+            : "Tapez pour choisir une application"
         }
       >
         <Button
@@ -437,13 +471,14 @@ function chatUrl(url: string, key: string): string {
 const markdownPlugins = [remarkGfm]
 
 const markdownComponents: Components = {
+  pre: MarkdownCodeBlock,
   a: ({ href, children, ...rest }) => {
     if (href?.startsWith("#project-ref/"))
       return <ProjectRefLink href={href}>{children}</ProjectRefLink>
     return (
-      <a href={href} {...rest}>
+      <ChatLink href={href} {...rest}>
         {children}
-      </a>
+      </ChatLink>
     )
   },
   img: ({ src, alt }) => {
@@ -633,7 +668,9 @@ function IdeThreadBar({
         >
           {[
             <option key="none" value="">
-              {sessions.length === 0 ? "No threads yet" : "Select a thread"}
+              {sessions.length === 0
+                ? "Aucune conversation pour l’instant"
+                : "Choisissez une conversation"}
             </option>,
             ...sessions.map((item) => (
               <option key={item.id} value={item.id}>
@@ -657,19 +694,14 @@ function IdeThreadBar({
   )
 }
 
+/** fr-CA relative time via the shared Intl formatter (was EN "25h ago"). */
 function formatAgo(ts: number): string {
-  if (!ts) return ""
-  const minutes = Math.round((Date.now() - ts) / 60_000)
-  if (minutes < 1) return "just now"
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 48) return `${hours}h ago`
-  return `${Math.round(hours / 24)}d ago`
+  return formatFrAgo(ts)
 }
 
 function formatWhen(ts: number | null): string {
   if (!ts) return "—"
-  return new Date(ts).toLocaleString(undefined, {
+  return new Date(ts).toLocaleString("fr-CA", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -682,13 +714,14 @@ function cronSchedule(job: CronJobInfo): string {
   if (job.kind === "every") {
     const seconds = job.everySeconds ?? 0
     if (seconds >= 86400 && seconds % 86400 === 0)
-      return `every ${seconds / 86400}d`
+      return `tous les ${seconds / 86400} j`
     if (seconds >= 3600 && seconds % 3600 === 0)
-      return `every ${seconds / 3600}h`
-    if (seconds >= 60 && seconds % 60 === 0) return `every ${seconds / 60}m`
-    return `every ${seconds}s`
+      return `toutes les ${seconds / 3600} h`
+    if (seconds >= 60 && seconds % 60 === 0)
+      return `toutes les ${seconds / 60} min`
+    return `toutes les ${seconds} s`
   }
-  return `once at ${formatWhen(job.atMs)}`
+  return `une fois, le ${formatWhen(job.atMs)}`
 }
 
 type BubbleViewProps = {
@@ -713,6 +746,8 @@ type BubbleViewProps = {
   onScreenClose: () => void
   onOpenPreview: () => void
   onOpenCouncil: (name: string) => void
+  onQueuedForce: (pendingId: string) => void
+  onQueuedRemove: (pendingId: string) => void
   previewLive: boolean
   previewOpened: boolean
   previewSrc: string
@@ -744,6 +779,8 @@ const MessageBubble = memo(function MessageBubble({
   onScreenClose,
   onOpenPreview,
   onOpenCouncil,
+  onQueuedForce,
+  onQueuedRemove,
   previewLive,
   previewOpened,
   previewSrc,
@@ -776,6 +813,30 @@ const MessageBubble = memo(function MessageBubble({
       }}
     >
       {mine && entry.mark ? <SendMark mark={entry.mark} /> : null}
+      {mine && entry.mark === "queued" && entry.pendingId ? (
+        <span className="ob-queued-actions">
+          <Tip title={THREADS_UI.forceSend}>
+            <IconButton
+              size="small"
+              aria-label={THREADS_UI.forceSend}
+              onClick={() => onQueuedForce(entry.pendingId as string)}
+              sx={{ color: "inherit" }}
+            >
+              <BoltIcon width={16} height={16} />
+            </IconButton>
+          </Tip>
+          <Tip title={THREADS_UI.removeQueued}>
+            <IconButton
+              size="small"
+              aria-label={THREADS_UI.removeQueued}
+              onClick={() => onQueuedRemove(entry.pendingId as string)}
+              sx={{ color: "inherit" }}
+            >
+              <CloseIcon width={16} height={16} />
+            </IconButton>
+          </Tip>
+        </span>
+      ) : null}
       <div className="ob-md">
         {message.text.trim() ? (
           <PluginSegments text={message.text} renderers={renderers} />
@@ -803,7 +864,7 @@ const MessageBubble = memo(function MessageBubble({
                     ? "You have the screen below."
                     : stamp === dismissedHandoff
                       ? "Screen closed."
-                      : screenError || "Opening this screen…"}
+                      : screenError || "Ouverture de l’écran…"}
               </Typography>
             )}
             {index === lastHandoff && !held && stamp !== dismissedHandoff ? (
@@ -814,7 +875,7 @@ const MessageBubble = memo(function MessageBubble({
                   disabled={!running || sending || stopping || controlBusy}
                   onClick={onTakeControl}
                 >
-                  Take control
+                  {THREADS_UI.takeControl}
                 </Button>
                 <Button
                   size="small"
@@ -1000,7 +1061,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
       label: string
       dir?: ThreadDirInfo
       items: SessionInfo[]
-    }[] = [{ key: "", label: "Threads", items: [] }]
+    }[] = [{ key: "", label: THREADS_UI.listTitle, items: [] }]
     for (const dir of dirs)
       sections.push({ key: dir.id, label: dir.name, dir, items: [] })
     for (const item of sessions) {
@@ -1125,7 +1186,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
       {selectMode ? null : (
         <IconButton
           size="small"
-          aria-label={`Actions for ${threadTitle(item)}`}
+          aria-label={THREADS_UI.actionsFor(threadTitle(item))}
           onClick={(event) => {
             event.stopPropagation()
             actions.menu(item, event.currentTarget)
@@ -1170,17 +1231,17 @@ const ThreadsPanel = memo(function ThreadsPanel({
           <>
             <CheckBox
               checked={allSelected}
-              aria-label="Select all threads"
+              aria-label="Tout sélectionner"
               onChange={() => actions.selectAll()}
               sx={{ p: 0.5, mr: 0.5 }}
             />
-            <Typography variant="subtitle2" sx={{ flex: 1 }}>
-              {selectedIds.size} selected
+            <Typography variant="subtitle2" component="p" sx={{ flex: 1 }}>
+              {THREADS_UI.selectedCount(selectedIds.size)}
             </Typography>
-            <Tip title="Delete selected">
+            <Tip title="Supprimer la sélection">
               <IconButton
                 size="small"
-                aria-label="Delete selected threads"
+                aria-label="Supprimer la sélection"
                 color="error"
                 disabled={selectedIds.size === 0}
                 onClick={actions.requestBatchDelete}
@@ -1188,10 +1249,10 @@ const ThreadsPanel = memo(function ThreadsPanel({
                 <DeleteIcon width={18} height={18} />
               </IconButton>
             </Tip>
-            <Tip title="Cancel selection">
+            <Tip title="Annuler la sélection">
               <IconButton
                 size="small"
-                aria-label="Cancel thread selection"
+                aria-label="Annuler la sélection"
                 onClick={actions.toggleSelectMode}
               >
                 <CloseIcon width={18} height={18} />
@@ -1200,23 +1261,23 @@ const ThreadsPanel = memo(function ThreadsPanel({
           </>
         ) : (
           <>
-            <Typography variant="subtitle2" sx={{ flex: 1 }}>
-              Threads
+            <Typography variant="subtitle2" component="h2" sx={{ flex: 1 }}>
+              {THREADS_UI.listTitle}
             </Typography>
-            <Tip title="Select threads">
+            <Tip title="Sélectionner les conversations">
               <IconButton
                 size="small"
-                aria-label="Select threads"
+                aria-label="Sélectionner les conversations"
                 disabled={actionBusy || sessions.length === 0}
                 onClick={actions.toggleSelectMode}
               >
                 <ChecklistIcon width={18} height={18} />
               </IconButton>
             </Tip>
-            <Tip title="New folder">
+            <Tip title="Nouveau dossier">
               <IconButton
                 size="small"
-                aria-label="New folder"
+                aria-label="Nouveau dossier"
                 disabled={actionBusy}
                 onClick={actions.newFolder}
               >
@@ -1250,15 +1311,15 @@ const ThreadsPanel = memo(function ThreadsPanel({
               <input
                 value={threadQuery}
                 onChange={(event) => setThreadQuery(event.currentTarget.value)}
-                placeholder="Filter loaded threads"
-                aria-label="Filter loaded threads"
+                placeholder="Filtrer les conversations chargées"
+                aria-label="Filtrer les conversations chargées"
                 type="search"
               />
               {threadQuery ? (
                 <button
                   type="button"
                   className="ob-filter-clear"
-                  aria-label="Clear thread filter"
+                  aria-label="Effacer le filtre de conversations"
                   onClick={() => setThreadQuery("")}
                 >
                   <CloseIcon width={13} height={13} />
@@ -1273,7 +1334,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
               onClick={actions.create}
               sx={{ justifyContent: "flex-start" }}
             >
-              New thread
+              {THREADS_UI.newThread}
             </Button>
           </Stack>
         </Box>
@@ -1407,7 +1468,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
                     ) : null}
                     {dir ? (
                       <>
-                        <Tip title={`New thread in ${dir.name}`}>
+                        <Tip title={THREADS_UI.newThreadIn(dir.name)}>
                           <IconButton
                             size="small"
                             aria-label={`New thread in ${dir.name}`}
@@ -1421,7 +1482,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
                         <Tip title={`Folder actions for ${dir.name}`}>
                           <IconButton
                             size="small"
-                            aria-label={`Actions for folder ${dir.name}`}
+                            aria-label={THREADS_UI.actionsForFolder(dir.name)}
                             onClick={(event) =>
                               actions.folderMenu(dir, event.currentTarget)
                             }
@@ -1585,8 +1646,24 @@ function Composer({
   modelsError: string
   onReloadModels: () => void
 }) {
+  // An example chosen while a draft exists must never silently replace it:
+  // the seed stays staged until the user picks "replace" or "keep" — the
+  // hint below the composer. Peeking (not consuming) keeps that choice
+  // stable across the composer's remounts.
+  const [skippedSeed, setSkippedSeed] = useState(() => {
+    if (sessionId) return ""
+    const seed = peekComposerSeed()
+    const stored =
+      readDraft(localStorage, sessionId) || readBlankDraft(localStorage, userId)
+    return stored && seed ? seed : ""
+  })
   const [draft, setDraft] = useState(() => {
-    const stored = readDraft(localStorage, sessionId)
+    const stored =
+      readDraft(localStorage, sessionId) ||
+      // A thread that does not exist server-side yet keeps its text under
+      // the user-scoped blank key, so a detour through Home or Settings
+      // never loses it.
+      (!sessionId ? readBlankDraft(localStorage, userId) : "")
     if (stored) return stored
     // adopt a draft typed before this thread existed
     if (sessionId && migrateDraft) {
@@ -1633,6 +1710,15 @@ function Composer({
         track.stop()
     }
   }, [])
+
+  // An explicit "Nouvelle conversation" lands ready to type: the blank view
+  // focuses the composer (desktop only — a phone would pop the virtual
+  // keyboard over the view it just reached).
+  useEffect(() => {
+    if (sessionId || mobile || running === false) return
+    const timer = window.setTimeout(() => messageInputRef.current?.focus(), 0)
+    return () => window.clearTimeout(timer)
+  }, [sessionId, mobile, running])
 
   function stopRecording() {
     if (recordTimerRef.current) {
@@ -1742,12 +1828,18 @@ function Composer({
     }
   }
 
+  /** The draft's storage target: the thread, or the user-scoped blank slot. */
+  function draftTarget(): string {
+    return sessionId || blankDraftKey(userId)
+  }
+
   function persistDraftNow(text: string) {
     if (writeTimer.current) {
       clearTimeout(writeTimer.current)
       writeTimer.current = null
     }
-    writeDraft(localStorage, sessionId, text)
+    if (sessionId) writeDraft(localStorage, sessionId, text)
+    else writeBlankDraft(localStorage, userId, text)
   }
 
   function updateDraft(text: string) {
@@ -1755,22 +1847,34 @@ function Composer({
     sharedDraftRef.current = text
     setDraft(text)
     if (writeTimer.current) clearTimeout(writeTimer.current)
+    const target = draftTarget()
     writeTimer.current = setTimeout(() => {
       writeTimer.current = null
-      writeDraft(localStorage, sessionId, text)
+      if (target.startsWith("ob-draft:blank:"))
+        writeBlankDraft(localStorage, userId, text)
+      else writeDraft(localStorage, target, text)
     }, DRAFT_WRITE_DELAY)
   }
 
-  // flush a pending draft write when leaving the thread or the page
+  // flush a pending draft write when leaving the thread — or when the
+  // document goes away. React cleanups never run on a full-page navigation,
+  // reload or tab close, so the debounced write would die with the timer:
+  // pagehide is the last reliable hook.
   useEffect(() => {
-    return () => {
+    const flush = () => {
       if (writeTimer.current) {
         clearTimeout(writeTimer.current)
         writeTimer.current = null
-        writeDraft(localStorage, sessionId, draftRef.current)
+        if (sessionId) writeDraft(localStorage, sessionId, draftRef.current)
+        else writeBlankDraft(localStorage, userId, draftRef.current)
       }
     }
-  }, [sessionId])
+    window.addEventListener("pagehide", flush)
+    return () => {
+      window.removeEventListener("pagehide", flush)
+      flush()
+    }
+  }, [sessionId, userId])
 
   function ensureSkills() {
     if (skillsRequestedRef.current) return
@@ -2041,15 +2145,17 @@ function Composer({
     }
   }
 
-  async function addJoined(list: FileList | null) {
-    if (!list?.length) return
+  async function addJoined(list: FileList | File[] | null) {
+    // The input's FileList is a live view: clearing the input below would
+    // empty it mid-loop, so snapshot before the first await.
+    const { accepted, errors } = pickJoinableFiles(
+      Array.from(list ?? []),
+      joined.length,
+    )
+    for (const message of errors) onError(message)
+    if (!accepted.length) return
     const next = [...joined]
-    for (const file of list) {
-      const problem = joinFileError(file, next.length)
-      if (problem) {
-        onError(problem)
-        break
-      }
+    for (const file of accepted) {
       try {
         next.push(await readJoinedFile(file))
       } catch (caught) {
@@ -2061,6 +2167,36 @@ function Composer({
     }
     rememberJoined(next)
   }
+
+  // A running turn no longer removes the Send button: sending joins the
+  // waiting list, so Send and Stop coexist while busy.
+  const sendDisabled =
+    !running || sending || stopping || (!draft.trim() && joined.length === 0)
+  const sendButton = mobile ? (
+    <IconButton
+      size="medium"
+      aria-label={canStop ? THREADS_UI.queuedHint : "Envoyer le message"}
+      disabled={sendDisabled}
+      onClick={() => void submitFlow()}
+      sx={{
+        flexShrink: 0,
+        bgcolor: "primary.main",
+        color: "primary.contrastText",
+      }}
+    >
+      {sending ? "…" : <SendIcon />}
+    </IconButton>
+  ) : (
+    <Button
+      variant="contained"
+      startIcon={<SendIcon />}
+      onClick={() => void submitFlow()}
+      disabled={sendDisabled}
+      sx={{ flexShrink: 0 }}
+    >
+      {sending ? "…" : "Envoyer"}
+    </Button>
+  )
 
   return (
     <>
@@ -2143,6 +2279,45 @@ function Composer({
             ))}
           </Stack>
         ) : null}
+        {!sessionId && skippedSeed ? (
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            className="ob-status-row"
+            sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+          >
+            <Typography
+              variant="caption"
+              color="textSecondary"
+              sx={{ flex: 1, minWidth: 160 }}
+            >
+              L’exemple a été ignoré pour préserver votre brouillon.
+            </Typography>
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => {
+                updateDraft(skippedSeed)
+                clearComposerSeed()
+                setSkippedSeed("")
+                messageInputRef.current?.focus()
+              }}
+            >
+              Remplacer par l’exemple
+            </Button>
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => {
+                clearComposerSeed()
+                setSkippedSeed("")
+              }}
+            >
+              Garder mon brouillon
+            </Button>
+          </Stack>
+        ) : null}
         <Box
           className="ob-composer-field"
           sx={{ position: "relative", width: "100%" }}
@@ -2154,7 +2329,9 @@ function Composer({
           />
           {!draft ? (
             <div className="ob-composer-placeholder" aria-hidden="true">
-              {running ? "Message OpenBot…" : "Start the desktop to chat"}
+              {running
+                ? "Message OpenBot…"
+                : "Démarrez l’environnement pour discuter"}
             </div>
           ) : null}
           <TextField
@@ -2247,13 +2424,15 @@ function Composer({
               }
               if (
                 event.key === "Enter" &&
+                !event.repeat &&
                 !event.shiftKey &&
                 // An IME composition confirms with Enter — never submit then.
                 !event.nativeEvent.isComposing
               ) {
                 event.preventDefault()
-                if (canStop) onStop()
-                else void submitFlow()
+                // A running turn no longer hijacks Enter: the message joins
+                // the waiting list. Stopping stays on the Stop button.
+                void submitFlow()
               }
             }}
             sx={{ width: "100%" }}
@@ -2292,7 +2471,7 @@ function Composer({
                       primary={
                         mention.stage === "name"
                           ? `No ${mention.section} match`
-                          : "No section match"
+                          : "Aucune section correspondante"
                       }
                     />
                   </ListItemButton>
@@ -2348,11 +2527,17 @@ function Composer({
             >
               <AttachFileIcon />
             </IconButton>
-            <Tip title={recording ? "Release to transcribe" : "Hold to speak"}>
+            <Tip
+              title={
+                recording ? "Relâcher pour transcrire" : "Maintenir pour parler"
+              }
+            >
               <IconButton
                 size="medium"
                 aria-label={
-                  recording ? "Release to transcribe" : "Hold to speak"
+                  recording
+                    ? "Relâcher pour transcrire"
+                    : "Maintenir pour parler"
                 }
                 disabled={!running || sending || stopping || transcribing}
                 sx={{
@@ -2403,13 +2588,13 @@ function Composer({
             <Tip
               title={
                 readAloud
-                  ? "Read replies out loud: on"
-                  : "Read replies out loud: off"
+                  ? "Lire les réponses à voix haute : activé"
+                  : "Lire les réponses à voix haute : désactivé"
               }
             >
               <IconButton
                 size="medium"
-                aria-label="Read replies out loud"
+                aria-label="Lire les réponses à voix haute"
                 aria-pressed={readAloud}
                 disabled={!running && !readAloud}
                 onClick={() => {
@@ -2444,7 +2629,7 @@ function Composer({
               mobile ? (
                 <IconButton
                   size="medium"
-                  aria-label="Stop"
+                  aria-label={THREADS_UI.stopReplyAria}
                   disabled={stopping || stopBusy}
                   onClick={onStop}
                   sx={{
@@ -2464,43 +2649,14 @@ function Composer({
                   onClick={onStop}
                   sx={{ flexShrink: 0 }}
                 >
-                  Stop
+                  {THREADS_UI.stopReply}
                 </Button>
               )
-            ) : mobile ? (
-              <IconButton
-                size="medium"
-                aria-label="Send message"
-                disabled={
-                  !running ||
-                  sending ||
-                  stopping ||
-                  (!draft.trim() && joined.length === 0)
-                }
-                onClick={() => void submitFlow()}
-                sx={{
-                  flexShrink: 0,
-                  bgcolor: "primary.main",
-                  color: "primary.contrastText",
-                }}
-              >
-                {sending ? "…" : <SendIcon />}
-              </IconButton>
+            ) : null}
+            {canStop ? (
+              <Tip title={THREADS_UI.queuedHint}>{sendButton}</Tip>
             ) : (
-              <Button
-                variant="contained"
-                startIcon={<SendIcon />}
-                onClick={() => void submitFlow()}
-                disabled={
-                  !running ||
-                  sending ||
-                  stopping ||
-                  (!draft.trim() && joined.length === 0)
-                }
-                sx={{ flexShrink: 0 }}
-              >
-                {sending ? "…" : "Send"}
-              </Button>
+              sendButton
             )}
           </Box>
           {/* Row 2 — only when the chat column is compact (phones, chat
@@ -2567,8 +2723,8 @@ function Composer({
           }}
         >
           <ListItemText
-            primary="Référencer un projet (@)"
-            secondary="Ouvre la liste des éléments disponibles"
+            primary="Ouvrir le sélecteur de contexte (@)"
+            secondary="Liste les projets, fichiers et applications référençables — tapez ensuite pour filtrer"
           />
         </ListItemButton>
       </Menu>
@@ -2581,6 +2737,7 @@ export function Workspace({
   tab,
   onTab,
   onMeRefreshed,
+  blankChatRef,
 }: {
   me: Me
   /** Active workspace view, owned by the shell's route. */
@@ -2589,6 +2746,14 @@ export function Workspace({
   onTab: (next: WorkspaceTab) => void
   /** Push a refreshed profile up so Config and the shell stay in sync. */
   onMeRefreshed?: (me: Me) => void
+  /**
+   * Shell-owned "open a blank conversation" intent (R02). True from the
+   * moment a "Nouvelle conversation" CTA is used until the user explicitly
+   * opens a thread or the first send creates one; never cleared by a slow
+   * history load or a phase transition. Survives StrictMode remounts
+   * because the shell owns it, not storage consumed at mount time.
+   */
+  blankChatRef: { current: boolean }
 }) {
   // Mid widths: the threads history becomes a temporary swap-in instead of a
   // second permanent column squeezing the composer (1024px laptops).
@@ -2597,7 +2762,6 @@ export function Workspace({
   // render side by side.
   const dialogIdBase = useId()
   const dialogIds = {
-    newThread: `${dialogIdBase}-new-thread`,
     renameThread: `${dialogIdBase}-rename-thread`,
     deleteThread: `${dialogIdBase}-delete-thread`,
     batchDelete: `${dialogIdBase}-batch-delete`,
@@ -2628,6 +2792,11 @@ export function Workspace({
   const [sending, setSending] = useState(false)
   const [stopBusy, setStopBusy] = useState(false)
   const [receipts, setReceipts] = useState<LocalReceipt[]>([])
+  // Per-thread waiting list: messages typed while a turn runs, flushed in
+  // order when the session goes idle. In-memory only, like receipts.
+  const [queuedBySession, setQueuedBySession] = useState<
+    Record<string, QueuedMessage[]>
+  >({})
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [threadsError, setThreadsError] = useState("")
@@ -2647,7 +2816,15 @@ export function Workspace({
   )
   const [personas, setPersonas] = useState<PersonaInfo[]>([])
   const [threadPersona, setThreadPersona] = useState<Record<string, string>>({})
-  const [newThreadOpen, setNewThreadOpen] = useState(false)
+  const [hasBlankDraft, setHasBlankDraft] = useState(() =>
+    Boolean(readBlankDraft(localStorage, me.id)),
+  )
+  // Re-read whenever the visible thread changes: typing in the blank
+  // composer (or sending, which clears the slot) is reflected here, so the
+  // "Reprendre le brouillon" affordance only shows while a draft exists.
+  useEffect(() => {
+    setHasBlankDraft(Boolean(readBlankDraft(localStorage, me.id)))
+  }, [me.id])
   const [newPersonaId, setNewPersonaId] = useState("assistant")
   const [menuThread, setMenuThread] = useState<SessionInfo | null>(null)
   const [dirs, setDirs] = useState<ThreadDirInfo[]>([])
@@ -2873,8 +3050,26 @@ export function Workspace({
   const [atBottom, setAtBottom] = useState(true)
   const messagesJsonRef = useRef("")
   const messagesRef = useRef<ChatMessage[]>([])
+  // Current-thread mirror for async guards: a tick or media load started for
+  // one thread must never paint after the user switched to another — the
+  // classic race shows the previous (often busy) thread's transcript under
+  // the newly selected one.
+  const sessionIdRef = useRef(sessionId)
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
+  // Separate guards per resource: a message tick must not invalidate an
+  // in-flight media load (both fire together on session.idle), only a
+  // newer load of the same kind does.
+  const tickGuard = useRef(createLatestGuard())
+  const mediaGuard = useRef(createLatestGuard())
   const menuAnchor = useRef<HTMLElement | null>(null)
   const restoredRef = useRef(false)
+  // Set once the first history load COMPLETES (success or failure). The
+  // restore decision must never run against a list that simply has not
+  // arrived yet: sessionsLoading starts false, so gating on it alone let
+  // the restore mark itself done against an empty list and never run again.
+  const sessionsLoadedRef = useRef(false)
   const stoppingRef = useRef(false)
 
   const running = phase === "running"
@@ -2911,7 +3106,7 @@ export function Workspace({
           (job): RefItemView => ({
             id: job.id,
             name: job.name,
-            description: `${job.enabled ? "" : "paused · "}${cronSchedule(job)}`,
+            description: `${job.enabled ? "" : "en pause · "}${cronSchedule(job)}`,
           }),
         ),
       },
@@ -2927,8 +3122,13 @@ export function Workspace({
         messages,
         receipts.filter((item) => item.sessionId === sessionId),
         mediaMap,
+        (queuedBySession[sessionId] ?? []).map((item) => ({
+          id: item.id,
+          text: item.text,
+          files: item.files.map((file) => file.name),
+        })),
       ),
-    [messages, receipts, sessionId, mediaMap],
+    [messages, receipts, sessionId, mediaMap, queuedBySession],
   )
   const turnIssue = useMemo(() => turnError(messages), [messages])
   const [dismissedTurnId, setDismissedTurnId] = useState("")
@@ -3043,6 +3243,53 @@ export function Workspace({
   const canStop = Boolean(
     sessionId && running && !stopping && (sending || threadBusy(sessionId)),
   )
+  // Waiting-list flush: when the session goes idle, the head of the queue
+  // becomes the next prompt. One message per idle window — the guard
+  // re-opens only once a real turn has been observed busy again (the flush
+  // send's own `sending` window must not count), or shortly after, in case
+  // a turn never surfaced in the status feed. A dead-turn banner (dropped
+  // connection, provider error) holds the queue: the resume flow owns that
+  // window, and flushing into it re-sent the same message mid-recovery.
+  const flushBlockRef = useRef(false)
+  const flushBlockSessionRef = useRef("")
+  const [flushKick, setFlushKick] = useState(0)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: prompt is a fresh closure each render by design; flushKick deliberately re-checks after the guard reopens
+  useEffect(() => {
+    if (!sessionId || !running || stopping) return
+    if (flushBlockSessionRef.current !== sessionId) {
+      flushBlockSessionRef.current = sessionId
+      flushBlockRef.current = false
+    }
+    const queue = queuedBySession[sessionId] ?? []
+    if (queue.length === 0) return
+    if (turnIssue && turnIssueKey !== dismissedTurnId) return
+    if (threadBusy(sessionId)) {
+      flushBlockRef.current = false
+      return
+    }
+    if (sending || flushBlockRef.current) return
+    const head = queue[0]
+    if (!head) return
+    flushBlockRef.current = true
+    setQueuedBySession((prev) => ({
+      ...prev,
+      [sessionId]: dropQueuedHead(prev[sessionId] ?? []),
+    }))
+    void prompt(head.text, head.files).then(() => {
+      setTimeout(() => {
+        flushBlockRef.current = false
+        setFlushKick((kick) => kick + 1)
+      }, 2500)
+    })
+  }, [
+    sessionId,
+    running,
+    stopping,
+    sending,
+    threadBusy,
+    queuedBySession,
+    flushKick,
+  ])
   // Auto-resume: only when a turn dies from a dropped connection. Provider
   // rejections (quota, spend caps) stay on the banner with their own text.
   // One automatic attempt per dead turn, throttled so a long outage cannot
@@ -3139,6 +3386,8 @@ export function Workspace({
     screenClose: () => {},
     openPreview: () => {},
     openCouncil: (_name: string) => {},
+    queuedForce: (_pendingId: string) => {},
+    queuedRemove: (_pendingId: string) => {},
   })
   const bubbleActions = useMemo(
     () => ({
@@ -3147,6 +3396,10 @@ export function Workspace({
       screenClose: () => bubbleActionsRef.current.screenClose(),
       openPreview: () => bubbleActionsRef.current.openPreview(),
       openCouncil: (name: string) => bubbleActionsRef.current.openCouncil(name),
+      queuedForce: (pendingId: string) =>
+        bubbleActionsRef.current.queuedForce(pendingId),
+      queuedRemove: (pendingId: string) =>
+        bubbleActionsRef.current.queuedRemove(pendingId),
     }),
     [],
   )
@@ -3204,6 +3457,8 @@ export function Workspace({
       setCouncilName(name)
       setCouncilMode(mobile ? "overlay" : "pane")
     },
+    queuedForce: (pendingId) => void forceQueued(pendingId),
+    queuedRemove: (pendingId) => removeQueuedMessage(pendingId),
   }
   threadActionsRef.current = {
     select: selectThread,
@@ -3211,20 +3466,12 @@ export function Workspace({
       menuAnchor.current = anchor
       setMenuThread(item)
     },
-    create: () => {
-      setNewPersonaId("assistant")
-      setNewThreadDir("")
-      setNewThreadOpen(true)
-    },
+    create: () => startBlankThread(),
     newFolder: () => {
       setFolderName("")
       setFolderDialog({ mode: "create" })
     },
-    createIn: (dirId) => {
-      setNewPersonaId("assistant")
-      setNewThreadDir(dirId)
-      setNewThreadOpen(true)
-    },
+    createIn: (dirId) => startBlankThread(dirId),
     folderMenu: (dir, anchor) => {
       menuAnchor.current = anchor
       setFolderMenuDir(dir)
@@ -3279,18 +3526,17 @@ export function Workspace({
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           return res.json()
         }),
-        api<{ personas?: PersonaInfo[] }>("/api/personas").catch(() => ({
-          personas: [],
-        })),
+        // Auxiliary sources fail soft but NOT to empty: null keeps the last
+        // good data on screen instead of wiping folders/personas/assignments
+        // because one auxiliary request hiccuped.
+        api<{ personas?: PersonaInfo[] }>("/api/personas").catch(() => null),
         api<{ threads?: { sessionId: string; personaId: string }[] }>(
           "/api/personas/threads",
-        ).catch(() => ({ threads: [] })),
-        api<{ dirs?: ThreadDirInfo[] }>("/api/thread-dirs").catch(() => ({
-          dirs: [],
-        })),
+        ).catch(() => null),
+        api<{ dirs?: ThreadDirInfo[] }>("/api/thread-dirs").catch(() => null),
         api<{ threads?: { sessionId: string; dirId: string }[] }>(
           "/api/thread-dirs/assignments",
-        ).catch(() => ({ threads: [] })),
+        ).catch(() => null),
       ])
       setSessions(
         (Array.isArray(list) ? (list as SessionInfo[]) : [])
@@ -3307,19 +3553,23 @@ export function Workspace({
           ? (status as Record<string, SessionStatus>)
           : {},
       )
-      setPersonas(personaBody.personas ?? [])
-      const assigned: Record<string, string> = {}
-      for (const row of assignmentBody.threads ?? []) {
-        if (row.sessionId && row.personaId)
-          assigned[row.sessionId] = row.personaId
+      if (personaBody) setPersonas(personaBody.personas ?? [])
+      if (assignmentBody) {
+        const assigned: Record<string, string> = {}
+        for (const row of assignmentBody.threads ?? []) {
+          if (row.sessionId && row.personaId)
+            assigned[row.sessionId] = row.personaId
+        }
+        setThreadPersona(assigned)
       }
-      setThreadPersona(assigned)
-      setDirs(dirsBody.dirs ?? [])
-      const dirAssigned: Record<string, string> = {}
-      for (const row of dirAssignBody.threads ?? []) {
-        if (row.sessionId && row.dirId) dirAssigned[row.sessionId] = row.dirId
+      if (dirsBody) setDirs(dirsBody.dirs ?? [])
+      if (dirAssignBody) {
+        const dirAssigned: Record<string, string> = {}
+        for (const row of dirAssignBody.threads ?? []) {
+          if (row.sessionId && row.dirId) dirAssigned[row.sessionId] = row.dirId
+        }
+        setThreadDirMap(dirAssigned)
       }
-      setThreadDirMap(dirAssigned)
     } catch (caught) {
       // desktop may have gone to sleep; the next tick retries — but the
       // failure is never rendered as "no conversations".
@@ -3327,6 +3577,7 @@ export function Workspace({
         caught instanceof Error ? caught.message : "chargement impossible",
       )
     } finally {
+      sessionsLoadedRef.current = true
       setSessionsLoading(false)
     }
   }, [])
@@ -3357,7 +3608,7 @@ export function Workspace({
       await api("/api/desktop/stop", { method: "POST" })
       setPhase("sleeping")
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "stop failed")
+      setError(caught instanceof Error ? caught.message : "Échec de l’arrêt")
     } finally {
       stoppingRef.current = false
       setStopping(false)
@@ -3471,15 +3722,21 @@ export function Workspace({
   }, [sessionId, running])
 
   const loadMedia = useCallback(async () => {
-    if (!sessionId || !running) {
+    const id = sessionId
+    if (!id || !running) {
       setMediaMap(new Map())
       return
     }
+    const seq = mediaGuard.current.begin()
     try {
       const res = await fetch(
-        `/api/workspace/snapshots?sessionId=${encodeURIComponent(sessionId)}`,
+        `/api/workspace/snapshots?sessionId=${encodeURIComponent(id)}`,
       )
       if (!res.ok) return
+      // A late response for the previous thread must not replace the
+      // current thread's media map.
+      if (!mediaGuard.current.isCurrent(seq) || sessionIdRef.current !== id)
+        return
       const body = (await res.json()) as {
         media?: { messageId: string; path: string; url: string }[]
       }
@@ -3500,24 +3757,29 @@ export function Workspace({
   const scheduleMediaLoad = useDebounced(() => void loadMedia(), 500)
 
   const tick = useCallback(async () => {
-    if (!sessionId || !running) return
+    const id = sessionId
+    if (!id || !running) return
+    const seq = tickGuard.current.begin()
+    const isCurrent = () =>
+      tickGuard.current.isCurrent(seq) && sessionIdRef.current === id
     try {
-      const messageRes = await fetch(
-        `/api/opencode/session/${sessionId}/message`,
-      )
+      const messageRes = await fetch(`/api/opencode/session/${id}/message`)
       const body = await messageRes.json()
+      // A late response for the previous thread must not overwrite the
+      // view, the message refs, or the delta upsert base (messagesRef).
+      if (!isCurrent()) return
       const next = Array.isArray(body) ? body : []
       const payload = JSON.stringify(next)
       if (payload !== messagesJsonRef.current) {
         messagesJsonRef.current = payload
         messagesRef.current = next
         setMessages(next)
-        putCachedMessages(sessionId, payload, next)
+        putCachedMessages(id, payload, next)
       }
     } catch {
       return
     } finally {
-      setMessagesLoading(false)
+      if (isCurrent()) setMessagesLoading(false)
     }
     try {
       const statusRes = await fetch("/api/opencode/session/status")
@@ -3576,6 +3838,12 @@ export function Workspace({
       if (type === "session.deleted" && eventTouchesSession(event, sessionId)) {
         writeDraft(localStorage, sessionId, "")
         dropCachedMessages(sessionId)
+        setQueuedBySession((prev) => {
+          if (!prev[sessionId]?.length) return prev
+          const next = { ...prev }
+          delete next[sessionId]
+          return next
+        })
         setSessionId("")
         setMessages([])
         localStorage.removeItem(THREAD_KEY)
@@ -3651,23 +3919,31 @@ export function Workspace({
   }, [running, subscribe, scheduleThreads])
 
   useEffect(() => {
-    if (!running || restoredRef.current || sessionsLoading) return
-    // "Nouvelle conversation" from Home: the next chat view is a blank
-    // composer, not the restored last thread. Consumed once per mount.
-    if (consumeNewThreadIntent()) {
-      restoredRef.current = true
-      setSessionId("")
-      setMessages([])
-      setMessagesLoading(false)
-      return
-    }
+    if (!running || restoredRef.current || !sessionsLoadedRef.current) return
     restoredRef.current = true
+    // An explicit "Nouvelle conversation" intent wins over every automatic
+    // restore — phase changes, slow history, reconnections, refocus — until
+    // the user picks a thread or the first send creates one. Plain /chat
+    // visits restore normally once the intent is gone.
+    if (blankChatRef.current && !sessionId) return
     const stored = localStorage.getItem(THREAD_KEY)
     if (stored && !sessionId && sessions.some((item) => item.id === stored)) {
       setSessionId(stored)
       setMessagesLoading(true)
     }
-  }, [running, sessions, sessionsLoading, sessionId])
+  }, [running, sessions, sessionId, blankChatRef])
+
+  // The intent arrives while this Workspace instance stays mounted (the
+  // Home detour is a tab switch, not an unmount): landing on the chat tab
+  // with the intent active clears the view to a blank composer. Idempotent
+  // under StrictMode; the intent itself persists in the shell until an
+  // explicit selection or the first send clears it.
+  useEffect(() => {
+    if (tab !== "chat" || !blankChatRef.current || !sessionId) return
+    setSessionId("")
+    setMessages([])
+    setMessagesLoading(false)
+  }, [tab, sessionId, blankChatRef])
 
   useEffect(() => {
     setNoticeFocus({ tab, sessionId })
@@ -3692,16 +3968,37 @@ export function Workspace({
       const id = (event as CustomEvent<{ sessionId?: string }>).detail
         ?.sessionId
       if (!id) return
-      setSessionId(id)
-      setMessages([])
-      setMessagesLoading(true)
+      // A voluntary open of a specific thread ends the blank intent.
+      blankChatRef.current = false
+      if (id === sessionId) {
+        // Re-opening the visible thread: setSessionId would be a React
+        // no-op, so neither the cache-paint effect nor the tick effect
+        // re-runs — repaint from cache and force a reconciliation fetch.
+        const cached = getCachedMessages(id)
+        if (cached) {
+          messagesJsonRef.current = cached.payload
+          messagesRef.current = cached.messages
+          setMessages(cached.messages)
+          setMessagesLoading(false)
+        }
+        stickRef.current = true
+        setAtBottom(true)
+        scheduleTick()
+      } else {
+        setSessionId(id)
+        setMessages([])
+        setMessagesLoading(true)
+        // Same last-open memory as an explicit list pick: a reload restores
+        // the thread the user actually opened last, whatever the path.
+        localStorage.setItem(THREAD_KEY, id)
+      }
       setNotifyFocus((current) => ({ sessionId: id, seq: current.seq + 1 }))
       onTab("chat")
       if (mobile) setThreadsOpen(false)
     }
     window.addEventListener(OPEN_THREAD_EVENT, onOpen)
     return () => window.removeEventListener(OPEN_THREAD_EVENT, onOpen)
-  }, [mobile, onTab])
+  }, [sessionId, mobile, onTab, blankChatRef, scheduleTick])
 
   // the composer owns the draft text; track which thread it belongs to so a
   // draft typed before a thread exists can migrate to the first thread
@@ -3850,7 +4147,8 @@ export function Workspace({
       setCouncilData(next)
       setCouncilError("")
       setCouncilMemberId((current) =>
-        next.members.some((member) => member.sessionId === current)
+        next.members.some((member) => member.sessionId === current) ||
+        (next.subagents ?? []).some((sub) => sub.sessionId === current)
           ? current
           : (next.members[0]?.sessionId ?? ""),
       )
@@ -4017,8 +4315,8 @@ export function Workspace({
     if (!running || stopping) {
       setError(
         stopping
-          ? "Desktop is stopping. Wait, then send again."
-          : "Desktop is not ready. Wait until it is running, then send again.",
+          ? "L’environnement se met en veille. Attendez, puis renvoyez."
+          : "L’environnement n’est pas prêt. Attendez qu’il fonctionne, puis renvoyez.",
       )
       return false
     }
@@ -4045,10 +4343,21 @@ export function Workspace({
       if (!id) {
         const created = await api<{ id: string }>("/api/opencode/session", {
           method: "POST",
-          body: JSON.stringify({}),
+          // The blank composer's Assistant/Folder picks ride the same
+          // session-create contract the old dialog used; "assistant"/no
+          // folder send an empty body like before.
+          body: blankSessionBody(),
         })
         id = created.id
         draftSessionRef.current = id
+        // First accepted send: the blank intent ends exactly once, with the
+        // session the composer text migrates into. The picks are consumed.
+        blankChatRef.current = false
+        setNewPersonaId("assistant")
+        setNewThreadDir("")
+        setHasBlankDraft(false)
+        clearBlankDraft(localStorage, me.id)
+        clearComposerSeed()
         setSessionId(id)
         localStorage.setItem(THREAD_KEY, id)
         setReceipts((prev) =>
@@ -4108,17 +4417,69 @@ export function Workspace({
   // sends one message; the composer owns draft/joined restore on failure
   async function submit(text: string, files: JoinedFile[]): Promise<boolean> {
     rememberJoined([])
+    // A running turn no longer blocks the composer: the message joins the
+    // waiting list and the flush sends it when the turn ends. Queued
+    // messages live ONLY in the queue state (the bubble renders from it) —
+    // never as receipts — so nothing can orphan a ghost "En attente" bubble.
+    if (sessionId && canStop) {
+      const item = { id: clientId(), text, files }
+      const result = enqueueQueued(queuedBySession[sessionId] ?? [], item)
+      if (!result) {
+        setError(THREADS_UI.queueFull(MAX_QUEUED_MESSAGES))
+        rememberJoined(files)
+        return false
+      }
+      if (!result.duplicate) {
+        setQueuedBySession((prev) => {
+          // Re-checked inside the updater so two rapid submits cannot
+          // overwrite each other with a stale queue.
+          const merged = enqueueQueued(prev[sessionId] ?? [], item)
+          return merged && !merged.duplicate
+            ? { ...prev, [sessionId]: merged.queue }
+            : prev
+        })
+      }
+      return true
+    }
     const accepted = await prompt(text, files)
     if (!accepted) rememberJoined(files)
     return accepted
   }
 
+  /**
+   * Every "Nouvelle conversation" entry (thread list, drawer, folder "+",
+   * search) lands on the same blank composer the Home/Help CTAs open through
+   * the shell intent: a view, never a server-side row — the session is
+   * created by the first send, which then carries the assistant/folder
+   * picks. Idempotent: running it twice leaves the same blank view.
+   */
+  function startBlankThread(dirId = "") {
+    blankChatRef.current = true
+    setNewPersonaId("assistant")
+    setNewThreadDir(dirId)
+    if (sessionId) {
+      setSessionId("")
+      setMessages([])
+      setMessagesLoading(false)
+    }
+    setError("")
+    setThreadsOpen(false)
+    setDrawerOpen(false)
+    onTab("chat")
+  }
+
   function selectThread(id: string) {
     if (id !== sessionId) {
+      // An explicit pick from the history ends the blank intent.
+      blankChatRef.current = false
       setSessionId(id)
       setMessages([])
       setMessagesLoading(true)
       localStorage.setItem(THREAD_KEY, id)
+    } else {
+      // Re-clicking the visible thread refreshes in place — the
+      // sessionId effects never re-run for the same id.
+      scheduleTick()
     }
     if (mobile) setThreadsOpen(false)
   }
@@ -4175,29 +4536,19 @@ export function Workspace({
     )
   }
 
-  async function newThread() {
-    if (!running || actionBusy) return
-    setError("")
-    setActionBusy(true)
-    try {
-      const created = await api<SessionInfo>("/api/opencode/session", {
-        method: "POST",
-        body: JSON.stringify({
-          personaId: newPersonaId || "assistant",
-          ...(newThreadDir ? { dirId: newThreadDir } : {}),
-        }),
-      })
-      setSessionId(created.id)
-      setMessages([])
-      localStorage.setItem(THREAD_KEY, created.id)
-      setThreadsOpen(false)
-      setNewThreadOpen(false)
-      await loadThreads()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "new thread failed")
-    } finally {
-      setActionBusy(false)
-    }
+  /**
+   * The blank composer's secondary picks (Assistant / Dossier), applied when
+   * the first send creates the session — the same server contract the old
+   * new-thread dialog used, but nothing exists server-side before an
+   * explicit send.
+   */
+  function blankSessionBody(): string {
+    return JSON.stringify({
+      ...(newPersonaId && newPersonaId !== "assistant"
+        ? { personaId: newPersonaId }
+        : {}),
+      ...(newThreadDir ? { dirId: newThreadDir } : {}),
+    })
   }
 
   async function moveThread(id: string, dirId: string | null) {
@@ -4215,7 +4566,9 @@ export function Workspace({
       })
       await loadThreads()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "move failed")
+      setError(
+        caught instanceof Error ? caught.message : "Échec du déplacement",
+      )
     }
   }
 
@@ -4239,7 +4592,11 @@ export function Workspace({
       setFolderDialog(null)
       await loadThreads()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "folder save failed")
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Échec de l’enregistrement du dossier",
+      )
     } finally {
       setActionBusy(false)
     }
@@ -4256,7 +4613,9 @@ export function Workspace({
       await loadThreads()
     } catch (caught) {
       setError(
-        caught instanceof Error ? caught.message : "folder delete failed",
+        caught instanceof Error
+          ? caught.message
+          : "Échec de la suppression du dossier",
       )
     } finally {
       setActionBusy(false)
@@ -4276,7 +4635,7 @@ export function Workspace({
       setRenameTarget(null)
       await loadThreads()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "rename failed")
+      setError(caught instanceof Error ? caught.message : "Échec du renommage")
     } finally {
       setActionBusy(false)
     }
@@ -4301,7 +4660,9 @@ export function Workspace({
       }
       await loadThreads()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "delete failed")
+      setError(
+        caught instanceof Error ? caught.message : "Échec de la suppression",
+      )
     } finally {
       setActionBusy(false)
     }
@@ -4343,7 +4704,7 @@ export function Workspace({
       if (failed.length === ids.length) setError("delete failed")
       else
         setError(
-          `Deleted ${ids.length - failed.length} of ${ids.length} threads — the rest failed`,
+          `${ids.length - failed.length} sur ${ids.length} conversations supprimées — les autres ont échoué`,
         )
     }
     await loadThreads()
@@ -4356,10 +4717,44 @@ export function Workspace({
     try {
       await api(`/api/opencode/session/${sessionId}/abort`, { method: "POST" })
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "stop failed")
+      setError(caught instanceof Error ? caught.message : "Échec de l’arrêt")
     } finally {
       setStopBusy(false)
     }
+  }
+
+  // Force-send: jump the queue and interrupt the running turn; the idle
+  // transition flushes the promoted message right away.
+  async function forceQueued(pendingId: string) {
+    if (!sessionId || !running || stopping || sending) return
+    setQueuedBySession((prev) => ({
+      ...prev,
+      [sessionId]: promoteQueued(prev[sessionId] ?? [], pendingId),
+    }))
+    // A dead-turn banner holds the queue for the resume flow; forcing a
+    // send is an explicit user decision that steps over it.
+    if (turnIssue) setDismissedTurnId(turnIssue.messageId || turnIssue.detail)
+    if (canStop) {
+      try {
+        await api(`/api/opencode/session/${sessionId}/abort`, {
+          method: "POST",
+        })
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Échec de l’arrêt")
+      }
+      return
+    }
+    // Already idle (e.g. a previous flush failed): reopen the window now.
+    flushBlockRef.current = false
+    setFlushKick((kick) => kick + 1)
+  }
+
+  function removeQueuedMessage(pendingId: string) {
+    if (!sessionId) return
+    setQueuedBySession((prev) => ({
+      ...prev,
+      [sessionId]: removeQueuedItem(prev[sessionId] ?? [], pendingId),
+    }))
   }
 
   async function abortThread(id: string) {
@@ -4591,8 +4986,14 @@ export function Workspace({
           className="ob-mobile-bar ob-workspace-top"
           sx={{ minHeight: 40, flexShrink: 0, pr: 0.5 }}
         >
+          {/* The view's one heading. On the chat tab it always names the
+              current context (thread, blank composer, or the view), so the
+              outline never depends on a conversation being open — and it is
+              never an empty heading on Desktop/Projects/Media, where each
+              view carries its own title. Compact look, real h1/p element. */}
           <Typography
             variant="subtitle2"
+            component={tab === "chat" ? "h1" : "p"}
             sx={{
               flex: 1,
               minWidth: 0,
@@ -4608,8 +5009,8 @@ export function Workspace({
               ? activeThread
                 ? threadTitle(activeThread)
                 : sessionId
-                  ? "Nouvelle conversation"
-                  : ""
+                  ? THREAD.untitled
+                  : THREADS_UI.listTitle
               : ""}
           </Typography>
           {mobile ? null : running ? (
@@ -4647,7 +5048,7 @@ export function Workspace({
           {mobile ? (
             <IconButton
               size="small"
-              aria-label="Desktop options"
+              aria-label={THREADS_UI.desktopOptions}
               aria-haspopup="dialog"
               aria-expanded={drawerOpen}
               onClick={() => setDrawerOpen(true)}
@@ -4693,7 +5094,7 @@ export function Workspace({
                 startIcon={<ChatIcon />}
                 onClick={() => setThreadsOpen((open) => !open)}
               >
-                {threadsOpen ? "Hide threads" : "Threads"}
+                {threadsOpen ? THREADS_UI.hideThreads : THREADS_UI.listTitle}
               </Button>
               {!threadsOpen && sessions.some((item) => showUnread(item.id)) ? (
                 <span
@@ -4785,6 +5186,99 @@ export function Workspace({
                     {personaName(threadPersona[sessionId])}
                   </Typography>
                 ) : null}
+                {/* A blank draft survives detours and reloads; when another
+                    thread is open, the recovery stays one visible tap away —
+                    never a hidden detour through Home. */}
+                {sessionId && hasBlankDraft && running ? (
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    className="ob-status-row"
+                    sx={{ px: mobile ? 1 : 1.5, py: 0.5 }}
+                  >
+                    <Typography
+                      variant="caption"
+                      color="textSecondary"
+                      sx={{ flex: 1, minWidth: 0 }}
+                    >
+                      Un brouillon non envoyé est conservé sur cet appareil.
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => startBlankThread()}
+                    >
+                      Reprendre le brouillon
+                    </Button>
+                  </Stack>
+                ) : null}
+                {/* The blank view's secondary picks — the same
+                    assistant/folder choice the old new-thread dialog owned.
+                    They apply when the first send creates the session. */}
+                {!sessionId && running ? (
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    sx={{
+                      px: mobile ? 1 : 1.5,
+                      pt: 0.75,
+                      flexWrap: "wrap",
+                      rowGap: 0.5,
+                    }}
+                  >
+                    <Typography variant="caption" color="textSecondary">
+                      Assistant
+                    </Typography>
+                    <Select
+                      name="blank-persona"
+                      label=""
+                      value={newPersonaId}
+                      disabled={actionBusy}
+                      sx={{ width: 190 }}
+                      onSelect={setNewPersonaId}
+                    >
+                      {(personas.length
+                        ? personas
+                        : [
+                            {
+                              id: "assistant",
+                              name: "Assistant",
+                              instruction: "",
+                              builtin: true,
+                            },
+                          ]
+                      ).map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                    <Typography variant="caption" color="textSecondary">
+                      Dossier
+                    </Typography>
+                    <Select
+                      name="blank-folder"
+                      label=""
+                      value={newThreadDir}
+                      disabled={actionBusy}
+                      sx={{ width: 190 }}
+                      onSelect={setNewThreadDir}
+                    >
+                      {[
+                        <option key="none" value="">
+                          Aucun dossier
+                        </option>,
+                        ...dirs.map((dir) => (
+                          <option key={dir.id} value={dir.id}>
+                            {dir.name}
+                          </option>
+                        )),
+                      ]}
+                    </Select>
+                  </Stack>
+                ) : null}
                 {stopping ? (
                   <Stack
                     direction="row"
@@ -4795,7 +5289,7 @@ export function Workspace({
                   >
                     <CircularProgress size={1.2} />
                     <Typography variant="caption" color="textSecondary">
-                      Stopping the desktop…
+                      {THREADS_UI.sleepStopping}
                     </Typography>
                   </Stack>
                 ) : null}
@@ -4822,11 +5316,11 @@ export function Workspace({
                       sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
                       spacing={1}
                     >
-                      <Typography variant="subtitle1">
-                        Desktop is asleep
+                      <Typography variant="subtitle1" component="p">
+                        {THREADS_UI.screenAsleep}
                       </Typography>
                       <Typography variant="body2" color="textSecondary">
-                        Start the desktop to chat with OpenCode.
+                        {THREADS_UI.screenAsleepBody}
                       </Typography>
                       <Button
                         variant="contained"
@@ -4834,7 +5328,7 @@ export function Workspace({
                         onClick={() => void start()}
                         sx={{ mt: 1 }}
                       >
-                        Start desktop
+                        Démarrer l’environnement
                       </Button>
                     </Stack>
                   ) : messagesLoading && shown.length === 0 ? (
@@ -4886,17 +5380,17 @@ export function Workspace({
                       sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
                       spacing={1}
                     >
-                      <Typography variant="subtitle1">
+                      <Typography variant="subtitle1" component="p">
                         {phase === "starting"
-                          ? "Opening the desktop"
-                          : "No messages yet"}
+                          ? "L’environnement démarre"
+                          : "Aucun message pour l’instant"}
                       </Typography>
                       <Typography variant="body2" color="textSecondary">
                         {phase === "starting"
-                          ? "The model is not ready until the desktop is up."
+                          ? "Le modèle n’est utilisable qu’une fois l’environnement démarré."
                           : model
-                            ? `Using ${modelName(model)}. Ask anything.`
-                            : "Pick a model, then ask anything."}
+                            ? `Avec ${modelName(model)}. Demandez ce que vous voulez.`
+                            : "Choisissez un modèle, puis demandez ce que vous voulez."}
                       </Typography>
                       {phase !== "starting" && !model ? (
                         <Button
@@ -4908,7 +5402,7 @@ export function Workspace({
                               ?.focus()
                           }}
                         >
-                          Choose a model
+                          Choisir un modèle
                         </Button>
                       ) : null}
                     </Stack>
@@ -4938,6 +5432,8 @@ export function Workspace({
                           onScreenClose={bubbleActions.screenClose}
                           onOpenPreview={bubbleActions.openPreview}
                           onOpenCouncil={bubbleActions.openCouncil}
+                          onQueuedForce={bubbleActions.queuedForce}
+                          onQueuedRemove={bubbleActions.queuedRemove}
                           councilOpened={councilMode !== "closed"}
                           previewLive={showLivePreview({
                             preview: Boolean(entry.message.preview),
@@ -5114,6 +5610,7 @@ export function Workspace({
                 onSelect={setCouncilMemberId}
                 subscribe={subscribe}
                 live={live}
+                mobile={mobile}
               />
             ) : null}
             {councilMode === "pane" && !councilData ? (
@@ -5156,6 +5653,7 @@ export function Workspace({
             onSelect={setCouncilMemberId}
             subscribe={subscribe}
             live={live}
+            mobile={mobile}
           />
         ) : null}
         {councilMode === "overlay" && !councilData ? (
@@ -5192,16 +5690,20 @@ export function Workspace({
         >
           {!running ? (
             <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-              <Typography variant="subtitle1">Desktop is asleep</Typography>
+              <Typography variant="subtitle1" component="p">
+                {THREADS_UI.screenAsleep}
+              </Typography>
               <Typography variant="body2" color="textSecondary">
-                Start the desktop to view a thread screen.
+                {THREADS_UI.screenAsleepBody}
               </Typography>
             </Paper>
           ) : !sessionId ? (
             <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-              <Typography variant="subtitle1">No thread selected</Typography>
+              <Typography variant="subtitle1" component="p">
+                {THREADS_UI.noThreadSelected}
+              </Typography>
               <Typography variant="body2" color="textSecondary">
-                Select a thread to open its screen.
+                {THREADS_UI.noThreadSelectedBody}
               </Typography>
             </Paper>
           ) : (
@@ -5218,13 +5720,13 @@ export function Workspace({
                   sx={{ flex: 1 }}
                 >
                   {stopping
-                    ? "Stopping the desktop…"
+                    ? THREADS_UI.sleepStopping
                     : held
-                      ? "You have this screen. The agent is paused."
-                      : `Screen for ${
+                      ? THREADS_UI.screenHeld
+                      : THREADS_UI.screenViewOnly(
                           sessions.find((item) => item.id === sessionId)
-                            ?.title || "this thread"
-                        }. View only until you take control.`}
+                            ?.title || THREAD.untitled,
+                        )}
                 </Typography>
                 <Button
                   size="small"
@@ -5234,9 +5736,9 @@ export function Workspace({
                     void (held ? releaseControl(false) : takeControl())
                   }
                 >
-                  {held ? "Done" : "Take control"}
+                  {held ? THREADS_UI.releaseControl : THREADS_UI.takeControl}
                 </Button>
-                <Tip title="Reload VNC">
+                <Tip title={THREADS_UI.reloadScreen}>
                   <Button
                     size="small"
                     variant="text"
@@ -5259,7 +5761,7 @@ export function Workspace({
                       openVnc(screen.path, false)
                     }}
                   >
-                    Pop out
+                    {THREADS_UI.popOut}
                   </Button>
                 </Tip>
                 <AppLauncher
@@ -5280,11 +5782,13 @@ export function Workspace({
                 </Box>
               ) : (
                 <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-                  <Typography variant="subtitle1">
-                    {screenError ? "Screen unavailable" : "Opening screen"}
+                  <Typography variant="subtitle1" component="p">
+                    {screenError
+                      ? THREADS_UI.screenUnavailable
+                      : THREADS_UI.screenOpening}
                   </Typography>
                   <Typography variant="body2" color="textSecondary">
-                    {screenError || "Opening this thread's screen…"}
+                    {screenError || THREADS_UI.screenOpeningBody}
                   </Typography>
                 </Paper>
               )}
@@ -5326,7 +5830,7 @@ export function Workspace({
           anchor="left"
           width={300}
           ref={drawerPaperRef}
-          aria-label="Desktop and model options"
+          aria-label={THREADS_UI.desktopOptions}
         >
           <Box
             sx={{
@@ -5337,8 +5841,8 @@ export function Workspace({
             }}
           >
             <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="subtitle2" sx={{ flex: 1 }}>
-                Desktop
+              <Typography variant="subtitle2" component="h2" sx={{ flex: 1 }}>
+                {THREADS_UI.desktopDrawer}
               </Typography>
               <Chip size="small" color={phaseColor}>
                 {stopping
@@ -5371,7 +5875,7 @@ export function Workspace({
                 onClick={() => void start()}
                 disabled={phase === "starting"}
               >
-                Start
+                {THREADS_UI.startDesktopShort}
               </Button>
             )}
             <Divider />
@@ -5381,18 +5885,13 @@ export function Workspace({
                 variant="text"
                 startIcon={<AddIcon />}
                 disabled={actionBusy}
-                onClick={() => {
-                  setNewPersonaId("assistant")
-                  setNewThreadDir("")
-                  setNewThreadOpen(true)
-                  setDrawerOpen(false)
-                }}
+                onClick={() => startBlankThread()}
               >
-                New thread
+                {THREADS_UI.newThread}
               </Button>
             ) : null}
             <Typography variant="caption" color="textSecondary">
-              Model and thinking effort live at the bottom of the chat.
+              {THREADS_UI.desktopDrawerHint}
             </Typography>
           </Box>
         </Drawer>
@@ -5412,7 +5911,7 @@ export function Workspace({
                 }}
               >
                 <EditIcon />
-                <ListItemText primary="Rename" />
+                <ListItemText primary={THREADS_UI.rename} />
               </ListItemButton>
               <ListItemButton
                 onClick={() => {
@@ -5421,12 +5920,12 @@ export function Workspace({
                 }}
               >
                 <FolderIcon />
-                <ListItemText primary="Move to folder" />
+                <ListItemText primary={THREADS_UI.moveToFolder} />
               </ListItemButton>
               {threadBusy(menuThread.id) ? (
                 <ListItemButton onClick={() => void abortThread(menuThread.id)}>
                   <StopIcon />
-                  <ListItemText primary="Abort" />
+                  <ListItemText primary={THREADS_UI.abort} />
                 </ListItemButton>
               ) : null}
               <ListItemButton
@@ -5436,7 +5935,7 @@ export function Workspace({
                 }}
               >
                 <DeleteIcon />
-                <ListItemText primary="Delete" />
+                <ListItemText primary={THREADS_UI.delete} />
               </ListItemButton>
             </>
           ) : null}
@@ -5459,7 +5958,7 @@ export function Workspace({
             ) : (
               <span style={{ width: 18, display: "inline-flex" }} />
             )}
-            <ListItemText primary="No folder" />
+            <ListItemText primary={THREADS_UI.noFolder} />
           </ListItemButton>
           {dirs.map((dir) => (
             <ListItemButton
@@ -5485,7 +5984,7 @@ export function Workspace({
                 threadActions.newFolder()
               }}
             >
-              <ListItemText primary="No folders yet — create one first" />
+              <ListItemText primary={THREADS_UI.noFoldersYet} />
             </ListItemButton>
           ) : null}
         </Menu>
@@ -5505,7 +6004,7 @@ export function Workspace({
                 }}
               >
                 <EditIcon />
-                <ListItemText primary="Rename folder" />
+                <ListItemText primary={THREADS_UI.renameFolder} />
               </ListItemButton>
               <ListItemButton
                 onClick={() => {
@@ -5514,82 +6013,11 @@ export function Workspace({
                 }}
               >
                 <DeleteIcon />
-                <ListItemText primary="Delete folder" />
+                <ListItemText primary={THREADS_UI.deleteFolder} />
               </ListItemButton>
             </>
           ) : null}
         </Menu>
-
-        {newThreadOpen ? (
-          <AccessibleDialog
-            open
-            onClose={() => setNewThreadOpen(false)}
-            aria-labelledby={dialogIds.newThread}
-          >
-            <DialogTitle id={dialogIds.newThread}>New thread</DialogTitle>
-            <DialogContent>
-              <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-                The personality stays for this thread. It cannot be changed
-                later.
-              </Typography>
-              <Select
-                name="persona"
-                label="Personality"
-                value={newPersonaId}
-                disabled={actionBusy}
-                sx={{ width: "100%", mt: 1 }}
-                onSelect={setNewPersonaId}
-              >
-                {(personas.length
-                  ? personas
-                  : [
-                      {
-                        id: "assistant",
-                        name: "Assistant",
-                        instruction: "",
-                        builtin: true,
-                      },
-                    ]
-                ).map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </Select>
-              <Select
-                name="thread-folder"
-                label="Folder"
-                value={newThreadDir}
-                disabled={actionBusy}
-                sx={{ width: "100%", mt: 1 }}
-                onSelect={setNewThreadDir}
-              >
-                {[
-                  <option key="none" value="">
-                    No folder
-                  </option>,
-                  ...dirs.map((dir) => (
-                    <option key={dir.id} value={dir.id}>
-                      {dir.name}
-                    </option>
-                  )),
-                ]}
-              </Select>
-            </DialogContent>
-            <DialogActions>
-              <Button variant="text" onClick={() => setNewThreadOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                variant="contained"
-                disabled={actionBusy}
-                onClick={() => void newThread()}
-              >
-                Start
-              </Button>
-            </DialogActions>
-          </AccessibleDialog>
-        ) : null}
 
         {renameTarget ? (
           <AccessibleDialog
@@ -5597,10 +6025,12 @@ export function Workspace({
             onClose={() => setRenameTarget(null)}
             aria-labelledby={dialogIds.renameThread}
           >
-            <DialogTitle id={dialogIds.renameThread}>Rename thread</DialogTitle>
+            <DialogTitle id={dialogIds.renameThread}>
+              {THREADS_UI.renameTitle}
+            </DialogTitle>
             <DialogContent>
               <TextField
-                label="Title"
+                label={THREADS_UI.titleLabel}
                 value={renameTitle}
                 autoFocus
                 sx={{ width: "100%", mt: 1 }}
@@ -5636,12 +6066,13 @@ export function Workspace({
             aria-labelledby={dialogIds.deleteThread}
           >
             <DialogTitle id={dialogIds.deleteThread}>
-              Delete thread?
+              {THREADS_UI.deleteTitle}
             </DialogTitle>
             <DialogContent>
               <Typography variant="body2">
-                Deletes “{deleteTarget ? threadTitle(deleteTarget) : ""}” and
-                all of its messages. This cannot be undone.
+                {THREADS_UI.deleteBody(
+                  deleteTarget ? threadTitle(deleteTarget) : "",
+                )}
               </Typography>
             </DialogContent>
             <DialogActions>
@@ -5671,20 +6102,19 @@ export function Workspace({
           >
             <DialogTitle id={dialogIds.batchDelete}>
               {batchTarget.length === 1
-                ? `Delete “${threadTitle(
-                    sessions.find((item) => item.id === batchTarget[0]) ?? {
-                      id: batchTarget[0],
-                    },
-                  )}”?`
-                : `Delete ${batchTarget.length} threads?`}
+                ? THREADS_UI.deleteTitle
+                : THREADS_UI.deleteManyTitle(batchTarget.length)}
             </DialogTitle>
             <DialogContent>
               <Typography variant="body2">
                 {batchBusy
-                  ? `Deleting ${batchProgress.done} of ${batchProgress.total}…`
+                  ? THREADS_UI.deletingProgress(
+                      batchProgress.done,
+                      batchProgress.total,
+                    )
                   : batchTarget.length === 1
-                    ? "Deletes the thread and all of its messages. This cannot be undone."
-                    : `Deletes ${batchTarget.length} threads and all of their messages. This cannot be undone.`}
+                    ? THREADS_UI.deleteBody("")
+                    : THREADS_UI.deleteManyBody(batchTarget.length)}
               </Typography>
             </DialogContent>
             <DialogActions>
@@ -5714,15 +6144,16 @@ export function Workspace({
             aria-labelledby={dialogIds.folder}
           >
             <DialogTitle id={dialogIds.folder}>
-              {folderDialog.mode === "create" ? "New folder" : "Rename folder"}
+              {folderDialog.mode === "create"
+                ? THREADS_UI.newFolderTitle
+                : THREADS_UI.renameFolderTitle}
             </DialogTitle>
             <DialogContent>
               <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-                Folders group threads by topic on the dashboard. Deleting a
-                folder keeps its threads.
+                {THREADS_UI.folderHint}
               </Typography>
               <TextField
-                label="Name"
+                label={THREADS_UI.folderNameLabel}
                 value={folderName}
                 autoFocus
                 sx={{ width: "100%" }}
@@ -5745,7 +6176,9 @@ export function Workspace({
                 disabled={actionBusy || !folderName.trim()}
                 onClick={() => void saveFolder()}
               >
-                {folderDialog.mode === "create" ? "Create" : "Save"}
+                {folderDialog.mode === "create"
+                  ? THREADS_UI.create
+                  : STATES.save}
               </Button>
             </DialogActions>
           </AccessibleDialog>
@@ -5758,12 +6191,11 @@ export function Workspace({
             aria-labelledby={dialogIds.folderDelete}
           >
             <DialogTitle id={dialogIds.folderDelete}>
-              Delete “{folderDeleteTarget.name}”?
+              {THREADS_UI.folderDeleteTitle(folderDeleteTarget.name)}
             </DialogTitle>
             <DialogContent>
               <Typography variant="body2">
-                The folder is removed and its threads move back to the top
-                “Threads” group. No thread is deleted.
+                {THREADS_UI.folderDeleteBody}
               </Typography>
             </DialogContent>
             <DialogActions>

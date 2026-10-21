@@ -25,6 +25,7 @@ import {
 } from "./docker"
 import { HttpError } from "./http-error"
 import { keyVaultSpecById } from "./key-vault"
+import { instanceLanguage } from "./language"
 import {
   connectMcpServers,
   disconnectMcpServers,
@@ -185,7 +186,12 @@ export function pluginConfigPayload(
   manifest: PluginManifest,
   settings: Record<string, string>,
 ): Record<string, unknown> {
-  const payload: Record<string, unknown> = { settings }
+  const payload: Record<string, unknown> = {
+    settings,
+    // Host-wide UI language (Config tab). Every plugin gets it so pages,
+    // tools, and mentions localize without shipping their own selector.
+    language: instanceLanguage(db),
+  }
   // Both access levels reach the desktop config: a vaultCreate-only plugin
   // (the common case — the agent fills its own keys) reads the same
   // vault.<slug> section the skill docs promise, not just vaultRead plugins.
@@ -879,9 +885,101 @@ export async function setPluginEnabled(
   row: InstalledPlugin,
   enable: boolean,
 ): Promise<InstalledPlugin> {
-  const updated = db.setInstalledPluginEnabled(user.id, row.pluginId, enable)
   const manifest = row.manifest as PluginManifest
   const pluginId = row.pluginId
+
+  // OpenCode surfaces go first: they are the only steps here that can throw
+  // (syncOpencodePlugin, connectMcpServers, agentsMd sync). Every step after
+  // them is caught or a pure DB write, so a desktop-side failure leaves the
+  // enabled flag, cron jobs, skills, and config untouched — a retry of the
+  // same action heals, and the install never ends up half-disabled. The old
+  // order flipped the flag first, so one failing jq patch left the DB saying
+  // disabled while the desktop still ran the plugin's MCP/agents.
+  const oc = manifest.opencode
+  if (
+    oc &&
+    (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools || oc.agentsMd)
+  ) {
+    if (oc.agentsMd) {
+      const instructions = pluginAgentsMdPath(pluginId)
+      if (enable) {
+        await syncPluginAgentsMd(user.id, pluginId, oc.agentsMd)
+      }
+      await syncOpencodePlugin(
+        user.id,
+        enable
+          ? {
+              addPlugins: [],
+              removePlugins: [],
+              addMcp: {},
+              removeMcp: [],
+              addInstructions: [instructions],
+              removeInstructions: [],
+            }
+          : {
+              addPlugins: [],
+              removePlugins: [],
+              addMcp: {},
+              removeMcp: [],
+              addInstructions: [],
+              removeInstructions: [instructions],
+            },
+      )
+    }
+    let mcpStatus: Record<string, string> = {}
+    if (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools) {
+      if (enable) {
+        const mcpServers = validateMcpMap(oc.mcp)
+        await syncOpencodePlugin(user.id, {
+          addPlugins: oc.plugin ?? [],
+          removePlugins: [],
+          addMcp: mcpServers,
+          removeMcp: [],
+          addAgents: oc.agents ?? {},
+          removeAgents: [],
+          addAgentTools: oc.agentTools ?? {},
+          removeAgentTools: {},
+        })
+        mcpStatus = await connectMcpServers(db, user.id, mcpServers)
+      } else {
+        const mcpNames = Object.keys((oc.mcp ?? {}) as object)
+        await syncOpencodePlugin(user.id, {
+          addPlugins: [],
+          removePlugins: oc.plugin ?? [],
+          addMcp: {},
+          removeMcp: mcpNames,
+          addAgents: {},
+          removeAgents: Object.keys(oc.agents ?? {}),
+          addAgentTools: {},
+          removeAgentTools: oc.agentTools ?? {},
+        })
+        // A running daemon keeps removed servers until its next restart —
+        // drop them live so disable stops the tools immediately.
+        await disconnectMcpServers(db, user.id, mcpNames).catch(() => {})
+      }
+    }
+    if (Object.keys(mcpStatus).length > 0) {
+      db.setInstalledPluginApplied(user.id, pluginId, {
+        ...row.applied,
+        mcp: mcpStatus,
+      })
+    }
+    // Skip the restart only for a pure enable whose MCP entries all went live
+    // through the runtime connect above; everything else still needs one.
+    const mcpFullyLive =
+      enable &&
+      Object.keys(mcpStatus).length > 0 &&
+      Object.values(mcpStatus).every((status) => status === "connected")
+    const otherSurfaces =
+      (oc.plugin?.length ?? 0) > 0 ||
+      Object.keys(oc.agents ?? {}).length > 0 ||
+      Object.keys(oc.agentTools ?? {}).length > 0
+    if (oc.agentsMd || otherSurfaces || !mcpFullyLive) {
+      await restartOpencode(user.id, { db }).catch(() => {})
+    }
+  }
+
+  const updated = db.setInstalledPluginEnabled(user.id, row.pluginId, enable)
 
   for (const jobId of row.applied.cronJobIds) {
     const job = db.cronJobById(jobId, user.id)
@@ -978,90 +1076,6 @@ export async function setPluginEnabled(
         }`,
       )
     })
-  }
-
-  const oc = manifest.opencode
-  if (
-    oc &&
-    (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools || oc.agentsMd)
-  ) {
-    if (oc.agentsMd) {
-      const instructions = pluginAgentsMdPath(pluginId)
-      if (enable) {
-        await syncPluginAgentsMd(user.id, pluginId, oc.agentsMd)
-      }
-      await syncOpencodePlugin(
-        user.id,
-        enable
-          ? {
-              addPlugins: [],
-              removePlugins: [],
-              addMcp: {},
-              removeMcp: [],
-              addInstructions: [instructions],
-              removeInstructions: [],
-            }
-          : {
-              addPlugins: [],
-              removePlugins: [],
-              addMcp: {},
-              removeMcp: [],
-              addInstructions: [],
-              removeInstructions: [instructions],
-            },
-      )
-    }
-    let mcpStatus: Record<string, string> = {}
-    if (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools) {
-      if (enable) {
-        const mcpServers = validateMcpMap(oc.mcp)
-        await syncOpencodePlugin(user.id, {
-          addPlugins: oc.plugin ?? [],
-          removePlugins: [],
-          addMcp: mcpServers,
-          removeMcp: [],
-          addAgents: oc.agents ?? {},
-          removeAgents: [],
-          addAgentTools: oc.agentTools ?? {},
-          removeAgentTools: {},
-        })
-        mcpStatus = await connectMcpServers(db, user.id, mcpServers)
-      } else {
-        const mcpNames = Object.keys((oc.mcp ?? {}) as object)
-        await syncOpencodePlugin(user.id, {
-          addPlugins: [],
-          removePlugins: oc.plugin ?? [],
-          addMcp: {},
-          removeMcp: mcpNames,
-          addAgents: {},
-          removeAgents: Object.keys(oc.agents ?? {}),
-          addAgentTools: {},
-          removeAgentTools: oc.agentTools ?? {},
-        })
-        // A running daemon keeps removed servers until its next restart —
-        // drop them live so disable stops the tools immediately.
-        await disconnectMcpServers(db, user.id, mcpNames).catch(() => {})
-      }
-    }
-    if (Object.keys(mcpStatus).length > 0) {
-      db.setInstalledPluginApplied(user.id, pluginId, {
-        ...row.applied,
-        mcp: mcpStatus,
-      })
-    }
-    // Skip the restart only for a pure enable whose MCP entries all went live
-    // through the runtime connect above; everything else still needs one.
-    const mcpFullyLive =
-      enable &&
-      Object.keys(mcpStatus).length > 0 &&
-      Object.values(mcpStatus).every((status) => status === "connected")
-    const otherSurfaces =
-      (oc.plugin?.length ?? 0) > 0 ||
-      Object.keys(oc.agents ?? {}).length > 0 ||
-      Object.keys(oc.agentTools ?? {}).length > 0
-    if (oc.agentsMd || otherSurfaces || !mcpFullyLive) {
-      await restartOpencode(user.id, { db }).catch(() => {})
-    }
   }
 
   refreshMentionClashes(db, user.id)
@@ -1230,6 +1244,29 @@ export async function resyncPluginsForVaultSlug(
       failed.push(row.pluginId)
       console.error(
         `plugin ${row.pluginId} vault re-sync failed: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
+  }
+  return failed
+}
+
+// The language rides every plugin config payload, so a language change
+// re-syncs every enabled plugin (not slug-filtered like the vault path).
+// Failures land in the pending queue through reapplyPluginConfig and flush
+// when the desktop next comes up; the caller schedules page-server restarts
+// for the ones that did sync.
+export async function resyncPluginsForLanguage(db: Db, user: User) {
+  const failed: string[] = []
+  for (const row of db.installedPlugins(user.id)) {
+    if (!row.enabled) continue
+    try {
+      await reapplyPluginConfig(db, user, row)
+    } catch (error) {
+      failed.push(row.pluginId)
+      console.error(
+        `plugin ${row.pluginId} language re-sync failed: ${
           error instanceof Error ? error.message : error
         }`,
       )

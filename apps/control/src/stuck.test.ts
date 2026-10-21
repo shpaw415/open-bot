@@ -86,6 +86,15 @@ describe("stuck tools", () => {
     ).toBe(3 * STUCK_TOOL_MS)
   })
 
+  test("a documented ob-thread wait gets the long teammate budget", () => {
+    const now = 10_000_000
+    expect(
+      toolLimit([running(now - 1, "ob-thread wait ses_abc --timeout 90")]),
+    ).toBe(6 * STUCK_TOOL_MS)
+    // other ob-thread commands keep the default budget
+    expect(toolLimit([running(now - 1, "ob-thread list")])).toBe(STUCK_TOOL_MS)
+  })
+
   test("a tool frozen by a killed turn is stale once the session is re-prompted", () => {
     const now = 10_000_000
     const corpse = {

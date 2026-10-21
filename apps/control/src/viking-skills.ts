@@ -46,6 +46,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
+// OpenViking wraps every response in a {status, result, ...} envelope
+// (documented in docs/en/api/04-skills.md); legacy builds answered the bare
+// payload. unwrapVikingResult is the shared reader — every hand-rolled
+// response parse must go through it or it silently reads nothing.
+export function unwrapVikingResult(body: unknown): unknown {
+  return isRecord(body) && "result" in body ? body.result : body
+}
+
+// The skills array from a list response, accepting the current envelope
+// ({status:"ok", result:{skills:[...]}}) and the legacy bare shapes
+// ({skills:[...]} or a bare array).
+export function vikingSkillList(body: unknown): unknown[] {
+  const inner = unwrapVikingResult(body)
+  if (isRecord(inner) && Array.isArray(inner.skills)) return inner.skills
+  if (Array.isArray(inner)) return inner
+  return []
+}
+
 export function skillNameError(name: string) {
   if (reservedSkillNames.has(name)) return `${name} is a built-in skill`
   if (!skillNamePattern.test(name)) {
@@ -151,7 +169,7 @@ export function createVikingSkills(
         "viking_skills",
       )
     }
-    return isRecord(body) && "result" in body ? body.result : body
+    return unwrapVikingResult(body)
   }
 
   async function get(name: string): Promise<SkillDetail> {

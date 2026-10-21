@@ -118,11 +118,73 @@ function initial(name: string): string {
   return (name.trim()[0] ?? "?").toUpperCase()
 }
 
-// One allowlist section of the persona dialog (skills or MCP servers). The
-// locked chips are a plugin's base list; everything else is the user's.
-// MCP passes noneChip/noneActive/onBlockAll for its third state — an empty
-// allowlist blocks every server.
-function ScopePicker(props: {
+// One allowlist section of the persona dialog (skills or MCP servers),
+// rendered as grouped chip clouds: "From <plugin>" sections, the user's
+// directories, and Ungrouped. Each group carries a tri-state `All` chip —
+// filled when every member is selected, `All · n/m` (outlined) when partial.
+// Clicking All batch-allows the group's (search-filtered) members; a click
+// that would push the selection past `max` is refused with an inline error,
+// never silently clipped. The locked chips are a plugin's base list;
+// everything else is the user's. MCP passes noneChip/noneActive/onBlockAll
+// for its third state — an empty allowlist blocks every server.
+export type ScopeEntry = {
+  name: string
+  description: string
+  dirId: string | null
+  pluginName: string | null
+  /** Manifest group label (skills only): refines the plugin section title. */
+  groupLabel?: string | null
+  /** Desktop seed skill: unfiled ones render under the Built-in section. */
+  seed?: boolean
+}
+
+export type ScopeGroup = { id: string | null; label: string }
+
+const BUILTIN_LABEL = "Built-in"
+
+function scopePickerGroups(
+  entries: ScopeEntry[],
+  dirs: ScopeGroup[],
+): ScopeGroup[] {
+  const plugins = new Set<string>()
+  let builtin = false
+  for (const entry of entries) {
+    if (entry.dirId) continue
+    if (entry.pluginName) {
+      plugins.add(
+        entry.groupLabel
+          ? `From ${entry.pluginName} · ${entry.groupLabel}`
+          : `From ${entry.pluginName}`,
+      )
+      continue
+    }
+    if (entry.seed) builtin = true
+  }
+  return [
+    ...[...plugins].sort().map((label) => ({ id: null, label })),
+    ...dirs,
+    ...(builtin ? [{ id: null, label: BUILTIN_LABEL }] : []),
+    { id: null, label: "Ungrouped" },
+  ]
+}
+
+// Which picker group an entry renders under: a user directory wins (the
+// user moved it there), then the plugin section, then Built-in for unfiled
+// seed skills, then Ungrouped.
+function entryGroupLabel(entry: ScopeEntry, dirs: ScopeGroup[]): string {
+  if (entry.dirId) {
+    const dir = dirs.find((group) => group.id === entry.dirId)
+    if (dir) return dir.label
+  }
+  if (entry.pluginName)
+    return entry.groupLabel
+      ? `From ${entry.pluginName} · ${entry.groupLabel}`
+      : `From ${entry.pluginName}`
+  if (entry.seed) return BUILTIN_LABEL
+  return "Ungrouped"
+}
+
+export function ScopePicker(props: {
   sectionTitle: string
   caption: string
   filterLabel: string
@@ -133,7 +195,9 @@ function ScopePicker(props: {
   manualLabel: string
   manualPlaceholder: string
   manualError: string
-  names: string[]
+  entries: ScopeEntry[]
+  dirs: ScopeGroup[]
+  max: number
   baseLocked: string[] | null
   selected: string[]
   catalogLoading: boolean
@@ -148,19 +212,105 @@ function ScopePicker(props: {
   onManual: (value: string) => void
   onManualAdd: () => void
   onToggle: (name: string) => void
+  onToggleGroup: (names: string[], select: boolean) => void
   onClearAll: () => void
 }) {
   const query = props.filter.trim().toLowerCase()
-  const pool = new Set<string>()
-  for (const name of props.names) pool.add(name)
-  for (const name of props.baseLocked ?? []) pool.add(name)
-  for (const name of props.selected) pool.add(name)
-  const pickerNames = [...pool]
-    .filter((name) => !query || name.includes(query))
-    .sort()
+  const pool = new Map<string, ScopeEntry>()
+  for (const entry of props.entries) pool.set(entry.name, entry)
+  for (const name of props.baseLocked ?? [])
+    if (!pool.has(name))
+      pool.set(name, {
+        name,
+        description: "",
+        dirId: null,
+        pluginName: null,
+      })
+  for (const name of props.selected)
+    if (!pool.has(name))
+      pool.set(name, {
+        name,
+        description: "",
+        dirId: null,
+        pluginName: null,
+      })
+  const matches = (entry: ScopeEntry) =>
+    !query ||
+    entry.name.toLowerCase().includes(query) ||
+    entry.description.toLowerCase().includes(query)
+  // Selected count for the live cap counter.
+  const cap = props.selected.length
+  const capTone =
+    cap >= props.max
+      ? "error"
+      : cap >= props.max - (props.max >= 32 ? 8 : 2)
+        ? "warning"
+        : undefined
+  const atCap = cap >= props.max
+  const groups = scopePickerGroups([...pool.values()], props.dirs)
+  const grouped = groups
+    .map((group) => {
+      const members = [...pool.values()].filter(
+        (entry) => entryGroupLabel(entry, props.dirs) === group.label,
+      )
+      const visible = members.filter(matches)
+      return { group, members, visible }
+    })
+    .filter((item) => item.visible.length > 0)
+  const [groupError, setGroupError] = useState<string>("")
+  const clearGroupError = () => {
+    if (groupError) setGroupError("")
+  }
+  function toggleGroup(members: ScopeEntry[], select: boolean) {
+    const selectable = members.filter(
+      (entry) => !(props.baseLocked ?? []).includes(entry.name),
+    )
+    if (select) {
+      const adding = selectable.filter(
+        (entry) => !props.selected.includes(entry.name),
+      )
+      if (adding.length === 0) return
+      if (cap + adding.length > props.max) {
+        setGroupError(
+          `This would exceed the limit of ${props.max} — select fewer.`,
+        )
+        return
+      }
+      props.onToggleGroup(
+        adding.map((entry) => entry.name),
+        true,
+      )
+      clearGroupError()
+      return
+    }
+    const removing = selectable.filter((entry) =>
+      props.selected.includes(entry.name),
+    )
+    if (removing.length === 0) return
+    props.onToggleGroup(
+      removing.map((entry) => entry.name),
+      false,
+    )
+    clearGroupError()
+  }
   return (
     <Box>
-      <Typography variant="subtitle2">{props.sectionTitle}</Typography>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+      >
+        <Typography variant="subtitle2">{props.sectionTitle}</Typography>
+        <Chip
+          size="small"
+          variant="outlined"
+          color={capTone}
+          sx={{ borderRadius: "8px" }}
+        >
+          {cap} / {props.max}
+        </Chip>
+      </Stack>
       <Typography
         variant="caption"
         color="textSecondary"
@@ -215,6 +365,7 @@ function ScopePicker(props: {
         <TextField
           label={props.filterLabel}
           value={props.filter}
+          placeholder="Search by name or description…"
           onChange={(event) => props.onFilter(event.currentTarget.value)}
         />
         {props.catalogFailed ? (
@@ -222,9 +373,19 @@ function ScopePicker(props: {
             The live list is unavailable — add entries by name below.
           </Alert>
         ) : null}
+        {groupError ? (
+          <Alert severity="warning" sx={{ py: 0.75 }}>
+            {groupError}
+          </Alert>
+        ) : null}
+        {atCap ? (
+          <Typography variant="caption" color="error">
+            Limit reached: {props.max} maximum.
+          </Typography>
+        ) : null}
         <Box
           sx={{
-            maxHeight: 280,
+            maxHeight: 320,
             overflowY: "auto",
             borderRadius: "8px",
             border: "1px solid rgba(var(--text-main), 0.12)",
@@ -236,58 +397,125 @@ function ScopePicker(props: {
               {props.loading}
             </Typography>
           ) : (
-            <Stack
-              direction="row"
-              spacing={0.75}
-              useFlexGap
-              sx={{ flexWrap: "wrap", rowGap: 0.75 }}
-            >
+            <Stack spacing={1.5}>
               {props.baseLocked === null ? (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  onClick={props.onClearAll}
-                  sx={{
-                    borderRadius: "8px",
-                    color:
-                      !props.noneActive && props.selected.length === 0
-                        ? "rgba(var(--text-main), 0.5)"
-                        : undefined,
-                  }}
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  useFlexGap
+                  sx={{ flexWrap: "wrap", rowGap: 0.75 }}
                 >
-                  {props.allChip}
-                </Chip>
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    onClick={props.onClearAll}
+                    sx={{
+                      borderRadius: "8px",
+                      color:
+                        !props.noneActive && props.selected.length === 0
+                          ? "rgba(var(--text-main), 0.5)"
+                          : undefined,
+                    }}
+                  >
+                    {props.allChip}
+                  </Chip>
+                  {props.noneChip ? (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      onClick={props.onBlockAll}
+                      sx={{
+                        borderRadius: "8px",
+                        color: props.noneActive
+                          ? "rgba(var(--text-main), 0.5)"
+                          : undefined,
+                      }}
+                    >
+                      {props.noneChip}
+                    </Chip>
+                  ) : null}
+                </Stack>
               ) : null}
-              {props.noneChip && props.baseLocked === null ? (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  onClick={props.onBlockAll}
-                  sx={{
-                    borderRadius: "8px",
-                    color: props.noneActive
-                      ? "rgba(var(--text-main), 0.5)"
-                      : undefined,
-                  }}
-                >
-                  {props.noneChip}
-                </Chip>
-              ) : null}
-              {pickerNames.map((name) => (
-                <ScopeChip
-                  key={name}
-                  name={name}
-                  locked={(props.baseLocked ?? []).includes(name)}
-                  selected={props.selected.includes(name)}
-                  lockedTitle={props.lockedTitle}
-                  onToggle={props.onToggle}
-                />
-              ))}
-              {pickerNames.length === 0 && props.baseLocked !== null ? (
+              {grouped.length === 0 ? (
                 <Typography variant="caption" color="textSecondary">
-                  {props.noMatch}
+                  {query
+                    ? `No results for « ${props.filter.trim()} »`
+                    : props.noMatch}
                 </Typography>
-              ) : null}
+              ) : (
+                grouped.map(({ group, members, visible }) => {
+                  const selectable = members.filter(
+                    (entry) => !(props.baseLocked ?? []).includes(entry.name),
+                  )
+                  const selectedCount = selectable.filter((entry) =>
+                    props.selected.includes(entry.name),
+                  ).length
+                  const allSelected =
+                    selectable.length > 0 && selectedCount === selectable.length
+                  const partial = selectedCount > 0 && !allSelected
+                  return (
+                    <Box key={group.label}>
+                      <Stack
+                        direction="row"
+                        spacing={0.75}
+                        alignItems="center"
+                        sx={{ mb: 0.5, flexWrap: "wrap", rowGap: 0.5 }}
+                      >
+                        <Typography
+                          variant="caption"
+                          color="textSecondary"
+                          sx={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                        >
+                          {group.label}
+                        </Typography>
+                        <Tip
+                          title={
+                            allSelected
+                              ? "Unselect the whole group"
+                              : "Allow the whole group"
+                          }
+                        >
+                          <Chip
+                            size="small"
+                            variant={allSelected ? "filled" : "outlined"}
+                            disabled={atCap && !allSelected}
+                            aria-pressed={allSelected}
+                            onClick={() => toggleGroup(visible, !allSelected)}
+                            sx={{ borderRadius: "8px" }}
+                          >
+                            {partial
+                              ? `${props.allChip.split(" ")[0]} · ${selectedCount}/${selectable.length}`
+                              : props.allChip.split(" ")[0]}
+                          </Chip>
+                        </Tip>
+                      </Stack>
+                      <Stack
+                        direction="row"
+                        spacing={0.75}
+                        useFlexGap
+                        sx={{ flexWrap: "wrap", rowGap: 0.75 }}
+                      >
+                        {visible.map((entry) => (
+                          <ScopeChip
+                            key={entry.name}
+                            name={entry.name}
+                            locked={(props.baseLocked ?? []).includes(
+                              entry.name,
+                            )}
+                            selected={props.selected.includes(entry.name)}
+                            lockedTitle={props.lockedTitle}
+                            onToggle={(name) => {
+                              clearGroupError()
+                              props.onToggle(name)
+                            }}
+                            title={entry.description || undefined}
+                          />
+                        ))}
+                      </Stack>
+                    </Box>
+                  )
+                })
+              )}
             </Stack>
           )}
         </Box>
@@ -297,6 +525,7 @@ function ScopePicker(props: {
               label={props.manualLabel}
               value={props.manual}
               placeholder={props.manualPlaceholder}
+              disabled={atCap}
               onChange={(event) => props.onManual(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -306,7 +535,12 @@ function ScopePicker(props: {
               }}
               sx={{ maxWidth: 280 }}
             />
-            <Button size="small" variant="text" onClick={props.onManualAdd}>
+            <Button
+              size="small"
+              variant="text"
+              disabled={atCap}
+              onClick={props.onManualAdd}
+            >
               Add
             </Button>
           </Stack>
@@ -327,12 +561,14 @@ function ScopeChip({
   selected,
   lockedTitle,
   onToggle,
+  title,
 }: {
   name: string
   locked: boolean
   selected: boolean
   lockedTitle: string
   onToggle: (name: string) => void
+  title?: string
 }) {
   const chip = (
     <Chip
@@ -350,7 +586,7 @@ function ScopeChip({
       {name}
     </Chip>
   )
-  if (!locked) return chip
+  if (!locked) return title ? <Tip title={title}>{chip}</Tip> : chip
   return (
     <Tip key={name} title={`From ${lockedTitle} — always allowed`}>
       {chip}
@@ -377,9 +613,15 @@ export function Personalities() {
   // form closes silently and real edits ask before being dropped.
   const [pristine, setPristine] = useState<DraftSnapshot | null>(null)
   const [confirmId, setConfirmId] = useState("")
-  const [skillCatalog, setSkillCatalog] = useState<string[] | null>(null)
-  const [mcpCatalog, setMcpCatalog] = useState<string[] | null>(null)
+  const [skillCatalog, setSkillCatalog] = useState<ScopeEntry[] | null>(null)
+  const [mcpCatalog, setMcpCatalog] = useState<ScopeEntry[] | null>(null)
+  const [skillDirs, setSkillDirs] = useState<ScopeGroup[]>([])
+  const [mcpDirs, setMcpDirs] = useState<ScopeGroup[]>([])
   const [catalogFailed, setCatalogFailed] = useState(false)
+  // live:false is a sleeping desktop answering empty lists — not an error,
+  // but the grouped picker would look broken with no hint, so it degrades
+  // exactly like a failed catalog (info alert + manual add stay visible).
+  const [catalogLive, setCatalogLive] = useState(true)
   const [filter, setFilter] = useState("")
   const [manualName, setManualName] = useState("")
   const [mcpFilter, setMcpFilter] = useState("")
@@ -418,19 +660,64 @@ export function Personalities() {
     setSkillCatalog(null)
     setMcpCatalog(null)
     setCatalogFailed(false)
+    setCatalogLive(true)
     setFilter("")
     setManualName("")
     setMcpFilter("")
     setManualMcp("")
     api<{
-      skills?: { name: string }[]
-      mcp?: { name: string }[]
+      skills?: {
+        name: string
+        description?: string
+        plugin?: { name: string } | null
+        group?: string | null
+        dirId?: string | null
+        seed?: boolean
+      }[]
+      mcp?: {
+        name: string
+        plugin?: string | null
+        dirId?: string | null
+      }[]
+      dirs?: {
+        skill?: { id: string; label: string }[]
+        mcp?: { id: string; label: string }[]
+      }
       live?: boolean
     }>("/api/personas/skill-catalog")
       .then((body) => {
         if (cancelled) return
-        setSkillCatalog((body.skills ?? []).map((skill) => skill.name))
-        setMcpCatalog((body.mcp ?? []).map((server) => server.name))
+        setCatalogLive(body.live !== false)
+        setSkillCatalog(
+          (body.skills ?? []).map((skill) => ({
+            name: skill.name,
+            description: skill.description ?? "",
+            pluginName: skill.plugin?.name ?? null,
+            groupLabel: skill.group ?? null,
+            dirId: skill.dirId ?? null,
+            seed: skill.seed ?? false,
+          })),
+        )
+        setMcpCatalog(
+          (body.mcp ?? []).map((server) => ({
+            name: server.name,
+            description: "",
+            pluginName: server.plugin ?? null,
+            dirId: server.dirId ?? null,
+          })),
+        )
+        setSkillDirs(
+          (body.dirs?.skill ?? []).map((dir) => ({
+            id: dir.id,
+            label: dir.label,
+          })),
+        )
+        setMcpDirs(
+          (body.dirs?.mcp ?? []).map((dir) => ({
+            id: dir.id,
+            label: dir.label,
+          })),
+        )
       })
       .catch(() => {
         if (cancelled) return
@@ -521,6 +808,44 @@ export function Personalities() {
       return
     }
     setDraft({ ...draft, skills: null, skillsTouched: true })
+  }
+
+  // Batch allow/deny a whole group (directory or plugin section). The picker
+  // only sends names that are selectable and change state; the cap check ran
+  // there too — this stays the single write path into the draft.
+  function toggleSkillsGroup(names: string[], select: boolean) {
+    if (!draft || names.length === 0) return
+    if (draft.baseLocked !== null) {
+      const extras = select
+        ? [...draft.extras, ...names.filter((n) => !draft.extras.includes(n))]
+        : draft.extras.filter((n) => !names.includes(n))
+      setDraft({ ...draft, extras, skillsTouched: true })
+      return
+    }
+    const current = draft.skills ?? []
+    const next = select
+      ? [...current, ...names.filter((n) => !current.includes(n))]
+      : current.filter((n) => !names.includes(n))
+    setDraft({ ...draft, skills: next, skillsTouched: true })
+  }
+
+  function toggleMcpGroup(names: string[], select: boolean) {
+    if (!draft || names.length === 0) return
+    if (draft.mcpBaseLocked !== null) {
+      const extras = select
+        ? [
+            ...draft.mcpExtras,
+            ...names.filter((n) => !draft.mcpExtras.includes(n)),
+          ]
+        : draft.mcpExtras.filter((n) => !names.includes(n))
+      setDraft({ ...draft, mcpExtras: extras, mcpTouched: true })
+      return
+    }
+    const current = draft.mcp ?? []
+    const next = select
+      ? [...current, ...names.filter((n) => !current.includes(n))]
+      : current.filter((n) => !names.includes(n))
+    setDraft({ ...draft, mcp: next, mcpTouched: true })
   }
 
   function clearMcp() {
@@ -869,7 +1194,7 @@ export function Personalities() {
                 <ScopePicker
                   sectionTitle="Allowed skills"
                   caption="Empty means all skills. A restricted persona loads only the ones listed."
-                  filterLabel="Filter skills"
+                  filterLabel="Search skills"
                   allChip="All skills"
                   emptyBase="All skills (no restriction declared)"
                   noMatch="No skills match the filter."
@@ -877,7 +1202,9 @@ export function Personalities() {
                   manualLabel="Add skill by name"
                   manualPlaceholder="research"
                   manualError={error}
-                  names={skillCatalog ?? []}
+                  entries={skillCatalog ?? []}
+                  dirs={skillDirs}
+                  max={64}
                   baseLocked={draft.baseLocked}
                   selected={
                     draft.baseLocked !== null
@@ -885,7 +1212,7 @@ export function Personalities() {
                       : (draft.skills ?? [])
                   }
                   catalogLoading={skillCatalog === null}
-                  catalogFailed={catalogFailed}
+                  catalogFailed={catalogFailed || !catalogLive}
                   filter={filter}
                   manual={manualName}
                   lockedTitle={lockedTitle}
@@ -893,12 +1220,13 @@ export function Personalities() {
                   onManual={setManualName}
                   onManualAdd={addManual}
                   onToggle={toggleSkill}
+                  onToggleGroup={toggleSkillsGroup}
                   onClearAll={clearSkills}
                 />
                 <ScopePicker
                   sectionTitle="Allowed MCP servers"
                   caption="Empty means all servers. A restricted persona loads only the listed servers' tools."
-                  filterLabel="Filter servers"
+                  filterLabel="Search servers"
                   allChip="All servers"
                   emptyBase="All servers (no restriction declared)"
                   noMatch="No servers match the filter."
@@ -906,7 +1234,9 @@ export function Personalities() {
                   manualLabel="Add server by name"
                   manualPlaceholder="stock"
                   manualError=""
-                  names={mcpCatalog ?? []}
+                  entries={mcpCatalog ?? []}
+                  dirs={mcpDirs}
+                  max={16}
                   baseLocked={draft.mcpBaseLocked}
                   selected={
                     draft.mcpBaseLocked !== null
@@ -914,7 +1244,7 @@ export function Personalities() {
                       : (draft.mcp ?? [])
                   }
                   catalogLoading={mcpCatalog === null}
-                  catalogFailed={catalogFailed}
+                  catalogFailed={catalogFailed || !catalogLive}
                   filter={mcpFilter}
                   manual={manualMcp}
                   lockedTitle={lockedTitle}
@@ -922,6 +1252,7 @@ export function Personalities() {
                   onManual={setManualMcp}
                   onManualAdd={addManualMcp}
                   onToggle={toggleMcp}
+                  onToggleGroup={toggleMcpGroup}
                   onClearAll={clearMcp}
                 />
               </Stack>

@@ -87,14 +87,24 @@ export function useOverlayA11y(
   suspendEscape?: boolean,
 ) {
   const idRef = useRef<symbol | null>(null)
+  // The trigger is captured at RENDER time, when `open` first flips true —
+  // before React commits the overlay. A dialog field carrying autoFocus
+  // takes focus during the commit, so an effect-time capture would record
+  // the dialog's own field; on close that element is gone with the dialog
+  // and the restore silently no-ops (focus left on the page). wasOpen
+  // starts false so a conditionally-mounted dialog (open on first render)
+  // captures too; on a deep-link open with no real trigger the capture is
+  // body — restoring body is the status quo, never a regression.
+  const wasOpenRef = useRef(false)
+  const triggerRef = useRef<HTMLElement | null>(null)
+  if (open && !wasOpenRef.current && typeof document !== "undefined")
+    triggerRef.current = (document.activeElement as HTMLElement) ?? null
+  wasOpenRef.current = open
   useEffect(() => {
     if (!open) return
     const id = Symbol("overlay")
     idRef.current = id
     registerOverlay(id)
-    // Whoever had focus before the overlay (its trigger) gets it back on
-    // close — captured now, before the overlay takes it.
-    const previouslyFocused = document.activeElement as HTMLElement | null
     const focusTimer = window.setTimeout(() => {
       const root = rootRef?.current
       if (!root) return
@@ -140,8 +150,8 @@ export function useOverlayA11y(
       unregisterOverlay(id)
       if (idRef.current === id) idRef.current = null
       window.removeEventListener("keydown", onKey, true)
-      if (previouslyFocused && document.contains(previouslyFocused))
-        previouslyFocused.focus?.()
+      const trigger = triggerRef.current
+      if (trigger && document.contains(trigger)) trigger.focus?.()
     }
   }, [open, onClose, rootRef, suspendEscape])
 }

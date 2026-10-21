@@ -14,6 +14,7 @@ import {
   isNull,
   lt,
   lte,
+  or,
   sql,
   sum,
 } from "drizzle-orm"
@@ -21,11 +22,14 @@ import { drizzle } from "drizzle-orm/bun-sqlite"
 import { applyMigrations } from "./migrate"
 import {
   appSettings,
+  catalogDirItems,
+  catalogDirs,
   councilMembers,
   councils,
   cronJobs,
   cronNotices,
   dashboardLayouts,
+  delegationWatches,
   desktops,
   improvements,
   installedPlugins,
@@ -377,6 +381,24 @@ export type ThreadDirAssignment = {
   dirId: string
 }
 
+export type CatalogKind = "skill" | "mcp"
+
+export type CatalogDir = {
+  id: string
+  userId: string
+  kind: CatalogKind
+  label: string
+  position: number
+  createdAt: number
+}
+
+export type CatalogDirItem = {
+  userId: string
+  kind: CatalogKind
+  name: string
+  dirId: string
+}
+
 export type Council = {
   id: string
   userId: string
@@ -390,6 +412,20 @@ export type CouncilMember = {
   sessionId: string
   role: string
   createdAt: number
+}
+
+export type DelegationKind = "council" | "persona"
+
+export type DelegationWatch = {
+  id: string
+  userId: string
+  kind: DelegationKind
+  creatorSessionId: string
+  subjectSessionId: string
+  councilId: string | null
+  createdAt: number
+  wokenAt: number | null
+  pending: boolean
 }
 
 export type CronScheduleKind = "cron" | "every" | "at"
@@ -1793,6 +1829,140 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    catalogDirs(userId: string, kind: CatalogKind) {
+      return orm
+        .select()
+        .from(catalogDirs)
+        .where(and(eq(catalogDirs.userId, userId), eq(catalogDirs.kind, kind)))
+        .orderBy(asc(catalogDirs.position), asc(catalogDirs.createdAt))
+        .all()
+    },
+    catalogDirById(id: string, userId: string) {
+      return (
+        orm
+          .select()
+          .from(catalogDirs)
+          .where(and(eq(catalogDirs.id, id), eq(catalogDirs.userId, userId)))
+          .get() ?? null
+      )
+    },
+    catalogDirByLabel(userId: string, kind: CatalogKind, label: string) {
+      const wanted = label.toLowerCase()
+      return (
+        orm
+          .select()
+          .from(catalogDirs)
+          .where(
+            and(eq(catalogDirs.userId, userId), eq(catalogDirs.kind, kind)),
+          )
+          .all()
+          .find((row) => row.label.toLowerCase() === wanted) ?? null
+      )
+    },
+    createCatalogDir(row: CatalogDir) {
+      orm.insert(catalogDirs).values(row).run()
+    },
+    renameCatalogDir(id: string, userId: string, label: string) {
+      if (!this.catalogDirById(id, userId)) return null
+      orm
+        .update(catalogDirs)
+        .set({ label })
+        .where(and(eq(catalogDirs.id, id), eq(catalogDirs.userId, userId)))
+        .run()
+      return this.catalogDirById(id, userId)
+    },
+    // The client sends the full ordered id list (↑/↓ buttons, no drag lib);
+    // unknown ids are ignored, known ids keep their relative order.
+    reorderCatalogDirs(userId: string, kind: CatalogKind, ids: string[]) {
+      const known = new Set(this.catalogDirs(userId, kind).map((d) => d.id))
+      let position = 0
+      for (const id of ids) {
+        if (!known.has(id)) continue
+        orm
+          .update(catalogDirs)
+          .set({ position: position++ })
+          .where(and(eq(catalogDirs.id, id), eq(catalogDirs.userId, userId)))
+          .run()
+      }
+    },
+    deleteCatalogDir(id: string, userId: string) {
+      if (!this.catalogDirById(id, userId)) return false
+      // Membership rows go with the directory: items fall back to
+      // "Sans groupe" (no row), never dangle.
+      orm
+        .delete(catalogDirItems)
+        .where(
+          and(
+            eq(catalogDirItems.userId, userId),
+            eq(catalogDirItems.dirId, id),
+          ),
+        )
+        .run()
+      orm
+        .delete(catalogDirs)
+        .where(and(eq(catalogDirs.id, id), eq(catalogDirs.userId, userId)))
+        .run()
+      return true
+    },
+    catalogDirItems(userId: string, kind: CatalogKind) {
+      return orm
+        .select()
+        .from(catalogDirItems)
+        .where(
+          and(
+            eq(catalogDirItems.userId, userId),
+            eq(catalogDirItems.kind, kind),
+          ),
+        )
+        .all()
+    },
+    setCatalogDirItem(
+      userId: string,
+      kind: CatalogKind,
+      name: string,
+      dirId: string | null,
+    ) {
+      if (dirId === null) {
+        orm
+          .delete(catalogDirItems)
+          .where(
+            and(
+              eq(catalogDirItems.userId, userId),
+              eq(catalogDirItems.kind, kind),
+              eq(catalogDirItems.name, name),
+            ),
+          )
+          .run()
+        return
+      }
+      orm
+        .insert(catalogDirItems)
+        .values({ userId, kind, name, dirId })
+        .onConflictDoUpdate({
+          target: [
+            catalogDirItems.userId,
+            catalogDirItems.kind,
+            catalogDirItems.name,
+          ],
+          set: { dirId },
+        })
+        .run()
+    },
+    // The item itself vanished (skill deleted, MCP server removed): drop its
+    // membership so the directory shows no dangling name.
+    removeCatalogDirItems(userId: string, kind: CatalogKind, names: string[]) {
+      if (names.length === 0) return
+      orm
+        .delete(catalogDirItems)
+        .where(
+          and(
+            eq(catalogDirItems.userId, userId),
+            eq(catalogDirItems.kind, kind),
+            inArray(catalogDirItems.name, names),
+          ),
+        )
+        .run()
+    },
     councils(userId: string) {
       return orm
         .select()
@@ -1904,6 +2074,110 @@ export function openDatabase(path: string) {
         .orderBy(desc(councils.createdAt), desc(councils.id))
         .all()
       for (const row of rows.slice(keep)) this.deleteCouncil(row.id, userId)
+    },
+    createDelegationWatch(row: DelegationWatch) {
+      orm.insert(delegationWatches).values(row).run()
+    },
+    delegationWatchesBySubject(userId: string, sessionId: string) {
+      return orm
+        .select()
+        .from(delegationWatches)
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            eq(delegationWatches.subjectSessionId, sessionId),
+          ),
+        )
+        .all()
+    },
+    delegationWatchesByCouncil(userId: string, councilId: string) {
+      return orm
+        .select()
+        .from(delegationWatches)
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            eq(delegationWatches.councilId, councilId),
+          ),
+        )
+        .all()
+    },
+    pendingDelegationWatches(userId: string, creatorSessionId: string) {
+      return orm
+        .select()
+        .from(delegationWatches)
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            eq(delegationWatches.creatorSessionId, creatorSessionId),
+            eq(delegationWatches.pending, true),
+          ),
+        )
+        .all()
+    },
+    markDelegationsWoken(userId: string, ids: string[], wokenAt: number) {
+      if (ids.length === 0) return
+      orm
+        .update(delegationWatches)
+        .set({ wokenAt, pending: false })
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            inArray(delegationWatches.id, ids),
+          ),
+        )
+        .run()
+    },
+    markDelegationsPending(userId: string, ids: string[]) {
+      if (ids.length === 0) return
+      orm
+        .update(delegationWatches)
+        .set({ pending: true })
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            inArray(delegationWatches.id, ids),
+          ),
+        )
+        .run()
+    },
+    rearmDelegation(userId: string, sessionId: string) {
+      orm
+        .update(delegationWatches)
+        .set({ wokenAt: null, pending: false })
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            eq(delegationWatches.subjectSessionId, sessionId),
+            or(
+              isNotNull(delegationWatches.wokenAt),
+              eq(delegationWatches.pending, true),
+            ),
+          ),
+        )
+        .run()
+    },
+    deleteDelegationWatches(userId: string, sessionId: string) {
+      orm
+        .delete(delegationWatches)
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            eq(delegationWatches.subjectSessionId, sessionId),
+          ),
+        )
+        .run()
+    },
+    deleteDelegationWatchesByCreator(userId: string, sessionId: string) {
+      orm
+        .delete(delegationWatches)
+        .where(
+          and(
+            eq(delegationWatches.userId, userId),
+            eq(delegationWatches.creatorSessionId, sessionId),
+          ),
+        )
+        .run()
     },
     createCronJob(job: CronJob) {
       orm.insert(cronJobs).values(job).run()

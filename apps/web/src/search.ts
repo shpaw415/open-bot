@@ -6,6 +6,7 @@ import {
   HOME_PATH,
   workspacePath,
 } from "./routes"
+import { THREADS_UI } from "./texts"
 
 /**
  * Global search over data the app already has:
@@ -32,6 +33,11 @@ export type SearchEntry = {
   sessionId?: string
   /** Projects open through the project pipeline (id, not just the view). */
   projectId?: string
+  /**
+   * The shell's "Nouvelle conversation" intent — the same blank composer
+   * as Home/Help/the thread list, never a pre-created server thread.
+   */
+  newThread?: boolean
   /** Extra FR/EN words that match this entry with the same scoring. */
   keywords?: string[]
 }
@@ -53,6 +59,21 @@ export function searchNavEntries(role: "admin" | "user"): SearchEntry[] {
       title: "Accueil",
       path: HOME_PATH,
       keywords: ["home", "dashboard", "demarrage", "start"],
+    },
+    {
+      id: "nav:new-thread",
+      group: "nav",
+      title: THREADS_UI.newThread,
+      hint: "Composeur vierge",
+      newThread: true,
+      keywords: [
+        "new thread",
+        "nouvelle discussion",
+        "ecrire",
+        "rediger",
+        "composer",
+        "nouveau message",
+      ],
     },
     {
       id: "nav:chat",
@@ -142,6 +163,7 @@ const CONFIG_TAB_KEYWORDS: Record<string, string[]> = {
   nav: ["system1", "navigation", "system 1", "decision"],
   media: ["image", "video", "3d", "generation"],
   voice: ["voix", "dictée", "lecture", "stt", "tts", "speech"],
+  language: ["langue", "language", "locale", "traduction", "i18n"],
   personas: ["personnalites", "assistants", "personas", "personnalites"],
   skills: ["competences", "skills"],
   plugins: ["applications", "extensions", "marketplace", "boutique"],

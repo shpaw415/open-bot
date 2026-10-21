@@ -14,6 +14,7 @@ export type ConfigTab =
   | "nav"
   | "media"
   | "voice"
+  | "language"
   | "personas"
   | "skills"
   | "backup"
@@ -75,6 +76,7 @@ export const CONFIG_TABS: ConfigTab[] = [
   "nav",
   "media",
   "voice",
+  "language",
   "personas",
   "skills",
   "plugins",
@@ -94,6 +96,7 @@ export const CONFIG_TAB_LABELS: Record<AnyConfigTab, string> = {
   nav: "Assistant de navigation",
   media: "Génération de médias",
   voice: "Voix",
+  language: "Langue",
   personas: "Assistants personnalisés",
   skills: "Compétences",
   plugins: "Extensions",
@@ -124,7 +127,11 @@ export const CONFIG_GROUPS: ConfigGroup[] = [
     label: "Connexions",
     tabs: ["providers", "keys", "plugins", "mcp", "endpoints"],
   },
-  { key: "preferences", label: "Préférences", tabs: ["media", "voice", "nav"] },
+  {
+    key: "preferences",
+    label: "Préférences",
+    tabs: ["language", "media", "voice", "nav"],
+  },
   {
     key: "avance",
     label: "Avancé",

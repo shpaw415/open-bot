@@ -7,15 +7,26 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <h1>Stock</h1>
+    <h1 id="title">Stock</h1>
     <form id="add">
-      <input name="name" placeholder="Item name" required />
-      <input name="qty" type="number" min="0" placeholder="Qty" required />
-      <button>Add</button>
+      <input name="name" id="name-input" placeholder="Item name" required />
+      <input
+        name="qty"
+        type="number"
+        min="0"
+        id="qty-input"
+        placeholder="Qty"
+        required
+      />
+      <button id="add-button">Add</button>
     </form>
     <table>
       <thead>
-        <tr><th>Item</th><th>Qty</th><th></th></tr>
+        <tr>
+          <th id="th-item">Item</th>
+          <th id="th-qty">Qty</th>
+          <th></th>
+        </tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>

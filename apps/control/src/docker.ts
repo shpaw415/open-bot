@@ -1850,6 +1850,20 @@ export async function syncPluginConfigGuide(
 // instructions entries in the desktop's opencode.json. agents/agentTools use
 // deep merges so patches to existing agents (e.g. tool denies on build)
 // compose with each other; instructions is a set of file paths.
+// Exported for docker.test.ts: the jq program behind syncOpencodePlugin.
+// $rmM/$rmA are arrays (index is valid); $rmT[$n] is an object of glob→bool,
+// so membership must use has() — index() on an object throws under jq 1.6/1.7.
+export function opencodePatchProgram() {
+  return [
+    ".plugin = (((.plugin // []) + $addP) - $rmP | unique)",
+    ".mcp = (((.mcp // {}) + $addM) | with_entries(select(.key as $k | ($rmM | index($k)) | not)))",
+    ".agent = (((.agent // {}) * $addA) | with_entries(select(.key as $k | ($rmA | index($k)) | not)))",
+    "reduce ($addT | keys_unsorted[]) as $n (.; (.agent[$n].tools) = (((.agent[$n].tools) // {}) + $addT[$n]))",
+    "reduce ($rmT | keys_unsorted[]) as $n (.; if .agent[$n].tools then .agent[$n].tools = ((.agent[$n].tools) | with_entries(select(.key as $k | ($rmT[$n] | has($k)) | not))) | if (.agent[$n].tools | length) == 0 then del(.agent[$n].tools) else . end else . end)",
+    ".instructions = (((.instructions // []) + $addI) - $rmI | unique)",
+  ].join(" | ")
+}
+
 export async function syncOpencodePlugin(
   userId: string,
   patch: {
@@ -1881,14 +1895,7 @@ export async function syncOpencodePlugin(
   if (empty) return false
   if (!(await isRunning(n.opencode))) return false
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
-  const program = [
-    ".plugin = (((.plugin // []) + $addP) - $rmP | unique)",
-    ".mcp = (((.mcp // {}) + $addM) | with_entries(select(.key as $k | ($rmM | index($k)) | not)))",
-    ".agent = (((.agent // {}) * $addA) | with_entries(select(.key as $k | ($rmA | index($k)) | not)))",
-    "reduce ($addT | keys_unsorted[]) as $n (.; (.agent[$n].tools) = (((.agent[$n].tools) // {}) + $addT[$n]))",
-    "reduce ($rmT | keys_unsorted[]) as $n (.; if .agent[$n].tools then .agent[$n].tools = ((.agent[$n].tools) | with_entries(select(.key as $k | ($rmT[$n] | index($k)) | not))) | if (.agent[$n].tools | length) == 0 then del(.agent[$n].tools) else . end else . end)",
-    ".instructions = (((.instructions // []) + $addI) - $rmI | unique)",
-  ].join(" | ")
+  const program = opencodePatchProgram()
   const script = [
     "sh",
     "-c",

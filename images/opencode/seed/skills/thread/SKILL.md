@@ -54,11 +54,18 @@ ob-thread start --title "Invoice follow-up" --dir "Billing" --display
 The personalities are a team, and delegation is not only for when the user names one. When a task falls outside your own skills, checking the roster is your first move: `ob-persona list` shows each teammate's description and skill scopes — delegate to the one that fits. When nobody fits, tell the user and offer the options: create the missing personality with `ob-persona add`, install a plugin (the `plugin` skill), or find another way together. When the user asks to give a task to a named personality ("have the software manager implement X in my project"), start a thread for it instead of doing the work yourself:
 
 ```sh
-ob-thread start --persona "Software manager" --title "Add CSV export" --message "Implement CSV export in ~/project/report-app. Report back with the file paths."
+ob-thread start --persona "Software manager" --from ses_YOURID --title "Add CSV export" --message "Implement CSV export in ~/project/report-app. Report back with the file paths."
 ```
 
 - `--persona NAME` makes the new thread answer and work as that personality.
   The agents are a team; you are the coordinator.
+- `--from SESSION_ID` (your own session id — the screen id in your system
+  line) arms an automatic wake-up: when the teammate finishes its current
+  work, this thread is re-prompted with a `[teammate]` message. It is not a
+  user reply — read the results with `ob-thread read <id>` (or the files you
+  asked for) and report to the user here. Without `--from` the control plane
+  guesses the one busy chat; the start output shows `wake` so you can tell
+  whether it armed.
 - A persona with a skill scope limits which skills load in its thread —
   `ob-persona list` shows `(skills: …)` on restricted ones. If a delegated
   teammate says it cannot use a skill, that is the persona's scope, not a
@@ -97,6 +104,34 @@ ob-thread delete --all
   wanted: check with the user before bulk cleanup, and prefer `--all` only
   when they asked for exactly that.
 - Deleting a thread removes its messages, persona binding, media, and screen.
+
+Manage a thread you own while it runs — your hidden `worker:` threads and
+persona teammates:
+
+```sh
+ob-thread read ses_abc123 4
+ob-thread wait ses_abc123 --timeout 30
+ob-thread stop ses_abc123
+ob-thread post ses_abc123 "Stop editing; report what you changed so far"
+```
+
+- `read` prints the last N messages (default 6) of a thread you manage — the
+  cheap way to see what a teammate or council member wrote before reporting.
+- `wait` blocks until the thread finishes its current turn (state goes
+  idle) or the timeout hits — the supported way to wait on a teammate or
+  council member from inside your own turn. Cap `--timeout` at 110 minutes;
+  the command is recognized by the stuck-command watchdog with a long
+  budget. Never hold a raw `sleep` loop or any other command in one bash
+  call past ~15 minutes — the watchdog kills it and wraps your turn up.
+  For waits longer than the budget, end the turn instead (an idle session
+  is never killed) and check the results on the next prompt.
+- `stop` aborts the thread's current turn only — the thread and its history
+  stay. Use it to pull the brake on a delegation that went sideways (wrong
+  task, runaway edits) instead of letting it finish.
+- `post` sends a follow-up prompt into the thread — a correction, missing
+  context, or a wrap-up instruction.
+- The server refuses all three for plain user chats and cron jobs; visible
+  persona threads you started are manageable, other visible threads are not.
 
 Tell the user the thread title you started and, for visible threads, that it
 is now on the dashboard.

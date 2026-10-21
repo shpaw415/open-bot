@@ -220,6 +220,49 @@ export const threadDirAssignments = sqliteTable(
   ],
 )
 
+// Directories (labeled groups) for the skills/MCP catalog. Organization
+// only — membership never changes what a persona allowlist enforces; the
+// picker just expands a directory into names on save.
+export const catalogDirs = sqliteTable(
+  "catalog_dirs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    kind: text("kind", { enum: ["skill", "mcp"] }).notNull(),
+    label: text("label").notNull(),
+    position: integer("position").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("catalog_dirs_user_kind_label").on(
+      table.userId,
+      table.kind,
+      table.label,
+    ),
+    index("catalog_dirs_user_kind").on(
+      table.userId,
+      table.kind,
+      table.position,
+    ),
+  ],
+)
+
+// One directory per item per kind: the picker expands membership into the
+// flat allowlist, so an item can only live in one labeled group.
+export const catalogDirItems = sqliteTable(
+  "catalog_dir_items",
+  {
+    userId: text("user_id").notNull(),
+    kind: text("kind", { enum: ["skill", "mcp"] }).notNull(),
+    name: text("name").notNull(),
+    dirId: text("dir_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.kind, table.name] }),
+    index("catalog_dir_items_dir").on(table.userId, table.dirId),
+  ],
+)
+
 export const councils = sqliteTable(
   "councils",
   {
@@ -250,6 +293,37 @@ export const councilMembers = sqliteTable(
     primaryKey({ columns: [table.councilId, table.sessionId] }),
     index("council_members_user_session").on(table.userId, table.sessionId),
     index("council_members_user").on(table.userId, table.createdAt),
+  ],
+)
+
+// Delegation watches: one row per delegated session (a council member or a
+// persona teammate) recorded at thread creation so the control plane can wake
+// the coordinating thread when the work finishes. wokenAt is set once the
+// coordinator has been re-prompted and cleared (re-armed) when the subject
+// starts working again; pending marks a wake that fired while the coordinator
+// was busy and delivers on its next idle.
+export const delegationWatches = sqliteTable(
+  "delegation_watches",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    kind: text("kind", { enum: ["council", "persona"] }).notNull(),
+    creatorSessionId: text("creator_session_id").notNull(),
+    subjectSessionId: text("subject_session_id").notNull(),
+    councilId: text("council_id"),
+    createdAt: integer("created_at").notNull(),
+    wokenAt: integer("woken_at"),
+    pending: integer("pending", { mode: "boolean" }).notNull().default(false),
+  },
+  (table) => [
+    index("delegation_watches_user_subject").on(
+      table.userId,
+      table.subjectSessionId,
+    ),
+    index("delegation_watches_user_creator").on(
+      table.userId,
+      table.creatorSessionId,
+    ),
   ],
 )
 

@@ -67,6 +67,8 @@ ob-vnc --session SESSION hit-image IMAGE_X IMAGE_Y
 
 `map` prints `live X Y` — click with those. `hit-image` prints the same line plus the JSON element under it, so you can confirm the target before clicking. Full-desktop captures (no resolution argument) print `factor 1 offset 0,0`; their image coordinates are already live coordinates and `map` is unnecessary.
 
+`ob-page read` lives in yet another pixel space: viewport (page) pixels, not live-screen ones. To turn a viewport coordinate from `ob-page read` geometry into an `ob-vnc move/click` point, take `offset X,Y` and `live WxH` from any capture line and `viewport WxH` from the `read` line. Normally the two sizes match and the conversion is plain addition — `live = offset + viewport`. If they differ (browser zoom), scale first: `live = offset + viewport × liveW/viewportW`. You rarely need this: `ob-page click`/`type` take element ids directly, and `map`/`hit` cover everything you read off a screenshot.
+
 - omit the resolution: lossless 1920x1200 grab of the desktop
 - `2` or `3`: browser at that pixel density
 - `2560x1600`: browser viewport for that shot. Clicks still use live-screen pixels

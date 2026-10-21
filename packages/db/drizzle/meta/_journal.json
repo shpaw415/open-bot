@@ -120,6 +120,20 @@
       "when": 1792366148081,
       "tag": "0016_clammy_prima",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1792426256021,
+      "tag": "0017_boring_magma",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1792548674256,
+      "tag": "0018_silky_payback",
+      "breakpoints": true
     }
   ]
 }

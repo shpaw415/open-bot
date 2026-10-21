@@ -2,10 +2,19 @@ import { cpus } from "node:os"
 import type { Db } from "@open-bot/db"
 import { desktopExec, desktopPhase } from "./docker"
 import { names } from "./env"
+import type { EventHub } from "./events"
 import { sh } from "./shell"
 
 export const DISK_CAP_KEY = "desktop_disk_max_gb"
 export const MAX_DISK_CAP_GB = 1_000_000
+
+// The desktop's RAM is a cgroup cap; Chromium renderers start dying
+// ("Aw Snap") as usage closes on it, with no other signal. The sampler
+// fires one notice per episode at 85% and sweeps zombie tabs at 90%,
+// re-arming only when the desktop drains back under 75%.
+export const MEMORY_WARN_RATIO = 0.85
+export const MEMORY_ACT_RATIO = 0.9
+export const MEMORY_REARM_RATIO = 0.75
 
 export type DesktopSample = {
   at: number
@@ -28,6 +37,43 @@ const MAX_SAMPLES = 60
 const SAMPLE_INTERVAL_MS = 30_000
 
 const history = new Map<string, DesktopSample[]>()
+/** One alert/sweep per pressure episode, per desktop. */
+const memoryLatched = new Set<string>()
+
+export function memoryRatio(sample: DesktopSample): number | null {
+  return sample.memMax > 0 ? sample.memUsed / sample.memMax : null
+}
+
+export function memoryLatchedFor(userId: string) {
+  return memoryLatched.has(userId)
+}
+
+/**
+ * Edge-triggered pressure decision: one alert per episode, a tab sweep at
+ * the 90% crossing, re-arm only under 75% so flapping around the threshold
+ * never spams the dashboard.
+ */
+export function memoryPressureDecision(
+  userId: string,
+  ratio: number,
+): { alert: boolean; sweep: boolean } {
+  if (ratio < MEMORY_REARM_RATIO) {
+    memoryLatched.delete(userId)
+    return { alert: false, sweep: false }
+  }
+  if (memoryLatched.has(userId)) return { alert: false, sweep: false }
+  memoryLatched.add(userId)
+  return { alert: true, sweep: ratio >= MEMORY_ACT_RATIO }
+}
+
+async function sweepTabs(userId: string): Promise<void> {
+  // Best-effort: close crashed/unresponsive tabs so a thrashing renderer
+  // stops competing for the cgroup. The sweep script refuses user-held
+  // screens itself.
+  await desktopExec(userId, "opencode", [
+    "/usr/local/bin/ob-tab-sweep.sh",
+  ]).catch(() => undefined)
+}
 
 export function desktopDiskMaxGb(db: Db) {
   const raw = db.getSetting(DISK_CAP_KEY)
@@ -178,7 +224,11 @@ export async function hardwareStats(
   }
 }
 
-export function startStatsSampler(db: Db, intervalMs = SAMPLE_INTERVAL_MS) {
+export function startStatsSampler(
+  db: Db,
+  hub?: EventHub,
+  intervalMs = SAMPLE_INTERVAL_MS,
+) {
   return setInterval(() => {
     void (async () => {
       try {
@@ -188,6 +238,9 @@ export function startStatsSampler(db: Db, intervalMs = SAMPLE_INTERVAL_MS) {
         for (const userId of [...history.keys()]) {
           if (!active.has(userId)) history.delete(userId)
         }
+        for (const userId of [...memoryLatched]) {
+          if (!active.has(userId)) memoryLatched.delete(userId)
+        }
         for (const userId of active) {
           if ((await desktopPhase(userId)) !== "running") continue
           const sample = await sampleDesktop(userId)
@@ -196,6 +249,26 @@ export function startStatsSampler(db: Db, intervalMs = SAMPLE_INTERVAL_MS) {
           rows.push(sample)
           while (rows.length > MAX_SAMPLES) rows.shift()
           history.set(userId, rows)
+          const ratio = memoryRatio(sample)
+          if (ratio === null) continue
+          const decision = memoryPressureDecision(userId, ratio)
+          if (!decision.alert) continue
+          const percent = Math.round(ratio * 100)
+          if (hub) {
+            hub.emit(userId, {
+              type: "hardware.notice",
+              properties: {
+                title: "Desktop memory pressure",
+                body: `RAM at ${percent}% of the container cap${
+                  decision.sweep
+                    ? " — crashed tabs are being swept"
+                    : " — heavy tabs may start dying"
+                }. Run ob-memory on the desktop for the breakdown.`,
+                percent,
+              },
+            })
+          }
+          if (decision.sweep) await sweepTabs(userId)
         }
       } catch {
         // sampling is best-effort

@@ -4,6 +4,7 @@ import { wakeDesktop } from "./desktop-wake"
 import { desktopPhase, endpoint } from "./docker"
 import { names, pagesOrigin } from "./env"
 import { HttpError } from "./http-error"
+import { instanceLanguage } from "./language"
 import { randomToken } from "./passwords"
 import { PLUGIN_UI_FILE_NAME } from "./plugin-artifact"
 import {
@@ -749,7 +750,11 @@ export type PluginPageInfo = {
 export async function pluginPageSummaries(
   db: Db,
   user: User,
-): Promise<{ pages: PluginPageInfo[]; desktop: string }> {
+): Promise<{
+  pages: PluginPageInfo[]
+  desktop: string
+  pagesOrigin: boolean
+}> {
   const desktop = await desktopPhase(user.id)
   const pages: PluginPageInfo[] = []
   for (const row of db.installedPlugins(user.id)) {
@@ -778,7 +783,9 @@ export async function pluginPageSummaries(
       })),
     })
   }
-  return { pages, desktop }
+  // Device access (mic/camera) in app-tab frames needs a secure context —
+  // only the dedicated pages origin provides one (see env.pagesOrigin).
+  return { pages, desktop, pagesOrigin: Boolean(pagesOrigin()) }
 }
 
 // GET /api/pages handler (session user only). Proxying goes through
@@ -791,13 +798,23 @@ export async function handlePluginPagesStatus(
   return Response.json(body)
 }
 
-function strippedHeaders(headers: Headers, token: string) {
+// Shared request-shaping for both plugin page proxies (/api/pages and the
+// _frame path): the client's headers are stripped of anything that could
+// confuse the upstream or leak identity, the page token rides in, and the
+// host-wide UI language is injected so plugin servers can localize every
+// response without a restart (the config file copy covers boot-time reads).
+export function strippedHeaders(
+  headers: Headers,
+  token: string,
+  language?: string,
+) {
   const out = new Headers(headers)
   out.delete("host")
   out.delete("accept-encoding")
   out.delete("cookie")
   out.delete("authorization")
   out.set("x-open-bot-page-token", token)
+  if (language) out.set("x-open-bot-language", language)
   out.set("cache-control", "no-cache")
   out.set("referrer-policy", "no-referrer")
   return out
@@ -891,7 +908,7 @@ export async function proxyPluginPage(
   const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
   const upstream = await fetch(dest, {
     method: req.method,
-    headers: strippedHeaders(req.headers, state.token),
+    headers: strippedHeaders(req.headers, state.token, instanceLanguage(db)),
     body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     // let SSE/streaming responses flow through untouched
     redirect: "manual",
@@ -1087,7 +1104,7 @@ export async function proxyPluginPageFrame(
   const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
   const upstream = await fetch(dest, {
     method: req.method,
-    headers: strippedHeaders(req.headers, state.token),
+    headers: strippedHeaders(req.headers, state.token, instanceLanguage(db)),
     body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     redirect: "manual",
     duplex: "half",

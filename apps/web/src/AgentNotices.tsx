@@ -6,6 +6,7 @@ import type { ChatMessage } from "./chat-view"
 import { useEventStream, useMobile } from "./hooks"
 import {
   type NoticeInput,
+  noticeFromHardwareEvent,
   noticeFromPluginEvent,
   noticeFromSecurityEvent,
   pushNotice,
@@ -157,6 +158,18 @@ export function AgentNotices({
           | undefined
         const id = `plugin-notice-${props?.pluginId ?? "x"}-${Date.now()}`
         setToast(deliver(noticeFromPluginEvent(props, id), () => {}))
+        return
+      }
+      if (event.type === "hardware.notice") {
+        const props = event.properties as
+          | {
+              title?: unknown
+              body?: unknown
+              percent?: unknown
+            }
+          | undefined
+        const id = `hardware-notice-${Date.now()}`
+        setToast(deliver(noticeFromHardwareEvent(props, id), () => {}))
         return
       }
       const armId = armsSession(event)

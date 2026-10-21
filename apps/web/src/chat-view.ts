@@ -112,7 +112,7 @@ export type VisibleMessage = ChatMessage & {
   sentAt: number | null
 }
 
-export type SendStatus = "sending" | "sent" | "failed"
+export type SendStatus = "queued" | "sending" | "sent" | "failed"
 
 export type SendReceipt = {
   id: string
@@ -347,6 +347,11 @@ export function chatImageUrl(url: string): string {
   return ""
 }
 
+export function chatLinkOpensExternally(href: string | undefined): boolean {
+  if (!href) return false
+  return /^(https?:)?\/\//i.test(href)
+}
+
 export function embedWorkspaceImages(text: string): string {
   return text
     .split("\n")
@@ -563,15 +568,12 @@ export function receiptMatches(
   return got.startsWith(want)
 }
 
-function pendingParts(receipt: SendReceipt): ChatPart[] {
-  const text = [
-    receipt.text.trim(),
-    ...(receipt.files ?? []).map((name) => `Joined file: ${name}`),
-  ]
+function pendingParts(text: string, files: string[]): ChatPart[] {
+  const joined = [text.trim(), ...files.map((name) => `Joined file: ${name}`)]
     .filter(Boolean)
     .join("\n\n")
-  if (!text) return []
-  return [{ type: "text", text }]
+  if (!joined) return []
+  return [{ type: "text", text: joined }]
 }
 
 function receiptBubbleIndex(
@@ -600,6 +602,7 @@ export function transcriptBubbles(
   messages: ChatMessage[],
   receipts: SendReceipt[],
   media?: MediaMap,
+  queued: { id: string; text: string; files: string[] }[] = [],
 ): TranscriptEntry[] {
   const shown = threadBubbles(messages, media)
   const marks = new Map<number, SendStatus>()
@@ -628,7 +631,7 @@ export function transcriptBubbles(
     const [bubble] = threadBubbles([
       {
         info: { role: "user", time: { created: receipt.sentAt } },
-        parts: pendingParts(receipt),
+        parts: pendingParts(receipt.text, receipt.files ?? []),
       },
     ])
     if (!bubble) continue
@@ -637,6 +640,19 @@ export function transcriptBubbles(
       mark: receipt.status,
       pendingId: receipt.id,
     })
+  }
+  // Waiting-list messages render straight from the queue state — never from
+  // receipts — so a flushed or removed item cannot leave a ghost bubble
+  // behind. They always sit after any in-flight send receipt.
+  for (const item of queued) {
+    const [bubble] = threadBubbles([
+      {
+        info: { role: "user", time: { created: 0 } },
+        parts: pendingParts(item.text, item.files),
+      },
+    ])
+    if (!bubble) continue
+    out.push({ message: bubble, mark: "queued", pendingId: item.id })
   }
   return out
 }

@@ -63,9 +63,21 @@ export async function evaluate(
     expression,
     returnByValue: true,
     awaitPromise: true,
-  })) as { result?: { value?: unknown }; exceptionDetails?: { text?: string } }
+  })) as {
+    result?: { value?: unknown }
+    exceptionDetails?: {
+      text?: string
+      exception?: { description?: string }
+    }
+  }
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || "evaluate failed")
+    // CDP's exceptionDetails.text is a bare "Uncaught"; the description
+    // carries the actual SyntaxError/TypeError the page threw.
+    throw new Error(
+      result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        "evaluate failed",
+    )
   }
   return result.result?.value
 }
@@ -104,7 +116,7 @@ export const HIT_SCRIPT = `
   const ancestor = el.closest(
     'a, button, [role="button"], [role="link"], [role="menuitem"], [onclick], input, select, textarea, label, summary',
   )
-  const describe = (item: Element) => {
+  const describe = (item) => {
     const name = item.getAttribute("aria-label") || item.getAttribute("title")
     return {
       tag: item.tagName.toLowerCase(),

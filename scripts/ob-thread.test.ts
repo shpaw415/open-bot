@@ -374,3 +374,114 @@ test("delete without ids prints usage", async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("stop posts to the thread stop route", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["stop", "t1"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("ses_1")
+    const args = await argsOf(home)
+    expect(args).toContain("POST")
+    expect(args.join(" ")).toContain("/api/threads/t1/stop")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("post sends the message body to the thread post route", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["post", "t1", "Stop editing", "and report"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("ses_1")
+    const args = await argsOf(home)
+    expect(args.join(" ")).toContain("/api/threads/t1/post")
+    expect(await bodyOf(home)).toEqual({
+      message: "Stop editing and report",
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("stop and post usage errors never call curl", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    expect((await run(home, ["stop"])).code).toBe(2)
+    expect((await run(home, ["post", "t1"])).code).toBe(2)
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+function fakeCurlWithStatus(home: string) {
+  const bin = join(home, "bin")
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+n=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)
+n=$((n+1))
+printf '%s' "$n" > "$FAKE_COUNT"
+if [ "$n" -le 1 ]; then
+  printf '%s\\n' '{"id":"t1","running":true,"state":"busy"}'
+else
+  printf '%s\\n' '{"id":"t1","running":false,"state":"idle"}'
+fi
+`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+}
+
+test("wait polls until the thread goes idle and prints the final state", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithStatus(home)
+    const result = await run(home, ["wait", "t1", "--timeout", "1"], {
+      FAKE_COUNT: join(home, "count"),
+    })
+    expect(result.code).toBe(0)
+    const out = JSON.parse(result.stdout) as {
+      id: string
+      running: boolean
+      state: string
+      waitedSeconds: number
+      timeout: boolean
+    }
+    expect(out).toMatchObject({
+      id: "t1",
+      running: false,
+      state: "idle",
+      timeout: false,
+    })
+    expect(out.waitedSeconds).toBeGreaterThanOrEqual(5)
+    expect((await argsOf(home)).join(" ")).toContain("/api/threads/t1/status")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}, 20_000)
+
+test("wait validates the timeout and id before calling curl", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithStatus(home)
+    const noId = await run(home, ["wait"])
+    expect(noId.code).toBe(2)
+    expect(noId.stderr).toContain("Usage:")
+    const badTimeout = await run(home, ["wait", "t1", "--timeout", "abc"])
+    expect(badTimeout.code).toBe(2)
+    expect(badTimeout.stderr).toContain("whole number of minutes")
+    const tooBig = await run(home, ["wait", "t1", "--timeout", "111"])
+    expect(tooBig.code).toBe(2)
+    expect(tooBig.stderr).toContain("limited to 1-110 minutes")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

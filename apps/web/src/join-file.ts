@@ -21,6 +21,28 @@ export function joinFileError(file: File, count: number): string | null {
   return null
 }
 
+export type JoinPick = {
+  accepted: File[]
+  errors: string[]
+}
+
+export function pickJoinableFiles(
+  files: readonly File[],
+  existingCount: number,
+): JoinPick {
+  const accepted: File[] = []
+  const errors: string[] = []
+  for (const file of files) {
+    const problem = joinFileError(file, existingCount + accepted.length)
+    if (problem) {
+      if (!errors.includes(problem)) errors.push(problem)
+      continue
+    }
+    accepted.push(file)
+  }
+  return { accepted, errors }
+}
+
 export function promptParts(text: string, files: JoinedFile[]) {
   const parts: {
     type: string

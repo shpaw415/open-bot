@@ -12,6 +12,7 @@ import { api, type Me } from "./api"
 import { Config } from "./Config"
 import { CronView } from "./CronView"
 import { Dashboard } from "./Dashboard"
+import { clearComposerSeed, setComposerSeed } from "./dashboard-data"
 import { useOverlayA11y } from "./dialog-a11y"
 import { dirtyForms } from "./dirty-form"
 import { Help } from "./Help"
@@ -35,7 +36,6 @@ import { openNotifiedThread, setNoticeFocus } from "./notify"
 import {
   PluginAppsView,
   type PluginsViewStatus,
-  PluginTabView,
   pluginTabs,
 } from "./plugin-tabs"
 import { PluginsProvider, pluginsAwaitingRoute, usePlugins } from "./plugin-ui"
@@ -49,6 +49,7 @@ import {
   HELP_PATH,
   HOME_PATH,
   parseRoute,
+  pluginPath,
   type WorkspaceTab,
   workspacePath,
 } from "./routes"
@@ -364,11 +365,13 @@ export function App() {
     }
     window.addEventListener("popstate", onPop)
     // Tag the entry this tab booted on (position 0) so later pops know
-    // where they stand.
+    // where they stand. The search string rides along — boot happens before
+    // deep-linked views (?job=…) read the query, and stripping it here used
+    // to erase the deep link before its consumer ever mounted.
     history.replaceState(
       { ...history.state, ob: guard.tagReplace(0), obPos: 0 },
       "",
-      location.pathname,
+      location.pathname + location.search,
     )
     return () => {
       window.removeEventListener("popstate", onPop)
@@ -497,7 +500,24 @@ function Shell({
     [go],
   )
 
+  // "Nouvelle conversation" intent, owned by the shell (not by storage read
+  // at a fragile Workspace mount): it survives Workspace remounts and
+  // StrictMode's setup/cleanup cycles, and stays active until the user
+  // explicitly opens a thread or the first send creates one. A voluntary
+  // notification open clears it; a slow history load never can.
+  const blankChatRef = useRef(false)
+  const openNewThread = useCallback(
+    (seed?: string) => {
+      blankChatRef.current = true
+      if (seed) setComposerSeed(seed)
+      go(CHAT_PATH)
+    },
+    [go],
+  )
+
   const logout = useCallback(() => {
+    blankChatRef.current = false
+    clearComposerSeed()
     void api("/api/auth/logout", { method: "POST" }).then(() => setMe(null))
   }, [setMe])
 
@@ -553,6 +573,22 @@ function Shell({
   useEffect(() => {
     document.title = pageContext ? `${pageContext} · open-bot` : "open-bot"
   }, [pageContext])
+
+  // Explicit navigation (go, replace, Back/Forward) moves focus to the
+  // content so keyboard and screen-reader users land inside the new view
+  // instead of on a stale nav link. Real-time events and in-view state
+  // changes never re-path, so they never steal focus. The very first render
+  // keeps the browser's default focus position.
+  const firstPathRef = useRef(true)
+  // Refs only; the trigger is the path itself, not a reactive value inside.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refs only
+  useEffect(() => {
+    if (firstPathRef.current) {
+      firstPathRef.current = false
+      return
+    }
+    document.getElementById("ob-main")?.focus({ preventScroll: true })
+  }, [path])
 
   const sidebar = (railMode: boolean) => (
     <>
@@ -634,8 +670,17 @@ function Shell({
       )
     }
     if (parsed.route.view === "home")
-      return <Dashboard me={me} tabs={tabs} go={go} onOpenThread={openReply} />
-    if (parsed.route.view === "help") return <Help go={go} />
+      return (
+        <Dashboard
+          me={me}
+          tabs={tabs}
+          go={go}
+          onOpenThread={openReply}
+          onNewThread={openNewThread}
+        />
+      )
+    if (parsed.route.view === "help")
+      return <Help go={go} onNewThread={openNewThread} />
     if (parsed.route.view === "not-found") {
       return (
         <Box className="ob-scroll ob-view-enter" sx={{ flex: 1, minHeight: 0 }}>
@@ -666,17 +711,24 @@ function Shell({
         </Box>
       )
     }
-    if (parsed.route.view === "apps")
+    // One view for both routes: /apps (no selection) and /<pluginId>:<tabId>
+    // (an open app). The selection lives in the URL, so the side list, the
+    // document title, reload and Back/Forward all agree — picking an app in
+    // the list, a Home shortcut and a search hit land on the same page.
+    if (parsed.route.view === "apps" || parsed.route.view === "plugin")
       return (
         <PluginAppsView
           tabs={tabs}
           status={pluginsViewStatus}
+          selectedKey={
+            parsed.route.view === "plugin" ? parsed.route.tab.key : ""
+          }
+          onOpen={(tab) => go(pluginPath(tab))}
+          onClose={() => go("/apps")}
           onAddPlugin={() => go("/config/plugins")}
           onManagePlugins={() => go("/config/plugins")}
         />
       )
-    if (parsed.route.view === "plugin")
-      return <PluginTabView key={parsed.route.tab.key} tab={parsed.route.tab} />
     if (parsed.route.view === "plugin-pending") {
       // The URL may name a plugin page. While the install list is in flight
       // the view is a skeleton; if the first load failed, the URL is held
@@ -764,6 +816,7 @@ function Shell({
         tab={workspaceTab}
         onTab={(next) => go(workspacePath(next))}
         onMeRefreshed={setMe}
+        blankChatRef={blankChatRef}
       />
     )
   })()
@@ -786,6 +839,7 @@ function Shell({
         navCollapsed={mobile ? undefined : rail}
         appTabs={tabs}
         onOpenThread={openReply}
+        onNewThread={() => openNewThread()}
         go={go}
         onLogout={logout}
       />

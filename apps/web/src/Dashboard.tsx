@@ -1,24 +1,24 @@
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import Chip from "@shpaw415/mui-lite/Chip"
 import Paper from "@shpaw415/mui-lite/Paper"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, type DesktopStatus, type Me, type QuotaState } from "./api"
+import { Chip } from "./chip"
 import {
   buildAlerts,
   buildChecklist,
   checklistComplete,
   formatFrAgo,
+  formatFrNamedAgo,
   formatFrWhen,
   type HomeAlert,
-  type JobLike,
-  markNewThreadIntent,
+  parseJobs,
   parseRecentThreads,
   pickUpcomingJobs,
-  type RecentThread,
-  setComposerSeed,
-  type UpcomingJob,
+  type RecentCoverage,
+  type RecentThreadsResult,
+  splitJobProblems,
 } from "./dashboard-data"
 import { useEventStream } from "./hooks"
 import { ChatIcon, ExtensionIcon, FolderIcon } from "./icons"
@@ -45,18 +45,31 @@ type Res<T> = {
   data: T
   error: string
   at: number
+  /** False once a load failed and the data on screen may be outdated. */
+  fresh: boolean
 }
 
 function freshRes<T>(data: T): Res<T> {
-  return { status: "loading", data, error: "", at: 0 }
+  return { status: "loading", data, error: "", at: 0, fresh: false }
 }
 
-const GUIDE_KEY = "ob-home-guide-hidden"
+function guideStorageKey(userId: string): string {
+  return `ob-home-guide-hidden:${userId}`
+}
 
 const EXAMPLES = [
-  "Fais une recherche et résume-moi…",
-  "Rédige un courriel de suivi pour…",
-  "Prépare un plan pour…",
+  {
+    label: "Recherche + résumé",
+    seed: "Fais une recherche sur le web et résume-moi les points clés sous forme de liste.",
+  },
+  {
+    label: "Courriel de suivi",
+    seed: "Rédige un courriel de suivi poli pour une demande restée sans réponse depuis une semaine.",
+  },
+  {
+    label: "Plan de travail",
+    seed: "Prépare un plan détaillé pour organiser mon projet, étape par étape.",
+  },
 ]
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
@@ -64,7 +77,15 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
     <Typography
       variant="subtitle2"
       component="h2"
-      sx={{ mb: 1, color: "textSecondary" }}
+      sx={{
+        mb: 1,
+        color: "textSecondary",
+        // mui-lite restyles any tag-level h2 at the h2 scale (2rem/300);
+        // section headers must stay secondary to the page's h1.
+        fontSize: "0.875rem",
+        fontWeight: 600,
+        lineHeight: 1.4,
+      }}
     >
       {children}
     </Typography>
@@ -74,19 +95,42 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 function SectionError({
   text,
   onRetry,
+  staleAt,
 }: {
   text: string
   onRetry: () => void
+  staleAt: number
 }) {
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }}>
       <Typography variant="body2" color="textSecondary">
         {text}
       </Typography>
+      {staleAt ? (
+        <Typography variant="caption" color="textSecondary">
+          Données affichées du {formatFrWhen(staleAt)} — elles peuvent être
+          anciennes.
+        </Typography>
+      ) : null}
       <Button size="small" variant="text" onClick={onRetry} sx={{ mt: 0.5 }}>
         Réessayer
       </Button>
     </Paper>
+  )
+}
+
+/** Warning strip above still-rendered (possibly outdated) data. */
+function StaleNote({ at, onRetry }: { at: number; onRetry: () => void }) {
+  return (
+    <Stack direction="row" spacing={1} alignItems="center">
+      <Typography variant="caption" color="textSecondary" sx={{ flex: 1 }}>
+        Actualisation impossible ({formatFrWhen(at)}) — les données peuvent être
+        anciennes.
+      </Typography>
+      <Button size="small" variant="text" onClick={onRetry}>
+        Réessayer
+      </Button>
+    </Stack>
   )
 }
 
@@ -95,112 +139,173 @@ export function Dashboard({
   tabs,
   go,
   onOpenThread,
+  onNewThread,
 }: {
   me: Me
   tabs: PluginTab[]
   go: (path: string) => void
   onOpenThread: (sessionId: string) => void
+  /** Every "Nouvelle conversation" CTA shares the shell-owned intent. */
+  onNewThread: (seed?: string) => void
 }) {
   const visible = useDocumentVisible()
   const { subscribe } = useEventStream(true)
   const [phase, setPhase] = useState<"starting" | "running" | "sleeping">(
     me.desktop ?? "sleeping",
   )
+  // The profile's phase can be stale (cached /api/me); until a passive probe
+  // confirms it, the badge says so instead of announcing readiness.
+  const [phaseConfirmed, setPhaseConfirmed] = useState(false)
   const [startError, setStartError] = useState("")
   const [waking, setWaking] = useState(false)
-  const [threads, setThreads] = useState<Res<RecentThread[]>>(freshRes([]))
-  const [jobs, setJobs] = useState<Res<UpcomingJob[]>>(freshRes([]))
+  const [threads, setThreads] = useState<Res<RecentThreadsResult>>(
+    freshRes({ threads: [], coverage: "titles" }),
+  )
+  const [jobs, setJobs] = useState<Res<ReturnType<typeof parseJobs>>>(
+    freshRes([]),
+  )
   const [quota, setQuota] = useState<Res<QuotaState | null>>(freshRes(null))
   const [projects, setProjects] = useState<Res<number>>(freshRes(0))
   const [guideHidden, setGuideHidden] = useState(() => {
     try {
-      return localStorage.getItem(GUIDE_KEY) === "1"
+      return localStorage.getItem(guideStorageKey(me.id)) === "1"
     } catch {
       return false
     }
   })
   const aliveRef = useRef(true)
-  useEffect(
-    () => () => {
+  // Per-source request sequence: only the newest request may write its
+  // source, so a slow earlier response can never overwrite a newer one.
+  const seq = useRef({ threads: 0, jobs: 0, quota: 0, projects: 0, phase: 0 })
+  useEffect(() => {
+    // Re-armed on every effect cycle (StrictMode setup/cleanup/setup keeps
+    // it true for the live instance); false only after real unmount.
+    aliveRef.current = true
+    return () => {
       aliveRef.current = false
-    },
-    [],
-  )
+    }
+  }, [])
 
   const loadThreads = useCallback(() => {
+    const request = ++seq.current.threads
     api<unknown>("/api/threads/recent")
       .then((body) => {
-        if (!aliveRef.current) return
+        if (!aliveRef.current || request !== seq.current.threads) return
         setThreads({
           status: "ready",
           data: parseRecentThreads(body),
           error: "",
           at: Date.now(),
+          fresh: true,
         })
       })
       .catch((caught) => {
-        if (!aliveRef.current) return
+        if (!aliveRef.current || request !== seq.current.threads) return
         setThreads((current) => ({
           status: "error",
           data: current.data,
           error:
             caught instanceof Error ? caught.message : "échec du chargement",
           at: current.at,
+          fresh: false,
         }))
       })
   }, [])
 
   const loadJobs = useCallback(() => {
-    api<JobLike[]>("/api/cron")
+    const request = ++seq.current.jobs
+    api<unknown>("/api/cron")
       .then((body) => {
-        if (!aliveRef.current) return
+        if (!aliveRef.current || request !== seq.current.jobs) return
         setJobs({
           status: "ready",
-          data: pickUpcomingJobs(Array.isArray(body) ? body : []),
+          data: parseJobs(body),
           error: "",
           at: Date.now(),
+          fresh: true,
         })
       })
       .catch((caught) => {
-        if (!aliveRef.current) return
+        if (!aliveRef.current || request !== seq.current.jobs) return
         setJobs((current) => ({
           status: "error",
           data: current.data,
           error:
             caught instanceof Error ? caught.message : "échec du chargement",
           at: current.at,
+          fresh: false,
         }))
       })
   }, [])
 
   const loadQuota = useCallback(() => {
+    const request = ++seq.current.quota
     api<QuotaState>("/api/quota")
       .then((body) => {
-        if (!aliveRef.current) return
-        setQuota({ status: "ready", data: body, error: "", at: Date.now() })
+        if (!aliveRef.current || request !== seq.current.quota) return
+        setQuota({
+          status: "ready",
+          data: body,
+          error: "",
+          at: Date.now(),
+          fresh: true,
+        })
       })
       .catch(() => {
-        if (!aliveRef.current) return
-        // Quota only powers an alert; its failure stays silent rather than
-        // inventing an over/quota state.
-        setQuota((current) => ({ ...current, status: "ready" }))
+        if (!aliveRef.current || request !== seq.current.quota) return
+        // Quota only powers an alert. Unknown is not "no quota problem":
+        // the data stays marked unfresh and no alert is invented.
+        setQuota((current) => ({ ...current, status: "ready", fresh: false }))
       })
   }, [])
 
   const loadProjects = useCallback(() => {
+    const request = ++seq.current.projects
     api<{ projects?: unknown[] }>("/api/projects")
       .then((body) => {
-        if (!aliveRef.current) return
+        if (!aliveRef.current || request !== seq.current.projects) return
         setProjects({
           status: "ready",
           data: Array.isArray(body.projects) ? body.projects.length : 0,
           error: "",
           at: Date.now(),
+          fresh: true,
         })
       })
       .catch(() => {
-        if (!aliveRef.current) return
-        setProjects((current) => ({ ...current, status: "ready" }))
+        if (!aliveRef.current || request !== seq.current.projects) return
+        // Unknown count is not zero: the shortcut renders without a number.
+        setProjects((current) => ({
+          ...current,
+          status: "ready",
+          fresh: false,
+        }))
+      })
+  }, [])
+
+  // Passive phase probe: /api/desktop never starts anything. Runs on mount
+  // even when the profile said "running" — the profile can be stale — and
+  // on every visibility return.
+  const loadPhase = useCallback(() => {
+    const request = ++seq.current.phase
+    api<DesktopStatus>("/api/desktop")
+      .then((status) => {
+        if (!aliveRef.current || request !== seq.current.phase) return
+        setPhaseConfirmed(true)
+        if (status.error) {
+          if (status.phase === "sleeping" || status.phase === "starting")
+            setStartError(status.error)
+          setPhase(status.phase)
+        } else {
+          setStartError("")
+          setPhase(status.phase)
+        }
+      })
+      .catch(() => {
+        // A probe error proves neither sleep nor readiness: keep the last
+        // known phase but stop advertising it as confirmed.
+        if (!aliveRef.current || request !== seq.current.phase) return
+        setPhaseConfirmed(false)
       })
   }, [])
 
@@ -209,34 +314,17 @@ export function Dashboard({
     loadJobs()
     loadQuota()
     loadProjects()
-  }, [loadThreads, loadJobs, loadQuota, loadProjects])
+    loadPhase()
+  }, [loadThreads, loadJobs, loadQuota, loadProjects, loadPhase])
 
   // Phase poll: fast while starting, slow while sleeping (a cron or webhook
   // can wake the desktop behind our back); paused once running — /api/desktop
   // never starts anything itself.
   useEffect(() => {
     if (phase === "running" || !visible) return
-    const timer = setInterval(
-      () => {
-        void api<DesktopStatus>("/api/desktop")
-          .then((status) => {
-            if (!aliveRef.current) return
-            if (status.error) {
-              if (phase === "starting") {
-                setPhase("sleeping")
-                setStartError(status.error)
-              }
-            } else {
-              setStartError("")
-              setPhase(status.phase)
-            }
-          })
-          .catch(() => {})
-      },
-      phase === "starting" ? 2000 : 10_000,
-    )
+    const timer = setInterval(loadPhase, phase === "starting" ? 2000 : 10_000)
     return () => clearInterval(timer)
-  }, [phase, visible])
+  }, [phase, visible, loadPhase])
 
   // Revalidate on focus and on the events the shell already carries.
   useEffect(() => {
@@ -244,11 +332,12 @@ export function Dashboard({
       if (!document.hidden) {
         loadThreads()
         loadJobs()
+        loadPhase()
       }
     }
     document.addEventListener("visibilitychange", onVisible)
     return () => document.removeEventListener("visibilitychange", onVisible)
-  }, [loadThreads, loadJobs])
+  }, [loadThreads, loadJobs, loadPhase])
 
   useEffect(
     () =>
@@ -261,54 +350,47 @@ export function Dashboard({
 
   const desktop = DESKTOP_STATE_TEXT[phase]
   const hasModel = Boolean(me.model?.modelID)
-  const hasThreads = threads.status === "ready" && threads.data.length > 0
-  const checklist = buildChecklist({ hasModel, hasThreads })
+  // The summary's knowledge state drives both the guide and the empty state:
+  // - coverage "full" (real session list, fresh read): an empty list is a
+  //   CONFIRMED empty history — the guide may say "start a first one".
+  // - coverage "titles" with rows: history exists — never a first-thread
+  //   invitation, even though the full list was not readable.
+  // - coverage "titles" empty: unknown — an empty name index is not proof
+  //   of an empty history, so neither state is claimed.
+  const recent = threads.data
+  const threadsKnown =
+    threads.status === "ready" &&
+    threads.fresh &&
+    (recent.coverage === "full" || recent.threads.length > 0)
+  const hasThreads = threads.status === "ready" && recent.threads.length > 0
+  const coverage: RecentCoverage = recent.coverage
+  const checklist = buildChecklist({ hasModel, hasThreads, threadsKnown })
   const showGuide = !checklistComplete(checklist) && !guideHidden
 
-  const alerts: HomeAlert[] = buildAlerts({
-    desktopError: startError,
-    quota: quota.status === "ready" ? quota.data : null,
-    failedJobs: (jobs.status === "ready" ? jobs.data : [])
-      .filter((job) => job.lastError)
-      .map((job) => ({
-        id: job.id,
-        name: job.name,
-        lastError: job.lastError,
-      })),
-  })
+  const alerts: HomeAlert[] = (() => {
+    const all = jobs.status === "ready" ? jobs.data : []
+    const { failed, overdue } = splitJobProblems(all)
+    return buildAlerts({
+      desktopError: startError,
+      quota: quota.status === "ready" && quota.fresh ? quota.data : null,
+      failedJobs: failed,
+      overdueJobs: overdue,
+    })
+  })()
 
-  function newConversation(seed?: string) {
-    if (seed) setComposerSeed(seed)
-    markNewThreadIntent()
-    go(CHAT_PATH)
-  }
-
-  function wake() {
-    if (waking || phase !== "sleeping") return
-    setWaking(true)
-    setStartError("")
-    setPhase("starting")
-    void api("/api/desktop/start", { method: "POST" })
-      .catch((caught) => {
-        setPhase("sleeping")
-        setStartError(
-          caught instanceof Error ? caught.message : "démarrage impossible",
-        )
-      })
-      .finally(() => setWaking(false))
-  }
+  const upcoming = pickUpcomingJobs(jobs.status === "ready" ? jobs.data : [])
 
   function hideGuide() {
     setGuideHidden(true)
     try {
-      localStorage.setItem(GUIDE_KEY, "1")
+      localStorage.setItem(guideStorageKey(me.id), "1")
     } catch {
       // session-only
     }
   }
 
   const checklistLabels: Record<
-    "model" | "first-thread" | "app",
+    "model" | "first-thread",
     { title: string; detail: string; action?: { label: string; path: string } }
   > = {
     model: {
@@ -328,12 +410,6 @@ export function Dashboard({
       action: hasThreads
         ? undefined
         : { label: "Nouvelle conversation", path: "" },
-    },
-    app: {
-      title: "Ajouter une application (facultatif)",
-      detail:
-        "Des extensions peuvent ajouter des outils à vos conversations. Rien à installer pour commencer.",
-      action: { label: "Parcourir les extensions", path: "/config/plugins" },
     },
   }
 
@@ -371,36 +447,29 @@ export function Dashboard({
               variant="contained"
               size="large"
               startIcon={<ChatIcon width={18} height={18} />}
-              onClick={() => newConversation()}
+              onClick={() => onNewThread()}
               sx={{ alignSelf: "flex-start" }}
             >
               Nouvelle conversation
             </Button>
             <Chip
               size="small"
-              color={
-                phase === "running"
-                  ? "success"
-                  : phase === "starting"
-                    ? "primary"
-                    : undefined
-              }
-              onClick={phase === "sleeping" ? wake : undefined}
-              sx={{ cursor: phase === "sleeping" ? "pointer" : "default" }}
               label={
-                phase === "running"
-                  ? desktop.label
-                  : phase === "starting"
-                    ? `${desktop.label}…`
-                    : `${desktop.label} — démarrer`
+                phase === "starting"
+                  ? `${desktop.label}…`
+                  : desktop.label +
+                    (phaseConfirmed ? "" : " — état à confirmer")
               }
+              title={desktop.detail}
             />
             <Typography variant="caption" color="textSecondary">
               {phase === "sleeping"
                 ? "Vos conversations sont conservées; l’environnement démarre à la demande."
                 : phase === "starting"
                   ? "Quelques minutes peuvent être nécessaires au premier démarrage."
-                  : "L’environnement de travail est prêt."}
+                  : phaseConfirmed
+                    ? "L’environnement de travail est prêt."
+                    : "État en cours de vérification."}
             </Typography>
           </Stack>
           {phase === "sleeping" ? (
@@ -408,7 +477,22 @@ export function Dashboard({
               <Button
                 size="small"
                 variant="outlined"
-                onClick={wake}
+                onClick={() => {
+                  if (waking || phase !== "sleeping") return
+                  setWaking(true)
+                  setStartError("")
+                  setPhase("starting")
+                  void api("/api/desktop/start", { method: "POST" })
+                    .catch((caught) => {
+                      setPhase("sleeping")
+                      setStartError(
+                        caught instanceof Error
+                          ? caught.message
+                          : "démarrage impossible",
+                      )
+                    })
+                    .finally(() => setWaking(false))
+                }}
                 disabled={waking}
               >
                 Démarrer l’environnement
@@ -427,12 +511,14 @@ export function Dashboard({
             aria-label="Exemples de demandes"
           >
             {EXAMPLES.map((example) => (
-              <Chip
-                key={example}
+              <Button
+                key={example.label}
+                size="small"
                 variant="outlined"
-                onClick={() => newConversation(example)}
-                label={example}
-              />
+                onClick={() => onNewThread(example.seed)}
+              >
+                {example.label}
+              </Button>
             ))}
           </Stack>
         </Stack>
@@ -472,7 +558,11 @@ export function Dashboard({
         {showGuide ? (
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Stack direction="row" alignItems="center" spacing={1}>
-              <Typography variant="subtitle1" component="h2" sx={{ flex: 1 }}>
+              <Typography
+                variant="subtitle1"
+                component="h2"
+                sx={{ flex: 1, fontSize: "1rem", fontWeight: 600 }}
+              >
                 Bien démarrer
               </Typography>
               <Button size="small" variant="text" onClick={hideGuide}>
@@ -482,6 +572,7 @@ export function Dashboard({
             <Stack spacing={1} sx={{ mt: 1 }}>
               {checklist.map((step) => {
                 const labels = checklistLabels[step.id]
+                const unknown = step.state === "unknown"
                 return (
                   <Stack
                     key={step.id}
@@ -496,7 +587,11 @@ export function Dashboard({
                         height: 18,
                         borderRadius: "50%",
                         border: "2px solid",
-                        borderColor: step.done ? "success.main" : "divider",
+                        borderColor: unknown
+                          ? "divider"
+                          : step.done
+                            ? "success.main"
+                            : "divider",
                         backgroundColor: step.done
                           ? "success.main"
                           : "transparent",
@@ -509,6 +604,7 @@ export function Dashboard({
                     >
                       {labels.title}
                       {step.done ? " — fait" : ""}
+                      {unknown ? " — à vérifier" : ""}
                     </Typography>
                     <Typography
                       variant="caption"
@@ -519,9 +615,11 @@ export function Dashboard({
                         display: { xs: "none", sm: "block" },
                       }}
                     >
-                      {labels.detail}
+                      {unknown
+                        ? "La vérification est impossible tant que la liste n’a pas répondu."
+                        : labels.detail}
                     </Typography>
-                    {labels.action && !step.done ? (
+                    {labels.action && !step.done && !unknown ? (
                       <Button
                         size="small"
                         variant="text"
@@ -529,7 +627,7 @@ export function Dashboard({
                           const action = labels.action
                           if (!action) return
                           if (action.path) go(action.path)
-                          else newConversation()
+                          else onNewThread()
                         }}
                       >
                         {labels.action.label}
@@ -538,6 +636,42 @@ export function Dashboard({
                   </Stack>
                 )
               })}
+              {/* Optional suggestion, never a fake unfinished step. */}
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Box
+                  aria-hidden
+                  sx={{
+                    width: 18,
+                    height: 18,
+                    flexShrink: 0,
+                    textAlign: "center",
+                  }}
+                >
+                  <ExtensionIcon width={16} height={16} />
+                </Box>
+                <Typography variant="body2">
+                  Suggestion — ajouter des applications
+                </Typography>
+                <Typography
+                  variant="caption"
+                  color="textSecondary"
+                  sx={{
+                    flex: 1,
+                    minWidth: 0,
+                    display: { xs: "none", sm: "block" },
+                  }}
+                >
+                  Des extensions peuvent ajouter des outils. Rien à installer
+                  pour commencer.
+                </Typography>
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => go("/config/plugins")}
+                >
+                  Parcourir les extensions
+                </Button>
+              </Stack>
             </Stack>
           </Paper>
         ) : null}
@@ -571,51 +705,86 @@ export function Dashboard({
                   Chargement des conversations
                 </output>
               </Stack>
-            ) : threads.status === "error" ? (
+            ) : threads.status === "error" && recent.threads.length === 0 ? (
               <SectionError
                 text="Impossible de charger vos conversations récentes. Vos échanges n’ont pas été supprimés."
                 onRetry={loadThreads}
+                staleAt={threads.at}
               />
-            ) : threads.data.length === 0 ? (
-              <Typography variant="body2" color="textSecondary">
-                Aucune conversation nommée pour l’instant. Décrivez une tâche
-                dans une nouvelle conversation pour commencer.
-              </Typography>
             ) : (
               <Stack spacing={1}>
-                {threads.data.map((thread) => (
-                  <Paper
-                    key={thread.sessionId}
-                    variant="outlined"
-                    sx={{ p: 1.5 }}
-                  >
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: 600,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {thread.title}
-                        </Typography>
-                        <Typography variant="caption" color="textSecondary">
-                          {formatFrAgo(thread.createdAt)}
-                        </Typography>
-                      </Box>
+                {threads.status === "error" ? (
+                  <StaleNote at={threads.at} onRetry={loadThreads} />
+                ) : null}
+                {recent.threads.length === 0 ? (
+                  coverage === "full" ? (
+                    <Typography variant="body2" color="textSecondary">
+                      Aucune conversation pour l’instant. Décrivez une tâche
+                      dans une nouvelle conversation pour commencer.
+                    </Typography>
+                  ) : (
+                    // Index vide ≠ historique vide : la couverture réelle
+                    // n'est pas connue (environnement en veille ou liste
+                    // injoignable). Aucune fausse invitation à démarrer.
+                    <Stack spacing={1}>
+                      <Typography variant="body2" color="textSecondary">
+                        Votre historique n’est pas disponible dans cet aperçu.
+                      </Typography>
                       <Button
                         size="small"
-                        variant="text"
-                        onClick={() => onOpenThread(thread.sessionId)}
+                        variant="outlined"
+                        onClick={() => go(CHAT_PATH)}
+                        sx={{ alignSelf: "flex-start" }}
                       >
-                        Ouvrir
+                        Ouvrir les conversations
                       </Button>
                     </Stack>
-                  </Paper>
-                ))}
+                  )
+                ) : (
+                  <>
+                    {coverage === "titles" ? (
+                      <Typography variant="caption" color="textSecondary">
+                        Aperçu partiel — seules les conversations nommées
+                        apparaissent ici.
+                      </Typography>
+                    ) : null}
+                    {recent.threads.map((thread) => (
+                      <Paper
+                        key={thread.sessionId}
+                        variant="outlined"
+                        sx={{ p: 1.5 }}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Typography
+                              variant="body2"
+                              sx={{
+                                fontWeight: 600,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {thread.title}
+                            </Typography>
+                            <Typography variant="caption" color="textSecondary">
+                              {coverage === "full"
+                                ? `activité ${formatFrAgo(thread.createdAt)}`
+                                : formatFrNamedAgo(thread.createdAt)}
+                            </Typography>
+                          </Box>
+                          <Button
+                            size="small"
+                            variant="text"
+                            onClick={() => onOpenThread(thread.sessionId)}
+                          >
+                            Ouvrir
+                          </Button>
+                        </Stack>
+                      </Paper>
+                    ))}
+                  </>
+                )}
               </Stack>
             )}
           </Stack>
@@ -642,36 +811,42 @@ export function Dashboard({
                   />
                 ))}
               </Stack>
-            ) : jobs.status === "error" ? (
+            ) : jobs.status === "error" && jobs.data.length === 0 ? (
               <SectionError
                 text="Impossible de charger les automatisations."
                 onRetry={loadJobs}
+                staleAt={jobs.at}
               />
-            ) : jobs.data.length === 0 ? (
-              <Typography variant="body2" color="textSecondary">
-                Aucune automatisation à venir. Programmez une tâche récurrente
-                dans {NAV.automations}.
-              </Typography>
             ) : (
               <Stack spacing={1}>
-                {jobs.data.map((job) => (
-                  <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        fontWeight: 600,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {job.name}
-                    </Typography>
-                    <Typography variant="caption" color="textSecondary">
-                      Prochaine exécution {formatFrWhen(job.nextRunAt)}
-                    </Typography>
-                  </Paper>
-                ))}
+                {jobs.status === "error" ? (
+                  <StaleNote at={jobs.at} onRetry={loadJobs} />
+                ) : null}
+                {upcoming.length === 0 ? (
+                  <Typography variant="body2" color="textSecondary">
+                    Aucune automatisation à venir. Programmez une tâche
+                    récurrente dans {NAV.automations}.
+                  </Typography>
+                ) : (
+                  upcoming.map((job) => (
+                    <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          fontWeight: 600,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {job.name}
+                      </Typography>
+                      <Typography variant="caption" color="textSecondary">
+                        Prochaine exécution {formatFrWhen(job.nextRunAt)}
+                      </Typography>
+                    </Paper>
+                  ))
+                )}
               </Stack>
             )}
           </Stack>
@@ -744,7 +919,7 @@ export function Dashboard({
             onClick={() => go(workspacePath("projects"))}
           >
             {NAV.projects}
-            {projects.status === "ready" && projects.data > 0
+            {projects.status === "ready" && projects.fresh && projects.data > 0
               ? ` (${projects.data})`
               : ""}
           </Button>
@@ -764,7 +939,7 @@ export function Dashboard({
               variant="text"
               onClick={() => {
                 try {
-                  localStorage.removeItem(GUIDE_KEY)
+                  localStorage.removeItem(guideStorageKey(me.id))
                 } catch {}
                 setGuideHidden(false)
               }}

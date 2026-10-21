@@ -48,7 +48,7 @@ export function holdSystemLine() {
 
 export function vncSystemLine(sessionId: string, port: number) {
   return [
-    `This thread's screen id is ${sessionId}.`,
+    `This thread's screen id (also your session id, for ob-thread --from) is ${sessionId}.`,
     `Drive it only with ob-chrome, ob-page, ob-nav, or ob-vnc --session ${sessionId}.`,
     "Do not call vncdo. Do not run xclip or xsel. Paste with ob-vnc paste. Do not pass a host or port.",
     "Do not use 5900, computer:5900, computer::5900, or $OPEN_BOT_VNC.",

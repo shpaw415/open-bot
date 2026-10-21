@@ -22,6 +22,18 @@ describe("search — sources", () => {
     expect(admin.some((entry) => entry.path === "/admin")).toBe(true)
   })
 
+  test("the new-conversation entry carries the shell intent, not a path", () => {
+    const entry = searchNavEntries("user").find(
+      (item) => item.id === "nav:new-thread",
+    )
+    if (!entry) throw new Error("expected a nav:new-thread entry")
+    expect(entry.newThread).toBe(true)
+    expect(entry.path).toBeUndefined()
+    // reachable by typing common words, in fr or en
+    expect(scoreSearchEntry("nouvelle", entry)).not.toBeNull()
+    expect(scoreSearchEntry("new thread", entry)).not.toBeNull()
+  })
+
   test("threads map to conversation opens, not paths", () => {
     const entries = searchThreadEntries([
       { id: "s1", title: "Fix the login flow" },

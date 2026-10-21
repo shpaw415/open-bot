@@ -3,6 +3,7 @@ import {
   applyMessageDelta,
   type ChatMessage,
   chatImageUrl,
+  chatLinkOpensExternally,
   embedWorkspaceImages,
   mediaKey,
   modelActivity,
@@ -73,6 +74,22 @@ test("modelActivity keeps the orb through the send-to-reply gap", () => {
       now: 5_000,
     }),
   ).toBeNull()
+})
+
+test("chatLinkOpensExternally picks absolute web links only", () => {
+  expect(chatLinkOpensExternally("https://example.com/docs")).toBe(true)
+  expect(chatLinkOpensExternally("http://example.com/x?a=1")).toBe(true)
+  expect(chatLinkOpensExternally("//cdn.example.com/lib.js")).toBe(true)
+  expect(chatLinkOpensExternally("HTTPS://EXAMPLE.COM")).toBe(true)
+  expect(chatLinkOpensExternally("mailto:hi@example.com")).toBe(false)
+  expect(chatLinkOpensExternally("/api/workspace/snapshot/s1/koi.png")).toBe(
+    false,
+  )
+  expect(chatLinkOpensExternally("#project-ref/x")).toBe(false)
+  expect(chatLinkOpensExternally("relative/page.html")).toBe(false)
+  expect(chatLinkOpensExternally("open-bot://council/r2")).toBe(false)
+  expect(chatLinkOpensExternally("")).toBe(false)
+  expect(chatLinkOpensExternally(undefined)).toBe(false)
 })
 
 test("routes workspace glb paths to the model3d endpoint", () => {
@@ -178,6 +195,27 @@ test("transcriptBubbles keeps pinned URLs through bubble merging", () => {
       text.includes("second ![koi](/home/agent/workspace/koi.png)"),
     ),
   ).toBe(true)
+})
+
+test("transcriptBubbles renders waiting-list items as queued bubbles", () => {
+  const messages = [
+    { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "hi" }] },
+    {
+      info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 } },
+      parts: [{ type: "text", text: "hello" }],
+    },
+  ]
+  const bubbles = transcriptBubbles(messages, [], undefined, [
+    { id: "q1", text: "première en attente", files: [] },
+    { id: "q2", text: "avec fichier", files: ["notes.txt"] },
+  ])
+  const queued = bubbles.filter((entry) => entry.mark === "queued")
+  expect(queued.map((entry) => entry.pendingId)).toEqual(["q1", "q2"])
+  expect(queued[0]?.message.text).toBe("première en attente")
+  expect(queued[1]?.message.text).toContain("Joined file: notes.txt")
+  // Bubbles come straight from the queue state, so a flushed or removed
+  // item can never linger as a ghost "En attente" bubble.
+  expect(bubbles.at(-1)?.pendingId).toBe("q2")
 })
 
 test("embeds a bare glb path line like a workspace image", () => {

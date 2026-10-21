@@ -37,6 +37,9 @@ describe("PluginAppsView — render", () => {
       <PluginAppsView
         tabs={[]}
         status={{ ...ready, status: "loading" }}
+        selectedKey=""
+        onOpen={() => {}}
+        onClose={() => {}}
         onAddPlugin={() => {}}
         onManagePlugins={() => {}}
       />,
@@ -50,6 +53,9 @@ describe("PluginAppsView — render", () => {
       <PluginAppsView
         tabs={[]}
         status={errorStatus}
+        selectedKey=""
+        onOpen={() => {}}
+        onClose={() => {}}
         onAddPlugin={() => {}}
         onManagePlugins={() => {}}
       />,
@@ -64,6 +70,9 @@ describe("PluginAppsView — render", () => {
       <PluginAppsView
         tabs={[tab("grid")]}
         status={errorStatus}
+        selectedKey=""
+        onOpen={() => {}}
+        onClose={() => {}}
         onAddPlugin={() => {}}
         onManagePlugins={() => {}}
       />,
@@ -81,6 +90,9 @@ describe("PluginAppsView — render", () => {
       <PluginAppsView
         tabs={[]}
         status={ready}
+        selectedKey=""
+        onOpen={() => {}}
+        onClose={() => {}}
         onAddPlugin={() => {}}
         onManagePlugins={() => {}}
       />,
@@ -99,12 +111,62 @@ describe("PluginAppsView — render", () => {
       <PluginAppsView
         tabs={[tab("grid")]}
         status={ready}
+        selectedKey=""
+        onOpen={() => {}}
+        onClose={() => {}}
         onAddPlugin={() => {}}
         onManagePlugins={() => {}}
       />,
     )
-    expect(html).toContain('placeholder="Filter apps"')
-    expect(html).toContain('aria-label="Filter apps"')
+    expect(html).toContain('placeholder="Filtrer les applications"')
+    expect(html).toContain('aria-label="Filtrer les applications"')
     expect(html).toContain('type="search"')
+    // Add/manage are reachable with apps installed, not only in the empty
+    // state (second audit R10).
+    expect(html).toContain(">Ajouter<")
+    expect(html).toContain(">Gérer<")
+  })
+})
+
+describe("PluginAppsView — selection lives in the route (V03)", () => {
+  // The view is interactive; a static render of the desktop layout must at
+  // least show the selected state coming from selectedKey, and the mobile
+  // pane must carry the back affordance. Click-through (onOpen/onClose) is
+  // exercised by the shell wiring; here the route contract is what matters.
+  test("desktop: the route-selected tab is marked in the side list and shown", () => {
+    const html = renderToStaticMarkup(
+      <PluginAppsView
+        tabs={[tab("grid"), tab("leads")]}
+        status={ready}
+        selectedKey="stock:leads"
+        onOpen={() => {}}
+        onClose={() => {}}
+        onAddPlugin={() => {}}
+        onManagePlugins={() => {}}
+      />,
+    )
+    // the selected app's pane renders (and only that one)
+    expect(html).toContain(">leads</h1>")
+    expect(html).not.toContain(">grid</h1>")
+    // the side list marks exactly the route-selected item (mui-lite class)
+    expect(html).toContain("MUI_ListItemButton_Root_selected")
+    const selectedPart = html.split("MUI_ListItemButton_Root_selected")[1] ?? ""
+    expect(selectedPart).toContain(">leads</span>")
+    expect(selectedPart).not.toContain(">grid</span>")
+  })
+
+  test("desktop: no selection (the /apps route) still shows the first app's pane", () => {
+    const html = renderToStaticMarkup(
+      <PluginAppsView
+        tabs={[tab("grid"), tab("leads")]}
+        status={ready}
+        selectedKey=""
+        onOpen={() => {}}
+        onClose={() => {}}
+        onAddPlugin={() => {}}
+        onManagePlugins={() => {}}
+      />,
+    )
+    expect(html).toContain("grid")
   })
 })

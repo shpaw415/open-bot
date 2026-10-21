@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { appTabSandbox, filterTabs, pluginTabs } from "./plugin-tabs"
+import {
+  appTabFrameProps,
+  appTabSandbox,
+  filterTabs,
+  pluginTabs,
+} from "./plugin-tabs"
 import type { InstalledPluginInfo } from "./plugin-ui"
 
 function plugin(
@@ -114,5 +119,16 @@ describe("filterTabs", () => {
   test("same-host app frames do not keep the dashboard origin", () => {
     expect(appTabSandbox(false)).not.toContain("allow-same-origin")
     expect(appTabSandbox(true)).toContain("allow-same-origin")
+  })
+
+  test("app frames delegate device permissions regardless of embed mode", () => {
+    for (const isolated of [false, true]) {
+      const props = appTabFrameProps(isolated)
+      expect(props.allow).toContain("microphone 'src'")
+      expect(props.allow).toContain("camera 'src'")
+      expect(props.allow).toContain("autoplay 'src'")
+      expect(props.allow).not.toContain("*")
+    }
+    expect(appTabFrameProps(false).sandbox).toBe(appTabSandbox(false))
   })
 })

@@ -100,7 +100,7 @@ function ProjectCard({
     <Box
       role="button"
       tabIndex={0}
-      aria-label={`Open ${project.name}`}
+      aria-label={`Ouvrir ${project.name}`}
       onClick={() => onOpen(project)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -270,10 +270,10 @@ function ProjectCard({
             },
           }}
         >
-          <Tip title="Remove project link">
+          <Tip title="Retirer le lien du projet">
             <IconButton
               size="small"
-              aria-label={`Remove ${project.name}`}
+              aria-label={`Retirer ${project.name}`}
               onClick={(event) => {
                 event.stopPropagation()
                 onRemove(project)
@@ -502,7 +502,15 @@ export function Projects({
   }, [])
   useEffect(() => {
     const raced = takePendingProject()
-    if (raced) setPendingOpen(raced)
+    if (raced) {
+      setPendingOpen(raced)
+      return
+    }
+    // URL restore: /projects?id=X selects that project through the same
+    // pipeline — no second mechanism. Back/Forward and reload then land on
+    // the same project; an unknown or removed id just stays on the list.
+    const fromUrl = new URLSearchParams(location.search).get("id")
+    if (fromUrl) setPendingOpen(fromUrl)
   }, [])
   useEffect(() => {
     if (!pendingOpen || !projects) return
@@ -572,6 +580,10 @@ export function Projects({
           onThreadDock={onThreadDock}
           onBack={() => {
             setSelected(null)
+            // Back to the list also drops the ?id= deep link so a reload
+            // lands on the list, not back inside the project.
+            if (location.search)
+              history.replaceState(null, "", location.pathname)
             load()
           }}
         />
@@ -665,7 +677,7 @@ export function Projects({
                 startIcon={<AddIcon width={18} height={18} />}
                 onClick={() => setCreateOpen(true)}
               >
-                New project
+                Nouveau projet
               </Button>
             }
           />
@@ -677,7 +689,7 @@ export function Projects({
             {grouped && grouped.plugins.length > 0 ? (
               <>
                 <SectionHeader
-                  label="Plugins"
+                  label="Extensions"
                   count={grouped.plugins.length}
                   hint="~/plugins-create"
                   palette={tint.plugin}
@@ -696,7 +708,7 @@ export function Projects({
             {grouped && grouped.general.length > 0 ? (
               <>
                 <SectionHeader
-                  label="General"
+                  label="Généraux"
                   count={grouped.general.length}
                   palette={tint.general}
                 />
@@ -719,50 +731,50 @@ export function Projects({
         open={createOpen}
         onClose={() => !busy && setCreateOpen(false)}
       >
-        <DialogTitle>New project</DialogTitle>
+        <DialogTitle>Nouveau projet</DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 0.5 }}>
             <TextField
-              label="Project name"
+              label="Nom du projet"
               value={name}
               autoFocus
               sx={{ width: "100%" }}
               disabled={busy}
-              placeholder="My App"
+              placeholder="Mon application"
               onChange={(event) => setName(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void create()
               }}
               helpText={
                 folder.trim()
-                  ? "Registers this existing folder"
+                  ? "Enregistre ce dossier existant"
                   : slug
-                    ? `Files live in /home/agent/workspace/${slug} on the desktop`
-                    : "Letters, numbers and dashes"
+                    ? `Les fichiers vivent dans /home/agent/workspace/${slug} sur le desktop`
+                    : "Lettres, chiffres et tirets"
               }
             />
             <TextField
-              label="Existing folder (optional)"
+              label="Dossier existant (facultatif)"
               value={folder}
               sx={{ width: "100%" }}
               disabled={busy}
               placeholder="/home/agent/plugins-create/my-plugin"
               onChange={(event) => setFolder(event.currentTarget.value)}
-              helpText="Point the project at a folder that already exists on the desktop"
+              helpText="Désigne un dossier qui existe déjà sur le desktop"
             />
             <Typography variant="caption" sx={{ color: "text.secondary" }}>
               {folder.trim()
-                ? "The folder must exist under /home/agent; the name defaults to its last segment."
-                : "The folder is created on the desktop if it does not exist yet."}{" "}
-              Mention the project in chat with{" "}
-              <Box Element="code">@projects/{slug || "name"}</Box> (the project
-              name; the slug works too).
+                ? "Le dossier doit exister sous /home/agent; le nom reprend par défaut son dernier segment."
+                : "Le dossier est créé sur le desktop s’il n’existe pas encore."}{" "}
+              Mentionnez le projet dans une conversation avec{" "}
+              <Box Element="code">@projects/{slug || "nom"}</Box> (le nom du
+              projet; le slug fonctionne aussi).
             </Typography>
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button disabled={busy} onClick={() => setCreateOpen(false)}>
-            Cancel
+            Annuler
           </Button>
           <Button
             variant="contained"
@@ -770,7 +782,7 @@ export function Projects({
             startIcon={busy ? <CircularProgress size={1.1} /> : undefined}
             onClick={() => void create()}
           >
-            Create project
+            Créer le projet
           </Button>
         </DialogActions>
       </AccessibleDialog>
@@ -779,11 +791,11 @@ export function Projects({
         open={removing !== null}
         onClose={() => !busy && setRemoving(null)}
       >
-        <DialogTitle>Remove “{removing?.name}”?</DialogTitle>
+        <DialogTitle>Retirer « {removing?.name} » ?</DialogTitle>
         <DialogContent>
           <Typography>
-            {removing?.name} will no longer appear here or in @projects. Files
-            on the desktop stay untouched at {removing?.path}.
+            {removing?.name} ne sera plus listé ici ni dans @projects. Les
+            fichiers du desktop restent en place dans {removing?.path}.
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -796,7 +808,7 @@ export function Projects({
             disabled={busy}
             onClick={() => void remove()}
           >
-            Remove
+            Retirer
           </Button>
         </DialogActions>
       </AccessibleDialog>

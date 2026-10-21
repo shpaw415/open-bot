@@ -98,6 +98,11 @@ export function toolStale(messages: unknown): boolean {
 export function toolLimit(messages: unknown): number {
   const tool = newestTool(messages)
   const command = tool?.command.trim() ?? ""
+  if (/^ob-thread wait\b/.test(command)) {
+    // documented blocking wait on a teammate or council member; the CLI
+    // caps --timeout below this budget, so a real hang still gets caught
+    return 6 * STUCK_TOOL_MS
+  }
   if (/^blender-team\b/.test(command)) {
     // blender-team pipelines run LLM worker stages (~30 min each) back to back
     return 6 * STUCK_TOOL_MS

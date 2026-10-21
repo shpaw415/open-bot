@@ -7,6 +7,7 @@ import {
   cronOwnedPluginId,
   pluginOriginForCronJob,
   pluginOwnership,
+  pluginSkillGroups,
 } from "./plugin-ownership"
 
 function open() {
@@ -110,5 +111,49 @@ describe("pluginOriginForCronJob", () => {
       "weather-pro",
     )
     expect(cronOwnedPluginId("daily-report")).toBeNull()
+  })
+})
+
+describe("pluginSkillGroups", () => {
+  test("collects skills[].group labels from installed manifests", () => {
+    const db = open()
+    db.createUser({
+      id: "u",
+      email: "g@localhost",
+      passwordHash: "hash",
+      role: "user",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    })
+    db.createInstalledPlugin({
+      id: "row-g",
+      userId: "u",
+      pluginId: "writer-tools",
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        id: "writer-tools",
+        name: "Writer Tools",
+        skills: [
+          {
+            name: "headline-lab",
+            description: "draft headlines",
+            body: "# x",
+            group: "Writing",
+          },
+          { name: "plain-skill", description: "no group", body: "# y" },
+        ],
+      }),
+      readme: null,
+      enabled: true,
+      source: "marketplace",
+      localPath: null,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    const groups = pluginSkillGroups(db, "u")
+    expect(groups.get("headline-lab")).toBe("Writing")
+    expect(groups.has("plain-skill")).toBe(false)
   })
 })

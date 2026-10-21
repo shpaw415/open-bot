@@ -24,6 +24,7 @@ import {
   removePluginPageLog,
   schedulePluginPageRestart,
   stopPluginPageServer,
+  strippedHeaders,
   sweepIdlePluginPageServers,
   touchPluginPageActivity,
 } from "./plugin-pages"
@@ -508,6 +509,7 @@ describe("plugin pages", () => {
       const db = {
         installedPlugin: (_userId: string, pluginId: string) =>
           pluginId === "stock-pro" ? row : null,
+        getSetting: () => null,
       } as never
       const hub = { emit() {} } as never
       const server = { upgrade: () => false } as never
@@ -691,6 +693,7 @@ describe("plugin pages", () => {
       const db = {
         installedPlugin: (_userId: string, pluginId: string) =>
           pluginId === "stock-pro" ? row : null,
+        getSetting: () => null,
         desktop: () => ({}),
         touchDesktop: () => {},
       } as never
@@ -735,6 +738,7 @@ describe("plugin pages", () => {
       const db = {
         installedPlugin: (_userId: string, pluginId: string) =>
           pluginId === "stock-pro" ? row : null,
+        getSetting: () => null,
         desktop: () => ({}),
         touchDesktop: () => {},
       } as never
@@ -773,6 +777,7 @@ describe("plugin pages", () => {
       const db = {
         installedPlugin: (_userId: string, pluginId: string) =>
           pluginId === "stock-pro" ? row : null,
+        getSetting: () => null,
         desktop: () => ({}),
         touchDesktop: () => {},
       } as never
@@ -813,5 +818,54 @@ describe("plugin pages", () => {
       clearPluginPageState()
       phase = "running"
     }
+  })
+})
+
+describe("strippedHeaders", () => {
+  test("injects the page token and, when given, the dashboard language", () => {
+    const headers = strippedHeaders(
+      new Headers({ cookie: "session=x", host: "dashboard" }),
+      "tok",
+      "fr",
+    )
+    expect(headers.get("x-open-bot-page-token")).toBe("tok")
+    expect(headers.get("x-open-bot-language")).toBe("fr")
+    expect(headers.get("cookie")).toBeNull()
+    expect(headers.get("host")).toBeNull()
+  })
+
+  test("language is optional and client identity headers always go", () => {
+    const headers = strippedHeaders(
+      new Headers({ authorization: "Bearer x" }),
+      "tok",
+    )
+    expect(headers.get("x-open-bot-language")).toBeNull()
+    expect(headers.get("authorization")).toBeNull()
+    expect(headers.get("x-open-bot-page-token")).toBe("tok")
+  })
+})
+
+describe("FRAME_STORAGE_SHIM — media bridge", () => {
+  test("insecure frames bridge devices, location and clipboard through the shell", () => {
+    expect(FRAME_STORAGE_SHIM).toContain("isSecureContext")
+    expect(FRAME_STORAGE_SHIM).toContain('type:"media-request"')
+    expect(FRAME_STORAGE_SHIM).toContain('type:"media-answer"')
+    expect(FRAME_STORAGE_SHIM).toContain('type:"media-release"')
+    expect(FRAME_STORAGE_SHIM).toContain("RTCPeerConnection")
+    expect(FRAME_STORAGE_SHIM).toContain('type:"media-blocked"')
+    // The 12 s bridge timeouts surface too — a stale dashboard shell (no
+    // message listener) must show the shell banner, never fall back to the
+    // frame's generic permission-denied error alone.
+    expect(FRAME_STORAGE_SHIM).toContain('type:"media-blocked",error')
+    expect(FRAME_STORAGE_SHIM).toContain("getDisplayMedia")
+    expect(FRAME_STORAGE_SHIM).toContain('type:"geo-request"')
+    expect(FRAME_STORAGE_SHIM).toContain('type:"geo-clear"')
+    expect(FRAME_STORAGE_SHIM).toContain('type:"clip-write"')
+    expect(FRAME_STORAGE_SHIM).toContain("watchPosition")
+    expect(FRAME_STORAGE_SHIM).toContain("clearWatch")
+    expect(FRAME_STORAGE_SHIM).toContain("requestMIDIAccess")
+    expect(FRAME_STORAGE_SHIM).toContain('"midi-access"')
+    expect(FRAME_STORAGE_SHIM).toContain('"midi-listen"')
+    expect(FRAME_STORAGE_SHIM).toContain('type:"midi-send"')
   })
 })

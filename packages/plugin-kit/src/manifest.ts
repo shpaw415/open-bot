@@ -81,6 +81,10 @@ export type PluginSkill = {
   name: string
   description: string
   body: string
+  // Optional group label: the skills/MCP directory UI shows the skill under
+  // this labeled section beside the automatic "From <plugin>" one. Display
+  // only — it never changes which skills load.
+  group?: string
 }
 
 export type PluginPersona = {
@@ -836,6 +840,16 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
       const body = str(skill?.body)
       if (!body || !body.trim() || body.length > MAX_TEXT) {
         issues.push({ path, message: "skill.body is required (max 64k)" })
+      }
+      // Optional group label for the skills/MCP directory UI. Display only.
+      if (skill?.group !== undefined && skill.group !== null) {
+        const group = str(skill.group)
+        if (!group || group.length > 48) {
+          issues.push({
+            path,
+            message: "skill.group must be a string (max 48)",
+          })
+        }
       }
     }
   }

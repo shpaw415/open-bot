@@ -8,6 +8,7 @@ const baseUser: Me = {
   id: "u1",
   email: "casey@example.com",
   role: "user",
+  language: "fr",
 }
 
 const baseProps = {
@@ -19,6 +20,7 @@ const baseProps = {
   onToggleNav: () => {},
   appTabs: [{ key: "stock:grid", title: "Grid", pluginName: "Stock" }],
   onOpenThread: () => {},
+  onNewThread: () => {},
   go: () => {},
   onLogout: () => {},
 }

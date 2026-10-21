@@ -17,6 +17,9 @@ mock.module("./docker", () => ({
   opencodeScript: () => {
     throw new Error("not mocked")
   },
+  restartOpencode: async () => {
+    throw new Error("not mocked")
+  },
   startDesktop: async () => {
     throw new Error("not mocked")
   },
@@ -118,8 +121,13 @@ function makeHub() {
 
 const originalFetch = globalThis.fetch
 let calls: { url: string; init?: RequestInit }[] = []
+let sessionList: unknown[] = [
+  { id: "s1", title: "worker:Research" },
+  { id: "s2", title: "worker:Reviewer" },
+]
 
-function installFetch() {
+function installFetch(list?: unknown[]) {
+  if (list) sessionList = list
   globalThis.fetch = (async (
     input: RequestInfo | URL,
     options?: RequestInit,
@@ -128,10 +136,7 @@ function installFetch() {
     const init = options
     calls.push({ url, init })
     if (url.endsWith("/session") && (!init?.method || init.method === "GET"))
-      return Response.json([
-        { id: "s1", title: "worker:Research" },
-        { id: "s2", title: "worker:Reviewer" },
-      ])
+      return Response.json(sessionList)
     if (url.includes("/session/") && init?.method === "DELETE") {
       if (failDeletes) return new Response("nope", { status: 500 })
       return Response.json({ id: url.split("/session/")[1] })
@@ -143,6 +148,10 @@ function installFetch() {
 beforeEach(() => {
   failDeletes = false
   calls = []
+  sessionList = [
+    { id: "s1", title: "worker:Research" },
+    { id: "s2", title: "worker:Reviewer" },
+  ]
 })
 
 afterEach(() => {
@@ -277,11 +286,71 @@ describe("GET /api/councils", () => {
         title: string
         createdAt: number
       }[]
+      subagents: unknown[]
     }
     expect(body.name).toBe("auth-review")
     expect(body.members).toEqual([
       { sessionId: "s1", role: "Researcher", title: "Research", createdAt: 1 },
       { sessionId: "s3", role: "", title: "", createdAt: 2 },
+    ])
+    expect(body.subagents).toEqual([])
+  })
+
+  test("detail lists task-tool subagents of members only, sorted by age", async () => {
+    installFetch([
+      { id: "s1", title: "worker:Research" },
+      // children of member s1
+      { id: "c1", title: "explore", parentID: "s1", time: { created: 30 } },
+      {
+        id: "c2",
+        title: "worker:helper",
+        parentID: "s1",
+        time: { created: 10 },
+      },
+      // child of a non-member session
+      { id: "x1", title: "other", parentID: "zzz", time: { created: 5 } },
+      // grandchild (subagent of a subagent) stays out of the rail
+      { id: "g1", title: "grandchild", parentID: "c1", time: { created: 40 } },
+      // member session with no children, plus a childless non-member
+      { id: "s3", title: "worker:Third" },
+      { id: "s9", title: "worker:Stranger" },
+    ])
+    const store = makeDb()
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push(
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s1",
+        role: "Researcher",
+        createdAt: 1,
+      },
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s3",
+        role: "",
+        createdAt: 2,
+      },
+    )
+    const res = (await request(
+      "GET",
+      "/api/councils/auth-review",
+      undefined,
+      store.db,
+    )) as Response
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      subagents: {
+        sessionId: string
+        parentId: string
+        title: string
+        createdAt: number
+      }[]
+    }
+    expect(body.subagents).toEqual([
+      { sessionId: "c2", parentId: "s1", title: "helper", createdAt: 10 },
+      { sessionId: "c1", parentId: "s1", title: "explore", createdAt: 30 },
     ])
   })
 
@@ -320,10 +389,12 @@ describe("GET /api/councils", () => {
         title: string
         createdAt: number
       }[]
+      subagents: unknown[]
     }
     expect(body.members).toEqual([
       { sessionId: "s1", role: "", title: "", createdAt: 1 },
     ])
+    expect(body.subagents).toEqual([])
     expect(calls).toHaveLength(0)
   })
 })
@@ -433,5 +504,129 @@ describe("DELETE /api/councils/:name", () => {
     )) as Response
     expect(res.status).toBe(409)
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe("GET /api/councils/:name/status", () => {
+  function installStatusFetch(options?: {
+    status?: Record<string, { type: string }>
+    messages?: Record<string, unknown>
+  }) {
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url.endsWith("/session/status"))
+        return Response.json(options?.status ?? {})
+      if (url.endsWith("/session") && (!init?.method || init.method === "GET"))
+        return Response.json(sessionList)
+      const message = url.match(/\/session\/([^/]+)\/message$/)
+      if (message) {
+        const rows = options?.messages?.[message[1] ?? ""]
+        return rows
+          ? Response.json(rows)
+          : new Response("nope", { status: 404 })
+      }
+      return Response.json({})
+    }) as unknown as typeof fetch
+  }
+
+  function statusRequest(name: string, useDb: Db) {
+    return handleCouncils(
+      new Request(`http://control/api/councils/${name}/status`),
+      new URL(`http://control/api/councils/${name}/status`),
+      useDb,
+      user,
+      makeHub() as never,
+    ) as Promise<Response>
+  }
+
+  test("pairs member state with the last assistant reply", async () => {
+    installStatusFetch({
+      status: { s1: { type: "busy" }, s2: { type: "idle" } },
+      messages: {
+        s1: [
+          {
+            info: { role: "assistant" },
+            parts: [{ type: "text", text: "half done" }],
+          },
+        ],
+        s2: [
+          {
+            info: { role: "assistant" },
+            parts: [{ type: "text", text: "finished the review" }],
+          },
+        ],
+      },
+    })
+    const store = makeDb()
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push(
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s1",
+        role: "Researcher",
+        createdAt: 1,
+      },
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s2",
+        role: "Reviewer",
+        createdAt: 2,
+      },
+    )
+    const res = await statusRequest("auth-review", store.db)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      name: "auth-review",
+      members: [
+        {
+          sessionId: "s1",
+          role: "Researcher",
+          title: "Research",
+          status: "busy",
+          lastReply: "half done",
+        },
+        {
+          sessionId: "s2",
+          role: "Reviewer",
+          title: "Reviewer",
+          status: "idle",
+          lastReply: "finished the review",
+        },
+      ],
+    })
+  })
+
+  test("unknown council 404s and a down desktop degrades to unknown", async () => {
+    installStatusFetch()
+    const store = makeDb()
+    expect((await statusRequest("nope", store.db)).status).toBe(404)
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push({
+      councilId: council.id,
+      userId: "user-1",
+      sessionId: "s1",
+      role: "",
+      createdAt: 1,
+    })
+    phase = "sleeping"
+    const res = await statusRequest("auth-review", store.db)
+    expect(await res.json()).toEqual({
+      name: "auth-review",
+      members: [
+        {
+          sessionId: "s1",
+          role: "",
+          title: "",
+          status: "unknown",
+          lastReply: "",
+        },
+      ],
+    })
   })
 })

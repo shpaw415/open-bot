@@ -61,3 +61,21 @@ export function pluginOriginForCronJob(
   if (!pluginId) return null
   return ownership.cronByPluginId.get(pluginId) ?? null
 }
+
+// Optional manifest group labels for skills (skills[].group): display-only
+// labels the skills/MCP directory UI shows under "From <plugin>". Read from
+// the installed manifest snapshots at catalog time — nothing new is stored.
+export function pluginSkillGroups(db: Db, userId: string): Map<string, string> {
+  const groups = new Map<string, string>()
+  for (const row of db.installedPlugins(userId)) {
+    const skills = (row.manifest as PluginManifest).skills
+    if (!Array.isArray(skills)) continue
+    for (const skill of skills) {
+      const name = (skill as { name?: unknown } | undefined)?.name
+      const group = (skill as { group?: unknown } | undefined)?.group
+      if (typeof name === "string" && typeof group === "string" && group.trim())
+        groups.set(name, group.trim())
+    }
+  }
+  return groups
+}

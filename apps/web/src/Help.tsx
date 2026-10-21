@@ -1,22 +1,23 @@
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { CHAT_PATH } from "./routes"
 import Stack from "./stack"
 import { NAV } from "./texts"
 
 type HelpEntry = {
   question: string
   answer: string
-  action?: { label: string; path: string }
+  action?:
+    | { label: string; path: string }
+    | { label: string; kind: "new-thread" }
 }
 
 const ENTRIES: HelpEntry[] = [
   {
     question: "Commencer une tâche",
     answer:
-      "Depuis l’accueil, choisissez « Nouvelle conversation » et décrivez votre objectif en une ou deux phrases. Open-bot vous demande les informations manquantes au fur et à mesure. Un modèle doit être sélectionné dans les paramètres pour que les réponses fonctionnent.",
-    action: { label: "Nouvelle conversation", path: CHAT_PATH },
+      "Depuis l’accueil ou cette page, choisissez « Nouvelle conversation » et décrivez votre objectif en une ou deux phrases. Open-bot vous demande les informations manquantes au fur et à mesure. Un modèle doit être sélectionné dans les paramètres pour que les réponses fonctionnent.",
+    action: { label: "Nouvelle conversation", kind: "new-thread" },
   },
   {
     question: "Donner du contexte à l’assistant",
@@ -50,7 +51,7 @@ const ENTRIES: HelpEntry[] = [
   {
     question: "Environnement en veille",
     answer:
-      "L’environnement de travail s’endort quand il n’est pas utilisé pour économiser les ressources. Vos conversations sont conservées. Le démarrer est toujours une action explicite — depuis l’accueil ou une conversation.",
+      "L’environnement de travail s’endort quand il n’est pas utilisé pour économiser les ressources. Vos conversations sont conservées. Son démarrage suit toujours une action explicite de votre part : le bouton de démarrage, l’envoi d’un message, ou l’ouverture d’une application qui en a besoin.",
   },
   {
     question: "En cas de blocage",
@@ -59,7 +60,13 @@ const ENTRIES: HelpEntry[] = [
   },
 ]
 
-export function Help({ go }: { go: (path: string) => void }) {
+export function Help({
+  go,
+  onNewThread,
+}: {
+  go: (path: string) => void
+  onNewThread: (seed?: string) => void
+}) {
   return (
     <Box className="ob-scroll ob-view-enter" sx={{ flex: 1, minHeight: 0 }}>
       <Stack
@@ -76,7 +83,11 @@ export function Help({ go }: { go: (path: string) => void }) {
         </Typography>
         {ENTRIES.map((entry) => (
           <Box key={entry.question}>
-            <Typography variant="subtitle1" component="h2">
+            <Typography
+              variant="subtitle1"
+              component="h2"
+              sx={{ fontSize: "1rem", fontWeight: 600 }}
+            >
               {entry.question}
             </Typography>
             <Typography variant="body2" sx={{ mt: 0.5 }}>
@@ -88,7 +99,10 @@ export function Help({ go }: { go: (path: string) => void }) {
                 variant="text"
                 onClick={() => {
                   const action = entry.action
-                  if (action) go(action.path)
+                  if (!action) return
+                  if ("kind" in action && action.kind === "new-thread")
+                    onNewThread()
+                  else if ("path" in action) go(action.path)
                 }}
                 sx={{ mt: 0.5 }}
               >

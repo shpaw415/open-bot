@@ -3,6 +3,8 @@ export type Me = {
   email: string
   role: "admin" | "user"
   mustChangePassword?: boolean
+  /** Host-wide UI language (Config > Langue); plugins receive the same value. */
+  language: string
   desktop?: "starting" | "running" | "sleeping"
   model?: {
     providerID: string | null

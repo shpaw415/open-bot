@@ -4,6 +4,7 @@ import { type AiConfigInput, defineAi } from "@open-bot/ai"
 import { openDatabase } from "@open-bot/db"
 import { applyPendingRestore, startBackupScheduler } from "./backup"
 import { startCronScheduler } from "./cron"
+import { dispatchDelegationWakes } from "./delegations"
 import {
   containerExists,
   currentStart,
@@ -83,6 +84,7 @@ const hub = new EventHub(
   (userId, event) => {
     onUpstreamEvent(db, userId, event)
     dispatchPluginHooks(db, userId, event)
+    dispatchDelegationWakes(db, userId, event)
   },
 )
 onDesktopReady((userId) => {
@@ -137,7 +139,7 @@ convertGuardCrons(db, hub)
 startCronScheduler(db, hub)
 startStuckWatch(db, hub)
 startBackupScheduler(db)
-startStatsSampler(db)
+startStatsSampler(db, hub)
 void reconnectDesktopNetworks()
 
 const RESTART_COOLDOWN_MS = 5 * 60_000

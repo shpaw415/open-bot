@@ -20,7 +20,6 @@ export type JobLike = {
 // ---- Composer seed (Home example prompts) ----------------------------------
 
 const SEED_KEY = "ob-composer-seed"
-const NEW_THREAD_KEY = "ob-new-thread"
 
 /**
  * Staged text for a brand-new conversation's composer. Consumed exactly
@@ -46,26 +45,23 @@ export function consumeComposerSeed(): string {
 }
 
 /**
- * "Open a blank conversation" intent: the next Workspace mount must not
- * restore the last thread. Session-scoped so a later plain /chat visit
- * still restores normally.
+ * Read the staged seed WITHOUT consuming it. A draft blocks the seed, and
+ * the resolution (replace or keep) is the user's explicit choice — the
+ * composer can remount freely (the app rebuilds its subtree when async
+ * state settles) without the blocked seed being lost or resurfacing.
  */
-export function markNewThreadIntent(): void {
+export function peekComposerSeed(): string {
   try {
-    sessionStorage.setItem(NEW_THREAD_KEY, "1")
+    return sessionStorage.getItem(SEED_KEY) ?? ""
   } catch {
-    // without storage the restore simply happens; harmless
+    return ""
   }
 }
 
-export function consumeNewThreadIntent(): boolean {
+export function clearComposerSeed(): void {
   try {
-    const flag = sessionStorage.getItem(NEW_THREAD_KEY) === "1"
-    if (flag) sessionStorage.removeItem(NEW_THREAD_KEY)
-    return flag
-  } catch {
-    return false
-  }
+    sessionStorage.removeItem(SEED_KEY)
+  } catch {}
 }
 
 // ---- Recent conversations (passive /api/threads/recent) --------------------
@@ -76,12 +72,38 @@ export type RecentThread = {
   createdAt: number
 }
 
-/** Validate the summary payload; a malformed body is an error, not []. */
-export function parseRecentThreads(body: unknown): RecentThread[] {
-  const list = (body as { threads?: unknown } | null)?.threads
+/**
+ * How complete the recent list is:
+ * - "full": the desktop's real session list, ordered by actual last
+ *   activity — an empty list is a confirmed empty history.
+ * - "titles": the control-plane name index only (desktop asleep or the
+ *   real list unreachable). Threads are only indexed when they are NAMED,
+ *   so an empty "titles" list proves nothing: it is unknown coverage,
+ *   never a confirmed "no conversations".
+ */
+export type RecentCoverage = "full" | "titles"
+
+export type RecentThreadsResult = {
+  threads: RecentThread[]
+  coverage: RecentCoverage
+}
+
+/**
+ * Validate the summary payload; a malformed body is an error, not []. A
+ * payload without a coverage marker (older server) is "titles" — the
+ * conservative reading of an index-only source.
+ */
+export function parseRecentThreads(body: unknown): RecentThreadsResult {
+  if (body == null || typeof body !== "object" || Array.isArray(body))
+    throw new Error("unexpected response shape")
+  const list = (body as { threads?: unknown }).threads
   if (!Array.isArray(list)) throw new Error("unexpected response shape")
+  const coverage: RecentCoverage =
+    (body as { coverage?: unknown }).coverage === "full" ? "full" : "titles"
   const out: RecentThread[] = []
   for (const item of list) {
+    if (item == null || typeof item !== "object" || Array.isArray(item))
+      continue
     const row = item as {
       sessionId?: unknown
       title?: unknown
@@ -91,7 +113,8 @@ export function parseRecentThreads(body: unknown): RecentThread[] {
       typeof row.sessionId === "string" &&
       row.sessionId &&
       typeof row.title === "string" &&
-      typeof row.createdAt === "number"
+      typeof row.createdAt === "number" &&
+      Number.isFinite(row.createdAt)
     )
       out.push({
         sessionId: row.sessionId,
@@ -99,7 +122,7 @@ export function parseRecentThreads(body: unknown): RecentThread[] {
         createdAt: row.createdAt,
       })
   }
-  return out.slice(0, 5)
+  return { threads: out.slice(0, 5), coverage }
 }
 
 // ---- Upcoming automations ---------------------------------------------------
@@ -111,12 +134,19 @@ export type UpcomingJob = {
   lastError: string | null
 }
 
+/** A run this far in the past is overdue (an alert), not "upcoming". */
+export const OVERDUE_GRACE_MS = 30 * 60_000
+
 /**
- * Enabled jobs with a real next run, soonest first. Paused/errored/never
- * scheduled jobs are deliberately not "upcoming" — the Automations view
- * owns those states.
+ * Enabled plugin-free jobs with a real next run, soonest first. Runs past
+ * now by more than OVERDUE_GRACE_MS are overdue — the alerts own them —
+ * so the "À venir" cards never call a broken schedule "upcoming".
  */
-export function pickUpcomingJobs(jobs: JobLike[], limit = 3): UpcomingJob[] {
+export function pickUpcomingJobs(
+  jobs: JobLike[],
+  limit = 3,
+  now = Date.now(),
+): UpcomingJob[] {
   return jobs
     .filter(
       (job) =>
@@ -126,6 +156,7 @@ export function pickUpcomingJobs(jobs: JobLike[], limit = 3): UpcomingJob[] {
         job.nextRunAt > 0,
     )
     .sort((a, b) => (a.nextRunAt ?? 0) - (b.nextRunAt ?? 0))
+    .filter((job) => (job.nextRunAt ?? 0) > now - OVERDUE_GRACE_MS)
     .slice(0, limit)
     .map((job) => ({
       id: job.id,
@@ -135,32 +166,111 @@ export function pickUpcomingJobs(jobs: JobLike[], limit = 3): UpcomingJob[] {
     }))
 }
 
+/** Validate /api/cron; a wrong-shaped 200 is a contract error, never []. */
+export function parseJobs(body: unknown): JobLike[] {
+  if (!Array.isArray(body)) throw new Error("unexpected response shape")
+  const out: JobLike[] = []
+  for (const item of body) {
+    if (item == null || typeof item !== "object" || Array.isArray(item))
+      continue
+    const row = item as Record<string, unknown>
+    if (typeof row.id !== "string" || !row.id) continue
+    if (typeof row.name !== "string") continue
+    // The full row is kept (kind, atMs, cronExpr, message… — CronView needs
+    // them); only the envelope and identity are validated here.
+    out.push(item as JobLike)
+  }
+  return out
+}
+
+/** A run later than this grace window is "late", stated as such. */
+export function splitJobProblems(
+  jobs: JobLike[],
+  now = Date.now(),
+): {
+  failed: {
+    id: string
+    name: string
+    lastError: string
+    nextRunAt: number | null
+    enabled: boolean
+  }[]
+  overdue: { id: string; name: string; nextRunAt: number }[]
+} {
+  const failed: {
+    id: string
+    name: string
+    lastError: string
+    nextRunAt: number | null
+    enabled: boolean
+  }[] = []
+  const overdue: { id: string; name: string; nextRunAt: number }[] = []
+  for (const job of jobs) {
+    // A lastError is a real failure regardless of pause state, plugin origin
+    // or position in the upcoming cap — the full source, not a slice.
+    if (job.lastError)
+      failed.push({
+        id: job.id,
+        name: job.name,
+        lastError: job.lastError,
+        nextRunAt: job.nextRunAt,
+        enabled: job.enabled,
+      })
+    else if (
+      job.enabled &&
+      typeof job.nextRunAt === "number" &&
+      job.nextRunAt > 0 &&
+      job.nextRunAt < now - OVERDUE_GRACE_MS
+    )
+      overdue.push({ id: job.id, name: job.name, nextRunAt: job.nextRunAt })
+  }
+  return { failed, overdue }
+}
+
 // ---- Getting-started checklist ---------------------------------------------
 
+export type ChecklistStepState = "done" | "todo" | "unknown"
+
 export type ChecklistStep = {
-  id: "model" | "first-thread" | "app"
+  id: "model" | "first-thread"
+  state: ChecklistStepState
+  /** Convenience for existing renderers; state === "done". */
   done: boolean
   optional?: boolean
 }
 
 /**
- * Effective prerequisites only: a usable model selected (in team mode the
- * admin's shared selection counts — no personal key demanded) and a first
- * conversation started. The app step is optional and never blocks.
+ * Effective prerequisites only, with honest knowledge states: a usable model
+ * selected (in team mode the admin's shared selection counts) and a first
+ * conversation started — known only when the list actually loaded. An
+ * unknown state never blocks the guide and never pushes an existing account
+ * to "start their first conversation" because a list request failed.
  */
 export function buildChecklist(input: {
   hasModel: boolean
   hasThreads: boolean
+  threadsKnown: boolean
 }): ChecklistStep[] {
   return [
-    { id: "model", done: input.hasModel },
-    { id: "first-thread", done: input.hasThreads },
-    { id: "app", done: false, optional: true },
+    {
+      id: "model",
+      state: input.hasModel ? "done" : "todo",
+      done: input.hasModel,
+    },
+    {
+      id: "first-thread",
+      state: !input.threadsKnown
+        ? "unknown"
+        : input.hasThreads
+          ? "done"
+          : "todo",
+      done: input.threadsKnown && input.hasThreads,
+    },
   ]
 }
 
 export function checklistComplete(steps: ChecklistStep[]): boolean {
-  return steps.filter((step) => !step.optional).every((step) => step.done)
+  return steps.every((step) => step.state !== "todo")
 }
 
 // ---- Attention required -----------------------------------------------------
@@ -173,14 +283,41 @@ export type HomeAlert = {
   actionPath: string
 }
 
+/** Deep link to one automations job; parseRoute sees only the path. */
+export function jobDeepLink(jobId: string): string {
+  return `/automations?job=${encodeURIComponent(jobId)}`
+}
+
+/** Read the ?job= deep link back ("" when absent/invalid). */
+export function jobIdFromSearch(search: string): string {
+  const value = new URLSearchParams(search).get("job")
+  return typeof value === "string" && /^[\w:-]{1,80}$/.test(value) ? value : ""
+}
+
+/** Time-of-day label used inside alert texts. */
+function frClock(ts: number): string {
+  return new Date(ts).toLocaleTimeString("fr-CA", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
 /**
  * Real, actionable problems only — server-reported fields, never inferred
- * from message text. Cap three; the exact context is one click away.
+ * from message text. Derived from the FULL validated job list, capped at
+ * three visible alerts with an honest "and N more" line when truncated.
  */
 export function buildAlerts(input: {
   desktopError?: string | null
   quota?: QuotaState | null
-  failedJobs: { id: string; name: string; lastError: string | null }[]
+  failedJobs: {
+    id: string
+    name: string
+    lastError: string
+    nextRunAt: number | null
+    enabled: boolean
+  }[]
+  overdueJobs?: { id: string; name: string; nextRunAt: number }[]
 }): HomeAlert[] {
   const alerts: HomeAlert[] = []
   if (input.desktopError)
@@ -200,19 +337,43 @@ export function buildAlerts(input: {
           ? "Le quota hebdomadaire est atteint. Les envois sont bloqués jusqu’au lundi suivant."
           : "Le quota hebdomadaire est dépassé; les envois continuent en avertissement.",
       actionLabel: "Voir les détails",
-      actionPath: "/config",
+      actionPath: "/config/keys",
     })
   for (const job of input.failedJobs) {
-    if (alerts.length >= 3) break
+    const scheduled =
+      job.enabled && typeof job.nextRunAt === "number" && job.nextRunAt > 0
     alerts.push({
       id: `cron-${job.id}`,
       severity: "warning",
-      text: `L’automatisation « ${job.name} » a échoué.`,
+      text: scheduled
+        ? `L’automatisation « ${job.name} » a échoué. Prochaine exécution maintenue à ${frClock(job.nextRunAt ?? 0)}.`
+        : `L’automatisation « ${job.name} » a échoué et n’a pas d’exécution programmée.`,
       actionLabel: "Voir l’automatisation",
-      actionPath: "/automations",
+      actionPath: jobDeepLink(job.id),
     })
   }
-  return alerts.slice(0, 3)
+  for (const job of input.overdueJobs ?? []) {
+    alerts.push({
+      id: `cron-late-${job.id}`,
+      severity: "warning",
+      text: `L’automatisation « ${job.name} » est en retard — elle s’exécutera dès que l’environnement reprend.`,
+      actionLabel: "Voir l’automatisation",
+      actionPath: jobDeepLink(job.id),
+    })
+  }
+  if (alerts.length > 3) {
+    const extra = alerts.length - 3
+    const kept = alerts.slice(0, 2)
+    kept.push({
+      id: "alerts-more",
+      severity: "warning",
+      text: `${extra + 1} autres éléments demandent votre attention.`,
+      actionLabel: "Tout voir",
+      actionPath: "/automations",
+    })
+    return kept
+  }
+  return alerts
 }
 
 // ---- fr-CA time labels -------------------------------------------------------
@@ -235,6 +396,15 @@ export function formatFrAgo(ts: number, now = Date.now()): string {
   })
 }
 
+/**
+ * Recent-threads caption. The source stores when the thread was NAMED, not
+ * its last activity — the label says exactly that instead of pretending.
+ */
+export function formatFrNamedAgo(ts: number, now = Date.now()): string {
+  const ago = formatFrAgo(ts, now)
+  return ago ? `nommée ${ago}` : ""
+}
+
 /** "18 oct., 09:00 (HAE)" — the zone abbreviation is part of the truth. */
 export function formatFrWhen(ts: number | null): string {
   if (!ts) return "—"
@@ -248,4 +418,24 @@ export function formatFrWhen(ts: number | null): string {
     .toLocaleTimeString("fr-CA", { timeZoneName: "short" })
     .match(/\s([^\s]+)$/)?.[1]
   return zone ? `${formatted} (${zone})` : formatted
+}
+
+// ---- datetime-local roundtrip (one-shot schedule edit) ----------------------
+
+/**
+ * Instant → <input type="datetime-local"> value in the VIEWER'S zone. Not
+ * toISOString().slice — that would relabel UTC as local and shift the
+ * instant by the zone offset.
+ */
+export function atMsToLocalInput(ms: number): string {
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** datetime-local value → instant (local zone), null when malformed. */
+export function localInputToMs(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return null
+  const ts = new Date(value).getTime()
+  return Number.isFinite(ts) ? ts : null
 }

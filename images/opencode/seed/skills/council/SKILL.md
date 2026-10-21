@@ -1,6 +1,6 @@
 ---
 name: council
-description: Form an agent team (council) the user can watch live in the dashboard, with ob-thread --council. Use it when a job benefits from several members working in parallel — research plus review, a second opinion, divide-and-summarize — or when the user asks for a team, a council, or a panel. Members are hidden threads; the user sees them in the council viewer pane, so always end the reply with the council marker.
+description: Form an agent team (council) the user can watch live in the dashboard, with ob-thread --council. Use it when a job benefits from several members working in parallel — research plus review, a second opinion, divide-and-summarize — or when the user asks for a team, a council, or a panel. Members are hidden threads; the last one to finish wakes this thread automatically so you can read the results and report.
 ---
 
 # Councils
@@ -10,11 +10,13 @@ live in a split pane beside the chat — member list, running dots, and each
 member's transcript. `ob-thread` starts the members; the council marker in
 your final reply opens the viewer.
 
-Start a council (run one command per member, same name every time):
+Start a council (run one command per member, same name every time; pass
+`--from` with your own session id — the screen id in your system line — so
+the control plane knows to wake this thread):
 
 ```sh
-ob-thread start --council auth-review --role Researcher --title "OAuth paths" --message "Map every OAuth path in ~/project/api and write findings to workspace/auth-paths.md"
-ob-thread start --council auth-review --role Reviewer --title "Token storage" --message "Review how tokens are stored in ~/project/api and write findings to workspace/token-storage.md"
+ob-thread start --council auth-review --from ses_YOURID --role Researcher --title "OAuth paths" --message "Map every OAuth path in ~/project/api and write findings to workspace/auth-paths.md"
+ob-thread start --council auth-review --from ses_YOURID --role Reviewer --title "Token storage" --message "Review how tokens are stored in ~/project/api and write findings to workspace/token-storage.md"
 ```
 
 Then end your final reply with the marker (the slug must match):
@@ -38,9 +40,25 @@ Rules:
 - Two to five members is a good council; more rarely helps.
 - Personas work on members too (`--persona "Software manager"`) when a job
   needs a specific voice.
-- Coordinate results yourself: when members go idle, read what they wrote,
-  decide, and answer the user in this thread. The council is their workspace,
-  not the conversation.
+- Subagents you spawn inside a member with the built-in task tool show up
+  under "Subagents" in the viewer automatically, transcripts included.
+  Plain `ob-thread start --hidden` helpers do not — use `--council` when
+  the user should watch them.
+- You do not need to poll. When the last member finishes, this thread is
+  woken automatically with a `[council: name]` message — the start output
+  shows `wake` ("armed"); passing `--from <your session id>` (the screen id
+  in your system line) makes it reliable. A wake-up is not a user reply:
+  read what the members produced — `ob-thread council status NAME` prints
+  each member's state and last reply, `ob-thread read ID` a transcript, and
+  files you asked them to write are on disk — decide, and answer the user
+  here. The council is their workspace, not the conversation.
+- To block until a single member finishes instead, use `ob-thread wait <id>`
+  (ids from `ob-thread list`) — it is recognized by the stuck-command
+  watchdog with a long budget (cap your `--timeout` at 110 minutes). Never
+  hold a raw `sleep` loop or any other command in one bash call past ~15
+  minutes: the watchdog kills it and wraps your turn up. For longer waits,
+  end the turn — an idle session is never killed, and the wake-up brings you
+  back when the team finishes.
 - Close the team when the work is done: `ob-thread council close auth-review`
   deletes every member thread and the council. Do it in the same session
   that concludes the work, or a later one — `ob-thread councils` lists what

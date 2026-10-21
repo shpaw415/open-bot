@@ -8,7 +8,7 @@ import Select from "@shpaw415/mui-lite/Select"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useId, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import AccessibleDialog, {
@@ -18,8 +18,17 @@ import AccessibleDialog, {
 } from "./AccessibleDialog"
 import { api, type Me } from "./api"
 import { PluginBadge } from "./ConfigList"
+import { ChatLink } from "./chat-link"
 import { Chip } from "./chip"
-import { formatFrAgo, formatFrWhen, type JobLike } from "./dashboard-data"
+import {
+  atMsToLocalInput,
+  formatFrAgo,
+  formatFrWhen,
+  type JobLike,
+  jobIdFromSearch,
+  localInputToMs,
+  parseJobs,
+} from "./dashboard-data"
 import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
@@ -203,8 +212,10 @@ export function CronView({ me }: { me: Me }) {
 
   const loadJobs = useCallback(async () => {
     try {
-      const body = await api<CronJobInfo[]>("/api/cron")
-      setJobs(Array.isArray(body) ? body : [])
+      // A 200 with a wrong shape is a contract error with Retry — never a
+      // silent "no automations".
+      const body = await api<unknown>("/api/cron")
+      setJobs(parseJobs(body) as CronJobInfo[])
       setLoadError("")
     } catch (caught) {
       // A failed load keeps the last good list and says so — never a fake
@@ -217,8 +228,9 @@ export function CronView({ me }: { me: Me }) {
 
   const loadNotices = useCallback(async () => {
     try {
-      const body = await api<CronNotice[]>("/api/cron/notices")
-      setNotices(Array.isArray(body) ? body : [])
+      const body = await api<unknown>("/api/cron/notices")
+      if (!Array.isArray(body)) throw new Error("unexpected response shape")
+      setNotices(body as CronNotice[])
       setNoticesError("")
     } catch (caught) {
       setNoticesError(
@@ -244,6 +256,27 @@ export function CronView({ me }: { me: Me }) {
       .then((body) => setPersonas(body.personas ?? []))
       .catch(() => {})
   }, [loadJobs, loadNotices])
+
+  // Dashboard alert deep link: /automations?job=ID opens that exact job's
+  // editor once the list arrives. The query is then cleaned so Back and a
+  // reload don't reopen the dialog. A job that vanished (deleted) stays
+  // closed — the list itself is the answer.
+  const pendingJobIdRef = useRef<string>(
+    typeof location === "undefined" ? "" : jobIdFromSearch(location.search),
+  )
+  const handledJobIdRef = useRef<string>("")
+  // openForm reads and writes state only; re-running per render is a no-op.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: openForm is render-local
+  useEffect(() => {
+    const id = pendingJobIdRef.current
+    if (!id || handledJobIdRef.current === id) return
+    const job = jobs.find((item) => item.id === id)
+    if (!job) return
+    handledJobIdRef.current = id
+    openForm(job)
+    if (typeof history !== "undefined")
+      history.replaceState(null, "", location.pathname)
+  }, [jobs])
 
   useEffect(() => {
     return subscribe((event) => {
@@ -277,7 +310,10 @@ export function CronView({ me }: { me: Me }) {
           ? String(job.everySeconds)
           : "3600",
       expr: job?.cronExpr ?? "0 9 * * *",
-      at: "",
+      // A one-shot job opens with its real instant, rendered in the viewer's
+      // zone — never toISOString().slice(0,16), which relabels UTC as local
+      // and silently moves the run.
+      at: job?.atMs ? atMsToLocalInput(job.atMs) : "",
       model: job ? cronModelValue(job) : "",
       persona: job?.personaId || "assistant",
       runKind: job?.runKind ?? "prompt",
@@ -295,18 +331,20 @@ export function CronView({ me }: { me: Me }) {
     setEveryUnit(next.everyUnit as IntervalUnit)
     setEverySecondsRaw(next.everySecondsRaw as string)
     setExpr(next.expr as string)
-    setAt("")
+    setAt(next.at as string)
     setModel(next.model as string)
     setPersona(next.persona as string)
     setRunKind(next.runKind as "prompt" | "script" | "both" | "auto")
     setScript(next.script as string)
-    // Advanced jobs (scripts, cron) open with the technical controls
-    // visible so their real values are editable, never converted away.
+    // Advanced jobs (scripts, cron expressions) open with the technical
+    // controls visible so their real values are editable, never converted
+    // away. A plain one-shot or whole-minute interval stays collapsed —
+    // it has no advanced value to show.
     const isAdvanced =
       job &&
       (job.kind === "cron" ||
         (job.runKind && job.runKind !== "prompt") ||
-        !intervalFromSeconds(job.everySeconds))
+        (job.kind === "every" && !intervalFromSeconds(job.everySeconds)))
     setAdvancedOpen(Boolean(isAdvanced))
     setFormError("")
     setPristine(next)
@@ -377,8 +415,8 @@ export function CronView({ me }: { me: Me }) {
   const scheduleSummary = useMemo(() => {
     if (kind === "once") {
       if (!at) return "Choisissez une date et une heure."
-      const ts = new Date(at).getTime()
-      if (!Number.isFinite(ts)) return "Date invalide."
+      const ts = localInputToMs(at)
+      if (ts == null) return "Date invalide."
       if (ts <= Date.now()) return "La date choisie est dans le passé."
       return `Une seule exécution, le ${formatFrFull(ts)} (heure de votre environnement).`
     }
@@ -400,6 +438,24 @@ export function CronView({ me }: { me: Me }) {
     return `Expression cron (UTC) : ${expr.trim()} — « 0 9 * * * » signifie 9 h UTC, pas 9 h locale.`
   }, [kind, at, everyValue, everyUnit, everySecondsRaw, expr])
 
+  /**
+   * True when every schedule field still holds exactly what the form opened
+   * with. An unchanged schedule is OMITTED from the PATCH — the server
+   * keeps the stored instant to the millisecond, so renaming or rewriting
+   * the instruction never shifts, truncates or DST-slides the run time.
+   */
+  function scheduleUnchanged(): boolean {
+    if (!pristine) return false
+    return (
+      pristine.kind === kind &&
+      pristine.at === at &&
+      pristine.everyValue === everyValue &&
+      pristine.everyUnit === everyUnit &&
+      pristine.everySecondsRaw === everySecondsRaw &&
+      pristine.expr === expr
+    )
+  }
+
   async function saveJob() {
     if (saving) return
     setFormError("")
@@ -410,8 +466,8 @@ export function CronView({ me }: { me: Me }) {
     // Schedule validation happens near the field, before the request.
     let schedule: Record<string, unknown>
     if (kind === "once") {
-      const ts = new Date(at).getTime()
-      if (!at || !Number.isFinite(ts)) {
+      const ts = localInputToMs(at)
+      if (!at || ts == null) {
         setFormError("Choisissez une date et une heure valides.")
         return
       }
@@ -447,11 +503,15 @@ export function CronView({ me }: { me: Me }) {
     setSaving(true)
     try {
       if (editId) {
-        // The PATCH contract accepts schedule changes — editing never asks
-        // to recreate the job, and the server recomputes the next run.
+        // The PATCH contract is present-set/omitted-keep for the schedule:
+        // an untouched schedule is simply not sent, so a name or
+        // instruction edit re-sends no date at all. A real schedule change
+        // goes through with the same contract as before.
         await api(`/api/cron/${editId}`, {
           method: "PATCH",
-          body: JSON.stringify({ ...fields, ...schedule }),
+          body: JSON.stringify(
+            scheduleUnchanged() ? fields : { ...fields, ...schedule },
+          ),
         })
       } else {
         await api("/api/cron", {
@@ -700,7 +760,7 @@ export function CronView({ me }: { me: Me }) {
                   >
                     Modifier
                   </Button>
-                  <Tip title="Exécute une fois maintenant, sans changer l’horaire.">
+                  <Tip title="Exécute une fois maintenant; l’horaire habituel reste inchangé.">
                     <Button
                       size="small"
                       variant="text"
@@ -708,7 +768,7 @@ export function CronView({ me }: { me: Me }) {
                       disabled={Boolean(busyId)}
                       onClick={() => void runJob(job)}
                     >
-                      Exécuter
+                      {busyId === job.id ? "Exécution…" : "Exécuter maintenant"}
                     </Button>
                   </Tip>
                   {notices.some((notice) => notice.jobId === job.id) ? (
@@ -1018,7 +1078,10 @@ export function CronView({ me }: { me: Me }) {
           <DialogContent>
             {result.summary?.trim() ? (
               <div className="ob-md">
-                <Markdown remarkPlugins={[remarkGfm]}>
+                <Markdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{ a: ChatLink }}
+                >
                   {result.summary}
                 </Markdown>
               </div>

@@ -11,6 +11,8 @@ import {
   type StreamEvent,
   visibleMessages,
 } from "./chat-view"
+import { MarkdownCodeBlock } from "./code-copy"
+import { createLatestGuard } from "./latest-guard"
 import { clampPreviewWidth } from "./PreviewView"
 import Stack from "./stack"
 
@@ -21,11 +23,22 @@ export type CouncilMemberInfo = {
   createdAt: number
 }
 
+// A task-tool subagent (opencode child session) of one of the members,
+// derived by the control plane from the live session list. Optional so an
+// older control plane without the field still renders.
+export type CouncilSubagentInfo = {
+  sessionId: string
+  parentId: string
+  title: string
+  createdAt: number
+}
+
 export type CouncilData = {
   id: string
   name: string
   createdAt: number
   members: CouncilMemberInfo[]
+  subagents?: CouncilSubagentInfo[]
 }
 
 export function councilRunning(status: { type?: string } | undefined): boolean {
@@ -36,6 +49,11 @@ function memberLabel(member: CouncilMemberInfo): string {
   const title = member.title.replace(/^worker:/, "").trim()
   const role = member.role.trim()
   return title || role || member.sessionId.slice(0, 12)
+}
+
+function subagentLabel(sub: CouncilSubagentInfo): string {
+  const title = sub.title.replace(/^worker:/, "").trim()
+  return title || sub.sessionId.slice(0, 12)
 }
 
 function CouncilDot({ live }: { live: boolean }) {
@@ -54,6 +72,7 @@ function CouncilDot({ live }: { live: boolean }) {
 }
 
 const councilMarkdownComponents = {
+  pre: MarkdownCodeBlock,
   img: ({ src, alt }: { src?: string; alt?: string }) => {
     const resolved = typeof src === "string" ? chatImageUrl(src) : ""
     if (!resolved) return null
@@ -93,21 +112,34 @@ function MemberTranscript({
   const [error, setError] = useState("")
   const messagesRef = useRef<unknown[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Guard: a load for the previous member must not paint after the switch —
+  // same race as the main chat's tick.
+  const sessionIdRef = useRef(sessionId)
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
+  const loadGuard = useRef(createLatestGuard())
 
   const load = useCallback(async () => {
+    const id = sessionId
+    const seq = loadGuard.current.begin()
+    const isCurrent = () =>
+      loadGuard.current.isCurrent(seq) && sessionIdRef.current === id
     try {
       const res = await fetch(
-        `/api/opencode/session/${encodeURIComponent(sessionId)}/message`,
+        `/api/opencode/session/${encodeURIComponent(id)}/message`,
       )
       const body = await res.json()
+      if (!isCurrent()) return
       const next = Array.isArray(body) ? body : []
       messagesRef.current = next
       setMessages(next)
       setError("")
     } catch {
+      if (!isCurrent()) return
       setError("could not load this member's thread")
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [sessionId])
 
@@ -228,6 +260,7 @@ export function CouncilRail({
   statusOf: (sessionId: string) => { type?: string } | undefined
   onSelect: (sessionId: string) => void
 }) {
+  const subagents = data.subagents ?? []
   return (
     <Stack
       spacing={0.5}
@@ -280,7 +313,148 @@ export function CouncilRail({
           )
         })
       )}
+      {subagents.length > 0 ? (
+        <>
+          <Typography
+            variant="caption"
+            color="textSecondary"
+            sx={{ px: 1, pt: 0.5 }}
+          >
+            Subagents
+          </Typography>
+          {subagents.map((sub) => {
+            const selected = sub.sessionId === selectedId
+            return (
+              <Button
+                key={sub.sessionId}
+                size="small"
+                variant={selected ? "contained" : "text"}
+                onClick={() => onSelect(sub.sessionId)}
+                sx={{
+                  justifyContent: "flex-start",
+                  textTransform: "none",
+                  px: 1,
+                  minWidth: 0,
+                }}
+                startIcon={
+                  <CouncilDot live={councilRunning(statusOf(sub.sessionId))} />
+                }
+              >
+                <Box
+                  sx={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    textAlign: "left",
+                  }}
+                >
+                  {subagentLabel(sub)}
+                </Box>
+              </Button>
+            )
+          })}
+        </>
+      ) : null}
     </Stack>
+  )
+}
+
+// Mobile member picker: one horizontally scrollable chip row above the
+// transcript — the desktop rail's 170px sidebar would leave a phone with
+// almost no transcript width. Chips keep the live dot; subagents trail.
+export function CouncilStrip({
+  data,
+  selectedId,
+  statusOf,
+  onSelect,
+}: {
+  data: CouncilData
+  selectedId: string
+  statusOf: (sessionId: string) => { type?: string } | undefined
+  onSelect: (sessionId: string) => void
+}) {
+  const subagents = data.subagents ?? []
+  if (data.members.length === 0 && subagents.length === 0) {
+    return (
+      <Typography variant="body2" color="textSecondary" sx={{ flexShrink: 0 }}>
+        No members in this council.
+      </Typography>
+    )
+  }
+  return (
+    <Stack
+      direction="row"
+      spacing={0.5}
+      alignItems="center"
+      className="ob-council-strip"
+      sx={{ flexShrink: 0, minWidth: 0 }}
+    >
+      {data.members.map((member) => (
+        <ChipButton
+          key={member.sessionId}
+          label={memberLabel(member)}
+          selected={member.sessionId === selectedId}
+          live={councilRunning(statusOf(member.sessionId))}
+          onClick={() => onSelect(member.sessionId)}
+        />
+      ))}
+      {subagents.length > 0 ? (
+        <Typography
+          variant="caption"
+          color="textSecondary"
+          sx={{ flexShrink: 0, px: 0.5 }}
+        >
+          Subagents
+        </Typography>
+      ) : null}
+      {subagents.map((sub) => (
+        <ChipButton
+          key={sub.sessionId}
+          label={subagentLabel(sub)}
+          selected={sub.sessionId === selectedId}
+          live={councilRunning(statusOf(sub.sessionId))}
+          onClick={() => onSelect(sub.sessionId)}
+        />
+      ))}
+    </Stack>
+  )
+}
+
+function ChipButton({
+  label,
+  selected,
+  live,
+  onClick,
+}: {
+  label: string
+  selected: boolean
+  live: boolean
+  onClick: () => void
+}) {
+  return (
+    <Button
+      size="small"
+      variant={selected ? "contained" : "outlined"}
+      onClick={onClick}
+      sx={{
+        flexShrink: 0,
+        textTransform: "none",
+        px: 1,
+        minWidth: 0,
+      }}
+      startIcon={<CouncilDot live={live} />}
+    >
+      <Box
+        sx={{
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          maxWidth: 150,
+        }}
+      >
+        {label}
+      </Box>
+    </Button>
   )
 }
 
@@ -291,8 +465,36 @@ function councilBody(
   onSelect: (sessionId: string) => void,
   subscribe: (listener: (event: StreamEvent) => void) => () => void,
   live: boolean,
+  mobile: boolean,
 ) {
-  const member = data.members.find((item) => item.sessionId === selectedId)
+  const member =
+    data.members.find((item) => item.sessionId === selectedId) ??
+    (data.subagents ?? []).find((item) => item.sessionId === selectedId)
+  const transcript = member ? (
+    <MemberTranscript
+      key={member.sessionId}
+      sessionId={member.sessionId}
+      subscribe={subscribe}
+      live={live}
+    />
+  ) : (
+    <Typography variant="body2" color="textSecondary" sx={{ p: 2 }}>
+      Select a member to see what it is doing.
+    </Typography>
+  )
+  if (mobile) {
+    return (
+      <Stack spacing={1} sx={{ flex: 1, minHeight: 0 }}>
+        <CouncilStrip
+          data={data}
+          selectedId={selectedId}
+          statusOf={statusOf}
+          onSelect={onSelect}
+        />
+        {transcript}
+      </Stack>
+    )
+  }
   return (
     <Stack
       direction="row"
@@ -305,18 +507,7 @@ function councilBody(
         statusOf={statusOf}
         onSelect={onSelect}
       />
-      {member ? (
-        <MemberTranscript
-          key={member.sessionId}
-          sessionId={member.sessionId}
-          subscribe={subscribe}
-          live={live}
-        />
-      ) : (
-        <Typography variant="body2" color="textSecondary" sx={{ p: 2 }}>
-          Select a member to see what it is doing.
-        </Typography>
-      )}
+      {transcript}
     </Stack>
   )
 }
@@ -333,6 +524,7 @@ export function CouncilPane({
   onSelect,
   subscribe,
   live,
+  mobile,
 }: {
   data: CouncilData
   selectedId: string
@@ -345,8 +537,10 @@ export function CouncilPane({
   onSelect: (sessionId: string) => void
   subscribe: (listener: (event: StreamEvent) => void) => () => void
   live: boolean
+  mobile: boolean
 }) {
-  const runningCount = data.members.filter((member) =>
+  const subagents = data.subagents ?? []
+  const runningCount = [...data.members, ...subagents].filter((member) =>
     councilRunning(statusOf(member.sessionId)),
   ).length
   return (
@@ -370,7 +564,15 @@ export function CouncilPane({
             Close
           </Button>
         </Stack>
-        {councilBody(data, selectedId, statusOf, onSelect, subscribe, live)}
+        {councilBody(
+          data,
+          selectedId,
+          statusOf,
+          onSelect,
+          subscribe,
+          live,
+          mobile,
+        )}
       </div>
     </>
   )
@@ -384,6 +586,7 @@ export function CouncilOverlay({
   onSelect,
   subscribe,
   live,
+  mobile,
 }: {
   data: CouncilData
   selectedId: string
@@ -392,6 +595,7 @@ export function CouncilOverlay({
   onSelect: (sessionId: string) => void
   subscribe: (listener: (event: StreamEvent) => void) => () => void
   live: boolean
+  mobile: boolean
 }) {
   return (
     <div className="ob-preview-overlay">
@@ -411,7 +615,15 @@ export function CouncilOverlay({
           flexDirection: "column",
         }}
       >
-        {councilBody(data, selectedId, statusOf, onSelect, subscribe, live)}
+        {councilBody(
+          data,
+          selectedId,
+          statusOf,
+          onSelect,
+          subscribe,
+          live,
+          mobile,
+        )}
       </Box>
     </div>
   )

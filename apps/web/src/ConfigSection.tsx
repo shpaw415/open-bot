@@ -40,7 +40,13 @@ export function ConfigSection({
           </Box>
         ) : null}
         <Stack sx={{ flex: 1, minWidth: 0 }} spacing={0.25}>
-          <Typography variant="subtitle1" sx={{ lineHeight: 1.3 }}>
+          {/* Section under the page's h1: a real h2 with the same compact
+              subtitle look — appearance and semantics stay separate. */}
+          <Typography
+            variant="subtitle1"
+            component="h2"
+            sx={{ lineHeight: 1.3 }}
+          >
             {title}
           </Typography>
           {description ? (

@@ -181,9 +181,14 @@ function FolderFace({
 export function HomeScreen({
   tabs,
   onOpen,
+  onAddPlugin,
+  onManagePlugins,
 }: {
   tabs: PluginTab[]
   onOpen: (key: string) => void
+  /** Add/manage stay reachable with apps installed, on phones too. */
+  onAddPlugin?: () => void
+  onManagePlugins?: () => void
 }) {
   const tabFor = useMemo(
     () => new Map(tabs.map((tab) => [tab.key, tab])),
@@ -825,6 +830,34 @@ export function HomeScreen({
               }}
             />
           ))}
+        </Box>
+      ) : null}
+
+      {/* Add/manage stay reachable with apps installed, on phones too. */}
+      {!edit && (onAddPlugin || onManagePlugins) ? (
+        <Box
+          onPointerDown={(event) => event.stopPropagation()}
+          sx={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: pages.length > 1 ? 28 : 8,
+            px: 1.5,
+            display: "flex",
+            justifyContent: "center",
+            gap: 1,
+          }}
+        >
+          {onAddPlugin ? (
+            <Button size="small" variant="outlined" onClick={onAddPlugin}>
+              Ajouter une application
+            </Button>
+          ) : null}
+          {onManagePlugins ? (
+            <Button size="small" variant="text" onClick={onManagePlugins}>
+              Gérer
+            </Button>
+          ) : null}
         </Box>
       ) : null}
 

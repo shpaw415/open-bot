@@ -68,12 +68,18 @@ const server = Bun.serve({
     if (url.pathname === "/healthz") return new Response("ok")
 
     if (url.pathname === "/mentions") {
+      // The control plane injects the dashboard's language (Config page →
+      // Langue) on every proxied request — localize with it, never ask the
+      // user to pick inside the plugin.
+      const fr = req.headers.get("x-open-bot-language") === "fr"
       return Response.json({
         items: items.map((item) => ({
           name: item.name,
-          description: `${item.qty} in stock`,
+          description: fr ? `${item.qty} en stock` : `${item.qty} in stock`,
           aliases: [String(item.id)],
-          hint: `stock item id ${item.id}; add or remove it on the Stock dashboard page`,
+          hint: fr
+            ? `id d’article ${item.id} ; ajoutez ou retirez-le sur la page Stock`
+            : `stock item id ${item.id}; add or remove it on the Stock dashboard page`,
         })),
       })
     }

@@ -47,6 +47,8 @@ const dbWith = (
 ) =>
   ({
     installedPlugins: () => plugins,
+    // Directory-membership pruning after a DELETE (migration 0017).
+    removeCatalogDirItems: () => {},
   }) as never
 
 // handleMcp throws HttpError; the server's top-level catch converts it the

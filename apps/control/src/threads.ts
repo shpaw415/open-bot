@@ -6,6 +6,7 @@ import {
   sanitizeRole,
 } from "./councils"
 import { createSession } from "./cron"
+import { recordDelegation, resolveDelegationCreator } from "./delegations"
 import { desktopPhase, endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
 import {
@@ -34,9 +35,15 @@ const PROMPT_TIMEOUT_MS = 30_000
 const DELETE_LIMIT = 100
 
 export function isThreadRequest(pathname: string, method: string): boolean {
-  return (
+  if (
     pathname === "/api/threads" &&
     (method === "GET" || method === "POST" || method === "DELETE")
+  )
+    return true
+  if (method === "GET" && /^\/api\/threads\/[^/]+\/status$/.test(pathname))
+    return true
+  return (
+    method === "POST" && /^\/api\/threads\/[^/]+\/(?:stop|post)$/.test(pathname)
   )
 }
 
@@ -68,6 +75,44 @@ export function visibleRecentThreads(
       title: row.title,
       createdAt: row.createdAt,
     }))
+}
+
+/**
+ * One opencode session row → the passive summary shape, or null when the
+ * session must never surface (subagent rows carry parentID; worker:/cron-run:
+ * titles are hidden the same way the dashboard thread list hides them).
+ * createdAt is the session's real last activity — time.updated, falling back
+ * to time.created — so the home list can order by actual recency when the
+ * real list was readable, without any DB migration inventing dates.
+ */
+export function recentRowFromSession(
+  item: unknown,
+): RecentThreadSummary | null {
+  if (item == null || typeof item !== "object" || Array.isArray(item))
+    return null
+  const row = item as {
+    id?: unknown
+    title?: unknown
+    parentID?: unknown
+    time?: { updated?: unknown; created?: unknown }
+  }
+  if (typeof row.id !== "string" || !row.id) return null
+  if (row.parentID) return null
+  if (typeof row.title !== "string") return null
+  if (
+    row.title.startsWith(WORKER_TITLE_PREFIX) ||
+    row.title.startsWith(CRON_TITLE_PREFIX)
+  )
+    return null
+  const updated =
+    typeof row.time?.updated === "number" && Number.isFinite(row.time.updated)
+      ? row.time.updated
+      : 0
+  const created =
+    typeof row.time?.created === "number" && Number.isFinite(row.time.created)
+      ? row.time.created
+      : 0
+  return { sessionId: row.id, title: row.title, createdAt: updated || created }
 }
 
 export function sanitizeThreadTitle(raw: unknown): string | null {
@@ -122,6 +167,20 @@ export async function handleThreads(
     return listThreads(db, agent)
   if (url.pathname === "/api/threads" && req.method === "DELETE")
     return deleteThreads(req, db, agent)
+  const managed = url.pathname.match(/^\/api\/threads\/([^/]+)\/(stop|post)$/)
+  if (managed && req.method === "POST") {
+    const id = decodeURIComponent(managed[1] ?? "")
+    if (!id) return json({ error: "not found" }, 404)
+    return managed[2] === "stop"
+      ? stopThread(id, db, agent)
+      : postThread(req, id, db, agent)
+  }
+  const status = url.pathname.match(/^\/api\/threads\/([^/]+)\/status$/)
+  if (status && req.method === "GET") {
+    const id = decodeURIComponent(status[1] ?? "")
+    if (!id) return json({ error: "not found" }, 404)
+    return threadStatus(id, db, agent)
+  }
   return json({ error: "not found" }, 404)
 }
 
@@ -137,6 +196,8 @@ export async function cleanupDeletedThread(
   db.clearThreadTitle(userId, sessionId)
   db.clearThreadDir(userId, sessionId)
   db.clearCouncilMember(userId, sessionId)
+  db.deleteDelegationWatches(userId, sessionId)
+  db.deleteDelegationWatchesByCreator(userId, sessionId)
   deleteSessionMedia(db, userId, sessionId)
   await stopThreadScreen(db, userId, sessionId)
 }
@@ -224,10 +285,23 @@ async function startThread(req: Request, db: Db, agent: User) {
       )
     persona = match
   }
+  if (body.from !== undefined && typeof body.from !== "string")
+    return json({ error: "from must be a string" }, 400)
+  const fromRaw = typeof body.from === "string" ? body.from.trim() : ""
 
   const resolved = await opencodeBase(db, agent)
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
+
+  // Delegation wake-up: councils and persona teammates re-prompt the
+  // coordinating thread when they finish. The creator is the caller's own
+  // session (`from`) or, unprovided, the one busy chat on the desktop.
+  const watchesDelegation =
+    Boolean(councilName) ||
+    Boolean(persona && persona.persona.id !== ASSISTANT_ID)
+  const delegation = watchesDelegation
+    ? await resolveDelegationCreator(base, headers, fromRaw)
+    : { creator: null, warning: null }
 
   const effectiveTitle = effectiveVisible ? title : hiddenThreadTitle(title)
   const ruleset = await personaScope(agent.id, persona?.persona ?? null)
@@ -267,6 +341,16 @@ async function startThread(req: Request, db: Db, agent: User) {
   }
   if (persona && persona.persona.id !== ASSISTANT_ID)
     db.setThreadPersona(agent.id, sessionId, persona.persona.id)
+  if (delegation.creator) {
+    recordDelegation(
+      db,
+      agent.id,
+      councilName ? "council" : "persona",
+      delegation.creator,
+      sessionId,
+      council?.id ?? null,
+    )
+  }
   if (message) {
     const promptBody: Record<string, unknown> = {
       parts: [{ type: "text", text: message }],
@@ -305,6 +389,12 @@ async function startThread(req: Request, db: Db, agent: User) {
   }
   if (dir) result.dir = dir
   if (council) result.council = council
+  if (watchesDelegation)
+    result.wake = {
+      armed: Boolean(delegation.creator),
+      creator: delegation.creator,
+    }
+  warning = warning ?? delegation.warning
   if (warning) result.warning = warning
   return json(result, 201)
 }
@@ -398,4 +488,108 @@ async function deleteThreads(req: Request, db: Db, agent: User) {
     deleted.push(id)
   }
   return json({ deleted, skipped })
+}
+
+// A top-level session the coordinator may manage with stop/post: its own
+// hidden worker: threads (the delete set) and persona-bound teammates.
+// Plain user chats and cron-run: sessions stay out of reach — visible threads
+// remain the user's to close, cron runs belong to the cron system.
+async function manageableThread(
+  id: string,
+  base: string,
+  headers: Record<string, string>,
+  db: Db,
+  agent: User,
+): Promise<Response | { session: { id: string } }> {
+  const res = await fetch(`${base}/session/${encodeURIComponent(id)}`, {
+    headers,
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => null)
+  if (!res || !res.ok) return json({ error: "session not found" }, 404)
+  const row = (await res.json().catch(() => null)) as {
+    id?: unknown
+    title?: unknown
+    parentID?: unknown
+  } | null
+  if (!row || typeof row.id !== "string" || row.id !== id || row.parentID)
+    return json({ error: "session not found" }, 404)
+  const title = typeof row.title === "string" ? row.title : ""
+  if (!title.startsWith(WORKER_TITLE_PREFIX) && !db.threadPersona(agent.id, id))
+    return json(
+      { error: "only worker: or persona-bound threads can be managed" },
+      403,
+    )
+  return { session: { id } }
+}
+
+// Reports whether a managed thread is still running a turn. `ob-thread wait`
+// polls this to block on a teammate or council member without holding a raw
+// sleep loop; the same manageable scope as stop/post applies.
+async function threadStatus(id: string, db: Db, agent: User) {
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const allowed = await manageableThread(id, base, headers, db, agent)
+  if (!("session" in allowed)) return allowed
+  const res = await fetch(`${base}/session/status`, {
+    headers,
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => null)
+  if (!res || !res.ok) return json({ error: "status failed" }, 502)
+  const body = (await res.json().catch(() => null)) as Record<
+    string,
+    { type?: unknown } | undefined
+  > | null
+  if (!body || typeof body !== "object")
+    return json({ error: "status failed" }, 502)
+  const entry = body[id]
+  const state = entry && typeof entry.type === "string" ? entry.type : "idle"
+  return json({ id, running: state !== "idle", state })
+}
+
+async function stopThread(id: string, db: Db, agent: User) {
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const allowed = await manageableThread(id, base, headers, db, agent)
+  if (!("session" in allowed)) return allowed
+  const abort = await fetch(`${base}/session/${encodeURIComponent(id)}/abort`, {
+    method: "POST",
+    headers,
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => null)
+  if (!abort || !abort.ok)
+    return json({ error: "stop failed" }, abort?.status === 404 ? 404 : 502)
+  return json({ id, stopped: true })
+}
+
+async function postThread(req: Request, id: string, db: Db, agent: User) {
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+  if (typeof body.message !== "string" || !body.message.trim())
+    return json({ error: "message is required" }, 400)
+  if (body.message.length > MESSAGE_LIMIT)
+    return json(
+      { error: `message is limited to ${MESSAGE_LIMIT} characters` },
+      400,
+    )
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const allowed = await manageableThread(id, base, headers, db, agent)
+  if (!("session" in allowed)) return allowed
+  const promptBody: Record<string, unknown> = {
+    parts: [{ type: "text", text: body.message }],
+  }
+  await applyThinkingEffort(db, agent.id, promptBody)
+  const posted = await fetch(
+    `${base}/session/${encodeURIComponent(id)}/prompt_async`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(promptBody),
+      signal: AbortSignal.timeout(PROMPT_TIMEOUT_MS),
+    },
+  ).catch(() => null)
+  if (!posted || !posted.ok) return json({ error: "post failed" }, 502)
+  return json({ id, posted: true })
 }

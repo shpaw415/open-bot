@@ -105,6 +105,7 @@ describe("plugin schema", () => {
     expect(top.pricing.properties.amount.maximum).toBe(PRICE_MAX_CENTS)
     expect(top.skills.items.properties.description.maxLength).toBe(1024)
     expect(top.skills.items.properties.body.maxLength).toBe(65536)
+    expect(top.skills.items.properties.group.maxLength).toBe(48)
     expect(top.personas.items.properties.instruction.maxLength).toBe(2000)
     expect(top.personas.items.properties.skills.maxItems).toBe(64)
     expect(top.cron.items.properties.message.maxLength).toBe(8000)

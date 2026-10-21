@@ -1,4 +1,5 @@
 import type { Db, User } from "@open-bot/db"
+import { lastAssistantText } from "./delegations"
 import { desktopPhase, endpoint } from "./docker"
 import type { EventHub } from "./events"
 import { cleanupDeletedThread } from "./threads"
@@ -19,7 +20,20 @@ export type CouncilMemberView = {
   createdAt: number
 }
 
-export type CouncilDetail = CouncilView & { members: CouncilMemberView[] }
+// A task-tool subagent (opencode child session) spawned by one of the
+// council's members. Derived live from the opencode session list — never
+// stored, so it disappears with its session and needs no migration.
+export type CouncilSubagentView = {
+  sessionId: string
+  parentId: string
+  title: string
+  createdAt: number
+}
+
+export type CouncilDetail = CouncilView & {
+  members: CouncilMemberView[]
+  subagents: CouncilSubagentView[]
+}
 
 function json(body: unknown, status = 200) {
   return Response.json(body, { status })
@@ -104,12 +118,101 @@ export function handleCouncils(
     })
   }
 
+  const status = url.pathname.match(/^\/api\/councils\/([^/]+)\/status$/)
+  if (status && req.method === "GET")
+    return councilStatus(db, user, decodeURIComponent(status[1] ?? ""))
+
   const match = url.pathname.match(/^\/api\/councils\/([^/]+)$/)
   if (!match) return null
   const name = decodeURIComponent(match[1] ?? "")
   if (req.method === "GET") return councilDetail(db, user, name)
   if (req.method === "DELETE") return closeCouncil(db, user, hub, name)
   return null
+}
+
+// Per-member live status for the coordinating agent (and the dashboard): one
+// call that pairs each member's idle/busy state with the tail of its last
+// assistant reply, so a wake-up can read results without N transcript fetches.
+// A down desktop degrades to unknown statuses and empty replies.
+async function councilStatus(
+  db: Db,
+  user: User,
+  name: string,
+): Promise<Response> {
+  const council = db.councilByName(user.id, name)
+  if (!council) return json({ error: "not found" }, 404)
+  const rows = db.councilMembers(user.id, council.id)
+  type MemberStatus = {
+    sessionId: string
+    role: string
+    title: string
+    status: string
+    lastReply: string
+  }
+  const members: MemberStatus[] = rows.map((row) => ({
+    sessionId: row.sessionId,
+    role: row.role,
+    title: "",
+    status: "unknown",
+    lastReply: "",
+  }))
+  try {
+    const phase = await desktopPhase(user.id)
+    if (phase === "running" && rows.length > 0) {
+      const base = await endpoint(user.id, "opencode", 4096)
+      const desktop = db.desktop(user.id)
+      const headers = desktop
+        ? {
+            authorization: `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`,
+          }
+        : undefined
+      const [statusRes, sessionsRes] = await Promise.all([
+        fetch(`${base}/session/status`, {
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        }).catch(() => null),
+        fetch(`${base}/session`, {
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        }).catch(() => null),
+      ])
+      const statusMap = (await statusRes?.json().catch(() => null)) as Record<
+        string,
+        { type?: string }
+      > | null
+      const sessions = (await sessionsRes?.json().catch(() => null)) as
+        | { id?: unknown; title?: unknown }[]
+        | null
+      const titles = new Map<string, string>()
+      if (Array.isArray(sessions)) {
+        for (const item of sessions) {
+          if (typeof item?.id === "string" && typeof item.title === "string")
+            titles.set(item.id, item.title.replace(/^worker:/, ""))
+        }
+      }
+      for (const member of members) {
+        member.title = titles.get(member.sessionId) ?? ""
+        const type = statusMap?.[member.sessionId]?.type
+        member.status =
+          typeof type === "string" && type
+            ? type
+            : statusMap
+              ? "idle"
+              : "unknown"
+        const res = await fetch(
+          `${base}/session/${encodeURIComponent(member.sessionId)}/message`,
+          { headers, signal: AbortSignal.timeout(10_000) },
+        ).catch(() => null)
+        if (res?.ok)
+          member.lastReply = lastAssistantText(
+            await res.json().catch(() => null),
+          )
+      }
+    }
+  } catch {
+    // keep the degraded rows; status is a convenience view
+  }
+  return json({ name: council.name, members })
 }
 
 // One call for the viewer pane: membership from the control plane plus the
@@ -123,7 +226,8 @@ async function councilDetail(
   const council = db.councilByName(user.id, name)
   if (!council) return json({ error: "not found" }, 404)
   const rows = db.councilMembers(user.id, council.id)
-  let titles = new Map<string, string>()
+  const titles = new Map<string, string>()
+  const subagents: CouncilSubagentView[] = []
   try {
     if (rows.length > 0) {
       const phase = await desktopPhase(user.id)
@@ -140,23 +244,42 @@ async function councilDetail(
         }).catch(() => null)
         const body = (await res?.json().catch(() => null)) as unknown
         if (res?.ok && Array.isArray(body)) {
-          titles = new Map(
-            body
-              .map((item) => item as { id?: unknown; title?: unknown })
-              .filter((item) => typeof item.id === "string")
-              .map((item) => [
-                item.id as string,
-                typeof item.title === "string"
-                  ? item.title.replace(/^worker:/, "")
-                  : "",
-              ]),
-          )
+          const memberIds = new Set(rows.map((row) => row.sessionId))
+          for (const item of body) {
+            const row = item as {
+              id?: unknown
+              title?: unknown
+              parentID?: unknown
+              time?: { created?: unknown }
+            }
+            if (typeof row.id !== "string") continue
+            const title =
+              typeof row.title === "string"
+                ? row.title.replace(/^worker:/, "")
+                : ""
+            titles.set(row.id, title)
+            // One level deep: native task-tool children of members. A
+            // subagent's own children stay out of the rail.
+            if (
+              typeof row.parentID === "string" &&
+              memberIds.has(row.parentID)
+            ) {
+              subagents.push({
+                sessionId: row.id,
+                parentId: row.parentID,
+                title,
+                createdAt:
+                  typeof row.time?.created === "number" ? row.time.created : 0,
+              })
+            }
+          }
         }
       }
     }
   } catch {
-    // keep the empty map; titles are cosmetic
+    // keep the empty map; titles and subagents are cosmetic
   }
+  subagents.sort((a, b) => a.createdAt - b.createdAt)
   const detail: CouncilDetail = {
     ...councilView(council),
     members: rows.map((row) => ({
@@ -165,6 +288,7 @@ async function councilDetail(
       title: titles.get(row.sessionId) ?? "",
       createdAt: row.createdAt,
     })),
+    subagents,
   }
   return json(detail)
 }

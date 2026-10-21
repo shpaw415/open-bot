@@ -129,6 +129,11 @@
             "minLength": 1,
             "maxLength": 65536,
             "description": "Markdown skill body (max 64k)."
+          },
+          "group": {
+            "type": "string",
+            "maxLength": 48,
+            "description": "Optional group label: the dashboard's skills/MCP directory UI shows this skill under a labeled section with the label (beside the automatic \"From <plugin>\" one). Display only — it never changes which skills load."
           }
         }
       }

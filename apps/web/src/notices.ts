@@ -7,7 +7,7 @@
  * changes, so one user's notices can never leak into another's view.
  */
 
-export type NoticeKind = "reply" | "plugin" | "security"
+export type NoticeKind = "reply" | "plugin" | "security" | "hardware"
 
 export type NoticeItem = {
   id: string
@@ -227,5 +227,40 @@ export function noticeFromPluginEvent(
     title: `${name}: ${heading}`,
     body: detail,
     dedupeKey: `plugin-notice:${pluginId}:${heading}`,
+  }
+}
+
+export type HardwareNoticeProps = {
+  title?: unknown
+  body?: unknown
+  percent?: unknown
+}
+
+/**
+ * Hardware pressure (sampler) → notice. Informational; the Hardware tab is
+ * the destination for the numbers.
+ */
+export function noticeFromHardwareEvent(
+  props: HardwareNoticeProps | undefined,
+  id: string,
+): NoticeInput {
+  const heading =
+    typeof props?.title === "string" && props.title.trim()
+      ? props.title.trim().slice(0, 120)
+      : "hardware notice"
+  const detail =
+    typeof props?.body === "string" && props.body.trim()
+      ? props.body.trim().slice(0, 500)
+      : ""
+  const percent = Number(props?.percent)
+  return {
+    id,
+    kind: "hardware",
+    title: Number.isFinite(percent)
+      ? `${heading} (${Math.round(percent)}%)`
+      : heading,
+    body: detail,
+    dedupeKey: `hardware:${heading}:${Number.isFinite(percent) ? Math.round(percent) : "x"}`,
+    href: "/hardware",
   }
 }

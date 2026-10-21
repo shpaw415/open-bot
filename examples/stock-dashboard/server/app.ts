@@ -6,6 +6,49 @@
 
 type StockItem = { id: number; name: string; qty: number }
 
+// Language comes from the dashboard (Config page → Langue): the control
+// plane appends ?lang= to the app frame URL and injects x-open-bot-language
+// on proxied requests — no language selector of our own. The URL wins;
+// the browser language is the fallback.
+const STRINGS = {
+  en: {
+    title: "Stock",
+    itemName: "Item name",
+    qty: "Qty",
+    add: "Add",
+    remove: "remove",
+    item: "Item",
+  },
+  fr: {
+    title: "Stock",
+    itemName: "Nom de l’article",
+    qty: "Quantité",
+    add: "Ajouter",
+    remove: "retirer",
+    item: "Article",
+  },
+} as const
+
+type Lang = keyof typeof STRINGS
+
+function pageLang(): Lang {
+  const fromUrl = new URLSearchParams(location.search).get("lang")
+  if (fromUrl === "fr" || fromUrl === "en") return fromUrl
+  return navigator.language.toLowerCase().startsWith("fr") ? "fr" : "en"
+}
+
+const t = STRINGS[pageLang()]
+
+document.title = t.title
+;(document.getElementById("title") as HTMLElement).textContent = t.title
+;(document.getElementById("name-input") as HTMLInputElement).placeholder =
+  t.itemName
+;(document.getElementById("qty-input") as HTMLInputElement).placeholder = t.qty
+;(document.getElementById("add-button") as HTMLButtonElement).textContent =
+  t.add
+;(document.getElementById("th-item") as HTMLElement).textContent = t.item
+;(document.getElementById("th-qty") as HTMLElement).textContent = t.qty
+
 const rows = document.getElementById("rows") as HTMLElement
 
 function escapeText(value: string) {
@@ -17,7 +60,7 @@ function render(items: StockItem[]) {
     .map(
       (item) =>
         `<tr><td>${escapeText(item.name)}</td><td>${item.qty}</td>` +
-        `<td><button data-id="${item.id}">remove</button></td></tr>`,
+        `<td><button data-id="${item.id}">${t.remove}</button></td></tr>`,
     )
     .join("")
 }

@@ -514,6 +514,8 @@ export async function handleMcp(
       `.mcp = ((.mcp // {}) | del(.[$n]))`,
       `--argjson n ${shellQuote(JSON.stringify(name))}`,
     )
+    // The server is gone: its directory membership would dangle.
+    db.removeCatalogDirItems(user.id, "mcp", [name])
     return json({ ok: true })
   }
 

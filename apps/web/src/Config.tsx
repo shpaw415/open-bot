@@ -34,6 +34,7 @@ import {
   PublicIcon,
   ScheduleIcon,
   SecurityIcon,
+  TranslateIcon,
   VpnKeyIcon,
 } from "./icons"
 import { KeyVault } from "./KeyVault"
@@ -49,6 +50,7 @@ import { System1 } from "./System1"
 import Stack from "./stack"
 import { useTeamMode } from "./team"
 import { QuotaMeter } from "./team-quota"
+import { CONFIG_CHAT } from "./texts"
 import { VideoProvider } from "./VideoProvider"
 import { VikingModels } from "./VikingModels"
 import { VoiceProvider } from "./VoiceProvider"
@@ -69,6 +71,7 @@ const TAB_ICONS: Record<ConfigTab, React.ReactNode> = {
   nav: <NavigationIcon />,
   media: <ImageIcon />,
   voice: <MicIcon />,
+  language: <TranslateIcon />,
   personas: <PersonIcon />,
   skills: <ExtensionIcon />,
   plugins: <ExtensionIcon />,
@@ -89,6 +92,8 @@ const TAB_DESCRIPTIONS: Record<ConfigTab, string> = {
   nav: "Le modèle de décision rapide qui guide le navigateur.",
   media: "Services de génération d’images, vidéos et modèles 3D.",
   voice: "Dictée vocale et lecture à voix haute dans les conversations.",
+  language:
+    "La langue des extensions installées — le tableau de bord la suivra aussi.",
   personas: "Personnalités avec lesquelles les conversations démarrent.",
   skills: "Packs d’instructions supplémentaires pour l’assistant.",
   plugins: "Extensions installées, marketplace et politique d’installation.",
@@ -182,38 +187,36 @@ function DefaultModelSection({
   return (
     <ConfigSection
       icon={<ChatIcon />}
-      title="Default chat model"
+      title={CONFIG_CHAT.modelTitle}
       description={
-        locked
-          ? "Set by your admin — the host's team mode picks this model for everyone."
-          : "Preselected for new chat threads and saved as your desktop's default model."
+        locked ? CONFIG_CHAT.modelLocked : CONFIG_CHAT.modelDescription
       }
       status={
         locked
-          ? { label: "Locked", color: "warning" }
+          ? { label: CONFIG_CHAT.locked, color: "warning" }
           : selected
             ? { label: shortLabel, color: "primary" }
             : models.length > 0
-              ? { label: "Not set" }
+              ? { label: CONFIG_CHAT.notSet }
               : null
       }
     >
       <Stack spacing={1.5}>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {saved ? (
-          <Alert severity="success">
-            Saved. New threads will start with this model.
-          </Alert>
+          <Alert severity="success">{CONFIG_CHAT.savedModel}</Alert>
         ) : null}
         {loading && models.length === 0 ? (
           <Stack spacing={1} aria-busy="true">
             <Box className="ob-skeleton" sx={{ height: 40 }} />
-            <output className="ob-sr-status">Loading models</output>
+            <output className="ob-sr-status">
+              {CONFIG_CHAT.loadingModels}
+            </output>
           </Stack>
         ) : (
           <ModelSelect
             name="default-model"
-            label="Default model"
+            label={CONFIG_CHAT.modelLabel}
             models={models}
             value={selected}
             disabled={models.length === 0 || locked}
@@ -226,8 +229,7 @@ function DefaultModelSection({
         )}
         {locked ? (
           <Typography variant="caption" color="textSecondary">
-            Set by your admin — the team's shared chat model applies to
-            everyone.
+            {CONFIG_CHAT.modelLockedHint}
           </Typography>
         ) : (
           <Stack direction="row" spacing={1}>
@@ -236,11 +238,11 @@ function DefaultModelSection({
               disabled={saving || !selected}
               onClick={() => void save()}
             >
-              {saving ? "Saving…" : "Save default model"}
+              {saving ? CONFIG_CHAT.saving : CONFIG_CHAT.saveModel}
             </Button>
             {dirty && !saving ? (
               <Chip size="small" variant="outlined" color="warning">
-                unsaved
+                {CONFIG_CHAT.unsaved}
               </Chip>
             ) : null}
             <Button
@@ -248,14 +250,13 @@ function DefaultModelSection({
               disabled={loading}
               onClick={() => void loadModels()}
             >
-              Reload list
+              {CONFIG_CHAT.reloadList}
             </Button>
           </Stack>
         )}
         {!selected && models.length > 0 ? (
           <Typography variant="caption" color="textSecondary">
-            No default picked yet — new threads start with an empty model
-            picker.
+            {CONFIG_CHAT.noDefaultYet}
           </Typography>
         ) : null}
       </Stack>
@@ -339,41 +340,40 @@ function ThinkingEffortSection({
   return (
     <ConfigSection
       icon={<PsychologyIcon />}
-      title="Thinking effort"
-      description="How much reasoning the model puts into each reply. The options come from the default model's supported variants."
+      title={CONFIG_CHAT.effortTitle}
+      description={CONFIG_CHAT.effortDescription}
       status={
         effort
           ? { label: effortLabel(effort), color: "primary" }
           : variants.length > 0
-            ? { label: "Model default" }
+            ? { label: CONFIG_CHAT.effortModelDefault }
             : null
       }
     >
       <Stack spacing={1.5}>
         {error ? <Alert severity="error">{error}</Alert> : null}
         {saved ? (
-          <Alert severity="success">
-            Saved. The next message in every thread uses this effort.
-          </Alert>
+          <Alert severity="success">{CONFIG_CHAT.savedEffort}</Alert>
         ) : null}
         {!selectedKey ? (
           <Typography variant="body2" color="textSecondary">
-            Pick a default model first — its supported thinking levels show up
-            here.
+            {CONFIG_CHAT.effortPickModelFirst}
           </Typography>
         ) : loading && models.length === 0 ? (
           <Stack spacing={1} aria-busy="true">
             <Box className="ob-skeleton" sx={{ height: 40 }} />
-            <output className="ob-sr-status">Loading models</output>
+            <output className="ob-sr-status">
+              {CONFIG_CHAT.loadingModels}
+            </output>
           </Stack>
         ) : options.length === 0 ? (
           <Typography variant="body2" color="textSecondary">
-            This model has no thinking variants.
+            {CONFIG_CHAT.effortNoVariants}
           </Typography>
         ) : (
           <Select
             name="thinking-effort"
-            label="Thinking effort"
+            label={CONFIG_CHAT.effortTitle}
             value={effort}
             onSelect={(value: string) => {
               setEffort(value)
@@ -382,7 +382,9 @@ function ThinkingEffortSection({
           >
             {options.map((variant) => (
               <option key={variant} value={variant}>
-                {variant === "" ? "Model default" : effortLabel(variant)}
+                {variant === ""
+                  ? CONFIG_CHAT.effortModelDefault
+                  : effortLabel(variant)}
               </option>
             ))}
           </Select>
@@ -393,11 +395,11 @@ function ThinkingEffortSection({
             disabled={saving || !selectedKey || options.length === 0}
             onClick={() => void save()}
           >
-            {saving ? "Saving…" : "Save thinking effort"}
+            {saving ? CONFIG_CHAT.saving : CONFIG_CHAT.saveEffort}
           </Button>
           {effortDirty && !saving ? (
             <Chip size="small" variant="outlined" color="warning">
-              unsaved
+              {CONFIG_CHAT.unsaved}
             </Chip>
           ) : null}
           <Button
@@ -405,9 +407,99 @@ function ThinkingEffortSection({
             disabled={loading}
             onClick={() => void loadModels()}
           >
-            Reload list
+            {CONFIG_CHAT.reloadList}
           </Button>
         </Stack>
+      </Stack>
+    </ConfigSection>
+  )
+}
+
+const LANGUAGE_OPTIONS = [
+  { value: "en", label: "English" },
+  { value: "fr", label: "Français" },
+]
+
+function LanguageSection({ me, onChanged }: { me: Me; onChanged: () => void }) {
+  const [selected, setSelected] = useState(me.language)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState("")
+  // Dirty = differs from the last saved value; toggling back goes clean.
+  const dirty = selected !== me.language
+  useDirtyFlag(dirty)
+
+  async function save() {
+    setError("")
+    setSaved(false)
+    setSaving(true)
+    try {
+      await api("/api/language", {
+        method: "PUT",
+        body: JSON.stringify({ language: selected }),
+      })
+      setSaved(true)
+      onChanged()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <ConfigSection
+      icon={<TranslateIcon />}
+      title="Langue"
+      description="Appliquée aux extensions installées — leurs pages, outils et mentions. Le tableau de bord utilisera la même langue."
+      status={{
+        label:
+          LANGUAGE_OPTIONS.find((option) => option.value === selected)?.label ??
+          selected,
+        color: "primary",
+      }}
+    >
+      <Stack spacing={1.5}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {saved ? (
+          <Alert severity="success">
+            Langue enregistrée. Les extensions la reçoivent à la prochaine
+            synchronisation.
+          </Alert>
+        ) : null}
+        <Select
+          name="instance-language"
+          label="Langue"
+          value={selected}
+          onSelect={(value: string) => {
+            setSelected(value)
+            setSaved(false)
+          }}
+        >
+          {LANGUAGE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </Select>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="contained"
+            disabled={saving || !dirty}
+            onClick={() => void save()}
+          >
+            {saving ? "Enregistrement…" : "Enregistrer"}
+          </Button>
+          {dirty && !saving ? (
+            <Chip size="small" variant="outlined" color="warning">
+              non enregistré
+            </Chip>
+          ) : null}
+        </Stack>
+        <Typography variant="caption" color="textSecondary">
+          Les pages d’extensions déjà ouvertes prennent la langue au prochain
+          chargement.
+        </Typography>
       </Stack>
     </ConfigSection>
   )
@@ -455,6 +547,8 @@ function renderSection(
       )
     case "voice":
       return <VoiceProvider />
+    case "language":
+      return <LanguageSection me={me} onChanged={onChanged} />
     case "personas":
       return <Personalities />
     case "skills":

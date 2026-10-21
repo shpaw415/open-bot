@@ -482,7 +482,7 @@ files[] source existing on disk. Grow it with real tests for your server's
 logic and exports.
 
 Manifest quick reference:
-- skills[]: {name, description, body} — installed into the desktop's OpenViking
+- skills[]: {name, description, body, group?} — installed into the desktop's OpenViking; group is an optional display label (max 48) the dashboard's skills/MCP directory UI shows the skill under
 - personas[]: {name, instruction, skills?: [...], mcp?: [...]} — personalities the thread picker can choose; skills is an optional allowlist (max 64 skill-name slugs, never globs) limiting which skills load in threads running that persona; mcp is the same model for MCP server names (max 16, letters/digits/dots/hyphens/underscores) limiting which servers' tools load; users extend either per install with skillsExtra/mcpExtra
 - cron[]: {name, message, everySeconds | cronExpr, run?: prompt|script|both|auto, script?} — scheduled jobs (run=script/both/auto needs script, max 16k chars)
 - tools[]: {name, content, exec} — files installed into /usr/local/bin
@@ -556,6 +556,14 @@ Vault keys (the agent never sees the values either way).
   slugs live on the Config page Keys tab; plugin-specific slugs can be set
   from the Vault keys section above. Point them there, do not ask for the
   value in chat.
+
+## Language
+
+The dashboard's language (Config page → Langue) arrives automatically — the
+\`language\` field in \`~/.config/open-bot/plugin-$name.json\` and the
+\`x-open-bot-language\` header on every proxied request (\`?lang=\` rides the
+app frame URL for client-side reads). Localize with it; never build your own
+language selector.
 
 ## Walkthrough
 
@@ -1337,7 +1345,9 @@ EOF
     [ $# -eq 1 ] || { usage; exit 2; }
     out=$(request GET "/api/plugins/market/$(urlencode "$1")/comments")
     fail_on_error "$out"
-    printf '%s' "$out" | jq -r '.comments[]? | "\(.createdAt | todate) \(.author): \(.body)"'
+    # createdAt is epoch milliseconds (D1 writes Date.now()); jq's todate
+    # expects seconds, so a raw todate printed years like 58765.
+    printf '%s' "$out" | jq -r '.comments[]? | "\((.createdAt / 1000 | floor) | todate) \(.author): \(.body)"'
     ;;
   comment)
     [ $# -ge 2 ] || { usage; exit 2; }

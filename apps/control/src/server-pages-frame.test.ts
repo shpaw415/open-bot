@@ -16,6 +16,7 @@ const db = {
   userById: (id: string) => (id === "user-1" ? user : null),
   installedPlugin: (userId: string, pluginId: string) =>
     userId === "user-1" && pluginId === "stock-pro" ? plugin : null,
+  getSetting: () => null,
 } as unknown as Db
 
 process.env.PORT = "0"

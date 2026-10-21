@@ -404,9 +404,15 @@ describe("persona skill scopes", () => {
     const body = (await (res as Response).json()) as {
       skills: unknown[]
       mcp: unknown[]
+      dirs: unknown
       live: boolean
     }
-    expect(body).toEqual({ skills: [], mcp: [], live: false })
+    expect(body).toEqual({
+      skills: [],
+      mcp: [],
+      dirs: { skill: [], mcp: [] },
+      live: false,
+    })
   })
 })
 

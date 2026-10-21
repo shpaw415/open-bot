@@ -4,7 +4,7 @@ import Select from "@shpaw415/mui-lite/Select"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useId, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -20,6 +20,11 @@ import {
 } from "./ConfigList"
 import { ConfigSection } from "./ConfigSection"
 import { Chip } from "./chip"
+import {
+  type DirectoryGroup,
+  DirectorySection,
+  useCollapsedDirs,
+} from "./directory-sections"
 import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { useEventStream } from "./hooks"
 import { HubIcon } from "./icons"
@@ -78,6 +83,10 @@ const emptyDraft: Draft = {
   headers: "",
 }
 
+type CatalogDir = { id: string; kind: string; label: string; position: number }
+
+const UNGROUPED_LABEL = "Ungrouped"
+
 function parseStringMap(text: string, label: string) {
   if (!text.trim()) return {}
   const parsed = JSON.parse(text) as unknown
@@ -100,8 +109,35 @@ export function McpView() {
   // The draft as it opened: closing asks before dropping real edits.
   const [pristine, setPristine] = useState<Draft | null>(null)
   const titleId = useId()
+  const groupTitleId = useId()
+  const moveTitleId = useId()
   const [confirmName, setConfirmName] = useState("")
+  const [groupConfirm, setGroupConfirm] = useState("")
   const reloading = useRef(false)
+  const [dirs, setDirs] = useState<CatalogDir[]>([])
+  const [dirOf, setDirOf] = useState<Map<string, string>>(new Map())
+  const [groupDraft, setGroupDraft] = useState<{
+    id: string | null
+    label: string
+  } | null>(null)
+  const [moveServer, setMoveServer] = useState<string | null>(null)
+  const [collapsed, toggleCollapsed] = useCollapsedDirs("ob.dirs.collapsed.mcp")
+
+  const loadDirs = useCallback(async () => {
+    try {
+      const body = await api<{
+        dirs?: CatalogDir[]
+        items?: { name: string; dirId: string }[]
+      }>("/api/catalog/dirs?kind=mcp")
+      setDirs(body.dirs ?? [])
+      setDirOf(
+        new Map((body.items ?? []).map((item) => [item.name, item.dirId])),
+      )
+    } catch {
+      setDirs([])
+      setDirOf(new Map())
+    }
+  }, [])
 
   const load = useCallback(async () => {
     if (reloading.current) return
@@ -126,14 +162,16 @@ export function McpView() {
 
   useEffect(() => {
     void load()
-  }, [load])
+    void loadDirs()
+  }, [load, loadDirs])
 
   const { subscribe } = useEventStream(true)
   useEffect(() => {
     return subscribe((event) => {
       if (event.type === "mcp.changed") void load()
+      if (event.type === "catalog.changed") void loadDirs()
     })
-  }, [subscribe, load])
+  }, [subscribe, load, loadDirs])
 
   function openNew() {
     setError("")
@@ -261,6 +299,288 @@ export function McpView() {
     }
   }
 
+  async function saveGroup() {
+    if (!groupDraft) return
+    const label = groupDraft.label.trim()
+    if (!label) return
+    setBusy(true)
+    setError("")
+    try {
+      if (groupDraft.id) {
+        await api(`/api/catalog/dirs/${encodeURIComponent(groupDraft.id)}`, {
+          method: "PUT",
+          body: JSON.stringify({ label }),
+        })
+        setSaved("Group renamed.")
+      } else {
+        await api("/api/catalog/dirs", {
+          method: "POST",
+          body: JSON.stringify({ kind: "mcp", label }),
+        })
+        setSaved("Group created. Move servers into it from their card.")
+      }
+      setGroupDraft(null)
+      await loadDirs()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "save failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeGroup(id: string) {
+    setBusy(true)
+    setError("")
+    try {
+      await api(`/api/catalog/dirs/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      })
+      setGroupConfirm("")
+      setSaved("Group removed. Its servers moved to the ungrouped list.")
+      await loadDirs()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "remove failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function reorderGroups(ids: string[]) {
+    setBusy(true)
+    setError("")
+    try {
+      await api("/api/catalog/dirs/reorder", {
+        method: "PUT",
+        body: JSON.stringify({ kind: "mcp", ids }),
+      })
+      await loadDirs()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "reorder failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function assign(name: string, dirId: string | null) {
+    setBusy(true)
+    setError("")
+    try {
+      await api("/api/catalog/dirs/assign", {
+        method: "PUT",
+        body: JSON.stringify({ kind: "mcp", names: [name], dirId }),
+      })
+      setMoveServer(null)
+      await loadDirs()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "move failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Sections: plugin groups (locked) → user groups (position order) →
+  // Ungrouped (always last). Grouping is dashboard-side only — it never
+  // touches opencode.json.
+  const sections = useMemo(() => {
+    type Bucket = {
+      key: string
+      group: DirectoryGroup
+      servers: McpServer[]
+    }
+    const userBuckets = new Map<string, Bucket>()
+    for (const dir of dirs)
+      userBuckets.set(`dir:${dir.id}`, {
+        key: `dir:${dir.id}`,
+        group: { id: dir.id, label: dir.label, count: 0 },
+        servers: [],
+      })
+    const pluginBuckets = new Map<string, Bucket>()
+    let ungrouped: Bucket | null = null
+    const bucketFor = (server: McpServer): Bucket => {
+      if (server.plugin) {
+        const key = `plugin:${server.plugin.id}`
+        let bucket = pluginBuckets.get(key)
+        if (!bucket) {
+          bucket = {
+            key,
+            group: {
+              id: null,
+              label: `From ${server.plugin.name}`,
+              count: 0,
+              locked: true,
+              badge: <PluginBadge plugin={server.plugin} />,
+            },
+            servers: [],
+          }
+          pluginBuckets.set(key, bucket)
+        }
+        return bucket
+      }
+      const dirId = dirOf.get(server.name)
+      const bucket = dirId ? userBuckets.get(`dir:${dirId}`) : undefined
+      if (bucket) return bucket
+      if (!ungrouped)
+        ungrouped = {
+          key: "ungrouped",
+          group: { id: null, label: UNGROUPED_LABEL, count: 0 },
+          servers: [],
+        }
+      return ungrouped
+    }
+    for (const server of servers) {
+      const bucket = bucketFor(server)
+      bucket.servers.push(server)
+      bucket.group.count++
+    }
+    return [
+      ...[...pluginBuckets.values()].sort((a, b) =>
+        a.group.label.localeCompare(b.group.label),
+      ),
+      ...userBuckets.values(),
+      ...(ungrouped ? [ungrouped] : []),
+    ]
+  }, [servers, dirs, dirOf])
+
+  const groupActions = (dir: CatalogDir, index: number) => (
+    <Stack direction="row" spacing={0.25} alignItems="center">
+      <Button
+        size="small"
+        variant="text"
+        disabled={busy || index === 0}
+        aria-label={`Move ${dir.label} up`}
+        onClick={() => {
+          const ids = dirs.map((d) => d.id)
+          ;[ids[index - 1], ids[index]] = [ids[index], ids[index - 1]]
+          void reorderGroups(ids)
+        }}
+      >
+        ↑
+      </Button>
+      <Button
+        size="small"
+        variant="text"
+        disabled={busy || index === dirs.length - 1}
+        aria-label={`Move ${dir.label} down`}
+        onClick={() => {
+          const ids = dirs.map((d) => d.id)
+          ;[ids[index + 1], ids[index]] = [ids[index], ids[index + 1]]
+          void reorderGroups(ids)
+        }}
+      >
+        ↓
+      </Button>
+      <Button
+        size="small"
+        variant="text"
+        disabled={busy}
+        onClick={() => setGroupDraft({ id: dir.id, label: dir.label })}
+      >
+        Rename
+      </Button>
+      <Button
+        size="small"
+        variant="text"
+        color="error"
+        disabled={busy}
+        onClick={() => {
+          if (groupConfirm === dir.id) {
+            void removeGroup(dir.id)
+            return
+          }
+          setGroupConfirm(dir.id)
+        }}
+      >
+        {groupConfirm === dir.id ? "Confirm delete" : "Delete"}
+      </Button>
+    </Stack>
+  )
+
+  const serverCard = (server: McpServer) => {
+    const meta = STATUS_META[server.status]
+    const managed = Boolean(server.plugin)
+    return (
+      <ConfigItemCard
+        key={server.name}
+        avatar={
+          <ItemAvatar tone={managed ? "secondary" : "primary"}>
+            <HubIcon width={20} height={20} />
+          </ItemAvatar>
+        }
+        title={server.name}
+        badge={
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <Tip title={server.error || `Status: ${meta.label.toLowerCase()}`}>
+              <Chip
+                size="small"
+                color={meta.color}
+                sx={{ height: 22, borderRadius: "8px" }}
+              >
+                {meta.label}
+              </Chip>
+            </Tip>
+            {server.plugin ? <PluginBadge plugin={server.plugin} /> : null}
+          </Stack>
+        }
+        description={`${server.type === "remote" ? "Remote" : "Local"} · ${server.target || "(no target)"}`}
+        pluginOwned={managed}
+        actions={
+          <>
+            <Tip
+              title={
+                managed
+                  ? `Managed by the ${server.plugin?.name} plugin — toggle it on the Plugins tab`
+                  : server.enabled
+                    ? "Disable this server"
+                    : "Enable this server"
+              }
+            >
+              <Switch
+                checked={server.enabled}
+                disabled={busy || managed || !live}
+                onChange={(event) =>
+                  void toggle(server, event.currentTarget.checked)
+                }
+              />
+            </Tip>
+            {managed ? null : (
+              <Button
+                size="small"
+                variant="text"
+                disabled={busy}
+                onClick={() => setMoveServer(server.name)}
+              >
+                Move
+              </Button>
+            )}
+            <Button
+              size="small"
+              variant="text"
+              disabled={busy || managed || !live}
+              onClick={() => openEdit(server)}
+            >
+              Edit
+            </Button>
+            <Button
+              size="small"
+              variant="text"
+              color="error"
+              disabled={busy || managed || !live}
+              onClick={() => {
+                if (confirmName === server.name) {
+                  void remove(server.name)
+                  return
+                }
+                setConfirmName(server.name)
+              }}
+            >
+              {confirmName === server.name ? "Confirm delete" : "Delete"}
+            </Button>
+          </>
+        }
+      />
+    )
+  }
+
   return (
     <ConfigSection
       icon={<HubIcon />}
@@ -287,89 +607,41 @@ export function McpView() {
             subtext="Add one below to give the agent more tools. Plugins can bring their own servers."
           />
         ) : (
-          servers.map((server) => {
-            const meta = STATUS_META[server.status]
-            const managed = Boolean(server.plugin)
-            return (
-              <ConfigItemCard
-                key={server.name}
-                avatar={
-                  <ItemAvatar tone={managed ? "secondary" : "primary"}>
-                    <HubIcon width={20} height={20} />
-                  </ItemAvatar>
-                }
-                title={server.name}
-                badge={
-                  <Stack direction="row" spacing={0.5} alignItems="center">
-                    <Tip
-                      title={
-                        server.error || `Status: ${meta.label.toLowerCase()}`
-                      }
-                    >
-                      <Chip
-                        size="small"
-                        color={meta.color}
-                        sx={{ height: 22, borderRadius: "8px" }}
-                      >
-                        {meta.label}
-                      </Chip>
-                    </Tip>
-                    {server.plugin ? (
-                      <PluginBadge plugin={server.plugin} />
-                    ) : null}
-                  </Stack>
-                }
-                description={`${server.type === "remote" ? "Remote" : "Local"} · ${server.target || "(no target)"}`}
-                pluginOwned={managed}
-                actions={
-                  <>
-                    <Tip
-                      title={
-                        managed
-                          ? `Managed by the ${server.plugin?.name} plugin — toggle it on the Plugins tab`
-                          : server.enabled
-                            ? "Disable this server"
-                            : "Enable this server"
-                      }
-                    >
-                      <Switch
-                        checked={server.enabled}
-                        disabled={busy || managed || !live}
-                        onChange={(event) =>
-                          void toggle(server, event.currentTarget.checked)
+          <Stack spacing={2}>
+            {sections.map((section) => {
+              const dirIndex =
+                section.group.id !== null
+                  ? dirs.findIndex((d) => d.id === section.group.id)
+                  : -1
+              return (
+                <DirectorySection
+                  key={section.key}
+                  group={
+                    section.group.id !== null && dirIndex >= 0
+                      ? {
+                          ...section.group,
+                          actions: groupActions(
+                            dirs[dirIndex] as CatalogDir,
+                            dirIndex,
+                          ),
                         }
-                      />
-                    </Tip>
-                    <Button
-                      size="small"
-                      variant="text"
-                      disabled={busy || managed || !live}
-                      onClick={() => openEdit(server)}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="text"
-                      color="error"
-                      disabled={busy || managed || !live}
-                      onClick={() => {
-                        if (confirmName === server.name) {
-                          void remove(server.name)
-                          return
-                        }
-                        setConfirmName(server.name)
-                      }}
-                    >
-                      {confirmName === server.name
-                        ? "Confirm delete"
-                        : "Delete"}
-                    </Button>
-                  </>
-                }
-              />
-            )
-          })
+                      : section.group
+                  }
+                  collapsed={collapsed}
+                  onToggle={toggleCollapsed}
+                  emptyText={
+                    section.group.locked
+                      ? "No servers in this group yet."
+                      : section.group.id !== null
+                        ? "No servers here — use Move on a server card."
+                        : "Everything not in a group lands here."
+                  }
+                >
+                  {section.servers.map(serverCard)}
+                </DirectorySection>
+              )
+            })}
+          </Stack>
         )}
         {!live && servers.length > 0 ? (
           <Typography variant="caption" color="textSecondary">
@@ -489,13 +761,116 @@ export function McpView() {
             </DialogActions>
           </AccessibleDialog>
         ) : null}
-        <Button
-          variant="contained"
-          disabled={busy || loading}
-          onClick={openNew}
-        >
-          Add MCP server
-        </Button>
+        {groupDraft ? (
+          <AccessibleDialog
+            open
+            aria-labelledby={groupTitleId}
+            onClose={() => setGroupDraft(null)}
+          >
+            <DialogTitle id={groupTitleId}>
+              {groupDraft.id ? "Rename group" : "New group"}
+            </DialogTitle>
+            <DialogContent>
+              <Stack spacing={2} sx={{ mt: 1 }}>
+                {error ? <Alert severity="error">{error}</Alert> : null}
+                <TextField
+                  label="Label"
+                  value={groupDraft.label}
+                  placeholder="Data sources, Browsers…"
+                  autoFocus
+                  onChange={(event) =>
+                    setGroupDraft({
+                      ...groupDraft,
+                      label: event.currentTarget.value,
+                    })
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault()
+                      void saveGroup()
+                    }
+                  }}
+                />
+                <Typography variant="caption" color="textSecondary">
+                  Organization only — groups live in the dashboard and never
+                  touch opencode.json.
+                </Typography>
+              </Stack>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                variant="text"
+                disabled={busy}
+                onClick={() => setGroupDraft(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                disabled={busy || !groupDraft.label.trim()}
+                onClick={() => void saveGroup()}
+              >
+                {groupDraft.id ? "Save" : "Create group"}
+              </Button>
+            </DialogActions>
+          </AccessibleDialog>
+        ) : null}
+        {moveServer ? (
+          <AccessibleDialog
+            open
+            aria-labelledby={moveTitleId}
+            onClose={() => setMoveServer(null)}
+          >
+            <DialogTitle id={moveTitleId}>Move « {moveServer} »</DialogTitle>
+            <DialogContent>
+              <Stack spacing={2} sx={{ mt: 1 }}>
+                <Select
+                  name="move-server-dir"
+                  label="Group"
+                  value={dirOf.get(moveServer) ?? ""}
+                  onSelect={(value: string) => {
+                    void assign(moveServer, value || null)
+                  }}
+                >
+                  {[
+                    <option key="none" value="">
+                      {UNGROUPED_LABEL}
+                    </option>,
+                    ...dirs.map((dir) => (
+                      <option key={dir.id} value={dir.id}>
+                        {dir.label}
+                      </option>
+                    )),
+                  ]}
+                </Select>
+                <Typography variant="caption" color="textSecondary">
+                  Picking a group moves the server immediately.
+                </Typography>
+              </Stack>
+            </DialogContent>
+            <DialogActions>
+              <Button variant="text" onClick={() => setMoveServer(null)}>
+                Close
+              </Button>
+            </DialogActions>
+          </AccessibleDialog>
+        ) : null}
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="contained"
+            disabled={busy || loading}
+            onClick={openNew}
+          >
+            Add MCP server
+          </Button>
+          <Button
+            variant="text"
+            disabled={busy || loading}
+            onClick={() => setGroupDraft({ id: null, label: "" })}
+          >
+            New group
+          </Button>
+        </Stack>
       </Stack>
     </ConfigSection>
   )

@@ -20,6 +20,7 @@ import { handleAdmin } from "./admin"
 import { handleKeys, isKeysRequest } from "./api-keys"
 import { desktopAppCatalog, launchDesktopApp } from "./apps"
 import { handleBackupApi } from "./backup-api"
+import { handleCatalogDirs } from "./catalog-dirs"
 import { handleCouncils, isCouncilPath } from "./councils"
 import {
   cronModelFields,
@@ -88,6 +89,11 @@ import {
   system1VaultSlug,
   videoVaultSlug,
 } from "./key-vault"
+import {
+  instanceLanguage,
+  isValidLanguage,
+  SUPPORTED_LANGUAGES,
+} from "./language"
 import { handleLlm } from "./llm"
 import {
   createLoginUrlScanner,
@@ -112,18 +118,28 @@ import {
   personaScope,
   personaSystem,
   resolvePersona,
+  seedSkillDescriptions,
 } from "./personas"
-import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
+import {
+  pluginOriginForCronJob,
+  pluginOwnership,
+  pluginSkillGroups,
+} from "./plugin-ownership"
 import {
   handlePluginPagesStatus,
   mintPageFrameToken,
   proxyPluginPage,
   proxyPluginPageFrame,
   sanitizePluginRest,
+  schedulePluginPageRestart,
 } from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins } from "./plugins"
-import { pluginVaultKeys, resyncPluginsForVaultSlug } from "./plugins-apply"
+import {
+  pluginVaultKeys,
+  resyncPluginsForLanguage,
+  resyncPluginsForVaultSlug,
+} from "./plugins-apply"
 import {
   mintPreviewToken,
   PREVIEW_REPLY,
@@ -179,6 +195,8 @@ import {
   cleanupDeletedThread,
   handleThreads,
   isThreadRequest,
+  type RecentThreadSummary,
+  recentRowFromSession,
   visibleRecentThreads,
 } from "./threads"
 import { parseTtyControl, ttyExitFrame, ttySizeOr } from "./tty"
@@ -1314,6 +1332,7 @@ async function api(
   const isThreadDirsPath =
     url.pathname === "/api/thread-dirs" ||
     url.pathname.startsWith("/api/thread-dirs/")
+  const isCatalogDirsPath = url.pathname.startsWith("/api/catalog/dirs")
   const isCouncilsPath = isCouncilPath(url.pathname)
   const isPluginPath =
     url.pathname === "/api/plugins" || url.pathname.startsWith("/api/plugins/")
@@ -1325,6 +1344,7 @@ async function api(
     isCronPath ||
     isPersonaPath ||
     isThreadDirsPath ||
+    isCatalogDirsPath ||
     isCouncilsPath ||
     isPluginPath ||
     isProjectManage ||
@@ -1354,6 +1374,11 @@ async function api(
       }
       if (isThreadDirsPath) {
         const handled = handleThreadDirs(req, url, db, agent, hub)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
+      if (isCatalogDirsPath) {
+        const handled = handleCatalogDirs(req, url, db, agent, hub)
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -1400,14 +1425,52 @@ async function api(
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
+  if (isCatalogDirsPath) {
+    const handled = handleCatalogDirs(req, url, db, user, hub)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
   // Passive home/search summary: titled threads from the control-plane DB.
   // Deliberately NO ensure/start — a sleeping desktop stays asleep. Titles
   // arrive as the agent (or the user) names threads, so this is a summary of
-  // named conversations, not the full live list.
+  // named conversations, not the full live list. The wider fetch lets the
+  // hidden-title filter run BEFORE the visible cap, so worker:/cron-run:
+  // noise never shrinks the user-visible list.
   if (url.pathname === "/api/threads/recent" && req.method === "GET") {
-    return json({
-      threads: visibleRecentThreads(db.recentThreadTitles(user.id, 12)),
-    })
+    const titled = visibleRecentThreads(db.recentThreadTitles(user.id, 40))
+    // Coverage upgrade, strictly passive: when the desktop already runs, the
+    // real session list is one local read (never a wake, never an ensure) —
+    // an empty control-plane name index then stops masquerading as "no
+    // conversations" for accounts whose history predates the index. Asleep
+    // or unreachable, the titled rows stand alone and the payload says so
+    // ("titles"): the client must treat an empty titled list as "unknown",
+    // not "empty history".
+    try {
+      const phase = await desktopPhase(user.id)
+      if (phase === "running") {
+        const desktopRow = db.desktop(user.id)
+        if (desktopRow) {
+          const base = await endpoint(user.id, "opencode", 4096)
+          const res = await fetch(new URL("/session", base), {
+            headers: basic(desktopRow.opencodePassword),
+            signal: AbortSignal.timeout(5000),
+          })
+          if (res.ok) {
+            const body: unknown = await res.json()
+            if (Array.isArray(body)) {
+              const rows = body
+                .map(recentRowFromSession)
+                .filter((row): row is RecentThreadSummary => row !== null)
+                .sort((a, b) => b.createdAt - a.createdAt)
+              return json({ threads: rows.slice(0, 5), coverage: "full" })
+            }
+          }
+        }
+      }
+    } catch {
+      // fall through to the titled index — a passive read never errors
+    }
+    return json({ threads: titled, coverage: "titles" })
   }
   if (isCouncilsPath) {
     const handled = handleCouncils(req, url, db, user, hub)
@@ -1487,6 +1550,7 @@ async function api(
       email: user.email,
       role: user.role,
       mustChangePassword: user.mustChangePassword,
+      language: instanceLanguage(db),
       desktop: phase,
       model: desktop
         ? {
@@ -1571,8 +1635,22 @@ async function api(
       return json({ error: "plugin page not found" }, 404)
     }
     const minted = mintPageFrameToken(user.id, pluginId, rest)
+    // The frame URL carries the host-wide language: the framed document
+    // request forwards it to the plugin server (same query pass-through as
+    // every proxied request) and the plugin's client JS reads it from
+    // location.search — the x-open-bot-language header covers the fetches.
+    let frameUrl = minted.frameUrl
+    try {
+      const parsed = new URL(frameUrl, "http://frame.local")
+      parsed.searchParams.set("lang", instanceLanguage(db))
+      frameUrl = frameUrl.startsWith("/")
+        ? `${parsed.pathname}${parsed.search}`
+        : parsed.toString()
+    } catch {
+      // Never fail the mint over URL shaping.
+    }
     return json({
-      frameUrl: minted.frameUrl,
+      frameUrl,
       expiresAt: minted.expiresAt,
       isolated: minted.isolated,
     })
@@ -2569,11 +2647,40 @@ async function api(
     const skills = await skillsClient(user, db)
     if (name) return json(await skills.get(name))
     const ownership = pluginOwnership(db, user.id)
+    const groups = pluginSkillGroups(db, user.id)
+    // Seed skills ride along read-only: the persona picker catalogs them,
+    // so the Skills tab must list them too — otherwise most picker entries
+    // could never be organized into a directory from the UI.
+    let seeds: Map<string, string>
+    try {
+      seeds = await seedSkillDescriptions(user.id)
+    } catch {
+      seeds = new Map()
+    }
+    const listed = await skills.list()
+    const seen = new Set(listed.map((skill) => skill.name))
     return json({
-      skills: (await skills.list()).map((skill) => {
-        const plugin = ownership.skillByName.get(skill.name)
-        return plugin ? { ...skill, plugin } : skill
-      }),
+      skills: [
+        ...listed.map((skill) => {
+          const plugin = ownership.skillByName.get(skill.name)
+          const group = groups.get(skill.name) ?? null
+          return {
+            ...skill,
+            group,
+            seed: false,
+            plugin: plugin ?? undefined,
+          }
+        }),
+        ...[...seeds.entries()]
+          .filter(([name]) => !seen.has(name))
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, description]) => ({
+            name,
+            description,
+            group: null,
+            seed: true,
+          })),
+      ],
     })
   }
   if (url.pathname === "/api/skills" && req.method === "PUT") {
@@ -2590,7 +2697,19 @@ async function api(
       if (previousError) return json({ error: previousError }, 400)
     }
     const skills = await skillsClient(user, db)
+    // A rename carries the directory membership over: the label points at
+    // the skill, not the name.
+    const carriedDir =
+      previousName && previousName !== input.name
+        ? (db
+            .catalogDirItems(user.id, "skill")
+            .find((row) => row.name === previousName)?.dirId ?? null)
+        : null
     await skills.save(input, previousName)
+    if (previousName && previousName !== input.name) {
+      db.setCatalogDirItem(user.id, "skill", input.name, carriedDir)
+      db.removeCatalogDirItems(user.id, "skill", [previousName])
+    }
     return json({ ok: true })
   }
   if (url.pathname === "/api/skills" && req.method === "DELETE") {
@@ -2600,6 +2719,8 @@ async function api(
     if (nameError) return json({ error: nameError }, 400)
     const skills = await skillsClient(user, db)
     await skills.remove(name)
+    // The skill is gone: its directory membership would dangle.
+    db.removeCatalogDirItems(user.id, "skill", [name])
     return json({ ok: true })
   }
   if (url.pathname === "/api/providers" && req.method === "GET") {
@@ -2729,6 +2850,40 @@ async function api(
     return json({
       ok: result.code === 0,
       output: result.stdout || result.stderr,
+    })
+  }
+  if (url.pathname === "/api/language" && req.method === "PUT") {
+    const body = await readJson(req)
+    if (!isValidLanguage(body.language)) {
+      return json(
+        { error: "unsupported language", supported: SUPPORTED_LANGUAGES },
+        400,
+      )
+    }
+    db.setSetting("language", body.language)
+    // Fan out: every enabled plugin's config file gains the new language.
+    // Sync failures stay pending (the queue flushes at desktop-up) and are
+    // reported instead of failing the save.
+    const failed = await resyncPluginsForLanguage(db, user)
+    for (const row of db.installedPlugins(user.id)) {
+      if (
+        !row.enabled ||
+        failed.includes(row.pluginId) ||
+        !(row.manifest as { dashboard?: { pages?: unknown } }).dashboard?.pages
+      )
+        continue
+      // Deferred + coalesced like a settings save — restarting inline would
+      // kill nothing today, but the save response must never wait on it.
+      schedulePluginPageRestart(db, user.id, row, hub)
+    }
+    return json({
+      ok: true,
+      language: body.language,
+      ...(failed.length
+        ? {
+            configSync: `pending — ${failed.join(", ")}; the config syncs when the desktop next comes up`,
+          }
+        : {}),
     })
   }
   if (url.pathname === "/api/model" && req.method === "PUT") {
@@ -2902,6 +3057,18 @@ async function api(
     })
   }
   if (url.pathname.startsWith("/api/opencode/")) {
+    // Guaranteed-passive read (?passive=1): refuses to start or wake
+    // anything, server-side — there is no probe/list race where the phase
+    // changes between a client probe and the real call. The header search
+    // (and any other passive reader) uses this route.
+    if (url.searchParams.get("passive") === "1" && req.method === "GET") {
+      const phase = await desktopPhase(user.id)
+      if (phase !== "running") return json({ error: "desktop_asleep" }, 503)
+      const row = db.desktop(user.id)
+      if (!row) throw new Error("desktop record missing")
+      const base = await endpoint(user.id, "opencode", 4096)
+      return proxy(req, base, "/api/opencode", basic(row.opencodePassword))
+    }
     const desktop = await ensure(user, db)
     const base = await endpoint(user.id, "opencode", 4096)
     const auth = basic(desktop.opencodePassword)
@@ -2981,7 +3148,7 @@ async function api(
       const line = [
         personaSystem(boundPersona),
         screen?.system ??
-          `This thread's screen id is ${root}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
+          `This thread's screen id (also your session id, for ob-thread --from) is ${root}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
         screen &&
         (await Promise.race([
           screenHeld(user.id, root),

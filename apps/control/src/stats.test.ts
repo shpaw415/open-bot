@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { parseDuTotal, parsePercent, parseSize } from "./stats"
+import {
+  memoryLatchedFor,
+  memoryPressureDecision,
+  memoryRatio,
+  parseDuTotal,
+  parsePercent,
+  parseSize,
+} from "./stats"
 
 describe("parseSize", () => {
   test("docker ps -s decimal units", () => {
@@ -52,5 +59,67 @@ describe("parseDuTotal", () => {
 
   test("empty", () => {
     expect(parseDuTotal("")).toBe(0)
+  })
+})
+
+describe("memoryRatio", () => {
+  test("usage over the cgroup cap", () => {
+    expect(memoryRatio({ memUsed: 3, memMax: 4 } as never)).toBe(0.75)
+    expect(memoryRatio({ memUsed: 1, memMax: 0 } as never)).toBeNull()
+  })
+})
+
+describe("memoryPressureDecision", () => {
+  const id = "stats-test-user"
+
+  function rearm() {
+    memoryPressureDecision(id, 0.5)
+    expect(memoryLatchedFor(id)).toBe(false)
+  }
+
+  test("one alert per episode, re-armed only under the rearm line", () => {
+    rearm()
+    expect(memoryPressureDecision(id, 0.86)).toEqual({
+      alert: true,
+      sweep: false,
+    })
+    // still latched at 88% — no second alert
+    expect(memoryPressureDecision(id, 0.88)).toEqual({
+      alert: false,
+      sweep: false,
+    })
+    // dip to 80% is not enough; back up over the line still latched
+    expect(memoryPressureDecision(id, 0.8)).toEqual({
+      alert: false,
+      sweep: false,
+    })
+    expect(memoryPressureDecision(id, 0.91)).toEqual({
+      alert: false,
+      sweep: false,
+    })
+    // under 75% re-arms
+    expect(memoryPressureDecision(id, 0.7)).toEqual({
+      alert: false,
+      sweep: false,
+    })
+    expect(memoryLatchedFor(id)).toBe(false)
+    expect(memoryPressureDecision(id, 0.86)).toEqual({
+      alert: true,
+      sweep: false,
+    })
+    rearm()
+  })
+
+  test("the sweep rides the alert only at the 90% crossing", () => {
+    rearm()
+    expect(memoryPressureDecision(id, 0.91)).toEqual({
+      alert: true,
+      sweep: true,
+    })
+    expect(memoryPressureDecision(id, 0.95)).toEqual({
+      alert: false,
+      sweep: false,
+    })
+    rearm()
   })
 })
