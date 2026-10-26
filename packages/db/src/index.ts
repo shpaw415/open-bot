@@ -22,6 +22,7 @@ import { drizzle } from "drizzle-orm/bun-sqlite"
 import { applyMigrations } from "./migrate"
 import {
   appSettings,
+  builtinPersonaScopes,
   catalogDirItems,
   catalogDirs,
   councilMembers,
@@ -263,6 +264,49 @@ export type Desktop = {
   selectedModel: string | null
   thinkingEffort: string | null
   lastActiveAt: number
+  memoryMb: number | null
+  diskGb: number | null
+  cpuCores: number | null
+}
+
+// Per-user desktop resource limits (Admin page). RAM caps the opencode
+// container live via docker update; CPU caps its cores the same way (null =
+// the 2-core default, host core count = takes every core the host has);
+// disk is the display cap on the Hardware view, overriding the host-wide
+// desktop_disk_max_gb per user.
+export const MEMORY_MIN_MB = 512
+export const MEMORY_MAX_MB = 65_536
+export const DISK_MAX_GB = 100_000
+export const CPU_MIN_CORES = 0.5
+// Nonsense guard only — the real upper bound is the host's core count,
+// validated live where the host is known.
+export const CPU_MAX_CORES = 4096
+
+export function validCpuCores(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= CPU_MIN_CORES &&
+    value <= CPU_MAX_CORES
+  )
+}
+
+export function validMemoryMb(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= MEMORY_MIN_MB &&
+    value <= MEMORY_MAX_MB
+  )
+}
+
+export function validDiskGb(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= DISK_MAX_GB
+  )
 }
 
 export type ImprovementKind = "bug" | "friction" | "feature"
@@ -303,11 +347,27 @@ export type Persona = {
   // Optional skill allowlist (null = all skills). skillsExtra extends the
   // base list of a plugin-owned persona without touching the base. mcp /
   // mcpExtra are the same model for MCP server names (null = all servers).
+  // The none flags block every skill / server outright — the only way to do
+  // that on a locked base (plugin or built-in persona).
   skills: string[] | null
   skillsExtra: string[] | null
+  skillsNone: boolean
   mcp: string[] | null
   mcpExtra: string[] | null
+  mcpNone: boolean
   createdAt: number
+}
+
+// User-added extensions to a built-in persona's locked base scope (desktop
+// seed skills / non-plugin MCP servers). Built-ins are code constants, so
+// only the extras and the block-all flags are stored.
+export type BuiltinPersonaScope = {
+  userId: string
+  personaId: string
+  skillsExtra: string[] | null
+  skillsNone: boolean
+  mcpExtra: string[] | null
+  mcpNone: boolean
 }
 
 // Persona skill lists are stored as JSON TEXT columns (nullable). A stored
@@ -326,8 +386,10 @@ function mapPersona(row: PersonaRow): Persona {
     instruction: row.instruction,
     skills: fromJsonList(row.skills),
     skillsExtra: fromJsonList(row.skillsExtra),
+    skillsNone: Boolean(row.skillsNone),
     mcp: fromJsonList(row.mcp),
     mcpExtra: fromJsonList(row.mcpExtra),
+    mcpNone: Boolean(row.mcpNone),
     createdAt: row.createdAt,
   }
 }
@@ -625,6 +687,9 @@ const desktopColumns = {
   selectedModel: desktops.selectedModel,
   thinkingEffort: desktops.thinkingEffort,
   lastActiveAt: desktops.lastActiveAt,
+  memoryMb: desktops.memoryMb,
+  diskGb: desktops.diskGb,
+  cpuCores: desktops.cpuCores,
 }
 
 function mapUser(row: typeof users.$inferSelect | undefined): User | null {
@@ -852,7 +917,7 @@ export function openDatabase(path: string) {
         .run()
       return row
     },
-    ensureDesktop(desktop: Desktop) {
+    ensureDesktop(desktop: Omit<Desktop, "memoryMb" | "diskGb" | "cpuCores">) {
       orm.insert(desktops).values(desktop).onConflictDoNothing().run()
     },
     desktop(userId: string) {
@@ -863,6 +928,25 @@ export function openDatabase(path: string) {
           .where(eq(desktops.userId, userId))
           .get() ?? null
       )
+    },
+    updateDesktopLimits(
+      userId: string,
+      limits: {
+        memoryMb?: number | null
+        diskGb?: number | null
+        cpuCores?: number | null
+      },
+    ) {
+      const set: {
+        memoryMb?: number | null
+        diskGb?: number | null
+        cpuCores?: number | null
+      } = {}
+      if ("memoryMb" in limits) set.memoryMb = limits.memoryMb
+      if ("diskGb" in limits) set.diskGb = limits.diskGb
+      if ("cpuCores" in limits) set.cpuCores = limits.cpuCores
+      if (Object.keys(set).length === 0) return
+      orm.update(desktops).set(set).where(eq(desktops.userId, userId)).run()
     },
     getVikingProvider(userId?: string): VikingProvider | null {
       if (userId) {
@@ -1556,8 +1640,10 @@ export function openDatabase(path: string) {
         instruction?: string
         skills?: string[] | null
         skillsExtra?: string[] | null
+        skillsNone?: boolean
         mcp?: string[] | null
         mcpExtra?: string[] | null
+        mcpNone?: boolean
       },
     ) {
       if (!this.personaById(id, userId)) return null
@@ -1568,9 +1654,11 @@ export function openDatabase(path: string) {
       if (changes.skills !== undefined) set.skills = toJsonList(changes.skills)
       if (changes.skillsExtra !== undefined)
         set.skillsExtra = toJsonList(changes.skillsExtra)
+      if (changes.skillsNone !== undefined) set.skillsNone = changes.skillsNone
       if (changes.mcp !== undefined) set.mcp = toJsonList(changes.mcp)
       if (changes.mcpExtra !== undefined)
         set.mcpExtra = toJsonList(changes.mcpExtra)
+      if (changes.mcpNone !== undefined) set.mcpNone = changes.mcpNone
       orm
         .update(personas)
         .set(set)
@@ -1594,6 +1682,68 @@ export function openDatabase(path: string) {
         .where(and(eq(personas.id, id), eq(personas.userId, userId)))
         .run()
       return true
+    },
+    builtinPersonaScopes(userId: string): BuiltinPersonaScope[] {
+      return orm
+        .select()
+        .from(builtinPersonaScopes)
+        .where(eq(builtinPersonaScopes.userId, userId))
+        .all()
+        .map((row) => ({
+          userId: row.userId,
+          personaId: row.personaId,
+          skillsExtra: fromJsonList(row.skillsExtra),
+          skillsNone: Boolean(row.skillsNone),
+          mcpExtra: fromJsonList(row.mcpExtra),
+          mcpNone: Boolean(row.mcpNone),
+        }))
+    },
+    setBuiltinPersonaScope(
+      userId: string,
+      personaId: string,
+      changes: {
+        skillsExtra?: string[] | null
+        skillsNone?: boolean
+        mcpExtra?: string[] | null
+        mcpNone?: boolean
+      },
+    ) {
+      const existing = orm
+        .select()
+        .from(builtinPersonaScopes)
+        .where(
+          and(
+            eq(builtinPersonaScopes.userId, userId),
+            eq(builtinPersonaScopes.personaId, personaId),
+          ),
+        )
+        .get()
+      const skillsExtra =
+        changes.skillsExtra !== undefined
+          ? toJsonList(changes.skillsExtra)
+          : (existing?.skillsExtra ?? null)
+      const skillsNone =
+        changes.skillsNone ?? Boolean(existing?.skillsNone ?? false)
+      const mcpExtra =
+        changes.mcpExtra !== undefined
+          ? toJsonList(changes.mcpExtra)
+          : (existing?.mcpExtra ?? null)
+      const mcpNone = changes.mcpNone ?? Boolean(existing?.mcpNone ?? false)
+      orm
+        .insert(builtinPersonaScopes)
+        .values({
+          userId,
+          personaId,
+          skillsExtra,
+          skillsNone,
+          mcpExtra,
+          mcpNone,
+        })
+        .onConflictDoUpdate({
+          target: [builtinPersonaScopes.userId, builtinPersonaScopes.personaId],
+          set: { skillsExtra, skillsNone, mcpExtra, mcpNone },
+        })
+        .run()
     },
     setThreadPersona(userId: string, sessionId: string, personaId: string) {
       orm
@@ -2100,6 +2250,13 @@ export function openDatabase(path: string) {
             eq(delegationWatches.councilId, councilId),
           ),
         )
+        .all()
+    },
+    delegationWatchesAll(userId: string) {
+      return orm
+        .select()
+        .from(delegationWatches)
+        .where(eq(delegationWatches.userId, userId))
         .all()
     },
     pendingDelegationWatches(userId: string, creatorSessionId: string) {
@@ -3044,6 +3201,9 @@ export function openDatabase(path: string) {
         tx.delete(cronJobs).where(eq(cronJobs.userId, userId)).run()
         tx.delete(cronNotices).where(eq(cronNotices.userId, userId)).run()
         tx.delete(personas).where(eq(personas.userId, userId)).run()
+        tx.delete(builtinPersonaScopes)
+          .where(eq(builtinPersonaScopes.userId, userId))
+          .run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadDirAssignments)

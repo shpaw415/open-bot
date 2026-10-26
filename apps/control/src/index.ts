@@ -39,6 +39,7 @@ import { flushPendingPluginConfigs, reapplyPluginSetup } from "./plugins-apply"
 import { createServer, eventTarget } from "./server"
 import { startStatsSampler } from "./stats"
 import { startStuckWatch } from "./stuck"
+import { pushTeamOpencodeAuth } from "./team-apply"
 import { resolveWatchdogConfig, watchdogContainerPayload } from "./watchdog"
 import { onUpstreamEvent } from "./workspace-snapshots"
 
@@ -112,6 +113,17 @@ onDesktopUp(async (userId) => {
       }`,
     )
   })
+  // Team mode: the shared OpenCode provider auth rides every (re)create, so
+  // a merged provider is usable the moment the desktop is back.
+  try {
+    await pushTeamOpencodeAuth(db, userId, hub)
+  } catch (error: unknown) {
+    console.error(
+      `opencode auth sync failed for ${userId}: ${
+        error instanceof Error ? error.message : error
+      }`,
+    )
+  }
 })
 // Background pumps for already-running desktops so plugin hooks, media
 // capture, and other event observers work with no dashboard attached.
@@ -154,6 +166,12 @@ setInterval(() => {
       for (const row of db.idleDesktops(cutoff)) {
         if ((await desktopPhase(row.userId)) !== "running") continue
         if (await desktopBusy(row.userId, db.desktop(row.userId))) continue
+        // The busy probe takes seconds: the user may have come back during
+        // it, so re-read lastActive instead of trusting the query snapshot.
+        // A stop racing returning requests wedged the desktop in "starting"
+        // for minutes (2026-10-23).
+        const fresh = db.desktop(row.userId)
+        if (fresh && Date.now() - fresh.lastActiveAt < 60_000) continue
         await stopDesktop(row.userId)
       }
     } catch {

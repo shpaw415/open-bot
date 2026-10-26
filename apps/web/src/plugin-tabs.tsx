@@ -272,7 +272,8 @@ function midiPortInfo(port: MIDIPort) {
 }
 
 // Non-trickle ICE: hold the SDP until candidates are in (bounded — a fake or
-// broken PC must not hang the bridge).
+// broken PC must not hang the bridge; 3 s because a truncated candidate set
+// is how the loopback goes one-way and the app hears silence).
 function iceComplete(pc: RTCPeerConnection): Promise<void> {
   if (pc.iceGatheringState === "complete") return Promise.resolve()
   return new Promise((resolve) => {
@@ -284,7 +285,7 @@ function iceComplete(pc: RTCPeerConnection): Promise<void> {
     const onChange = () => {
       if (pc.iceGatheringState === "complete") done()
     }
-    const timer = setTimeout(done, 1500)
+    const timer = setTimeout(done, 3000)
     pc.addEventListener("icegatheringstatechange", onChange)
   })
 }
@@ -298,6 +299,12 @@ function iceComplete(pc: RTCPeerConnection): Promise<void> {
 // the HEAD so the plugin's page server can idle out; coming back to the tab
 // fires an immediate HEAD that revives the frame (and the server) at once.
 const APP_TAB_KEEPALIVE_MS = 4 * 60 * 1000
+
+// sessionStorage key holding the shell build this tab is running (from the
+// x-open-bot-build frame header). A drift means a newer web deploy landed —
+// the running shell can never swap its own JS, so the tab reloads itself once
+// instead of going stale (the trap that silently killed the media bridge).
+const UI_BUILD_KEY = "ob.build"
 
 function AppTabSkeleton() {
   return (
@@ -352,6 +359,12 @@ function AppTab({ tab }: { tab: PluginTab }) {
   const [reconnecting, setReconnecting] = useState(false)
   const [nonce, setNonce] = useState(0)
   const [mediaBlocked, setMediaBlocked] = useState<string | null>(null)
+  const [reloading, setReloading] = useState(false)
+  const [mediaDenied, setMediaDenied] = useState<{
+    req: MediaAsk
+    text: string
+    retry: boolean
+  } | null>(null)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   const [mediaAsk, setMediaAsk] = useState<MediaAsk | null>(null)
   const askRef = useRef<MediaAsk | null>(null)
@@ -359,7 +372,14 @@ function AppTab({ tab }: { tab: PluginTab }) {
   // Session memory per mounted tab: one consent covers repeat requests.
   const decisions = useRef<Map<string, boolean>>(new Map())
   const bridges = useRef<
-    Map<string, { pc: RTCPeerConnection; stream: MediaStream }>
+    Map<
+      string,
+      {
+        pc: RTCPeerConnection
+        stream: MediaStream
+        cleanup?: () => void
+      }
+    >
   >(new Map())
   const geoWatches = useRef<Map<string, number>>(new Map())
   const midiBridges = useRef<Map<string, MIDIAccess>>(new Map())
@@ -396,11 +416,39 @@ function AppTab({ tab }: { tab: PluginTab }) {
     const bridge = bridges.current.get(id)
     if (!bridge) return
     bridges.current.delete(id)
+    bridge.cleanup?.()
     try {
       bridge.pc.close()
     } catch {}
     for (const track of bridge.stream.getTracks()) track.stop()
   }
+  // Map a shell-side capture failure to a sentence the user can act on in the
+  // same tab — the plugin only ever sees a bare rejection, so without this the
+  // dashboard stays silent while the app shows its generic permission banner.
+  function deniedCaptureText(error: unknown): { text: string; retry: boolean } {
+    const name = error instanceof DOMException ? error.name : ""
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes("secure context")) {
+      return {
+        text: "needs a secure context — open the dashboard over https (the tunnel URL) or localhost",
+        retry: false,
+      }
+    }
+    if (name === "NotFoundError" || name === "OverconstrainedError") {
+      return {
+        text: "no microphone or camera was found on this device",
+        retry: false,
+      }
+    }
+    if (name === "NotAllowedError" || /permission/i.test(message)) {
+      return {
+        text: "the browser blocked the device for this site — click the mic/camera icon in the address bar, set it to Allow, then retry",
+        retry: true,
+      }
+    }
+    return { text: message || "device capture failed", retry: false }
+  }
+
   const startBridge = async (req: MediaAsk) => {
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -425,7 +473,35 @@ function AppTab({ tab }: { tab: PluginTab }) {
           })
       if (!stream) throw new Error("screen capture is unavailable")
       const pc = new RTCPeerConnection()
-      bridges.current.set(req.id, { pc, stream })
+      // The relayed track the frame receives can report muted=true forever on
+      // some browsers while audio flows fine, so mirror the source track's
+      // muted state over the bridge; the frame shim shadows track.muted with
+      // it. Cleaned up with the bridge.
+      const postTrackState = () => {
+        postToFrame({
+          source: "open-bot-shell",
+          type: "media-track-state",
+          id: req.id,
+          tracks: stream
+            .getTracks()
+            .map((track) => ({ muted: track.muted, enabled: track.enabled })),
+        })
+      }
+      const onTrackState = () => postTrackState()
+      for (const track of stream.getTracks()) {
+        track.addEventListener("mute", onTrackState)
+        track.addEventListener("unmute", onTrackState)
+      }
+      bridges.current.set(req.id, {
+        pc,
+        stream,
+        cleanup: () => {
+          for (const track of stream.getTracks()) {
+            track.removeEventListener("mute", onTrackState)
+            track.removeEventListener("unmute", onTrackState)
+          }
+        },
+      })
       pc.onconnectionstatechange = () => {
         if (
           pc.connectionState === "failed" ||
@@ -446,8 +522,11 @@ function AppTab({ tab }: { tab: PluginTab }) {
         id: req.id,
         sdp: offer.sdp,
       })
+      postTrackState()
     } catch (caught) {
       releaseBridge(req.id)
+      const reason = deniedCaptureText(caught)
+      if (!req.display) setMediaDenied({ req, ...reason })
       denyPost(
         req,
         caught instanceof Error ? caught.message : "device capture failed",
@@ -587,6 +666,7 @@ function AppTab({ tab }: { tab: PluginTab }) {
         setError("")
         setReconnecting(false)
         setMediaBlocked(null)
+        setMediaDenied(null)
         for (const id of [...bridges.current.keys()]) releaseBridge(id)
         for (const id of [...midiBridges.current.keys()]) releaseMidi(id)
       })
@@ -621,7 +701,28 @@ function AppTab({ tab }: { tab: PluginTab }) {
         credentials: "include",
       })
         .then((res) => {
-          if (!alive || res.ok || res.status === 502) return
+          if (!alive) return
+          const build = res.headers.get("x-open-bot-build")
+          if (build) {
+            const seen = sessionStorage.getItem(UI_BUILD_KEY)
+            if (!seen) {
+              sessionStorage.setItem(UI_BUILD_KEY, build)
+            } else if (seen !== build) {
+              const busy =
+                askRef.current !== null ||
+                askQueue.current.length > 0 ||
+                bridges.current.size > 0 ||
+                midiBridges.current.size > 0 ||
+                geoWatches.current.size > 0
+              if (!busy) {
+                sessionStorage.setItem(UI_BUILD_KEY, build)
+                setReloading(true)
+                setTimeout(() => window.location.reload(), 1500)
+                return
+              }
+            }
+          }
+          if (res.ok || res.status === 502) return
           void run(true)
         })
         .catch(() => {})
@@ -655,6 +756,7 @@ function AppTab({ tab }: { tab: PluginTab }) {
       if (!data.id) return
       const id = String(data.id)
       if (data.type === "media-request") {
+        setMediaDenied(null)
         decide({
           id,
           kind: "media",
@@ -854,6 +956,75 @@ function AppTab({ tab }: { tab: PluginTab }) {
             <CloseIcon />
           </IconButton>
         </Stack>
+      ) : null}
+      {mediaDenied ? (
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{
+            position: "absolute",
+            top: 4,
+            left: 8,
+            right: 8,
+            zIndex: 3,
+            bgcolor: "rgba(var(--bg-surface, 24, 27, 34), 0.95)",
+            px: 1.5,
+            py: 0.5,
+            borderRadius: 1,
+          }}
+        >
+          <Typography variant="caption" sx={{ flexGrow: 1 }}>
+            {mediaDenied.req.display
+              ? "Screen capture failed — "
+              : mediaDenied.req.video
+                ? mediaDenied.req.audio
+                  ? "Microphone and camera — "
+                  : "Camera — "
+                : "Microphone — "}
+            {mediaDenied.text}.
+          </Typography>
+          {mediaDenied.retry ? (
+            <Button
+              size="small"
+              variant="outlined"
+              aria-label="Retry device"
+              onClick={() => {
+                const denied = mediaDenied
+                setMediaDenied(null)
+                if (!denied) return
+                decisions.current.delete(askKey(denied.req))
+                decide(denied.req)
+              }}
+            >
+              Retry
+            </Button>
+          ) : null}
+          <IconButton
+            size="small"
+            aria-label="Dismiss device error"
+            onClick={() => setMediaDenied(null)}
+          >
+            <CloseIcon />
+          </IconButton>
+        </Stack>
+      ) : null}
+      {reloading ? (
+        <Typography
+          variant="caption"
+          color="textSecondary"
+          sx={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 6,
+            display: "grid",
+            placeItems: "center",
+            bgcolor: "rgba(var(--bg-surface, 24, 27, 34), 0.85)",
+            pointerEvents: "none",
+          }}
+        >
+          Dashboard updated — reloading…
+        </Typography>
       ) : null}
       {reconnecting ? (
         <Typography

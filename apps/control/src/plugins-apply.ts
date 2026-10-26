@@ -6,7 +6,7 @@ import type {
   User,
 } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
-import { nextRunMs } from "./cron"
+import { cleanupGuardSharedThread, GUARD_JOB_RE, nextRunMs } from "./cron"
 import {
   endpoint,
   ensurePluginAgentsMd,
@@ -31,6 +31,7 @@ import {
   disconnectMcpServers,
   readMcpConfig,
   validateMcpMap,
+  withDefaultMcpPath,
 } from "./mcp"
 import { skillCatalog } from "./personas"
 import {
@@ -411,8 +412,10 @@ export async function applyPluginInstall(
         instruction: persona.instruction,
         skills: persona.skills ?? null,
         skillsExtra: null,
+        skillsNone: false,
         mcp: persona.mcp ?? null,
         mcpExtra: null,
+        mcpNone: false,
         createdAt: Date.now(),
       })
       applied.personaIds.push(id)
@@ -616,7 +619,7 @@ export async function applyPluginInstall(
       // Same entry rules the dashboard's MCP tab enforces — a bad manifest
       // shape fails the install with a clear error instead of merging a dead
       // entry into opencode.json.
-      const mcpServers = validateMcpMap(opencode.mcp)
+      const mcpServers = withDefaultMcpPath(validateMcpMap(opencode.mcp))
       await syncOpencodePlugin(user.id, {
         addPlugins: opencode.plugin ?? [],
         removePlugins: [],
@@ -630,8 +633,12 @@ export async function applyPluginInstall(
       applied.opencode = true
       // Hot-connect the new servers into the running daemon: tools go live in
       // new threads immediately, without waiting for a restart the installing
-      // agent's own busy turn would keep deferred.
-      mcpStatus = await connectMcpServers(db, user.id, mcpServers)
+      // agent's own busy turn would keep deferred. Force is required: an
+      // install or update ships new server code, so an already-connected
+      // process from the previous version would keep running stale code.
+      mcpStatus = await connectMcpServers(db, user.id, mcpServers, {
+        force: true,
+      })
       if (Object.keys(mcpStatus).length > 0) applied.mcp = mcpStatus
     }
     if (applied.agentsMd || applied.opencode) {
@@ -828,10 +835,16 @@ export async function applyPluginUninstall(
   // Jobs created outside apply (the publish guard cron, plugin tooling) are
   // owned by the `plugin:<id>:` name prefix — sweep them so remove→reinstall
   // never hits a "scheduled job already exists" clash.
+  const guardSessionIds: string[] = []
   for (const job of db.cronJobs(user.id)) {
-    if (job.name.startsWith(`plugin:${row.pluginId}:`)) {
-      db.deleteCronJob(job.id, user.id)
-    }
+    if (!job.name.startsWith(`plugin:${row.pluginId}:`)) continue
+    if (GUARD_JOB_RE.test(job.name)) guardSessionIds.push(job.sessionId ?? "")
+    db.deleteCronJob(job.id, user.id)
+  }
+  if (guardSessionIds.length > 0) {
+    // The uninstalled plugin may have been the last one guarded: the shared
+    // thread (and its screen) goes with it. Best effort, desktop-up only.
+    void cleanupGuardSharedThread(db, user.id, guardSessionIds).catch(() => {})
   }
   await syncPluginAuth(user.id, row.pluginId, null).catch(() => {})
   // Sweep the guide even when the applied log lost its marker (upgrades from
@@ -929,7 +942,9 @@ export async function setPluginEnabled(
     let mcpStatus: Record<string, string> = {}
     if (oc.plugin?.length || oc.mcp || oc.agents || oc.agentTools) {
       if (enable) {
-        const mcpServers = validateMcpMap(oc.mcp)
+        // Same defaults as the install path: agent PATH for local servers,
+        // forced reconnect so enable always runs the installed code.
+        const mcpServers = withDefaultMcpPath(validateMcpMap(oc.mcp))
         await syncOpencodePlugin(user.id, {
           addPlugins: oc.plugin ?? [],
           removePlugins: [],
@@ -940,7 +955,9 @@ export async function setPluginEnabled(
           addAgentTools: oc.agentTools ?? {},
           removeAgentTools: {},
         })
-        mcpStatus = await connectMcpServers(db, user.id, mcpServers)
+        mcpStatus = await connectMcpServers(db, user.id, mcpServers, {
+          force: true,
+        })
       } else {
         const mcpNames = Object.keys((oc.mcp ?? {}) as object)
         await syncOpencodePlugin(user.id, {

@@ -5,7 +5,6 @@ import Drawer from "@shpaw415/mui-lite/Drawer"
 import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
 import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import { type ReactNode, useCallback, useEffect, useState } from "react"
-import { HostTab } from "./admin/HostTab"
 import { PeopleTab } from "./admin/PeopleTab"
 import { TeamTab } from "./admin/TeamTab"
 import type { AdminUser, DayWindow, Invite, UsageBody } from "./admin/types"
@@ -17,7 +16,6 @@ import { Improvements } from "./Improvements"
 import {
   BarChartIcon,
   ChecklistIcon,
-  ComputerIcon,
   ContentCopyIcon,
   PersonIcon,
   WorkIcon,
@@ -25,21 +23,19 @@ import {
 import Stack from "./stack"
 import { formatTokenCount } from "./team"
 
-type AdminTab = "people" | "usage" | "improvements" | "team" | "host"
+type AdminTab = "people" | "usage" | "improvements" | "team"
 
 const ADMIN_TABS: { value: AdminTab; label: string; icon: ReactNode }[] = [
   { value: "people", label: "People", icon: <PersonIcon /> },
   { value: "usage", label: "Usage", icon: <BarChartIcon /> },
   { value: "improvements", label: "Improvements", icon: <ChecklistIcon /> },
   { value: "team", label: "Team", icon: <WorkIcon /> },
-  { value: "host", label: "Host", icon: <ComputerIcon /> },
 ]
 
 export function Admin({ meId }: { meId: string }) {
   const mobile = useMobile()
   const [tab, setTab] = useState<AdminTab>("people")
   const [teamMounted, setTeamMounted] = useState(false)
-  const [hostMounted, setHostMounted] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [invite, setInvite] = useState("")
@@ -82,7 +78,6 @@ export function Admin({ meId }: { meId: string }) {
   function selectTab(next: AdminTab) {
     setTab(next)
     if (next === "team") setTeamMounted(true)
-    if (next === "host") setHostMounted(true)
   }
 
   async function createInvite() {
@@ -269,15 +264,7 @@ export function Admin({ meId }: { meId: string }) {
           spacing={1.5}
           sx={tab === "team" ? undefined : { display: "none" }}
         >
-          <TeamTab />
-        </Stack>
-      ) : null}
-      {hostMounted ? (
-        <Stack
-          spacing={1.5}
-          sx={tab === "host" ? undefined : { display: "none" }}
-        >
-          <HostTab busy={busy} onFactoryReset={factoryReset} />
+          <TeamTab adminBusy={busy} onFactoryReset={factoryReset} />
         </Stack>
       ) : null}
     </>

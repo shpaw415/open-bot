@@ -4,6 +4,7 @@ import {
   mintPreviewToken,
   parsePreviewFramePath,
   parsePreviewRegistry,
+  previewFrameCors,
   previewPortAllowed,
   previewRootAllowed,
   rewritePreviewCss,
@@ -90,6 +91,57 @@ describe("preview rewrite", () => {
     ).toBe(
       "a{background:url(/api/preview/frame/tok/img.png)}b{background:url(//cdn/x.png)}",
     )
+  })
+
+  test("opts every script out of Rocket Loader", () => {
+    const html = rewritePreviewHtml(
+      '<head></head><script type="module" src="/app.js"></script>' +
+        "<script>inline()</script>" +
+        '<script data-cfasync="false">already()</script>',
+      "/api/preview/frame/tok/",
+    )
+    expect(html).toContain('<script data-cfasync="false" type="module"')
+    expect(html).toContain('<script data-cfasync="false">inline()</script>')
+    // Existing opt-outs are left untouched (no double attribute).
+    expect(html.match(/data-cfasync/g)?.length).toBe(3)
+  })
+})
+
+describe("preview frame cors", () => {
+  test("echoes the opaque origin with allow-credentials", () => {
+    const req = new Request("https://open-bot.test/api/preview/frame/tok/", {
+      headers: { origin: "null" },
+    })
+    const res = previewFrameCors(
+      req,
+      new Response("ok", { status: 200, headers: { "x-keep": "1" } }),
+    )
+    expect(res.headers.get("access-control-allow-origin")).toBe("null")
+    expect(res.headers.get("access-control-allow-credentials")).toBe("true")
+    expect(res.headers.get("access-control-allow-methods")).toContain("GET")
+    expect(res.headers.get("vary")).toContain("Origin")
+    expect(res.headers.get("x-keep")).toBe("1")
+  })
+
+  test("falls back to the literal null origin without an Origin header", () => {
+    const res = previewFrameCors(
+      new Request("https://open-bot.test/api/preview/frame/tok/"),
+      new Response("expired", { status: 401 }),
+    )
+    expect(res.status).toBe(401)
+    expect(res.headers.get("access-control-allow-origin")).toBe("null")
+    expect(res.headers.get("access-control-allow-credentials")).toBe("true")
+  })
+
+  test("echoes requested preflight headers", () => {
+    const req = new Request("https://open-bot.test/api/preview/frame/tok/", {
+      headers: {
+        origin: "null",
+        "access-control-request-headers": "content-type",
+      },
+    })
+    const res = previewFrameCors(req, new Response(null, { status: 204 }))
+    expect(res.headers.get("access-control-allow-headers")).toBe("content-type")
   })
 })
 

@@ -39,12 +39,16 @@ export type PersonaView = {
   plugin?: PluginOrigin
   // Base allowlists (null = all). The Extra fields extend a plugin-owned
   // base list; the Effective fields are the pre-merged restrictions (null =
-  // unrestricted) so UI and CLI never re-derive the merge.
+  // unrestricted, [] = everything blocked) so UI and CLI never re-derive the
+  // merge. The None flags block every skill / server outright — the only
+  // way to do that on a locked base.
   skills: string[] | null
   skillsExtra: string[] | null
+  skillsNone: boolean
   skillsEffective: string[] | null
   mcp: string[] | null
   mcpExtra: string[] | null
+  mcpNone: boolean
   mcpEffective: string[] | null
 }
 
@@ -56,9 +60,11 @@ export const builtins: PersonaView[] = [
     builtin: true,
     skills: null,
     skillsExtra: null,
+    skillsNone: false,
     skillsEffective: null,
     mcp: null,
     mcpExtra: null,
+    mcpNone: false,
     mcpEffective: null,
   },
   {
@@ -69,9 +75,11 @@ export const builtins: PersonaView[] = [
     builtin: true,
     skills: null,
     skillsExtra: null,
+    skillsNone: false,
     skillsEffective: null,
     mcp: null,
     mcpExtra: null,
+    mcpNone: false,
     mcpEffective: null,
   },
   {
@@ -82,9 +90,11 @@ export const builtins: PersonaView[] = [
     builtin: true,
     skills: null,
     skillsExtra: null,
+    skillsNone: false,
     skillsEffective: null,
     mcp: null,
     mcpExtra: null,
+    mcpNone: false,
     mcpEffective: null,
   },
   {
@@ -95,19 +105,44 @@ export const builtins: PersonaView[] = [
     builtin: true,
     skills: null,
     skillsExtra: null,
+    skillsNone: false,
     skillsEffective: null,
     mcp: null,
     mcpExtra: null,
+    mcpNone: false,
     mcpEffective: null,
   },
 ]
 
-// The pre-merged skill allowlist: only a non-empty base restricts; extras
-// extend it.
+// Built-in personas carry a locked base scope — the desktop's seed skills and
+// every configured MCP server no plugin owns — computed at apply time, so the
+// base fields here stay null and the user's extras plus block-all flags come
+// from builtin_persona_scopes. Custom/plugin personas keep null = unrestricted.
+function builtinPersonaView(
+  db: Db,
+  userId: string,
+  item: PersonaView,
+): PersonaView {
+  const row = db
+    .builtinPersonaScopes(userId)
+    .find((scope) => scope.personaId === item.id)
+  return {
+    ...item,
+    skillsExtra: row?.skillsExtra ?? null,
+    skillsNone: Boolean(row?.skillsNone),
+    mcpExtra: row?.mcpExtra ?? null,
+    mcpNone: Boolean(row?.mcpNone),
+  }
+}
+
+// The pre-merged skill allowlist: a none flag blocks everything; only a
+// non-empty base restricts; extras extend it.
 export function skillsEffective(
   skills: string[] | null,
   skillsExtra: string[] | null,
+  skillsNone = false,
 ): string[] | null {
+  if (skillsNone) return []
   if (!skills || skills.length === 0) return null
   const merged = [...skills]
   for (const name of skillsExtra ?? [])
@@ -118,11 +153,14 @@ export function skillsEffective(
 // The pre-merged MCP allowlist is three-state: null = all servers, [] =
 // every server blocked, [names] = only those. Extras extend a non-empty
 // base; an explicit block-all base stays block-all (extras cannot
-// resurrect servers the plugin blocked).
+// resurrect servers the plugin blocked). The none flag blocks everything —
+// the only block-all available on a locked base.
 export function mcpEffective(
   mcp: string[] | null,
   mcpExtra: string[] | null,
+  mcpNone = false,
 ): string[] | null {
+  if (mcpNone) return []
   if (mcp === null) return null
   const merged = [...mcp]
   if (merged.length === 0) return merged
@@ -195,13 +233,16 @@ export function parseMcpList(
 }
 
 // The session permission ruleset for a persona: null when unrestricted
-// (never send rules — the session keeps whatever it had), else a catch-all
-// skill deny followed by one allow per allowed skill. Skill denies must
-// carry allow rules after them: a trailing pattern-"*" deny would disable
-// the skill tool itself (and the whole listing with it).
-export function skillRuleset(persona: PersonaView | null): ScopeRule[] | null {
-  const effective = persona?.skillsEffective
-  if (!persona || !effective || effective.length === 0) return null
+// (never send rules — the session keeps whatever it had), a lone catch-all
+// deny for a block-all list (the skill tool itself disappears — that is the
+// point), else a catch-all skill deny followed by one allow per allowed
+// skill. Skill denies must carry allow rules after them: a trailing
+// pattern-"*" deny would disable the skill tool itself (and the whole
+// listing with it).
+function skillRulesetFromList(effective: string[] | null): ScopeRule[] | null {
+  if (effective === null) return null
+  if (effective.length === 0)
+    return [{ permission: "skill", pattern: "*", action: "deny" }]
   return [
     { permission: "skill", pattern: "*", action: "deny" },
     ...effective.map((name) => ({
@@ -210,6 +251,11 @@ export function skillRuleset(persona: PersonaView | null): ScopeRule[] | null {
       action: "allow" as const,
     })),
   ]
+}
+
+export function skillRuleset(persona: PersonaView | null): ScopeRule[] | null {
+  if (!persona || persona.builtin) return null
+  return skillRulesetFromList(persona.skillsEffective)
 }
 
 // MCP denies are enumerated per configured server — there is no deny-all
@@ -231,6 +277,55 @@ export function mcpDenyRules(
     }))
 }
 
+// Built-in personas: the locked base is computed live — seed skills from the
+// desktop disk plus every configured MCP server without a plugin owner — and
+// extended by the stored extras. A none flag blocks everything outright and
+// skips the probe (blocking works even when the desktop cannot answer). A
+// probe failure otherwise degrades to unrestricted (never blocks the
+// prompt): empty seed listing → skills stay unscoped, unreadable MCP config
+// → skills-only scoping.
+async function builtinScopeRules(
+  db: Db,
+  userId: string,
+  persona: PersonaView,
+): Promise<ScopeRule[] | null> {
+  let skillRules: ScopeRule[] | null
+  if (persona.skillsNone) {
+    skillRules = skillRulesetFromList([])
+  } else {
+    try {
+      const seeds = await seedSkillDescriptions(userId)
+      skillRules =
+        seeds.size > 0
+          ? skillRulesetFromList([
+              ...seeds.keys(),
+              ...(persona.skillsExtra ?? []),
+            ])
+          : null
+    } catch {
+      skillRules = null
+    }
+  }
+  let mcpRules: ScopeRule[]
+  try {
+    const configured = Object.keys(await readMcpConfig(userId))
+    if (persona.mcpNone) {
+      mcpRules = mcpDenyRules([], configured)
+    } else {
+      const owners = pluginMcpOwners(db, userId)
+      const base = configured.filter((name) => !owners.has(name))
+      mcpRules = mcpDenyRules(
+        [...base, ...(persona.mcpExtra ?? [])],
+        configured,
+      )
+    }
+  } catch {
+    return skillRules
+  }
+  if (skillRules === null && mcpRules.length === 0) return null
+  return [...(skillRules ?? []), ...mcpRules]
+}
+
 // The full scope ruleset for a persona: skill rules plus — when the persona
 // restricts MCP — a `<server>_*` deny per configured server outside the
 // allowlist (an empty allowlist denies every configured server). The
@@ -238,10 +333,12 @@ export function mcpDenyRules(
 // MCP-restricted personas and degrades to skills-only scoping when the
 // desktop cannot answer.
 export async function personaScope(
+  db: Db,
   userId: string,
   persona: PersonaView | null,
 ): Promise<ScopeRule[] | null> {
-  if (!persona) return skillRuleset(persona)
+  if (!persona) return null
+  if (persona.builtin) return builtinScopeRules(db, userId, persona)
   const effectiveMcp = persona.mcpEffective
   if (effectiveMcp === null) return skillRuleset(persona)
   let configured: string[]
@@ -272,13 +369,22 @@ export function listPersonas(db: Db, userId: string): PersonaView[] {
       plugin,
       skills: row.skills,
       skillsExtra: row.skillsExtra,
-      skillsEffective: skillsEffective(row.skills, row.skillsExtra),
+      skillsNone: Boolean(row.skillsNone),
+      skillsEffective: skillsEffective(
+        row.skills,
+        row.skillsExtra,
+        Boolean(row.skillsNone),
+      ),
       mcp: row.mcp,
       mcpExtra: row.mcpExtra,
-      mcpEffective: mcpEffective(row.mcp, row.mcpExtra),
+      mcpNone: Boolean(row.mcpNone),
+      mcpEffective: mcpEffective(row.mcp, row.mcpExtra, Boolean(row.mcpNone)),
     }
   })
-  return [...builtins, ...custom]
+  return [
+    ...builtins.map((item) => builtinPersonaView(db, userId, item)),
+    ...custom,
+  ]
 }
 
 function personaView(row: {
@@ -287,9 +393,13 @@ function personaView(row: {
   instruction: string
   skills: string[] | null
   skillsExtra: string[] | null
+  skillsNone?: boolean | null
   mcp: string[] | null
   mcpExtra: string[] | null
+  mcpNone?: boolean | null
 }): PersonaView {
+  const skillsNone = Boolean(row.skillsNone)
+  const mcpNone = Boolean(row.mcpNone)
   return {
     id: row.id,
     name: row.name,
@@ -297,10 +407,12 @@ function personaView(row: {
     builtin: false,
     skills: row.skills,
     skillsExtra: row.skillsExtra,
-    skillsEffective: skillsEffective(row.skills, row.skillsExtra),
+    skillsNone,
+    skillsEffective: skillsEffective(row.skills, row.skillsExtra, skillsNone),
     mcp: row.mcp,
     mcpExtra: row.mcpExtra,
-    mcpEffective: mcpEffective(row.mcp, row.mcpExtra),
+    mcpNone,
+    mcpEffective: mcpEffective(row.mcp, row.mcpExtra, mcpNone),
   }
 }
 
@@ -310,7 +422,7 @@ export function resolvePersona(
   id: string,
 ): PersonaView | null {
   const builtin = builtins.find((item) => item.id === id)
-  if (builtin) return builtin
+  if (builtin) return builtinPersonaView(db, userId, builtin)
   const row = db.personaById(id, userId)
   if (!row) return null
   return personaView(row)
@@ -389,14 +501,40 @@ export function findPersona(
   }
 }
 
+// The prompt-level scope sentence. Built-in personas cannot enumerate their
+// locked base synchronously (it is a live disk/MCP-config read), so their
+// clause names the seed default and the user's additions instead.
+function builtinScopeLine(persona: PersonaView): string {
+  const scope = persona.skillsNone
+    ? " No skills load in this thread. If the request needs one, say this personality does not include skills instead of improvising."
+    : ` Only the desktop's built-in skills${
+        (persona.skillsExtra ?? []).length
+          ? ` plus these added ones: ${(persona.skillsExtra ?? []).join(", ")}`
+          : ""
+      } load in this thread. If the request needs a plugin or custom skill, say this personality does not include it instead of improvising.`
+  const mcpScope = persona.mcpNone
+    ? " No MCP server loads in this thread. If the request needs one, say this personality does not include MCP instead of improvising."
+    : ` Only the desktop's built-in MCP servers${
+        (persona.mcpExtra ?? []).length
+          ? ` plus these added ones: ${(persona.mcpExtra ?? []).join(", ")}`
+          : ""
+      } load in this thread. If the request needs another server's tools, say this personality does not include them.`
+  if (persona.id === ASSISTANT_ID)
+    return `${scope.trimStart()} ${mcpScope.trimStart()}`
+  return `For this thread only, answer as ${persona.name}. ${persona.instruction} This does not replace desktop, memory, or safety rules. Do not announce this persona unless asked.${scope} ${mcpScope.trimStart()}`
+}
+
 export function personaSystem(persona: PersonaView | null): string | null {
-  if (!persona || persona.id === ASSISTANT_ID) return null
+  if (!persona) return null
+  if (persona.builtin) return builtinScopeLine(persona)
   const effective = persona.skillsEffective
   const effectiveMcp = persona.mcpEffective
   const scope =
-    effective && effective.length > 0
-      ? ` Only these skills load in this thread: ${effective.join(", ")}. If the request needs another skill, say this personality does not include it instead of improvising.`
-      : ""
+    effective === null
+      ? ""
+      : effective.length > 0
+        ? ` Only these skills load in this thread: ${effective.join(", ")}. If the request needs another skill, say this personality does not include it instead of improvising.`
+        : " No skills load in this thread. If the request needs one, say this personality does not include skills instead of improvising."
   const mcpScope =
     effectiveMcp === null
       ? ""
@@ -419,13 +557,14 @@ export function mergeSystem(existing: unknown, line: string): string {
 // Fire-and-forget: a failure degrades to unrestricted, never blocks the
 // prompt.
 export async function applyPersonaScope(
+  db: Db,
   userId: string,
   base: string,
   headers: Record<string, string>,
   sessionId: string,
   persona: PersonaView | null,
 ): Promise<void> {
-  const ruleset = await personaScope(userId, persona)
+  const ruleset = await personaScope(db, userId, persona)
   if (!ruleset || ruleset.length === 0) return
   try {
     const res = await fetch(
@@ -683,12 +822,23 @@ export function handlePersonas(
   return null
 }
 
+// Validates a block-all flag from an API body: booleans only.
+function parseNoneFlag(
+  input: unknown,
+  label: string,
+): { none: boolean } | { error: string } {
+  if (typeof input !== "boolean") return { error: `${label} must be a boolean` }
+  return { none: input }
+}
+
 async function createPersona(req: Request, db: Db, user: User) {
   const body = (await req.json().catch(() => null)) as {
     name?: unknown
     instruction?: unknown
     skills?: unknown
+    skillsNone?: unknown
     mcp?: unknown
+    mcpNone?: unknown
   } | null
   if (!body) return json({ error: "invalid json" }, 400)
   const parsed = parsePersonaInput(body.name, body.instruction)
@@ -699,11 +849,23 @@ async function createPersona(req: Request, db: Db, user: User) {
     if ("error" in list) return json({ error: list.error }, 400)
     skills = list.skills
   }
+  let skillsNone = false
+  if (body.skillsNone !== undefined) {
+    const flag = parseNoneFlag(body.skillsNone, "skillsNone")
+    if ("error" in flag) return json({ error: flag.error }, 400)
+    skillsNone = flag.none
+  }
   let mcp: string[] | null = null
   if (body.mcp !== undefined) {
     const list = parseMcpList(body.mcp)
     if ("error" in list) return json({ error: list.error }, 400)
     mcp = list.mcp
+  }
+  let mcpNone = false
+  if (body.mcpNone !== undefined) {
+    const flag = parseNoneFlag(body.mcpNone, "mcpNone")
+    if ("error" in flag) return json({ error: flag.error }, 400)
+    mcpNone = flag.none
   }
   if (nameTaken(db, user.id, parsed.name))
     return json({ error: "a personality with that name already exists" }, 409)
@@ -714,8 +876,10 @@ async function createPersona(req: Request, db: Db, user: User) {
     instruction: parsed.instruction,
     skills,
     skillsExtra: null,
+    skillsNone,
     mcp,
     mcpExtra: null,
+    mcpNone,
     createdAt: Date.now(),
   }
   db.createPersona(persona)
@@ -723,15 +887,74 @@ async function createPersona(req: Request, db: Db, user: User) {
 }
 
 async function updatePersona(req: Request, db: Db, user: User, id: string) {
-  if (builtins.some((item) => item.id === id))
-    return json({ error: "built-in personalities cannot be edited" }, 400)
+  // Built-in personas accept only extras extensions and the block-all flags
+  // (same model as plugin-owned personas); their locked base is the
+  // desktop's seed set.
+  if (builtins.some((item) => item.id === id)) {
+    const body = (await req.json().catch(() => null)) as {
+      name?: unknown
+      instruction?: unknown
+      skills?: unknown
+      mcp?: unknown
+      skillsExtra?: unknown
+      skillsNone?: unknown
+      mcpExtra?: unknown
+      mcpNone?: unknown
+    } | null
+    if (!body) return json({ error: "invalid json" }, 400)
+    if (body.name !== undefined || body.instruction !== undefined)
+      return json(
+        { error: "built-in personalities cannot be renamed or re-instructed" },
+        400,
+      )
+    if (body.skills !== undefined || body.mcp !== undefined)
+      return json(
+        {
+          error:
+            "built-in skills and MCP servers are fixed to the desktop's seed set — extend with skillsExtra/mcpExtra or block with skillsNone/mcpNone instead",
+        },
+        409,
+      )
+    const changes: {
+      skillsExtra?: string[] | null
+      skillsNone?: boolean
+      mcpExtra?: string[] | null
+      mcpNone?: boolean
+    } = {}
+    if (body.skillsExtra !== undefined) {
+      const list = parseSkillList(body.skillsExtra)
+      if ("error" in list) return json({ error: list.error }, 400)
+      changes.skillsExtra = list.skills
+    }
+    if (body.skillsNone !== undefined) {
+      const flag = parseNoneFlag(body.skillsNone, "skillsNone")
+      if ("error" in flag) return json({ error: flag.error }, 400)
+      changes.skillsNone = flag.none
+    }
+    if (body.mcpExtra !== undefined) {
+      const list = parseMcpList(body.mcpExtra)
+      if ("error" in list) return json({ error: list.error }, 400)
+      changes.mcpExtra = list.mcp
+    }
+    if (body.mcpNone !== undefined) {
+      const flag = parseNoneFlag(body.mcpNone, "mcpNone")
+      if ("error" in flag) return json({ error: flag.error }, 400)
+      changes.mcpNone = flag.none
+    }
+    if (Object.keys(changes).length === 0)
+      return json({ error: "nothing to update" }, 400)
+    db.setBuiltinPersonaScope(user.id, id, changes)
+    return json(resolvePersona(db, user.id, id))
+  }
   const body = (await req.json().catch(() => null)) as {
     name?: unknown
     instruction?: unknown
     skills?: unknown
     skillsExtra?: unknown
+    skillsNone?: unknown
     mcp?: unknown
     mcpExtra?: unknown
+    mcpNone?: unknown
   } | null
   if (!body) return json({ error: "invalid json" }, 400)
   const current = db.personaById(id, user.id)
@@ -748,48 +971,67 @@ async function updatePersona(req: Request, db: Db, user: User, id: string) {
     instruction: string
     skills?: string[] | null
     skillsExtra?: string[] | null
+    skillsNone?: boolean
     mcp?: string[] | null
     mcpExtra?: string[] | null
+    mcpNone?: boolean
   } = { name: parsed.name, instruction: parsed.instruction }
   // A plugin owns its persona's base allowlists; users extend them with
-  // skillsExtra/mcpExtra instead. Name/instruction keep their existing
-  // behavior (editable either way).
+  // skillsExtra/mcpExtra and can block everything with skillsNone/mcpNone
+  // (the plugin cannot stop the user from disabling its surfaces).
+  // Name/instruction keep their existing behavior (editable either way).
+  // An explicit base list replaces a block-all — allowing named entries and
+  // blocking everything contradict each other, the list wins.
   const pluginOwner = () => pluginOwnership(db, user.id).personaById.get(id)
   if (body.skills !== undefined) {
     const plugin = pluginOwner()
     if (plugin)
       return json(
         {
-          error: `skills are managed by ${plugin.name} — extend with skillsExtra instead`,
+          error: `skills are managed by ${plugin.name} — extend with skillsExtra or block with skillsNone instead`,
         },
         409,
       )
     const list = parseSkillList(body.skills)
     if ("error" in list) return json({ error: list.error }, 400)
     changes.skills = list.skills
+    if (body.skillsNone === undefined && (list.skills?.length ?? 0) > 0)
+      changes.skillsNone = false
   }
   if (body.skillsExtra !== undefined) {
     const list = parseSkillList(body.skillsExtra)
     if ("error" in list) return json({ error: list.error }, 400)
     changes.skillsExtra = list.skills
   }
+  if (body.skillsNone !== undefined) {
+    const flag = parseNoneFlag(body.skillsNone, "skillsNone")
+    if ("error" in flag) return json({ error: flag.error }, 400)
+    changes.skillsNone = flag.none
+  }
   if (body.mcp !== undefined) {
     const plugin = pluginOwner()
     if (plugin)
       return json(
         {
-          error: `MCP servers are managed by ${plugin.name} — extend with mcpExtra instead`,
+          error: `MCP servers are managed by ${plugin.name} — extend with mcpExtra or block with mcpNone instead`,
         },
         409,
       )
     const list = parseMcpList(body.mcp)
     if ("error" in list) return json({ error: list.error }, 400)
     changes.mcp = list.mcp
+    if (body.mcpNone === undefined && (list.mcp?.length ?? 0) > 0)
+      changes.mcpNone = false
   }
   if (body.mcpExtra !== undefined) {
     const list = parseMcpList(body.mcpExtra)
     if ("error" in list) return json({ error: list.error }, 400)
     changes.mcpExtra = list.mcp
+  }
+  if (body.mcpNone !== undefined) {
+    const flag = parseNoneFlag(body.mcpNone, "mcpNone")
+    if ("error" in flag) return json({ error: flag.error }, 400)
+    changes.mcpNone = flag.none
   }
   const saved = db.updatePersona(id, user.id, changes)
   if (!saved) return json({ error: "not found" }, 404)

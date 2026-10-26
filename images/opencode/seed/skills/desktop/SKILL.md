@@ -9,10 +9,10 @@ Go to a page with `ob-chrome`. SESSION is the screen id in this thread's system 
 
 ```sh
 ob-chrome --session SESSION navigate https://example.com
-ob-chrome --session SESSION newtab https://example.com
-ob-chrome --session SESSION tabs
-ob-chrome --session SESSION switch 2
-ob-chrome --session SESSION closetab 2
+ob-chrome --session SESSION tab new https://example.com
+ob-chrome --session SESSION tab list
+ob-chrome --session SESSION tab switch 2
+ob-chrome --session SESSION tab close 2
 ob-chrome --session SESSION url
 ob-chrome --session SESSION back
 ob-chrome --session SESSION forward
@@ -21,7 +21,44 @@ ob-chrome --session SESSION reload
 
 `navigate` also accepts `--url URL` and a bare domain (the scheme is added). It prints one JSON line with the page `url`, `title`, `heading` (first h1) and 2500 chars of body `text` — a single navigate usually answers the question outright, so do not add a read after it unless you need interactive controls. If the tab crashed or hangs, navigate opens a fresh tab on its own and reports `via: "new-tab"`. If the screen or browser is unreachable, the command heals it and retries on its own (a relaunch opens a blank page) — no need to diagnose the screen.
 
-Tabs: `newtab URL` opens a second tab (a blank one with no URL) and switches to it — same JSON line as navigate. `tabs` lists them with 1-based indexes and marks the active one; `switch 2` moves to a tab by index or a url/text substring; `closetab 2` closes one (no number closes the active tab) and prints where the screen landed. Every other command — `navigate`, `url`, `back`, `ob-page` — follows the active tab, so `switch` before going back to work on the first one.
+Tabs: `tab new URL` opens a second tab (a blank one with no URL) and switches to it — same JSON line as navigate. `tab list` (or bare `tab`) lists them with 1-based indexes and marks the active one; `tab switch 2` moves to a tab by index or a url/text substring; `tab close 2` closes one (no number closes the active tab) and prints where the screen landed. `tab open` is an alias of `tab new`, `tab select` of `tab switch`. Every other command — `navigate`, `url`, `back`, `ob-page` — follows the active tab, so `tab switch` before going back to work on the first one. The old flat verbs still work: `newtab`, `tabs`, `switch`, `closetab`.
+
+## Screen recording
+
+Record the whole screen (browser plus native apps) to video when stills are not enough to debug what happened:
+
+```sh
+ob-record --session SESSION start
+ob-record --session SESSION start --fps 5 --duration 120 --output debug.mp4
+ob-record --session SESSION status
+ob-record --session SESSION stop
+ob-record --session SESSION list
+```
+
+`start` prints one JSON line with the output `file`; defaults are 15 fps and a 600 s auto-stop (`--duration SEC`, max 3600), 1920x1200. Files land in `~/.open-bot/recordings/SESSION/` unless `--output FILE` names one (relative names land there too; absolute paths must be under `/home/agent` or `/tmp`; `.mp4`, `.webm`, or `.mkv`). One recording per screen: a second `start` refuses until `stop`. `stop` finalizes the file and prints its `bytes` and `seconds`; `status` reports a live recording's elapsed time and growing size; `list` shows finished recordings. Start a recording before reproducing a flicker, animation, or timing bug, drive the screen normally, then `stop` and hand over the file path. Recording refuses to start while the user holds the screen, and stopping the screen stops the recording cleanly (the file is kept).
+
+## Devtools
+
+The screen keeps a DevTools recorder running, so when a page misbehaves, read the browser's own data before guessing:
+
+```sh
+ob-chrome --session SESSION console
+ob-chrome --session SESSION console --level error
+ob-chrome --session SESSION network
+ob-chrome --session SESSION network --filter api 6 --body
+ob-chrome --session SESSION metrics
+ob-chrome --session SESSION dom --selector "form.login"
+ob-chrome --session SESSION eval "location.href"
+ob-chrome --session SESSION cache clear --reload
+```
+
+`console` prints recent page console messages, uncaught errors and failed resource loads, oldest first, one JSON row each (`n`, `level`, `text`, `url`). `network` prints recent requests (`n`, `method`, `url`, `status`, `type`, `bytes`, `ms`, `fail`); `network N` gives that one request in full with request/response headers, and `--body` adds the response body. `metrics` is the live JS heap, DOM node, listener and layout counts — a growing heap or climbing layout count names the leak without touching the page.
+
+`dom` reads the live DOM: the whole page HTML by default, `--text` for full body text, or `--selector "css"` / a bare selector for the matched elements' HTML (`--limit N`, default 20). `eval "JS"` runs JavaScript in the page and prints the JSON result — the way to change the DOM too: set attributes, classes, values, inject or remove nodes, call the page's own APIs. `eval` throws with the real page error on exceptions. Large outputs are truncated — narrow the expression instead of dumping.
+
+`cache clear` busts the browser HTTP cache for dev (`--reload` reloads fresh in the same call); `cache clear --origin URL` wipes one origin's stale app data (cache storage, service workers, localStorage, IndexedDB) instead. Cookies survive unless `--cookies`. `reload --fresh` is a plain hard reload.
+
+Row numbering is the printed window: pass the same `--filter` when drilling in, and re-run plain `network` first when new requests arrived. Bodies are best-effort — a response whose body was already evicted says so; run `network N --body` again right after the request. `console|network --clear` empties the buffer.
 
 Read and act on the page with `ob-page --session SESSION`: it controls the browser DOM directly, no screenshots or OCR needed.
 
@@ -58,7 +95,7 @@ Capture to the path named in the system line, then read that PNG as-is. Do not r
 
 The last argument sets the resolution for that shot only. The live screen is restored.
 
-Every capture prints one line: `capture WxH live WxH factor N offset X,Y`. The browser window sits at an offset inside the desktop, so scaled and viewport shots are NOT aligned with the live screen: image coordinates must be divided by the factor AND shifted by the offset before a click. Do not do that math by hand — convert with `map`, and verify with `hit-image`:
+Every capture prints one line: `capture WxH live WxH factor N offset X,Y`. `factor` is the real ratio between capture pixels and the live viewport (a `2560x1600` shot over a 1911-wide screen prints `factor 1.34`; asymmetric viewports print `factor x1.34 y1.49`). The browser window sits at an offset inside the desktop, so scaled and viewport shots are NOT aligned with the live screen: image coordinates must be divided by the factor AND shifted by the offset before a click. Do not do that math by hand — convert with `map`, and verify with `hit-image`:
 
 ```sh
 ob-vnc --session SESSION map IMAGE_X IMAGE_Y
@@ -66,6 +103,8 @@ ob-vnc --session SESSION hit-image IMAGE_X IMAGE_Y
 ```
 
 `map` prints `live X Y` — click with those. `hit-image` prints the same line plus the JSON element under it, so you can confirm the target before clicking. Full-desktop captures (no resolution argument) print `factor 1 offset 0,0`; their image coordinates are already live coordinates and `map` is unnecessary.
+
+A capture pauses the captured window's rendering for a moment (seconds on a big or scaled shot) — any on-page FPS counter or animation timing you read right after a capture is falsified by it. When a job needs honest FPS numbers, take one sacrifice capture, wait ~15-20 seconds, then read the counter; or read it before any capture.
 
 `ob-page read` lives in yet another pixel space: viewport (page) pixels, not live-screen ones. To turn a viewport coordinate from `ob-page read` geometry into an `ob-vnc move/click` point, take `offset X,Y` and `live WxH` from any capture line and `viewport WxH` from the `read` line. Normally the two sizes match and the conversion is plain addition — `live = offset + viewport`. If they differ (browser zoom), scale first: `live = offset + viewport × liveW/viewportW`. You rarely need this: `ob-page click`/`type` take element ids directly, and `map`/`hit` cover everything you read off a screenshot.
 

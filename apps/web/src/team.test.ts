@@ -4,6 +4,8 @@ import {
   formatTokenCount,
   overlayDraft,
   overlayPatch,
+  parseCpuCoresInput,
+  parseMemoryInput,
   parseQuotaCapInput,
   quotaMeterView,
   TEAM_OVERLAY_SECTIONS,
@@ -84,6 +86,33 @@ test("parses quota cap input", () => {
   expect(parseQuotaCapInput("12.9")).toEqual({ ok: true, value: 12 })
   expect(parseQuotaCapInput("abc")).toEqual({ ok: false })
   expect(parseQuotaCapInput("-5")).toEqual({ ok: false })
+})
+
+test("parses desktop RAM input in GB into MB", () => {
+  expect(parseMemoryInput("")).toEqual({ ok: true, value: null })
+  expect(parseMemoryInput(" ")).toEqual({ ok: true, value: null })
+  expect(parseMemoryInput("4")).toEqual({ ok: true, value: 4096 })
+  expect(parseMemoryInput("0.5")).toEqual({ ok: true, value: 512 })
+  expect(parseMemoryInput("1.25")).toEqual({ ok: true, value: 1280 })
+  expect(parseMemoryInput("64")).toEqual({ ok: true, value: 65_536 })
+  expect(parseMemoryInput("0")).toEqual({ ok: false })
+  expect(parseMemoryInput("-2")).toEqual({ ok: false })
+  expect(parseMemoryInput("abc")).toEqual({ ok: false })
+  expect(parseMemoryInput("65")).toEqual({ ok: false })
+  expect(parseMemoryInput("0.2")).toEqual({ ok: false })
+})
+
+test("parses desktop CPU input in cores", () => {
+  expect(parseCpuCoresInput("")).toEqual({ ok: true, value: null })
+  expect(parseCpuCoresInput(" ")).toEqual({ ok: true, value: null })
+  expect(parseCpuCoresInput("2")).toEqual({ ok: true, value: 2 })
+  expect(parseCpuCoresInput("0.5")).toEqual({ ok: true, value: 0.5 })
+  expect(parseCpuCoresInput("1.25")).toEqual({ ok: true, value: 1.3 })
+  expect(parseCpuCoresInput("64")).toEqual({ ok: true, value: 64 })
+  expect(parseCpuCoresInput("0")).toEqual({ ok: false })
+  expect(parseCpuCoresInput("0.2")).toEqual({ ok: false })
+  expect(parseCpuCoresInput("-2")).toEqual({ ok: false })
+  expect(parseCpuCoresInput("abc")).toEqual({ ok: false })
 })
 
 test("team keys payload omits blank secrets and sends other blanks", () => {

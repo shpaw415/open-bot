@@ -9,7 +9,7 @@ import {
 } from "@shpaw415/mui-lite/List"
 import Menu from "@shpaw415/mui-lite/Menu"
 import TextField from "@shpaw415/mui-lite/TextField"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { effortLabel, effortOptions } from "./chat-controls"
 import { ChevronDownIcon, StarBorderIcon, StarIcon } from "./icons"
 import {
@@ -118,14 +118,17 @@ export function ComposerPickers({
   const selected = models.find((item) => modelKey(item) === model)
   const modelLabel = selected ? modelTitle(selected) : model || "Model"
 
+  // Filter off the critical path: the input stays live, the model list
+  // recomputes at a lower priority so a long catalog can never block typing.
+  const deferredQuery = useDeferredValue(query)
   const filtered = useMemo(() => {
     const ordered = sortModels(models, ids)
-    const needle = query.trim().toLowerCase()
+    const needle = deferredQuery.trim().toLowerCase()
     if (!needle) return ordered
     return ordered.filter((item) =>
       `${modelTitle(item)} ${modelKey(item)}`.toLowerCase().includes(needle),
     )
-  }, [models, ids, query])
+  }, [models, ids, deferredQuery])
 
   useEffect(() => {
     if (!modelOpen) return

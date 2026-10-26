@@ -5,9 +5,9 @@ import {
   sanitizeCouncilName,
   sanitizeRole,
 } from "./councils"
-import { createSession } from "./cron"
+import { createSession, UNLIMITED_STEPS_AGENT } from "./cron"
 import { recordDelegation, resolveDelegationCreator } from "./delegations"
-import { desktopPhase, endpoint } from "./docker"
+import { desktopDeathInfo, desktopPhase, endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
 import { trimDashboardMessages } from "./messages-trim"
 import {
@@ -301,6 +301,11 @@ async function startThread(req: Request, db: Db, agent: User) {
     return json({ error: "role must be a string" }, 400)
   const role = typeof body.role === "string" ? sanitizeRole(body.role) : ""
   if (role === null) return json({ error: "role must be a string" }, 400)
+  // steps:"unlimited" binds the session to the no-step-cap agent variant —
+  // long council members and background jobs that would outlive 256 steps.
+  if (body.steps !== undefined && body.steps !== "unlimited")
+    return json({ error: 'steps must be "unlimited" or omitted' }, 400)
+  const unlimitedSteps = body.steps === "unlimited"
   const effectiveVisible = visible && !councilName
   if (body.message !== undefined && typeof body.message !== "string")
     return json({ error: "message must be a string" }, 400)
@@ -346,7 +351,13 @@ async function startThread(req: Request, db: Db, agent: User) {
     : { creator: null, warning: null }
 
   const effectiveTitle = effectiveVisible ? title : hiddenThreadTitle(title)
-  const ruleset = await personaScope(agent.id, persona?.persona ?? null)
+  // Overlap guard (best effort): two workers with the same title on the same
+  // files corrupt each other's edits, and nothing else warns about it. Never
+  // blocks — the coordinator decides.
+  const overlapWarning = effectiveVisible
+    ? null
+    : await runningTitleMatch(base, headers, effectiveTitle)
+  const ruleset = await personaScope(db, agent.id, persona?.persona ?? null)
   let sessionId: string
   try {
     sessionId = await createSession(
@@ -355,6 +366,7 @@ async function startThread(req: Request, db: Db, agent: User) {
       effectiveTitle,
       undefined,
       ruleset,
+      unlimitedSteps ? UNLIMITED_STEPS_AGENT : null,
     )
   } catch (error) {
     return json(
@@ -381,8 +393,7 @@ async function startThread(req: Request, db: Db, agent: User) {
       createdAt: Date.now(),
     })
   }
-  if (persona && persona.persona.id !== ASSISTANT_ID)
-    db.setThreadPersona(agent.id, sessionId, persona.persona.id)
+  if (persona) db.setThreadPersona(agent.id, sessionId, persona.persona.id)
   if (delegation.creator) {
     recordDelegation(
       db,
@@ -442,10 +453,32 @@ async function startThread(req: Request, db: Db, agent: User) {
       name: persona.persona.name,
       matched: persona.matched,
     }
-    const allowed = persona.persona.skillsEffective
-    if (allowed) personaInfo.skills = { allowed: allowed.length }
-    const mcpAllowed = persona.persona.mcpEffective
-    if (mcpAllowed) personaInfo.mcp = { allowed: mcpAllowed.length }
+    if (persona.persona.builtin) {
+      // Built-ins have a live seed base, not a stored list — report the
+      // default plus the user's additions (or a block-all).
+      personaInfo.skills = persona.persona.skillsNone
+        ? { blocked: true }
+        : {
+            seedDefault: true,
+            extra: (persona.persona.skillsExtra ?? []).length,
+          }
+      personaInfo.mcp = persona.persona.mcpNone
+        ? { blocked: true }
+        : { seedDefault: true, extra: (persona.persona.mcpExtra ?? []).length }
+    } else {
+      const allowed = persona.persona.skillsEffective
+      if (allowed)
+        personaInfo.skills = {
+          allowed: allowed.length,
+          blocked: allowed.length === 0,
+        }
+      const mcpAllowed = persona.persona.mcpEffective
+      if (mcpAllowed)
+        personaInfo.mcp = {
+          allowed: mcpAllowed.length,
+          blocked: mcpAllowed.length === 0,
+        }
+    }
     result.persona = personaInfo
   }
   if (dir) result.dir = dir
@@ -457,7 +490,53 @@ async function startThread(req: Request, db: Db, agent: User) {
     }
   warning = warning ?? delegation.warning
   if (warning) result.warning = warning
+  if (overlapWarning)
+    result.warning = result.warning
+      ? `${result.warning}; ${overlapWarning}`
+      : overlapWarning
   return json(result, 201)
+}
+
+// One opencode round trip: is a same-titled top-level worker currently
+// running a turn? Null on any failure — the warning is best effort.
+async function runningTitleMatch(
+  base: string,
+  headers: Record<string, string>,
+  effectiveTitle: string,
+): Promise<string | null> {
+  try {
+    const [sessionsRes, statusRes] = await Promise.all([
+      fetch(`${base}/session`, {
+        headers,
+        signal: AbortSignal.timeout(5_000),
+      }).catch(() => null),
+      fetch(`${base}/session/status`, {
+        headers,
+        signal: AbortSignal.timeout(5_000),
+      }).catch(() => null),
+    ])
+    if (!sessionsRes?.ok) return null
+    const sessions = (await sessionsRes.json().catch(() => null)) as
+      | { id?: unknown; title?: unknown; parentID?: unknown }[]
+      | null
+    const statusMap = (await statusRes?.json().catch(() => null)) as Record<
+      string,
+      { type?: unknown } | undefined
+    > | null
+    if (!Array.isArray(sessions)) return null
+    const match = sessions.find(
+      (item) =>
+        !item.parentID &&
+        item.title === effectiveTitle &&
+        typeof item.id === "string" &&
+        statusMap?.[item.id as string]?.type !== undefined &&
+        statusMap[item.id as string]?.type !== "idle",
+    )
+    if (!match || typeof match.id !== "string") return null
+    return `another worker with this title is already running (${match.id}) — parallel briefs on the same files can corrupt each other's edits`
+  } catch {
+    return null
+  }
 }
 
 async function listThreads(db: Db, agent: User) {
@@ -585,8 +664,25 @@ async function manageableThread(
 
 // Reports whether a managed thread is still running a turn. `ob-thread wait`
 // polls this to block on a teammate or council member without holding a raw
-// sleep loop; the same manageable scope as stop/post applies.
+// sleep loop; the same manageable scope as stop/post applies. A dead desktop
+// answers a definite `desktop_down` state (with OOM info) instead of a
+// neutral error, so a silently OOM-killed council is visible in wait output.
 async function threadStatus(id: string, db: Db, agent: User) {
+  const phase = await desktopPhase(agent.id)
+  if (phase !== "running") {
+    const death = await desktopDeathInfo(agent.id)
+    if (death && !death.running)
+      return json({
+        id,
+        running: false,
+        state: "desktop_down",
+        desktop: {
+          running: false,
+          oomKilled: death.oomKilled,
+          exitCode: death.exitCode,
+        },
+      })
+  }
   const resolved = await opencodeBase(db, agent)
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved

@@ -44,6 +44,30 @@ ob-preview up --session SESSION --entry /home/agent/workspace/app/server.ts
 
 `bun --hot` reloads that file between edits. Keep asset URLs relative.
 
+## How the chat embed proxies your server
+
+The embed is a control-plane iframe that forwards every request to your port
+(4700-4719). The proxy is verbatim: same method, path, query string, headers
+(minus cookies/auth) and body, response streamed back untouched — no caching,
+no rate limit, no MIME rewriting, and WebSockets upgrade through. What is
+different from the direct `127.0.0.1:<port>` URL:
+
+- The frame is an opaque origin: storage and `getUserMedia` go through the
+  injected shim (see the `plugin` skill's device-access section), and the
+  capability token in the path expires after ~10 idle minutes — a stale
+  embed reloads.
+- Every asset request is one control-plane → desktop round trip over the
+  tunnel. Per-frame `img.src` churn or per-keystroke fetches amplify badly;
+  batch or swap sources in-page instead.
+- Cache-busting query imports (`import('./mod?cb=…')`) reach your server
+  verbatim — if they fail in the embed, suspect your server's module
+  resolution (or the opaque-origin shim), not the proxy.
+
+Smoke test before shipping: exercise the app on the direct port first
+(`curl 127.0.0.1:<port>/…` for status, the managed browser for interaction);
+whatever works there works verbatim through the embed unless it touches
+storage, media devices, or relative-path rewriting of HTML bodies.
+
 ## Reply
 
 End the final message with the embed line the command prints:

@@ -3,8 +3,14 @@ import type { Db, User } from "@open-bot/db"
 
 let phase = "running"
 let failEndpoint = false
+let death: {
+  running: boolean
+  oomKilled: boolean
+  exitCode: number | null
+} | null = null
 
 mock.module("./docker", () => ({
+  desktopDeathInfo: async () => death,
   desktopExec: () => {
     throw new Error("not mocked")
   },
@@ -46,6 +52,7 @@ const db = {
   personas: () => [],
   installedPlugins: () => [],
   setThreadPersona: () => {},
+  builtinPersonaScopes: () => [],
 } as unknown as Db
 
 const effortDb = {
@@ -61,6 +68,7 @@ const effortDb = {
   personas: () => [],
   installedPlugins: () => [],
   setThreadPersona: () => {},
+  builtinPersonaScopes: () => [],
 } as unknown as Db
 
 function personaDb(bound: string[][], scoped = false) {
@@ -90,12 +98,14 @@ function personaDb(bound: string[][], scoped = false) {
     ) => {
       bound.push([userId, sessionId, personaId])
     },
+    builtinPersonaScopes: () => [],
   } as unknown as Db
 }
 
 const originalFetch = globalThis.fetch
 let calls: { url: string; init?: RequestInit }[] = []
 let promptFails = false
+let phaseStatuses: Record<string, string> = {}
 
 function installFetch() {
   globalThis.fetch = (async (
@@ -119,6 +129,15 @@ function installFetch() {
       })
     if (promptFails && url.endsWith("/prompt_async"))
       return new Response("nope", { status: 500 })
+    if (
+      url.endsWith("/session/status") &&
+      (!init?.method || init.method === "GET")
+    )
+      return Response.json(
+        Object.fromEntries(
+          Object.entries(phaseStatuses).map(([id, type]) => [id, { type }]),
+        ),
+      )
     if (url.endsWith("/session") && (!init?.method || init.method === "GET"))
       return Response.json([
         { id: "s1", title: "worker:job" },
@@ -135,6 +154,8 @@ afterEach(() => {
   phase = "running"
   failEndpoint = false
   promptFails = false
+  death = null
+  phaseStatuses = {}
   calls = []
 })
 
@@ -209,12 +230,34 @@ describe("POST /api/threads", () => {
       title: "worker:Scrape prices",
       display: false,
     })
-    const create = calls.find((call) => call.url.endsWith("/session"))
+    const create = calls.find(
+      (call) => call.url.endsWith("/session") && call.init?.method === "POST",
+    )
     expect(create).toBeDefined()
     expect(JSON.parse(String(create?.init?.body))).toEqual({
       title: "worker:Scrape prices",
     })
     expect(calls.some((call) => call.url.endsWith("/prompt_async"))).toBeFalse()
+  })
+
+  test("warns when a same-titled worker is already running a turn", async () => {
+    installFetch()
+    phaseStatuses = { s1: "busy" }
+    const res = await post({ title: "job" })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { warning?: string }
+    expect(body.warning).toMatch(
+      /another worker with this title is already running \(s1\)/,
+    )
+  })
+
+  test("a same-titled idle worker does not warn", async () => {
+    installFetch()
+    phaseStatuses = { s1: "idle" }
+    const res = await post({ title: "job" })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { warning?: string }
+    expect(body.warning).toBeUndefined()
   })
 
   test("display threads keep the given title", async () => {
@@ -224,6 +267,30 @@ describe("POST /api/threads", () => {
     const body = (await res.json()) as { title: string; display: boolean }
     expect(body.title).toBe("Nightly sync")
     expect(body.display).toBe(true)
+  })
+
+  test("steps unlimited binds the no-step-cap agent on the session create", async () => {
+    installFetch()
+    const res = await post({
+      title: "Deep build",
+      steps: "unlimited",
+      message: "go",
+    })
+    expect(res.status).toBe(201)
+    const create = calls.find(
+      (call) => call.url.endsWith("/session") && call.init?.method === "POST",
+    )
+    expect(JSON.parse(String(create?.init?.body))).toEqual({
+      title: "worker:Deep build",
+      agent: "build-unlimited",
+    })
+  })
+
+  test("rejects step values other than unlimited", async () => {
+    installFetch()
+    expect((await post({ title: "Job", steps: 10 })).status).toBe(400)
+    expect((await post({ title: "Job", steps: "default" })).status).toBe(400)
+    expect(calls).toHaveLength(0)
   })
 
   test("posts the first message into the new thread with the screen line", async () => {
@@ -344,9 +411,9 @@ describe("POST /api/threads", () => {
       ],
     })
     const body = (await res.json()) as {
-      persona?: { skills?: { allowed: number } }
+      persona?: { skills?: { allowed: number; blocked: boolean } }
     }
-    expect(body.persona?.skills).toEqual({ allowed: 1 })
+    expect(body.persona?.skills).toEqual({ allowed: 1, blocked: false })
   })
 
   test("an unrestricted persona sends no permission key", async () => {
@@ -377,6 +444,7 @@ describe("POST /api/threads", () => {
     const { applyPersonaScope } = await import("./personas")
     const headers = { authorization: "Basic dGVzdA==" }
     await applyPersonaScope(
+      db,
       "user-1",
       "http://opencode:4096",
       headers,
@@ -388,9 +456,11 @@ describe("POST /api/threads", () => {
         builtin: false,
         skills: ["research"],
         skillsExtra: null,
+        skillsNone: false,
         skillsEffective: ["research"],
         mcp: null,
         mcpExtra: null,
+        mcpNone: false,
         mcpEffective: null,
       },
     )
@@ -408,6 +478,7 @@ describe("POST /api/threads", () => {
     })
     const before = calls.length
     await applyPersonaScope(
+      db,
       "user-1",
       "http://opencode:4096",
       headers,
@@ -415,6 +486,36 @@ describe("POST /api/threads", () => {
       null,
     )
     expect(calls.length).toBe(before)
+  })
+
+  test("an explicitly bound assistant persona is seed-scoped and reported", async () => {
+    installFetch()
+    const bound: string[][] = []
+    const res = await post(
+      { title: "Helper", message: "Help me", persona: "assistant" },
+      personaDb(bound),
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      persona?: { id: string; skills?: unknown; mcp?: unknown }
+    }
+    expect(body.persona?.id).toBe("assistant")
+    // the seed probe degrades on the mocked desktop — the default holds
+    expect(body.persona?.skills).toEqual({ seedDefault: true, extra: 0 })
+    expect(body.persona?.mcp).toEqual({ seedDefault: true, extra: 0 })
+    expect(bound).toEqual([["user-1", "ses_1", "assistant"]])
+    // no permission key: the scope probes fail on this mock, and the
+    // degrade path must stay unrestricted rather than block the thread
+    const create = calls.find(
+      (call) =>
+        call.url.endsWith("/session") &&
+        (call.init as RequestInit | undefined)?.method === "POST",
+    )
+    expect(JSON.parse(String(create?.init?.body)).permission).toBeUndefined()
+    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
+    expect(String(JSON.parse(String(prompt?.init?.body)).system)).toContain(
+      "built-in skills",
+    )
   })
 
   test("tolerates a typo in the persona name and reports the match", async () => {
@@ -429,30 +530,6 @@ describe("POST /api/threads", () => {
     }
     expect(body.persona?.name).toBe("Software manager")
     expect(body.persona?.matched).toBe("fuzzy")
-  })
-
-  test("the assistant persona binds nothing and injects nothing", async () => {
-    installFetch()
-    const bound: string[][] = []
-    const res = await post(
-      { title: "Job", message: "go", persona: "assistant" },
-      personaDb(bound),
-    )
-    expect(res.status).toBe(201)
-    const body = (await res.json()) as {
-      persona?: { id: string; name: string; matched: string }
-    }
-    expect(body.persona).toEqual({
-      id: "assistant",
-      name: "Assistant",
-      matched: "exact",
-    })
-    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
-    expect(JSON.parse(String(prompt?.init?.body))).toEqual({
-      parts: [{ type: "text", text: "go" }],
-      system: expect.stringContaining("screen id"),
-    })
-    expect(bound).toEqual([])
   })
 
   test("an unknown persona fails fast with suggestions", async () => {
@@ -491,6 +568,7 @@ describe("POST /api/threads", () => {
       personas: () => [],
       installedPlugins: () => [],
       setThreadPersona: () => {},
+      builtinPersonaScopes: () => [],
       threadDirs: (userId: string) =>
         dirs.filter((row) => row.userId === userId),
       threadDirByName: (userId: string, name: string) =>
@@ -585,6 +663,7 @@ describe("POST /api/threads councils", () => {
       personas: () => [],
       installedPlugins: () => [],
       setThreadPersona: () => {},
+      builtinPersonaScopes: () => [],
       councilByName: (userId: string, name: string) =>
         councils.find(
           (row) =>
@@ -667,6 +746,28 @@ describe("POST /api/threads councils", () => {
     expect(body.error).toMatch(/letters or digits/)
     expect(calls).toHaveLength(0)
   })
+
+  test("steps unlimited works on a council member too", async () => {
+    installFetch()
+    const { mock } = councilDb()
+    const res = await post(
+      {
+        title: "Deep review",
+        council: "long-review",
+        role: "Reviewer",
+        steps: "unlimited",
+      },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const create = calls.find(
+      (call) => call.url.endsWith("/session") && call.init?.method === "POST",
+    )
+    expect(JSON.parse(String(create?.init?.body))).toEqual({
+      title: "worker:Deep review",
+      agent: "build-unlimited",
+    })
+  })
 })
 
 describe("POST /api/threads delegation watches", () => {
@@ -693,6 +794,7 @@ describe("POST /api/threads delegation watches", () => {
           : [],
       installedPlugins: () => [],
       setThreadPersona: () => {},
+      builtinPersonaScopes: () => [],
       councilByName: (userId: string, name: string) =>
         councils.find(
           (row) =>
@@ -1213,6 +1315,37 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
         .status,
     ).toBe(409)
     expect(calls).toHaveLength(0)
+  })
+
+  test("status reports a definite desktop_down with OOM info", async () => {
+    installManageFetch()
+    statuses = {}
+    phase = "sleeping"
+    death = { running: false, oomKilled: true, exitCode: 137 }
+    const res = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      id: "w1",
+      running: false,
+      state: "desktop_down",
+      desktop: { running: false, oomKilled: true, exitCode: 137 },
+    })
+  })
+
+  test("an inconclusive death (mid-recreate) keeps the 409", async () => {
+    installManageFetch()
+    statuses = {}
+    phase = "sleeping"
+    death = null
+    expect(
+      (await manage("/api/threads/w1/status", undefined, undefined, "GET"))
+        .status,
+    ).toBe(409)
   })
 
   test("isThreadRequest matches the manage routes only", () => {

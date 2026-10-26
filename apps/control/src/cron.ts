@@ -580,12 +580,19 @@ export function sessionCreateBody(
   title: string,
   parentID?: string,
   permission?: ScopeRule[] | null,
+  agent?: string | null,
 ) {
   const body: Record<string, unknown> = { title }
   if (parentID) body.parentID = parentID
   if (permission && permission.length > 0) body.permission = permission
+  if (agent) body.agent = agent
   return body
 }
+
+// The no-step-cap variant of the build agent, derived by the image
+// entrypoint from agent.build minus its steps guard. `steps: "unlimited"` on
+// a thread-create body maps onto it; any other value is a route-level 400.
+export const UNLIMITED_STEPS_AGENT = "build-unlimited"
 
 export async function createSession(
   base: string,
@@ -593,10 +600,11 @@ export async function createSession(
   title: string,
   parentID?: string,
   permission?: ScopeRule[] | null,
+  agent?: string | null,
 ) {
   const created = await opencodeJson(`${base}/session`, headers, {
     method: "POST",
-    body: JSON.stringify(sessionCreateBody(title, parentID, permission)),
+    body: JSON.stringify(sessionCreateBody(title, parentID, permission, agent)),
   })
   if (!created.ok) throw new Error(`session create failed (${created.status})`)
   const body = (await created.json()) as { id?: string }
@@ -628,6 +636,108 @@ async function ensureDeliveryThread(
   if (sessionId && (await sessionLive(base, headers, sessionId)))
     return sessionId
   return createSession(base, headers, title)
+}
+
+// Plugin publish guards keep one cron job per plugin (ownership sweeps,
+// `ob-plugin guard off <id>`, and the script/auto semantics all key on the
+// `plugin:<id>:guard` name), but every one of them delivers through a single
+// shared per-user thread — one thread-list entry and one screen instead of N.
+export const GUARD_JOB_RE = /^plugin:.+:guard$/
+export const GUARD_THREAD_TITLE = "Garde des plugins"
+
+const guardJobs = (db: Db, userId: string) =>
+  db.cronJobs(userId).filter((job) => GUARD_JOB_RE.test(job.name))
+
+async function deleteSessionWithScreen(
+  db: Db,
+  userId: string,
+  base: string,
+  headers: Record<string, string>,
+  sessionId: string,
+) {
+  await stopThreadScreen(db, userId, sessionId).catch(() => {})
+  await opencodeJson(`${base}/session/${sessionId}`, headers, {
+    method: "DELETE",
+  })
+}
+
+/**
+ * Resolve (adopt or create) the shared guard delivery thread and point every
+ * guard job row at it. Reads fresh rows — the in-hand job's sessionId may be
+ * stale after a sibling fire consolidated first. Adoption renames the newest
+ * live guard thread to the shared title, then deletes the leftover per-plugin
+ * guard threads (machine-created) together with their screens.
+ */
+export async function ensureGuardDeliveryThread(
+  db: Db,
+  userId: string,
+  base: string,
+  headers: Record<string, string>,
+): Promise<string> {
+  const jobs = guardJobs(db, userId)
+  const byCreated = [...jobs].sort((a, b) => b.createdAt - a.createdAt)
+  let adopted: string | null = null
+  for (const job of byCreated) {
+    if (!job.sessionId) continue
+    if (await sessionLive(base, headers, job.sessionId)) {
+      adopted = job.sessionId
+      break
+    }
+  }
+  if (!adopted) {
+    adopted = await createSession(base, headers, GUARD_THREAD_TITLE)
+  } else {
+    await opencodeJson(`${base}/session/${adopted}`, headers, {
+      method: "PATCH",
+      body: JSON.stringify({ title: GUARD_THREAD_TITLE }),
+    })
+  }
+  for (const sid of new Set(
+    jobs
+      .map((job) => job.sessionId)
+      .filter((sid): sid is string => Boolean(sid) && sid !== adopted),
+  )) {
+    if (await sessionLive(base, headers, sid)) {
+      await deleteSessionWithScreen(db, userId, base, headers, sid).catch(
+        () => {},
+      )
+    }
+  }
+  for (const job of jobs) {
+    if (job.sessionId !== adopted) db.setCronSession(job.id, adopted)
+  }
+  return adopted
+}
+
+/**
+ * After the last guard job of a user is removed, delete the shared guard
+ * thread (and its screen). Callers pass the sessionIds observed on the guard
+ * rows before deletion; desktop-down skips silently. Best effort end to end.
+ */
+export async function cleanupGuardSharedThread(
+  db: Db,
+  userId: string,
+  candidates: string[],
+) {
+  if (guardJobs(db, userId).length > 0) return
+  const account = db.userById(userId)
+  const desktop = db.desktop(userId)
+  if (!account || account.disabled || !desktop) return
+  if ((await desktopPhase(userId)) !== "running") return
+  const base = await endpoint(userId, "opencode", 4096)
+  const headers = {
+    authorization: `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`,
+    "content-type": "application/json",
+  }
+  for (const sid of new Set(candidates.filter(Boolean))) {
+    try {
+      if (await sessionLive(base, headers, sid)) {
+        await deleteSessionWithScreen(db, userId, base, headers, sid)
+      }
+    } catch {
+      // leftover threads are cosmetic; never fail the caller for them
+    }
+  }
 }
 
 async function postCronResult(
@@ -738,13 +848,23 @@ async function settleCronNotice(
     const text = noticeText({ summary, sessionMissing: missing })
     const base = await endpoint(current.userId, "opencode", 4096)
     const job = db.cronJobById(current.jobId, current.userId)
-    const delivery = await ensureDeliveryThread(
-      base,
-      headers,
-      job?.sessionId ?? null,
-      current.jobName,
-    )
-    if (job && delivery !== job.sessionId) db.setCronSession(job.id, delivery)
+    let delivery: string
+    if (job && GUARD_JOB_RE.test(job.name)) {
+      delivery = await ensureGuardDeliveryThread(
+        db,
+        current.userId,
+        base,
+        headers,
+      )
+    } else {
+      delivery = await ensureDeliveryThread(
+        base,
+        headers,
+        job?.sessionId ?? null,
+        current.jobName,
+      )
+      if (job && delivery !== job.sessionId) db.setCronSession(job.id, delivery)
+    }
     await postCronResult(base, headers, delivery, current.jobName, text)
     if (current.runSessionId) {
       await deleteRunSession(
@@ -833,6 +953,14 @@ export async function fireCronJob(
     // Created lazily: a quiet auto run (no sentinel, no error) must not
     // resurrect a thread the user deleted.
     const ensureThread = async () => {
+      if (GUARD_JOB_RE.test(job.name)) {
+        try {
+          return await ensureGuardDeliveryThread(db, job.userId, base, headers)
+        } catch {
+          // Consolidation is best effort; a transient opencode hiccup
+          // delivers per-job this run and retries the merge next fire.
+        }
+      }
       const sid = await ensureDeliveryThread(
         base,
         headers,
@@ -898,7 +1026,7 @@ export async function fireCronJob(
         const persona = resolvePersona(db, job.userId, job.personaId)
         if (!persona) throw new Error("personality not found")
         personaLine = personaSystem(persona)
-        personaRuleset = await personaScope(job.userId, persona)
+        personaRuleset = await personaScope(db, job.userId, persona)
       }
       // The run session is a child of the delivery thread; children share the
       // parent's screen (same convention as the chat prompt path). Ensuring

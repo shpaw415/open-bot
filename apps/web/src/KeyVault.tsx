@@ -174,6 +174,9 @@ export function KeyVault({ isAdmin = false }: { isAdmin?: boolean }) {
   function renderEntry(spec: VaultSpec, index: number) {
     const entry = entries.find((item) => item.slug === spec.id)
     const anySaved = spec.fields.some((field) => fieldSaved(entry, field.id))
+    // Team mode locks the shared provider keys only — plugin-declared keys
+    // stay per-user, so their owner keeps editing them.
+    const locked = shared && !spec.plugin
     return (
       <Box key={spec.id}>
         {index > 0 ? <Divider sx={{ mb: 1.5 }} /> : null}
@@ -228,7 +231,7 @@ export function KeyVault({ isAdmin = false }: { isAdmin?: boolean }) {
           </Typography>
           {spec.fields.map((field) => {
             const hasSaved = fieldSaved(entry, field.id)
-            if (shared) {
+            if (locked) {
               return hasSaved ? (
                 <Chip key={field.id} size="small" variant="outlined">
                   {field.label} saved
@@ -252,7 +255,7 @@ export function KeyVault({ isAdmin = false }: { isAdmin?: boolean }) {
               />
             )
           })}
-          {shared ? null : (
+          {locked ? null : (
             <Stack direction="row" spacing={1}>
               <Button
                 variant="contained"
@@ -323,7 +326,7 @@ export function KeyVault({ isAdmin = false }: { isAdmin?: boolean }) {
           title="Plugin keys"
           description={
             shared
-              ? "Managed by your admin — plugin keys follow the same shared set in team mode."
+              ? "Plugin keys stay personal in team mode — each user keeps their own, and only the provider keys above are shared."
               : "API keys declared by installed plugins and merged into this vault, so every key lives in one place. Shared provider keys a plugin reads stay in the list above."
           }
         >

@@ -4,6 +4,10 @@ import type { Db } from "@open-bot/db"
 let phase = "running"
 
 mock.module("./docker", () => ({
+  // bun applies mock.module process-wide, so a sibling test file that imports
+  // docker through another module (councils → desktopDeathInfo) resolves this
+  // registration when both files share one run — keep the shape a superset.
+  desktopDeathInfo: async () => null,
   desktopExec: () => {
     throw new Error("not mocked")
   },
@@ -28,6 +32,8 @@ const {
   dispatchDelegationWakes,
   eventSessionId,
   handleDelegationIdle,
+  handleDelegations,
+  isDelegationsPath,
   lastAssistantText,
   recordDelegation,
   resolveDelegationCreator,
@@ -63,6 +69,8 @@ function fakeDb() {
       watches.filter(
         (row) => row.userId === userId && row.councilId === councilId,
       ),
+    delegationWatchesAll: (userId: string) =>
+      watches.filter((row) => row.userId === userId),
     pendingDelegationWatches: (userId: string, creator: string) =>
       watches.filter(
         (row) =>
@@ -140,6 +148,10 @@ function installFetch() {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.endsWith("/session/status")) return Response.json(statusMap)
+    if (url.endsWith("/session") && !url.includes("/session/"))
+      return Response.json(sessions)
+    const message = url.match(/\/session\/([^/]+)\/message$/)
+    if (message) return Response.json(messages[message[1]] ?? [])
     if (url.endsWith("/prompt_async") && init?.method === "POST") {
       prompts.push({
         url,
@@ -151,10 +163,15 @@ function installFetch() {
   }) as unknown as typeof fetch
 }
 
+let sessions: { id?: unknown; title?: unknown }[]
+let messages: Record<string, unknown[]>
+
 beforeEach(() => {
   installFetch()
   statusMap = {}
   prompts = []
+  sessions = []
+  messages = {}
 })
 
 afterEach(() => {
@@ -193,6 +210,8 @@ describe("dispatchDelegationWakes", () => {
     ).text
     expect(text).toContain("[council: auth-review]")
     expect(text).toContain("All 2 members finished")
+    expect(text).toContain("m1")
+    expect(text).toContain("m2")
     expect(store.watches.map((row) => row.wokenAt)).toEqual([
       expect.any(Number),
       expect.any(Number),
@@ -260,18 +279,33 @@ describe("dispatchDelegationWakes", () => {
     expect(prompts).toHaveLength(2)
   })
 
-  test("a persona teammate wakes on its own idle", async () => {
+  test("a persona teammate wakes on its own idle with ids and reply tail", async () => {
     const store = fakeDb()
     seedCouncil(store, [
       { id: "w1", kind: "persona", creator: "chat1", subject: "mate1" },
     ])
     statusMap = { mate1: { type: "idle" } }
+    sessions = [{ id: "mate1", title: "worker:Animate seven heroes" }]
+    messages = {
+      mate1: [
+        {
+          info: { role: "assistant" },
+          parts: [
+            { type: "text", text: "All seven heroes animated and saved." },
+          ],
+        },
+      ],
+    }
     await handleDelegationIdle(store.db, "user-1", "mate1")
     expect(prompts).toHaveLength(1)
     const text = (
       (prompts[0]?.body.parts as { text: string }[])[0] ?? { text: "" }
     ).text
     expect(text).toContain("[teammate]")
+    expect(text).toContain("mate1")
+    expect(text).toContain("Animate seven heroes")
+    expect(text).toContain("All seven heroes animated and saved.")
+    expect(text).toContain("ob-thread read")
   })
 
   test("sessions without watch rows are ignored", async () => {
@@ -315,6 +349,91 @@ describe("dispatchDelegationWakes", () => {
     // fire-and-forget: flush the microtask queue
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(prompts).toHaveLength(1)
+  })
+})
+
+describe("handleDelegations", () => {
+  const user = { id: "user-1" } as never
+
+  test("lists creator → subject pairs for the caller only", () => {
+    const store = fakeDb()
+    seedCouncil(store, [
+      { id: "w1", creator: "chat1", subject: "m1", councilId: "c1" },
+      { id: "w2", kind: "persona", creator: "chat2", subject: "mate1" },
+    ])
+    // another user's row must stay out
+    recordDelegation(store.db, "user-2", "council", "other", "row", null)
+    const res = handleDelegations(
+      new Request("http://x/api/delegations"),
+      new URL("http://x/api/delegations"),
+      store.db,
+      user,
+    ) as Response
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toContain("application/json")
+  })
+
+  test("body shape carries kind, creator, subject, councilId", async () => {
+    const store = fakeDb()
+    seedCouncil(store, [
+      { id: "w1", creator: "chat1", subject: "m1", councilId: "c1" },
+      { id: "w2", kind: "persona", creator: "chat2", subject: "mate1" },
+    ])
+    const res = handleDelegations(
+      new Request("http://x/api/delegations"),
+      new URL("http://x/api/delegations"),
+      store.db,
+      user,
+    ) as Response
+    const body = (await res.json()) as {
+      watches: {
+        kind: string
+        creator: string
+        subject: string
+        councilId: string | null
+      }[]
+    }
+    expect(body.watches).toEqual([
+      { kind: "council", creator: "chat1", subject: "m1", councilId: "c1" },
+      { kind: "persona", creator: "chat2", subject: "mate1", councilId: null },
+    ])
+  })
+
+  test("an empty watch list is an empty array, not an error", async () => {
+    const store = fakeDb()
+    const res = handleDelegations(
+      new Request("http://x/api/delegations"),
+      new URL("http://x/api/delegations"),
+      store.db,
+      user,
+    ) as Response
+    expect(await res.json()).toEqual({ watches: [] })
+  })
+
+  test("non-GET or foreign paths return null for the dispatcher", () => {
+    const store = fakeDb()
+    expect(
+      handleDelegations(
+        new Request("http://x/api/delegations", { method: "POST" }),
+        new URL("http://x/api/delegations"),
+        store.db,
+        user,
+      ),
+    ).toBeNull()
+    expect(
+      handleDelegations(
+        new Request("http://x/api/other"),
+        new URL("http://x/api/other"),
+        store.db,
+        user,
+      ),
+    ).toBeNull()
+  })
+
+  test("path matcher matches exactly /api/delegations", () => {
+    expect(isDelegationsPath("/api/delegations")).toBe(true)
+    expect(isDelegationsPath("/api/delegations/extra")).toBe(false)
+    expect(isDelegationsPath("/api/delegation")).toBe(false)
   })
 })
 

@@ -30,6 +30,7 @@ import {
   MicIcon,
   NavigationIcon,
   PersonIcon,
+  ProcessesIcon,
   PsychologyIcon,
   PublicIcon,
   ScheduleIcon,
@@ -43,6 +44,7 @@ import { Model3dProvider } from "./Model3dProvider"
 import { ModelSelect } from "./ModelSelect"
 import { Personalities } from "./Personalities"
 import { Plugins } from "./Plugins"
+import { Processes } from "./Processes"
 import { Providers } from "./Providers"
 import { Reports } from "./Reports"
 import { CONFIG_GROUPS, CONFIG_TAB_LABELS, type ConfigTab } from "./routes"
@@ -79,6 +81,7 @@ const TAB_ICONS: Record<ConfigTab, React.ReactNode> = {
   endpoints: <PublicIcon />,
   backup: <BackupIcon />,
   hardware: <ComputerIcon />,
+  processes: <ProcessesIcon />,
   reports: <BugReportIcon />,
   security: <SecurityIcon />,
 }
@@ -101,6 +104,7 @@ const TAB_DESCRIPTIONS: Record<ConfigTab, string> = {
   endpoints: "URL publiques qui joignent les pages des extensions.",
   backup: "Instantanés et restauration de cette instance.",
   hardware: "Disque, mémoire et processeur de l’environnement.",
+  processes: "Processus de fond lancés par l’assistant — suivi et arrêt.",
   reports: "Bogues et frictions signalés par l’assistant.",
   security: "La protection qui surveille les échanges du modèle.",
 }
@@ -563,6 +567,8 @@ function renderSection(
       return <Endpoints />
     case "hardware":
       return <Hardware />
+    case "processes":
+      return <Processes />
     case "reports":
       return <Reports />
     case "security":

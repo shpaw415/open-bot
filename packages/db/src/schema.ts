@@ -4,6 +4,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -95,6 +96,12 @@ export const desktops = sqliteTable("desktops", {
   watchdogModel: text("watchdog_model"),
   watchdogBaseUrl: text("watchdog_base_url"),
   thinkingEffort: text("thinking_effort"),
+  // Per-user desktop resource limits (admin-set). NULL = defaults: the
+  // hardcoded 4 GB opencode container memory, the 2-core opencode CPU
+  // allotment, and the host-wide desktop_disk_max_gb Hardware-view cap.
+  memoryMb: integer("memory_mb"),
+  diskGb: integer("disk_gb"),
+  cpuCores: real("cpu_cores"),
 })
 
 export const userKeys = sqliteTable(
@@ -149,11 +156,17 @@ export const personas = sqliteTable(
     instruction: text("instruction").notNull(),
     // Optional skill allowlists (JSON string arrays). skills null = all
     // skills; skills_extra extends a plugin-owned base list. mcp/mcp_extra
-    // are the same model for MCP server names (null = all servers).
+    // are the same model for MCP server names (null = all servers). The
+    // none flags block every skill / server outright — the only way to do
+    // that on a locked base (plugin or built-in persona).
     skills: text("skills"),
     skillsExtra: text("skills_extra"),
+    skillsNone: integer("skills_none", { mode: "boolean" })
+      .notNull()
+      .default(false),
     mcp: text("mcp"),
     mcpExtra: text("mcp_extra"),
+    mcpNone: integer("mcp_none", { mode: "boolean" }).notNull().default(false),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("personas_user").on(table.userId)],
@@ -167,6 +180,25 @@ export const threadPersonas = sqliteTable(
     personaId: text("persona_id").notNull(),
   },
   (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
+)
+
+// Built-in personas have no row in `personas` (they are code constants with a
+// locked base scope: desktop seed skills / non-plugin MCP servers). This table
+// stores only the user-added extensions per built-in persona, plus the
+// block-all flags (none = every skill / server disabled).
+export const builtinPersonaScopes = sqliteTable(
+  "builtin_persona_scopes",
+  {
+    userId: text("user_id").notNull(),
+    personaId: text("persona_id").notNull(),
+    skillsExtra: text("skills_extra"),
+    skillsNone: integer("skills_none", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    mcpExtra: text("mcp_extra"),
+    mcpNone: integer("mcp_none", { mode: "boolean" }).notNull().default(false),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.personaId] })],
 )
 
 export const threadScreens = sqliteTable(

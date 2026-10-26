@@ -352,9 +352,11 @@ describe("cron model and personality", () => {
       builtin: false,
       skills: ["research", "media"],
       skillsExtra: null,
+      skillsNone: false,
       skillsEffective: ["research", "media"],
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       mcpEffective: null,
     }
     const scoped = sessionCreateBody(
@@ -377,6 +379,11 @@ describe("cron model and personality", () => {
       parentID: "root-1",
     })
     expect(sessionCreateBody("t")).toEqual({ title: "t" })
+    // steps:"unlimited" maps onto the no-step-cap agent variant
+    expect(sessionCreateBody("t", undefined, null, "build-unlimited")).toEqual({
+      title: "t",
+      agent: "build-unlimited",
+    })
   })
 })
 

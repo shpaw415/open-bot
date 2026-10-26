@@ -82,6 +82,20 @@ export function desktopDiskMaxGb(db: Db) {
   return Math.min(Math.floor(value), MAX_DISK_CAP_GB)
 }
 
+/**
+ * The Hardware-view disk cap for one user: the admin-set per-user cap wins
+ * over the host-wide "Desktop disk max"; 0 on both means full disk
+ * (diskMaxBytes null). Caps are display-only — nothing is enforced or pruned.
+ */
+export function effectiveDiskMaxGb(
+  userGb: number | null | undefined,
+  hostGb: number,
+) {
+  const user = userGb != null && userGb > 0 ? Math.floor(userGb) : 0
+  if (user > 0) return Math.min(user, MAX_DISK_CAP_GB)
+  return hostGb
+}
+
 const BYTE_UNITS: Record<string, number> = {
   b: 1,
   kb: 1000,
@@ -215,7 +229,10 @@ export async function hardwareStats(
   const phase = await desktopPhase(userId)
   let sample = phase === "running" ? await sampleDesktop(userId) : null
   if (!sample) sample = lastSample(userId)
-  const maxGb = desktopDiskMaxGb(db)
+  const maxGb = effectiveDiskMaxGb(
+    db.desktop(userId)?.diskGb ?? null,
+    desktopDiskMaxGb(db),
+  )
   return {
     phase,
     sample,

@@ -27,9 +27,31 @@ gen-3d "a stylized ceramic owl figurine, smooth glaze" -o /home/agent/workspace/
   shows shape and color, not print-readiness; the workspace file explorer
   still serves the raw file.
 - On failure it prints the provider's error on stderr — surface it verbatim.
+- Every submission is journaled to `~/.open-bot/gen-3d-jobs.json` the moment
+  the provider accepts it, so an interrupted generation is never paid twice:
+  `gen-3d status` lists submitted jobs, `gen-3d status ID` shows one (and
+  live-refreshes a running one), `gen-3d resume ID` keeps polling and
+  downloads when it finishes, and `gen-3d download ID [-o out.glb]` re-fetches
+  the file of a succeeded job.
 - If it prints "no 3d model provider configured — build the part with gpio-3d
   instead", fall back to the `gpio-3d` skill: design the part as a build
   recipe and write printable `.stl` + `.glb` files procedurally.
+
+## Tripo rigging and animation
+
+With the `tripo` provider configured, `gen-3d tripo <args>` runs the desktop's
+`tripo` CLI with the vaulted key injected as `TRIPO_API_KEY` — rig, animate,
+and retarget reuse the gen-3d configuration with no separate login and
+nothing printed:
+
+```sh
+gen-3d tripo --help
+gen-3d tripo rig --help
+```
+
+It exits with the CLI's code and streams its output. If the CLI is missing,
+install it first; if auth fails, the key on the config page is the one to
+fix.
 
 ## Fallback to gpio-3d
 

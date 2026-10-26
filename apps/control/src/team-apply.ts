@@ -1,10 +1,12 @@
 import type { Db } from "@open-bot/db"
 import {
   type ChatKeyEntry,
+  captureOpencodeAuth,
   restartOpencode,
   syncChatAuth,
   syncImageAuth,
   syncModel3dAuth,
+  syncOpencodeAuth,
   syncSystem1,
   syncVideoAuth,
   syncWatchdogConfig,
@@ -25,6 +27,12 @@ import {
 } from "./key-vault"
 import { system1ProviderById } from "./system1"
 import {
+  getTeamOpencodeAuth,
+  setTeamOpencodeAuth,
+  teamMode,
+  teamOpencodeAuthPublic,
+} from "./team"
+import {
   resolveWatchdogConfig,
   watchdogContainerPayload,
   watchdogProviderById,
@@ -33,6 +41,8 @@ import {
 export type TeamApplyOptions = {
   slugs?: string[]
   configChanged?: boolean
+  /** Push the shared OpenCode auth snapshot even without configChanged. */
+  opencodeAuth?: boolean
 }
 
 export type TeamApplyResult = {
@@ -50,6 +60,7 @@ async function applyTeamChangeForUser(
   changed: Set<string>,
   all: boolean,
   hub: EventHub | undefined,
+  pushOpencodeAuth: boolean,
 ): Promise<Record<string, unknown>> {
   const applied: Record<string, unknown> = {}
   const touches = (slug: string) => all || changed.has(slug)
@@ -181,7 +192,63 @@ async function applyTeamChangeForUser(
       }
     }
   }
+  if (all || pushOpencodeAuth) {
+    try {
+      const appliedAuth = await pushTeamOpencodeAuth(db, userId, hub)
+      if (appliedAuth) applied.opencodeAuth = appliedAuth
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!softError(message, "missing opencode auth setup")) {
+        applied.opencodeAuthError = message
+        console.error(`team apply opencode auth ${userId}: ${message}`)
+      }
+    }
+  }
   return applied
+}
+
+/**
+ * Merge the shared OpenCode auth snapshot into one desktop (team mode only).
+ * Restarts opencode when something changed. Returns null when there is
+ * nothing to push (personal mode, empty snapshot) — callers treat that as
+ * "skipped", and push errors surface to the applied log like every surface.
+ */
+export async function pushTeamOpencodeAuth(
+  db: Db,
+  userId: string,
+  hub?: EventHub,
+): Promise<Record<string, unknown> | null> {
+  if (teamMode(db) !== "team") return null
+  const snapshot = getTeamOpencodeAuth(db)
+  if (!snapshot || Object.keys(snapshot.entries).length === 0) return null
+  const result = await syncOpencodeAuth(userId, snapshot.entries)
+  if (result.changed.length > 0) {
+    const desktop = db.desktop(userId)
+    if (desktop) await restartOpencode(userId, { db, desktop, hub })
+  }
+  return result
+}
+
+/**
+ * Capture the admin desktop's current provider auth, store it as the shared
+ * snapshot, and fan it out. Returns null when the admin desktop is down or
+ * the auth file is unreadable — the caller decides how to surface that.
+ */
+export async function refreshTeamOpencodeAuth(
+  db: Db,
+  adminUserId: string,
+  hub?: EventHub,
+) {
+  if (teamMode(db) !== "team") return null
+  const captured = await captureOpencodeAuth(adminUserId)
+  if (!captured) return null
+  const snapshot = setTeamOpencodeAuth(db, captured)
+  const results = await applyTeamChange(db, hub, { opencodeAuth: true })
+  return {
+    ...teamOpencodeAuthPublic(snapshot),
+    applied: results.filter((result) => result.ok).length,
+    failed: results.filter((result) => !result.ok).length,
+  }
 }
 
 export async function applyTeamChange(
@@ -203,6 +270,7 @@ export async function applyTeamChange(
           changed,
           all,
           hub,
+          opts.opencodeAuth === true,
         )
         return { userId: user.id, ok: true, applied }
       } catch (error) {

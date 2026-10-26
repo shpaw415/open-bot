@@ -1,15 +1,27 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
 import type { Desktop } from "@open-bot/db"
-import { pendingRestart, restartOpencode } from "./docker"
+import {
+  captureOpencodeAuth,
+  pendingRestart,
+  restartOpencode,
+  syncOpencodeAuth,
+} from "./docker"
 import * as shellModule from "./shell"
 
 const shCalls: string[][] = []
+const shInputs: (string | undefined)[] = []
 const shResult = { code: 0, stdout: "", stderr: "" }
 mock.module("./shell", () => ({
   ...shellModule,
   docker: async () => "",
-  sh: async (args: string[]) => {
+  sh: async (args: string[], input?: string) => {
+    // docker.ts's isRunning probes the container through sh — answer it so
+    // capture/sync reach the code under test.
+    if (args.includes("inspect")) {
+      return { code: 0, stdout: "true\n", stderr: "" }
+    }
     shCalls.push(args)
+    shInputs.push(input)
     return shResult
   },
 }))
@@ -135,5 +147,50 @@ describe("restartOpencode", () => {
     })
     expect(pkillCount()).toBe(1)
     expect(pendingRestart("u-force")).toBeUndefined()
+  })
+})
+
+// Shared OpenCode provider auth (team mode): capture and fan-out shell
+// wrappers. These live here because this file owns the ./shell mock that the
+// shared docker module binds to in the full-suite run order.
+describe("opencode auth capture and sync", () => {
+  test("capture reads the auth file once the container answers running", async () => {
+    shResult.code = 0
+    shResult.stdout = JSON.stringify({ zai: { type: "api", key: "k" } })
+    shResult.stderr = ""
+    const auth = await captureOpencodeAuth("u1")
+    expect(auth).toEqual({ zai: { type: "api", key: "k" } })
+    expect(shCalls.at(-1)?.includes("cat")).toBe(true)
+  })
+
+  test("capture skips the container when it is not running", async () => {
+    shResult.code = 1
+    shResult.stdout = ""
+    expect(await captureOpencodeAuth("u1")).toBeNull()
+  })
+
+  test("sync pipes the entries payload and parses changed ids", async () => {
+    shResult.code = 0
+    shResult.stdout = '{"changed":["zai"]}'
+    shResult.stderr = ""
+    const result = await syncOpencodeAuth("u1", { zai: { type: "api" } })
+    expect(result).toEqual({ changed: ["zai"] })
+    expect(
+      shCalls.at(-1)?.some((arg) => arg.endsWith("apply-opencode-auth.sh")),
+    ).toBe(true)
+    expect(JSON.parse(shInputs.at(-1) ?? "{}")).toEqual({
+      entries: { zai: { type: "api" } },
+    })
+  })
+
+  test("sync names the missing image script", async () => {
+    shResult.code = 127
+    shResult.stdout = ""
+    shResult.stderr = "sh: /opt/open-bot/apply-opencode-auth.sh: not found"
+    expect(syncOpencodeAuth("u1", { zai: { type: "api" } })).rejects.toThrow(
+      /missing opencode auth setup/,
+    )
+    shResult.stdout = ""
+    shResult.stderr = ""
   })
 })

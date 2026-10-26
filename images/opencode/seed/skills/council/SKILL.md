@@ -38,8 +38,22 @@ Rules:
 - Give each member a self-contained `--message`: they cannot see this chat.
   Include the paths they need and where to write results.
 - Two to five members is a good council; more rarely helps.
+- Mind the desktop's RAM: every member is a full session, and a Chromium tab
+  or native build per member adds up fast. Budget roughly 1.5-2 GiB per
+  active member (check the real cap with `ob-memory`); on an 8 GiB desktop,
+  four members compiling or browsing at once can OOM the whole desktop and
+  kill every member silently. Cap build parallelism (`cargo` `[build]
+  jobs=2` in `.cargo/config.toml`) and keep one browser tab per member when
+  the team is large. If members report `idle` but the desktop died
+  (`desktop is not running`, OOM), revive it and rerun the council.
 - Personas work on members too (`--persona "Software manager"`) when a job
   needs a specific voice.
+- `--steps unlimited` lifts the 256-step cap on that member. Council work is
+  exactly the long-job shape the cap was cut for — deep research, big
+  builds, multi-phase reviews — and a member that hits the cap ends
+  mid-task with no way to resume. Pass it on every member of a long council
+  (`ob-thread start --council NAME --steps unlimited --from ... --role ...`).
+  A cut turn cannot resume itself, so decide when you start, not after.
 - Subagents you spawn inside a member with the built-in task tool show up
   under "Subagents" in the viewer automatically, transcripts included.
   Plain `ob-thread start --hidden` helpers do not — use `--council` when

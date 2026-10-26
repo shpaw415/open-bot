@@ -154,6 +154,46 @@ function ensurePersonaTables(sqlite: Database) {
   `)
 }
 
+function ensureBuiltinPersonaScopeTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS builtin_persona_scopes (
+      user_id TEXT NOT NULL,
+      persona_id TEXT NOT NULL,
+      skills_extra TEXT,
+      skills_none INTEGER NOT NULL DEFAULT 0,
+      mcp_extra TEXT,
+      mcp_none INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, persona_id)
+    );
+  `)
+  if (tableNames(sqlite).has("builtin_persona_scopes")) {
+    const columns = columnNames(sqlite, "builtin_persona_scopes")
+    if (!columns.has("skills_none")) {
+      sqlite.exec(
+        "ALTER TABLE builtin_persona_scopes ADD COLUMN skills_none INTEGER NOT NULL DEFAULT 0",
+      )
+    }
+    if (!columns.has("mcp_none")) {
+      sqlite.exec(
+        "ALTER TABLE builtin_persona_scopes ADD COLUMN mcp_none INTEGER NOT NULL DEFAULT 0",
+      )
+    }
+  }
+  if (tableNames(sqlite).has("personas")) {
+    const columns = columnNames(sqlite, "personas")
+    if (!columns.has("skills_none")) {
+      sqlite.exec(
+        "ALTER TABLE personas ADD COLUMN skills_none INTEGER NOT NULL DEFAULT 0",
+      )
+    }
+    if (!columns.has("mcp_none")) {
+      sqlite.exec(
+        "ALTER TABLE personas ADD COLUMN mcp_none INTEGER NOT NULL DEFAULT 0",
+      )
+    }
+  }
+}
+
 function ensureUserKeysTable(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS user_keys (
@@ -317,6 +357,7 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   }
   ensureLegacyColumns(sqlite)
   ensurePersonaTables(sqlite)
+  ensureBuiltinPersonaScopeTable(sqlite)
   ensureThreadScreenTable(sqlite)
   ensureThreadTitleTable(sqlite)
   ensureCronNoticeTable(sqlite)

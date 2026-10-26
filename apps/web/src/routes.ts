@@ -22,6 +22,7 @@ export type ConfigTab =
   | "mcp"
   | "endpoints"
   | "hardware"
+  | "processes"
   | "reports"
   | "security"
 
@@ -84,6 +85,7 @@ export const CONFIG_TABS: ConfigTab[] = [
   "endpoints",
   "backup",
   "hardware",
+  "processes",
   "reports",
   "security",
 ]
@@ -104,6 +106,7 @@ export const CONFIG_TAB_LABELS: Record<AnyConfigTab, string> = {
   endpoints: "Points d'accès publics",
   backup: "Sauvegarde",
   hardware: "Matériel",
+  processes: "Processus",
   reports: "Rapports",
   security: "Protection de l'agent",
   cron: "Automatisations",
@@ -135,7 +138,7 @@ export const CONFIG_GROUPS: ConfigGroup[] = [
   {
     key: "avance",
     label: "Avancé",
-    tabs: ["cron", "backup", "hardware", "reports", "security"],
+    tabs: ["cron", "backup", "hardware", "processes", "reports", "security"],
   },
 ]
 

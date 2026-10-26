@@ -17,20 +17,31 @@ import {
   vikingProviderReady,
 } from "@open-bot/db"
 import { handleAdmin } from "./admin"
-import { handleKeys, isKeysRequest } from "./api-keys"
+import { handleKeys, isKeysRequest, keysTeamLocked } from "./api-keys"
 import { desktopAppCatalog, launchDesktopApp } from "./apps"
 import { handleBackupApi } from "./backup-api"
 import { handleCatalogDirs } from "./catalog-dirs"
+import {
+  type CliId,
+  cliProviderById,
+  cliProviders,
+  filterCliModels,
+  isCliProviderId,
+} from "./cli-bridge/providers"
 import { handleCouncils, isCouncilPath } from "./councils"
 import {
+  cleanupGuardSharedThread,
   cronModelFields,
   cronPersonaFields,
   fireCronJob,
+  GUARD_JOB_RE,
   nextRunMs,
   normalizeCronRun,
   parseCron,
   parseRunKind,
+  UNLIMITED_STEPS_AGENT,
 } from "./cron"
+import { handleDelegations, isDelegationsPath } from "./delegations"
 import {
   type ChatKeyEntry,
   currentStart,
@@ -38,13 +49,17 @@ import {
   endpoint,
   isRunning,
   opencodeExec,
+  probeCliProviders,
+  probeCliProvidersCached,
   restartOpencode,
+  spawnCliLogin,
   spawnLogin,
   spawnProjectShell,
   startDesktop,
   startError,
   stopDesktop,
   syncChatAuth,
+  syncCliAuth,
   syncImageAuth,
   syncModel3dAuth,
   syncSystem1,
@@ -111,7 +126,6 @@ import {
 } from "./model3d-providers"
 import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords"
 import {
-  ASSISTANT_ID,
   applyPersonaScope,
   handlePersonas,
   mergeSystem,
@@ -132,6 +146,7 @@ import {
   proxyPluginPageFrame,
   sanitizePluginRest,
   schedulePluginPageRestart,
+  uiBuildId,
 } from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins } from "./plugins"
@@ -146,6 +161,11 @@ import {
   proxyPreview,
   readPreviewPort,
 } from "./preview"
+import {
+  desktopProcesses,
+  killDesktopProcess,
+  PROCESS_ID_PATTERN,
+} from "./processes"
 import {
   isProjectManageRequest,
   opencodeFileUrl,
@@ -189,6 +209,7 @@ import {
   teamMode,
   teamWriteLocked,
 } from "./team"
+import { refreshTeamOpencodeAuth } from "./team-apply"
 import { handleThreadDirs } from "./thread-dirs"
 import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
 import {
@@ -290,6 +311,9 @@ type LoginSession = {
   id: string
   userId: string
   provider?: string
+  // Set when this login drives a CLI subscription binary (claude/muse)
+  // instead of `opencode auth login`.
+  cli?: CliId
   method?: string
   started: boolean
   done: boolean
@@ -544,13 +568,23 @@ async function createOpencodeSession(
       return json({ error: "unknown folder" }, 400)
     dirId = raw.dirId
   }
+  // steps:"unlimited" binds the new session to the no-step-cap agent variant
+  // (same contract as POST /api/threads); a raw agent field is not accepted —
+  // the web speaks the steps semantic, the control plane owns the mapping.
+  if (raw.steps !== undefined && raw.steps !== "unlimited")
+    return json({ error: 'steps must be "unlimited" or omitted' }, 400)
   const rest = { ...raw }
   delete rest.personaId
   delete rest.dirId
+  delete rest.agent
+  if (raw.steps === "unlimited") rest.agent = UNLIMITED_STEPS_AGENT
   // Persona skill scopes ride the session-create body as opencode permission
-  // rules — one write, no restart, persisted in opencode.db.
-  if (personaId && personaId !== ASSISTANT_ID) {
+  // rules — one write, no restart, persisted in opencode.db. Built-in
+  // personas (Assistant included) are seed-scoped, so they apply like any
+  // other persona.
+  if (personaId) {
     const ruleset = await personaScope(
+      db,
       userId,
       resolvePersona(db, userId, personaId),
     )
@@ -572,7 +606,7 @@ async function createOpencodeSession(
       // return the upstream body even if the folder cannot be stored
     }
   }
-  if (upstream.ok && personaId && personaId !== ASSISTANT_ID) {
+  if (upstream.ok && personaId) {
     try {
       const created = JSON.parse(text) as { id?: string }
       if (created.id) db.setThreadPersona(userId, created.id, personaId)
@@ -1008,6 +1042,7 @@ export function createServer(
           if (!pageUser) return json({ error: "unauthorized" }, 401)
           return await handlePluginPagesStatus(db, pageUser)
         }
+        if (url.pathname === "/api/build") return json({ build: uiBuildId() })
         if (url.pathname.startsWith("/api/"))
           return await api(req, url, db, hub, () => server.timeout(req, 0))
         if (url.pathname.startsWith("/desktop/"))
@@ -1336,6 +1371,7 @@ async function api(
     url.pathname.startsWith("/api/thread-dirs/")
   const isCatalogDirsPath = url.pathname.startsWith("/api/catalog/dirs")
   const isCouncilsPath = isCouncilPath(url.pathname)
+  const isDelegations = isDelegationsPath(url.pathname)
   const isPluginPath =
     url.pathname === "/api/plugins" || url.pathname.startsWith("/api/plugins/")
   const isProjectManage = isProjectManageRequest(url.pathname, req.method)
@@ -1349,6 +1385,7 @@ async function api(
     isThreadDirsPath ||
     isCatalogDirsPath ||
     isCouncilsPath ||
+    isDelegations ||
     isPluginPath ||
     isProjectManage ||
     isMedia ||
@@ -1388,6 +1425,11 @@ async function api(
       }
       if (isCouncilsPath) {
         const handled = handleCouncils(req, url, db, agent, hub)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
+      if (isDelegations) {
+        const handled = handleDelegations(req, url, db, agent)
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -1479,6 +1521,11 @@ async function api(
   }
   if (isCouncilsPath) {
     const handled = handleCouncils(req, url, db, user, hub)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
+  if (isDelegations) {
+    const handled = handleDelegations(req, url, db, user)
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
@@ -1759,6 +1806,20 @@ async function api(
     hub.emit(user.id, { type: "reports.changed" })
     return json({ ok: true })
   }
+  if (url.pathname === "/api/processes" && req.method === "GET") {
+    await ensure(user, db)
+    return json({ processes: await desktopProcesses(user.id) })
+  }
+  const processKillMatch = url.pathname.match(/^\/api\/processes\/([^/]+)$/)
+  if (processKillMatch && req.method === "DELETE") {
+    const processId = decodeURIComponent(processKillMatch[1] ?? "")
+    if (!PROCESS_ID_PATTERN.test(processId))
+      return json({ error: "bad process id" }, 400)
+    await ensure(user, db)
+    await killDesktopProcess(user.id, processId)
+    hub.emit(user.id, { type: "processes.changed" })
+    return json({ ok: true })
+  }
   if (url.pathname === "/api/hardware" && req.method === "GET") {
     await ensure(user, db)
     return json(await hardwareStats(user.id, db))
@@ -1833,11 +1894,13 @@ async function api(
     })
   }
   if (url.pathname === "/api/keys" && req.method === "PUT") {
-    if (getTeamConfig(db).mode === "team") {
-      return json({ error: "team_locked" }, 403)
-    }
     const body = await readJson(req)
     const slug = String(body.slug ?? "").trim()
+    // Team mode locks only the shared provider slugs; plugin-declared vault
+    // slugs stay per-user, so their owner can still manage them here.
+    if (keysTeamLocked(db, slug)) {
+      return json({ error: "team_locked" }, 403)
+    }
     const spec = keyVaultSpecById(slug)
     const pluginKey = spec ? null : pluginKeyBySlug(db, user.id, slug)
     if (!spec && !pluginKey) return json({ error: "unknown key entry" }, 400)
@@ -1901,10 +1964,12 @@ async function api(
     return json({ ok: true, applied })
   }
   if (url.pathname === "/api/keys" && req.method === "DELETE") {
-    if (getTeamConfig(db).mode === "team") {
+    const slug = url.searchParams.get("slug") ?? ""
+    // Same team rule as PUT: shared provider slugs are locked, plugin slugs
+    // stay per-user.
+    if (keysTeamLocked(db, slug)) {
       return json({ error: "team_locked" }, 403)
     }
-    const slug = url.searchParams.get("slug") ?? ""
     const spec = keyVaultSpecById(slug)
     const pluginKey = spec ? null : pluginKeyBySlug(db, user.id, slug)
     if (!spec && !pluginKey) return json({ error: "unknown key entry" }, 400)
@@ -2747,12 +2812,41 @@ async function api(
       }))
     const saved = db.desktop(user.id)
     const selection = effectiveSelection(db, user)
+    // CLI subscription providers live outside opencode's provider auth:
+    // probe the desktop for each CLI's own login state. A null probe
+    // (image predates cli-status.sh) reports unknown, never logged out.
+    const cliStatus = await probeCliProviders(user.id).catch(() => null)
+    const cliById = new Map((cliStatus ?? []).map((row) => [row.id, row]))
     return json({
       providers: {
         catalog,
         connected: providers?.connected ?? [],
       },
+      cliProviders: {
+        available: cliStatus !== null,
+        items: cliProviders.map((provider) => {
+          const row = cliById.get(provider.id)
+          return {
+            id: provider.id,
+            label: provider.label,
+            description: provider.description,
+            installed: row ? row.installed : null,
+            loggedIn: row ? row.loggedIn : null,
+            account: row?.account ?? null,
+            models: provider.models.map((model) => ({
+              id: model.id,
+              name: model.name,
+            })),
+          }
+        }),
+      },
       auth: publicProviderAuth(auth),
+      team: {
+        mode: teamMode(db),
+        // Non-admins in team mode consume the shared provider auth; the
+        // login/logout flows are admin-only (same rule as the Keys tab).
+        lockedAuth: teamWriteLocked(db, user.role),
+      },
       selected: saved
         ? {
             selectedProvider: selection.provider ?? saved.selectedProvider,
@@ -2764,6 +2858,15 @@ async function api(
     })
   }
   if (url.pathname === "/api/providers/login" && req.method === "POST") {
+    if (teamWriteLocked(db, user.role)) {
+      return json(
+        {
+          error:
+            "team_locked: providers are managed by the team admin in team mode",
+        },
+        403,
+      )
+    }
     await ensure(user, db)
     const body = await readJson(req)
     const id = crypto.randomUUID()
@@ -2771,6 +2874,7 @@ async function api(
       id,
       userId: user.id,
       provider: body.provider ? String(body.provider) : undefined,
+      cli: isCliProviderId(body.provider) ? body.provider : undefined,
       method: body.method ? String(body.method) : undefined,
       started: false,
       done: false,
@@ -2844,14 +2948,57 @@ async function api(
     return json({ delivered: true, status })
   }
   if (url.pathname === "/api/providers/logout" && req.method === "POST") {
+    if (teamWriteLocked(db, user.role)) {
+      return json(
+        {
+          error:
+            "team_locked: providers are managed by the team admin in team mode",
+        },
+        403,
+      )
+    }
     const body = await readJson(req)
-    await ensure(user, db)
+    const desktop = await ensure(user, db)
+    if (isCliProviderId(body.provider)) {
+      // CLI subscription logout: the CLI drops its own credential, then
+      // the auth sync revokes the dummy bridge key so the provider
+      // leaves the model picker.
+      const provider = cliProviderById(body.provider)
+      if (!provider) return json({ error: "unknown provider" }, 400)
+      const result = await opencodeExec(user.id, [
+        provider.bin,
+        ...provider.logoutArgs,
+      ])
+      if (result.code === 0) {
+        const synced = await syncCliAuth(
+          user.id,
+          basic(desktop.opencodePassword).authorization,
+        ).catch(() => null)
+        if (synced?.applied) {
+          await restartOpencode(user.id, { db, desktop, hub })
+        }
+      }
+      return json({
+        ok: result.code === 0,
+        output: result.stdout || result.stderr,
+      })
+    }
     const result = await opencodeExec(user.id, [
       "opencode",
       "auth",
       "logout",
       String(body.provider ?? ""),
     ])
+    if (result.code === 0 && user.role === "admin" && teamMode(db) === "team") {
+      // The admin just removed a provider: refresh the shared snapshot.
+      void refreshTeamOpencodeAuth(db, user.id, hub).catch((error: unknown) => {
+        console.error(
+          `team opencode auth refresh after logout failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      })
+    }
     return json({
       ok: result.code === 0,
       output: result.stdout || result.stderr,
@@ -3132,14 +3279,15 @@ async function api(
       // binding re-applies the skill ruleset (PATCH, fire-and-forget) so
       // persona edits, opencode restarts, and binding moves stay scoped
       // without a config write. One local ms-level call on persona-bound
-      // threads only.
-      const boundPersona = resolvePersona(
-        db,
-        user.id,
-        db.threadPersona(user.id, promptedId)?.personaId ?? ASSISTANT_ID,
-      )
-      if (boundPersona && boundPersona.id !== ASSISTANT_ID)
+      // threads only. Only an explicit binding scopes the thread — an
+      // unbound thread has no persona at all and stays unrestricted.
+      const binding = db.threadPersona(user.id, promptedId)
+      const boundPersona = binding
+        ? resolvePersona(db, user.id, binding.personaId)
+        : null
+      if (boundPersona)
         void applyPersonaScope(
+          db,
           user.id,
           base,
           basic(desktop.opencodePassword),
@@ -3271,7 +3419,16 @@ async function connectedModels(user: User, db: Db) {
       `${b.providerID}/${b.modelID}`,
     ),
   )
-  return { models, connected }
+  // CLI subscription providers read "connected" in opencode even while
+  // logged out (keyless custom providers); gate them on the real CLI
+  // login state so the picker never offers a dead subscription model.
+  const gated = models.some((model) => isCliProviderId(model.providerID))
+    ? filterCliModels(
+        models,
+        await probeCliProvidersCached(user.id).catch(() => null),
+      )
+    : models
+  return { models: gated, connected }
 }
 
 async function handleCron(
@@ -3548,11 +3705,16 @@ async function handleCron(
   }
 
   if (idMatch && !idMatch[2] && req.method === "DELETE") {
-    const removed = db.deleteCronJob(
-      decodeURIComponent(idMatch[1] ?? ""),
-      user.id,
-    )
+    const jobId = decodeURIComponent(idMatch[1] ?? "")
+    const job = db.cronJobById(jobId, user.id)
+    const removed = db.deleteCronJob(jobId, user.id)
     if (!removed) return json({ error: "job not found" }, 404)
+    if (job && GUARD_JOB_RE.test(job.name)) {
+      // Last guard gone → the shared thread (and its screen) goes with it.
+      void cleanupGuardSharedThread(db, user.id, [job.sessionId ?? ""]).catch(
+        () => {},
+      )
+    }
     hub.emit(user.id, { type: "cron.changed" })
     return json({ ok: true })
   }
@@ -3662,63 +3824,66 @@ function startLogin(session: LoginSession, cols: number, rows: number) {
     clearTimeout(session.expire)
     session.expire = null
   }
-  session.proc = spawnLogin(session.userId, {
-    provider: session.provider,
-    method: session.method,
-    cols,
-    rows,
-    onData(data) {
-      if (session.urlFlush) {
-        clearTimeout(session.urlFlush)
-        session.urlFlush = null
+  const onData = (data: Uint8Array) => {
+    if (session.urlFlush) {
+      clearTimeout(session.urlFlush)
+      session.urlFlush = null
+    }
+    const fresh = session.scanner.push(data).some((u) => !isLocalUrl(u))
+    if (fresh) {
+      session.urls = session.scanner.urls().filter((u) => !isLocalUrl(u))
+      const frame = JSON.stringify({ op: "urls", urls: session.urls })
+      for (const sock of session.sockets) {
+        try {
+          sock.send(frame)
+        } catch {
+          // socket already closed
+        }
       }
-      const fresh = session.scanner.push(data).some((u) => !isLocalUrl(u))
-      if (fresh) {
-        session.urls = session.scanner.urls().filter((u) => !isLocalUrl(u))
-        const frame = JSON.stringify({ op: "urls", urls: session.urls })
-        for (const sock of session.sockets) {
+    }
+    // A URL may have ended exactly at the chunk edge (or be the last thing
+    // the login ever prints) — flush the scanner after a quiet period.
+    session.urlFlush = setTimeout(
+      (sessionRef: LoginSession) => {
+        sessionRef.urlFlush = null
+        if (
+          sessionRef.done ||
+          sessionRef.scanner.flush().every((u) => isLocalUrl(u))
+        )
+          return
+        sessionRef.urls = sessionRef.scanner
+          .urls()
+          .filter((u) => !isLocalUrl(u))
+        const frame = JSON.stringify({ op: "urls", urls: sessionRef.urls })
+        for (const sock of sessionRef.sockets) {
           try {
             sock.send(frame)
           } catch {
             // socket already closed
           }
         }
+      },
+      2000,
+      session,
+    )
+    session.urlFlush.unref?.()
+    for (const sock of session.sockets) {
+      try {
+        sock.send(data)
+      } catch {
+        // socket already closed
       }
-      // A URL may have ended exactly at the chunk edge (or be the last thing
-      // the login ever prints) — flush the scanner after a quiet period.
-      session.urlFlush = setTimeout(
-        (sessionRef: LoginSession) => {
-          sessionRef.urlFlush = null
-          if (
-            sessionRef.done ||
-            sessionRef.scanner.flush().every((u) => isLocalUrl(u))
-          )
-            return
-          sessionRef.urls = sessionRef.scanner
-            .urls()
-            .filter((u) => !isLocalUrl(u))
-          const frame = JSON.stringify({ op: "urls", urls: sessionRef.urls })
-          for (const sock of sessionRef.sockets) {
-            try {
-              sock.send(frame)
-            } catch {
-              // socket already closed
-            }
-          }
-        },
-        2000,
-        session,
-      )
-      session.urlFlush.unref?.()
-      for (const sock of session.sockets) {
-        try {
-          sock.send(data)
-        } catch {
-          // socket already closed
-        }
-      }
-    },
-  })
+    }
+  }
+  session.proc = session.cli
+    ? spawnCliLogin(session.userId, session.cli, { cols, rows, onData })
+    : spawnLogin(session.userId, {
+        provider: session.provider,
+        method: session.method,
+        cols,
+        rows,
+        onData,
+      })
   void finishLogin(session)
 }
 
@@ -3872,7 +4037,41 @@ async function finishLogin(session: LoginSession) {
   session.code = code
   session.done = true
   let note: string | undefined
+  if (code === 0 && session.cli && session.db) {
+    // CLI subscription login: reflect the new login state in opencode's
+    // auth.json so the provider turns connected, then the restart below
+    // picks it up. Per-desktop state — never part of the team snapshot.
+    const row = session.db.desktop(session.userId)
+    if (row) {
+      await syncCliAuth(
+        session.userId,
+        basic(row.opencodePassword).authorization,
+      ).catch(() => null)
+    }
+  }
   if (code === 0) {
+    // Team mode: a successful provider login by the admin refreshes the
+    // shared auth snapshot and fans it out (best effort, fire-and-forget).
+    const admin = session.db?.userById(session.userId)
+    if (
+      !session.cli &&
+      session.db &&
+      admin &&
+      admin.role === "admin" &&
+      teamMode(session.db) === "team"
+    ) {
+      void refreshTeamOpencodeAuth(
+        session.db,
+        session.userId,
+        session.hub,
+      ).catch((error: unknown) => {
+        console.error(
+          `team opencode auth refresh after login failed: ${
+            error instanceof Error ? error.message : error
+          }`,
+        )
+      })
+    }
     try {
       await restartOpencode(session.userId, {
         db: session.db,

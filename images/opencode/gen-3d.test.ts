@@ -12,11 +12,12 @@ async function run(home: string, ...args: string[]) {
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [stderr, code] = await Promise.all([
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ])
-  return { code, stderr }
+  return { code, stdout, stderr }
 }
 
 function seed(home: string, marker: object, auth?: object) {
@@ -86,4 +87,63 @@ test("image wires the cli, auth script, and seed skill", () => {
   )
   expect(skill).toContain("name: gen-3d")
   expect(skill).toContain("gpio-3d")
+})
+
+test("status lists an empty journal and rejects unknown job ids", async () => {
+  const home = mkdtempSync(join(tmpdir(), "gen-3d-"))
+  const empty = await run(home, "status")
+  expect(empty.code).toBe(0)
+  expect(empty.stdout).toContain("(no gen-3d jobs)")
+  const missing = await run(home, "status", "task_nope")
+  expect(missing.code).toBe(1)
+  expect(missing.stderr).toContain("no gen-3d job task_nope")
+  const download = await run(home, "download", "task_nope")
+  expect(download.code).toBe(1)
+  expect(download.stderr).toContain("no gen-3d job task_nope")
+  const noId = await run(home, "resume")
+  expect(noId.code).toBe(1)
+  expect(noId.stderr).toContain("usage: gen-3d resume JOB_ID")
+})
+
+test("status shows a journaled job without touching the network", async () => {
+  const home = mkdtempSync(join(tmpdir(), "gen-3d-"))
+  mkdirSync(join(home, ".open-bot"), { recursive: true })
+  writeFileSync(
+    join(home, ".open-bot/gen-3d-jobs.json"),
+    JSON.stringify({
+      jobs: [
+        {
+          id: "task_1",
+          provider: "tripo",
+          prompt: "a ceramic owl",
+          model: "latest",
+          out: "/home/agent/workspace/owl.glb",
+          status: "success",
+          resultUrl: "https://cdn.example/owl.glb",
+          submittedAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    }),
+  )
+  const result = await run(home, "status", "task_1")
+  expect(result.code).toBe(0)
+  expect(result.stdout).toContain("[task_1] tripo success")
+  expect(result.stdout).toContain("a ceramic owl")
+  expect(result.stdout).toContain("gen-3d download task_1")
+})
+
+test("the tripo bridge requires credentials and the tripo provider", async () => {
+  const home = mkdtempSync(join(tmpdir(), "gen-3d-"))
+  seed(home, { provider: "tripo", model: "latest" })
+  const noAuth = await run(home, "tripo", "rig", "--help")
+  expect(noAuth.code).toBe(1)
+  expect(noAuth.stderr).toContain("missing 3d credentials")
+  seed(home, { provider: "meshy", model: "meshy-5" }, { token: "t" })
+  const wrongProvider = await run(home, "tripo", "rig", "--help")
+  expect(wrongProvider.code).toBe(1)
+  expect(wrongProvider.stderr).toContain("needs the tripo 3d provider")
+  const noArgs = await run(home, "tripo")
+  expect(noArgs.code).toBe(1)
+  expect(noArgs.stderr).toContain("usage: gen-3d tripo")
 })

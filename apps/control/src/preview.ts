@@ -106,23 +106,41 @@ export function previewFrameUrl(token: string) {
 //    Fixed by defaulting credentials on (the frame proxy echoes the origin
 //    with allow-credentials; its responses carry no secrets the page doesn't
 //    already own — the frame token is the gate).
-// 3. getUserMedia needs a secure context, and an opaque origin is never one —
-//    navigator.mediaDevices is simply missing, so device pages die silently.
-//    Fixed by a media bridge: the shim defines mediaDevices/geolocation/
+// 3. getUserMedia needs a trusted origin, and an opaque origin never has
+//    one — NOT even on an https dashboard, where the sandboxed frame is a
+//    secure context (it inherits the parent's) yet its native getUserMedia
+//    still rejects with SecurityError "Invalid security origin". The guard
+//    below therefore bridges whenever the document origin is opaque —
+//    window.origin === "null" (Chrome reports the URL origin on
+//    location.origin even for sandboxed frames) — not just when
+//    isSecureContext is false. Fixed by a media bridge: the shim defines
+//    mediaDevices/geolocation/
 //    clipboard/requestMIDIAccess stubs that ask the shell (postMessage); the
 //    shell captures with its own (trusted) origin and relays live mic/camera/
 //    screen tracks over an in-page WebRTC loopback, location fixes, MIDI
 //    messages (listen/send/state per port) and clipboard writes as plain
 //    messages — the frame gets real results without ever being a secure
 //    context. Frames on a dedicated pages origin (secure context) keep the
-//    browser's native flow instead. When the bridge is impossible (no
+//    browser's native flow instead. Chrome also answers permissions.query
+//    for microphone/camera with "denied" on an opaque origin without ever
+//    prompting — pages that pre-check permissions then refuse to call
+//    getUserMedia at all — so the shim answers "prompt" for device names
+//    and lets the real gate stay the shell's consent bar. When the bridge
+//    is impossible (no
 //    parent, no RTCPeerConnection, old dashboard) the stubs reject and post
 //    media-blocked to the parent, which shows a banner. The 12 s bridge
 //    timeouts post media-blocked too — a stale dashboard shell (no message
 //    listener) must surface instead of leaving the app's generic
 //    permission-denied banner as the only clue.
-// Injected ahead of every page script in frame-rewritten HTML only.
-export const FRAME_STORAGE_SHIM = `<script>(function(){function make(){var d={};return{getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d={}},key:function(i){return Object.keys(d)[i]||null},get length(){return Object.keys(d).length}}}function fix(n){try{window[n].getItem("ob")}catch(e){try{Object.defineProperty(window,n,{value:make(),configurable:true})}catch(e2){}}}fix("localStorage");fix("sessionStorage");try{document.cookie}catch(e){try{Object.defineProperty(document,"cookie",{get:function(){return""},set:function(){},configurable:true})}catch(e2){}}var of=window.fetch;if(of){window.fetch=function(i,n){n=n||{};if(!n.credentials)n.credentials="include";return of.call(this,i,n)}}var os=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(){this.withCredentials=true;return os.apply(this,arguments)};var oe=window.EventSource;if(oe){var WE=function(u,c){c=c||{};if(c.withCredentials===undefined)c.withCredentials=true;return new oe(u,c)};WE.prototype=oe.prototype;window.EventSource=WE};try{if(!window.isSecureContext||!navigator.mediaDevices){var mid=0,mpe={},gw={},mpend={},macc={};var say=function(m){m.source="open-bot-frame";try{parent.postMessage(m,"*")}catch(e){}};var die=function(m){say({type:"media-blocked"});return Promise.reject(new DOMException(m||"device access is unavailable in this frame","NotAllowedError"))};var ask=function(c,display){if(!window.RTCPeerConnection||!window.parent||window.parent===window)return die();return new Promise(function(res,rej){var id="m"+(++mid);mpe[id]={res:res,rej:rej};say({type:"media-request",id:id,display:!!display,audio:!!(c&&c.audio),video:display?true:!!(c&&c.video)});setTimeout(function(){if(mpe[id]){delete mpe[id];say({type:"media-blocked",error:"media bridge unavailable — the dashboard tab may be stale; refresh the dashboard page"});rej(new DOMException("media bridge unavailable","NotAllowedError"))}},12000)})};var gUM=function(c){c=c||{};if(!c.audio&&!c.video)return die();return ask(c,false)};var gDM=function(c){return ask(c,true)};try{Object.defineProperty(navigator,"mediaDevices",{value:{getUserMedia:gUM,getDisplayMedia:gDM,enumerateDevices:function(){return Promise.resolve([])},addEventListener:function(){},removeEventListener:function(){},ondevicechange:null},configurable:true})}catch(e){}try{Object.defineProperty(navigator,"geolocation",{value:{getCurrentPosition:function(ok,err,o){var id="g"+(++mid);gw[id]={ok:ok,err:err,kind:"current"};say({type:"geo-request",id:id,kind:"current",opts:o||{}});setTimeout(function(){if(gw[id]){delete gw[id];err&&err({code:3,message:"location bridge unavailable"})}},12000)},watchPosition:function(ok,err,o){var id="g"+(++mid);gw[id]={ok:ok,err:err,kind:"watch"};say({type:"geo-request",id:id,kind:"watch",opts:o||{}});return id},clearWatch:function(id){if(gw[id]){delete gw[id];say({type:"geo-clear",id:id})}}},configurable:true})}catch(e){}try{Object.defineProperty(navigator,"clipboard",{value:{writeText:function(t){return new Promise(function(res,rej){var id="c"+(++mid);gw[id]={res:res,rej:rej,kind:"clip"};say({type:"clip-write",id:id,text:String(t)})})}},configurable:true})}catch(e){}var rMA=function(c){c=c||{};if(!window.parent||window.parent===window)return die();return new Promise(function(res,rej){var id="n"+(++mid);mpend[id]={res:res,rej:rej};say({type:"midi-request",id:id,sysex:!!c.sysex});setTimeout(function(){if(mpend[id]){delete mpend[id];say({type:"media-blocked",error:"midi bridge unavailable"});rej(new DOMException("midi bridge unavailable","NotAllowedError"))}},12000)})};try{Object.defineProperty(navigator,"requestMIDIAccess",{value:rMA,configurable:true})}catch(e){}var makeAccess=function(d){var byId={},acc={sysexEnabled:!!d.sysexEnabled,onstatechange:null};var mkPort=function(sp){var port={id:sp.id,name:sp.name,manufacturer:sp.manufacturer,state:sp.state,connection:sp.connection,type:sp.type,version:sp.version,onstatechange:null};port.open=function(){port.connection="open";say({type:"midi-port",id:d.id,portId:sp.id,op:"open"});return Promise.resolve(port)};port.close=function(){port.connection="closed";say({type:"midi-port",id:d.id,portId:sp.id,op:"close"});return Promise.resolve(port)};if(sp.type==="output"){port.send=function(data,ts){var arr=[];for(var i=0;i<data.length;i++)arr.push(data[i]&255);var m={type:"midi-send",id:d.id,portId:sp.id,data:arr};if(typeof ts==="number")m.timestamp=ts;say(m)}}else{Object.defineProperty(port,"onmidimessage",{get:function(){return port._h||null},set:function(fn){port._h=fn||null;say({type:fn?"midi-listen":"midi-unlisten",id:d.id,portId:sp.id})},configurable:true})}byId[sp.id]=port;return port};var mkMap=function(list){var m=new Map();(list||[]).forEach(function(sp){m.set(sp.id,mkPort(sp))});return m};acc.inputs=mkMap(d.inputs);acc.outputs=mkMap(d.outputs);acc._on=function(msg){if(msg.type==="midi-message"){var inp=acc.inputs.get(msg.portId);if(inp&&inp._h)inp._h({data:new Uint8Array(msg.data||[]),timeStamp:msg.ts||0,target:inp});return}if(msg.type==="midi-state"){var keep={},lists={input:msg.inputs||[],output:msg.outputs||[]};["input","output"].forEach(function(k){var map=k==="input"?acc.inputs:acc.outputs;lists[k].forEach(function(sp){keep[k+sp.id]=1;var pt=byId[sp.id];if(pt){pt.name=sp.name;pt.manufacturer=sp.manufacturer;pt.state=sp.state;pt.connection=sp.connection;pt.version=sp.version}else{pt=mkPort(sp);byId[sp.id]=pt;map.set(sp.id,pt)}});var gone=[];map.forEach(function(pt,id){if(!keep[k+id])gone.push(id)});gone.forEach(function(id){map.delete(id)})});var ch=msg.changed&&byId[msg.changed.id];if(ch&&ch.onstatechange)ch.onstatechange({target:ch});if(acc.onstatechange)acc.onstatechange({target:acc,port:ch})}};macc[d.id]=acc;return acc};window.addEventListener("message",function(ev){var d=ev.data;if(!d||d.source!=="open-bot-shell"||!d.id)return;var p=mpe[d.id];if(d.type==="media-denied"){if(p){delete mpe[d.id];p.rej(new DOMException(d.error||"user denied","NotAllowedError"))}return}if(d.type==="media-offer"&&p){delete mpe[d.id];var pc=new RTCPeerConnection();pc.ontrack=function(e){var st=(e.streams&&e.streams[0])||new MediaStream([e.track]);st.getTracks().forEach(function(t){var os2=t.stop.bind(t);t.stop=function(){say({type:"media-release",id:d.id});os2()};t.addEventListener("ended",function(){say({type:"media-release",id:d.id})})});p.res(st)};pc.setRemoteDescription(d.sdp).then(function(){return pc.createAnswer()}).then(function(a){return pc.setLocalDescription(a)}).then(function(){var fin=function(){if(pc.localDescription)say({type:"media-answer",id:d.id,sdp:pc.localDescription.sdp})};if(pc.iceGatheringState==="complete"){fin();return}pc.addEventListener("icegatheringstatechange",function(){if(pc.iceGatheringState==="complete")fin()});setTimeout(fin,1500)}).catch(function(){p.rej(new DOMException("media bridge failed","NotAllowedError"));try{pc.close()}catch(e2){}});return}var q=mpend[d.id];if(d.type==="midi-access"&&q){delete mpend[d.id];q.res(makeAccess(d));return}if(d.type==="midi-denied"&&q){delete mpend[d.id];q.rej(new DOMException(d.error||"user denied","NotAllowedError"));return}var a2=macc[d.id];if(a2&&(d.type==="midi-message"||d.type==="midi-state")){a2._on(d);return}var w=gw[d.id];if(!w)return;if(d.type==="geo-response"){if(d.err){w.err&&w.err(d.err)}else{w.ok&&w.ok(d.pos)}if(w.kind==="current"){delete gw[d.id]}return}if(d.type==="clip-result"){delete gw[d.id];if(d.err){w.rej&&w.rej(new DOMException(d.err,"NotAllowedError"))}else{w.res&&w.res()}return}})}}catch(e){}})()</script>`
+// Injected ahead of every page script in frame-rewritten HTML only. The
+// data-cfasync="false" attribute is Cloudflare Rocket Loader's documented
+// opt-out (must stay the first attribute): the zone's Rocket Loader rewrites
+// and re-inserts scripts on its own schedule, which delayed this shim past
+// the page's own scripts — the page then called getUserMedia on a missing
+// navigator.mediaDevices and showed its generic mic-denied banner before the
+// bridge ever existed.
+export const FRAME_STORAGE_SHIM = `<script data-cfasync="false">(function(){function make(){var d={};return{getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d={}},key:function(i){return Object.keys(d)[i]||null},get length(){return Object.keys(d).length}}}function fix(n){try{window[n].getItem("ob")}catch(e){try{Object.defineProperty(window,n,{value:make(),configurable:true})}catch(e2){}}}fix("localStorage");fix("sessionStorage");try{document.cookie}catch(e){try{Object.defineProperty(document,"cookie",{get:function(){return""},set:function(){},configurable:true})}catch(e2){}}var of=window.fetch;if(of){window.fetch=function(i,n){n=n||{};if(!n.credentials)n.credentials="include";return of.call(this,i,n)}}var os=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(){this.withCredentials=true;return os.apply(this,arguments)};var oe=window.EventSource;if(oe){var WE=function(u,c){c=c||{};if(c.withCredentials===undefined)c.withCredentials=true;return new oe(u,c)};WE.prototype=oe.prototype;window.EventSource=WE};try{var obO=null;try{obO=window.origin}catch(e9){}if(obO==="null"||(window.location&&window.location.origin==="null")||!window.isSecureContext||!navigator.mediaDevices){var mid=0,mpe={},gw={},mpend={},macc={},mtr={};var say=function(m){m.source="open-bot-frame";try{parent.postMessage(m,"*")}catch(e){}};var die=function(m){say({type:"media-blocked"});return Promise.reject(new DOMException(m||"device access is unavailable in this frame","NotAllowedError"))};var ask=function(c,display){if(!window.RTCPeerConnection||!window.parent||window.parent===window)return die();return new Promise(function(res,rej){var id="m"+(++mid);mpe[id]={res:res,rej:rej};say({type:"media-request",id:id,display:!!display,audio:!!(c&&c.audio),video:display?true:!!(c&&c.video)});setTimeout(function(){if(mpe[id]){delete mpe[id];say({type:"media-blocked",error:"media bridge unavailable — the dashboard tab may be stale; refresh the dashboard page"});rej(new DOMException("media bridge unavailable","NotAllowedError"))}},12000)})};var gUM=function(c){c=c||{};if(!c.audio&&!c.video)return die();return ask(c,false)};var gDM=function(c){return ask(c,true)};try{Object.defineProperty(navigator,"mediaDevices",{value:{getUserMedia:gUM,getDisplayMedia:gDM,enumerateDevices:function(){return Promise.resolve([])},addEventListener:function(){},removeEventListener:function(){},ondevicechange:null},configurable:true})}catch(e){}try{Object.defineProperty(navigator,"geolocation",{value:{getCurrentPosition:function(ok,err,o){var id="g"+(++mid);gw[id]={ok:ok,err:err,kind:"current"};say({type:"geo-request",id:id,kind:"current",opts:o||{}});setTimeout(function(){if(gw[id]){delete gw[id];err&&err({code:3,message:"location bridge unavailable"})}},12000)},watchPosition:function(ok,err,o){var id="g"+(++mid);gw[id]={ok:ok,err:err,kind:"watch"};say({type:"geo-request",id:id,kind:"watch",opts:o||{}});return id},clearWatch:function(id){if(gw[id]){delete gw[id];say({type:"geo-clear",id:id})}}},configurable:true})}catch(e){}try{Object.defineProperty(navigator,"clipboard",{value:{writeText:function(t){return new Promise(function(res,rej){var id="c"+(++mid);gw[id]={res:res,rej:rej,kind:"clip"};say({type:"clip-write",id:id,text:String(t)})})}},configurable:true})}catch(e){}try{var pq0=null;try{pq0=navigator.permissions&&navigator.permissions.query?navigator.permissions.query.bind(navigator.permissions):null}catch(e0){}var pqr=function(d){var n=d&&d.name;if(n==="microphone"||n==="camera"||n==="geolocation"||n==="display-capture"||n==="midi")return Promise.resolve({state:"prompt",status:"prompt",name:n,onchange:null});if(pq0)return pq0(d);return Promise.reject(new DOMException("permission "+n+" is unknown","NotSupportedError"))};try{Object.defineProperty(navigator,"permissions",{value:{query:pqr},configurable:true})}catch(e2){if(navigator.permissions){navigator.permissions.query=pqr}}}catch(e){}var rMA=function(c){c=c||{};if(!window.parent||window.parent===window)return die();return new Promise(function(res,rej){var id="n"+(++mid);mpend[id]={res:res,rej:rej};say({type:"midi-request",id:id,sysex:!!c.sysex});setTimeout(function(){if(mpend[id]){delete mpend[id];say({type:"media-blocked",error:"midi bridge unavailable"});rej(new DOMException("midi bridge unavailable","NotAllowedError"))}},12000)})};try{Object.defineProperty(navigator,"requestMIDIAccess",{value:rMA,configurable:true})}catch(e){}var makeAccess=function(d){var byId={},acc={sysexEnabled:!!d.sysexEnabled,onstatechange:null};var mkPort=function(sp){var port={id:sp.id,name:sp.name,manufacturer:sp.manufacturer,state:sp.state,connection:sp.connection,type:sp.type,version:sp.version,onstatechange:null};port.open=function(){port.connection="open";say({type:"midi-port",id:d.id,portId:sp.id,op:"open"});return Promise.resolve(port)};port.close=function(){port.connection="closed";say({type:"midi-port",id:d.id,portId:sp.id,op:"close"});return Promise.resolve(port)};if(sp.type==="output"){port.send=function(data,ts){var arr=[];for(var i=0;i<data.length;i++)arr.push(data[i]&255);var m={type:"midi-send",id:d.id,portId:sp.id,data:arr};if(typeof ts==="number")m.timestamp=ts;say(m)}}else{Object.defineProperty(port,"onmidimessage",{get:function(){return port._h||null},set:function(fn){port._h=fn||null;say({type:fn?"midi-listen":"midi-unlisten",id:d.id,portId:sp.id})},configurable:true})}byId[sp.id]=port;return port};var mkMap=function(list){var m=new Map();(list||[]).forEach(function(sp){m.set(sp.id,mkPort(sp))});return m};acc.inputs=mkMap(d.inputs);acc.outputs=mkMap(d.outputs);acc._on=function(msg){if(msg.type==="midi-message"){var inp=acc.inputs.get(msg.portId);if(inp&&inp._h)inp._h({data:new Uint8Array(msg.data||[]),timeStamp:msg.ts||0,target:inp});return}if(msg.type==="midi-state"){var keep={},lists={input:msg.inputs||[],output:msg.outputs||[]};["input","output"].forEach(function(k){var map=k==="input"?acc.inputs:acc.outputs;lists[k].forEach(function(sp){keep[k+sp.id]=1;var pt=byId[sp.id];if(pt){pt.name=sp.name;pt.manufacturer=sp.manufacturer;pt.state=sp.state;pt.connection=sp.connection;pt.version=sp.version}else{pt=mkPort(sp);byId[sp.id]=pt;map.set(sp.id,pt)}});var gone=[];map.forEach(function(pt,id){if(!keep[k+id])gone.push(id)});gone.forEach(function(id){map.delete(id)})});var ch=msg.changed&&byId[msg.changed.id];if(ch&&ch.onstatechange)ch.onstatechange({target:ch});if(acc.onstatechange)acc.onstatechange({target:acc,port:ch})}};macc[d.id]=acc;return acc};window.addEventListener("message",function(ev){var d=ev.data;if(!d||d.source!=="open-bot-shell"||!d.id)return;var p=mpe[d.id];if(d.type==="media-denied"){if(p){delete mpe[d.id];p.rej(new DOMException(d.error||"user denied","NotAllowedError"))}return}if(d.type==="media-offer"&&p){delete mpe[d.id];var pc=new RTCPeerConnection();pc.ontrack=function(e){(mtr[d.id]||(mtr[d.id]=[])).push(e.track);var st=(e.streams&&e.streams[0])||new MediaStream([e.track]);st.getTracks().forEach(function(t){var os2=t.stop.bind(t);t.stop=function(){say({type:"media-release",id:d.id});os2()};t.addEventListener("ended",function(){say({type:"media-release",id:d.id})})});p.res(st)};pc.setRemoteDescription({type:"offer",sdp:d.sdp}).then(function(){return pc.createAnswer()}).then(function(a){return pc.setLocalDescription(a)}).then(function(){var done=false;var fin=function(){if(done)return;done=true;if(pc.localDescription)say({type:"media-answer",id:d.id,sdp:pc.localDescription.sdp})};if(pc.iceGatheringState==="complete"){fin();return}pc.addEventListener("icegatheringstatechange",function(){if(pc.iceGatheringState==="complete")fin()});setTimeout(fin,3000)}).catch(function(e){p.rej(new DOMException("media bridge failed: "+((e&&e.message)||e||"answer failed"),"NotAllowedError"));try{pc.close()}catch(e2){}});return}if(d.type==="media-track-state"){var arr=mtr[d.id];(d.tracks||[]).forEach(function(s2,i){var t=arr&&arr[i];if(!t)return;try{Object.defineProperty(t,"muted",{get:function(){return!!s2.muted},configurable:true})}catch(e3){}});return}
+var q=mpend[d.id];if(d.type==="midi-access"&&q){delete mpend[d.id];q.res(makeAccess(d));return}if(d.type==="midi-denied"&&q){delete mpend[d.id];q.rej(new DOMException(d.error||"user denied","NotAllowedError"));return}var a2=macc[d.id];if(a2&&(d.type==="midi-message"||d.type==="midi-state")){a2._on(d);return}var w=gw[d.id];if(!w)return;if(d.type==="geo-response"){if(d.err){w.err&&w.err(d.err)}else{w.ok&&w.ok(d.pos)}if(w.kind==="current"){delete gw[d.id]}return}if(d.type==="clip-result"){delete gw[d.id];if(d.err){w.rej&&w.rej(new DOMException(d.err,"NotAllowedError"))}else{w.res&&w.res()}return}})}}catch(e){}})()</script>`
 
 export function rewritePreviewHtml(
   html: string,
@@ -144,6 +162,17 @@ export function rewritePreviewHtml(
       /(<style[^>]*>)([\s\S]*?)(<\/style>)/gi,
       (_match, open: string, css: string, close: string) =>
         open + rewritePreviewCss(css, base) + close,
+    )
+    // Opt every script out of Cloudflare Rocket Loader. The zone rewrites and
+    // re-inserts scripts on its own schedule, which defers Vite dev modules
+    // past their preloads (credentials-mode mismatch warnings) and breaks HMR
+    // inside sandboxed frames; data-cfasync="false" is Rocket Loader's
+    // documented opt-out — the shim already carries it, page scripts need it
+    // too.
+    .replace(/<script(\s[^>]*)?>/gi, (tag, attrs: string | undefined) =>
+      attrs && /\bdata-cfasync=/i.test(attrs)
+        ? tag
+        : `<script data-cfasync="false"${attrs ?? ""}>`,
     )
   if (/<base\s/i.test(out)) return `${head}${out}`
   if (/<head[^>]*>/i.test(out)) {
@@ -269,18 +298,58 @@ async function rewriteBody(
   })
 }
 
+// Credentialed CORS for the preview frame — the sandboxed iframe is an opaque
+// origin, so its module scripts and credentialed fetches are cross-origin and
+// fail without ACAO (same contract as the plugin frame proxy's pageFrameCors).
+// Reflect is safe: the preview token gates the path, and no other /api/*
+// response carries CORS headers, so a page that knows the token gains nothing
+// by also sending cookies.
+export function previewFrameCors(req: Request, response: Response) {
+  const headers = new Headers(response.headers)
+  headers.set(
+    "access-control-allow-origin",
+    req.headers.get("origin") ?? "null",
+  )
+  headers.set("access-control-allow-credentials", "true")
+  headers.set(
+    "access-control-allow-methods",
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+  )
+  const asked = req.headers.get("access-control-request-headers")
+  if (asked) headers.set("access-control-allow-headers", asked)
+  else headers.delete("access-control-allow-headers")
+  headers.append("vary", "Origin")
+  headers.append("vary", "Access-Control-Request-Headers")
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
 export async function proxyPreview(
   req: Request,
   url: URL,
   server: UpgradeServer,
 ): Promise<Response | undefined> {
   const parsed = parsePreviewFramePath(url.pathname)
-  if (!parsed) return new Response("not found", { status: 404 })
+  if (!parsed)
+    return previewFrameCors(req, new Response("not found", { status: 404 }))
+  if (req.method === "OPTIONS") {
+    return previewFrameCors(req, new Response(null, { status: 204 }))
+  }
   const grant = touchPreviewToken(parsed.token)
-  if (!grant) return new Response("preview expired", { status: 401 })
+  if (!grant)
+    return previewFrameCors(
+      req,
+      new Response("preview expired", { status: 401 }),
+    )
   const port = await cachedPreviewPort(grant.userId, grant.sessionId)
   if (port === null)
-    return new Response("preview is not running", { status: 404 })
+    return previewFrameCors(
+      req,
+      new Response("preview is not running", { status: 404 }),
+    )
   const base = await endpoint(grant.userId, "opencode", port)
   if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
     const wsBase = base.replace(/^http/, "ws")
@@ -292,7 +361,9 @@ export async function proxyPreview(
         queue: [],
       },
     })
-    return ok ? undefined : new Response("upgrade failed", { status: 400 })
+    return ok
+      ? undefined
+      : previewFrameCors(req, new Response("upgrade failed", { status: 400 }))
   }
   const dest = new URL(`${parsed.rest}${url.search}`, base)
   const headers = new Headers(req.headers)
@@ -306,5 +377,8 @@ export async function proxyPreview(
     body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     duplex: "half",
   } as RequestInit)
-  return rewriteBody(upstream, previewFrameUrl(parsed.token))
+  return previewFrameCors(
+    req,
+    await rewriteBody(upstream, previewFrameUrl(parsed.token)),
+  )
 }

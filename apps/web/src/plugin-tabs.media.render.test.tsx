@@ -22,15 +22,16 @@ const appTab: PluginTab = {
   kind: "app",
 }
 
-function mount() {
+function mount(customFetch?: typeof fetch) {
   const realFetch = globalThis.fetch
-  const stub = (() =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({ frameUrl: "/frame/tok/", isolated: false }),
-        { status: 200 },
-      ),
-    )) as unknown as typeof fetch
+  const stub = (customFetch ??
+    (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ frameUrl: "/frame/tok/", isolated: false }),
+          { status: 200 },
+        ),
+      ))) as unknown as typeof fetch
   globalThis.fetch = stub
   const container = document.createElement("div")
   // Detached on purpose: happy-dom throws when a connected iframe's page
@@ -132,6 +133,61 @@ function patchNavigator(key: string, value: unknown): () => void {
       delete (nav as { [k: string]: unknown })[key]
     }
   }
+}
+
+// Same trick for location.reload — the self-heal must be observable, not real.
+function patchReload(): { reloads: () => number; restore: () => void } {
+  const loc = window.location as unknown as Record<string, unknown>
+  let count = 0
+  const owned = Object.hasOwn(loc, "reload")
+  const real = loc.reload
+  Object.defineProperty(loc, "reload", {
+    value: () => {
+      count += 1
+    },
+    configurable: true,
+  })
+  return {
+    reloads: () => count,
+    restore: () => {
+      if (owned) {
+        Object.defineProperty(loc, "reload", {
+          value: real,
+          configurable: true,
+        })
+      } else {
+        delete loc.reload
+      }
+    },
+  }
+}
+
+// The keep-alive interval is 4 minutes; tests trigger check() via the
+// visibilitychange listener instead (visible by default in happy-dom).
+async function pokeCheck(waitMs: number) {
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"))
+    await new Promise((resolve) => setTimeout(resolve, waitMs))
+  })
+}
+
+function buildFetch(build: string): typeof fetch {
+  return ((_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init as RequestInit | undefined)?.method === "POST") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ frameUrl: "/frame/tok/", isolated: false }),
+          { status: 200 },
+        ),
+      )
+    }
+    return Promise.resolve(
+      new Response(null, {
+        status: 200,
+        headers: { "x-open-bot-build": build },
+      }),
+    )
+  }) as unknown as typeof fetch
 }
 
 describe("AppTab — media-blocked banner", () => {
@@ -236,6 +292,7 @@ describe("AppTab — media-blocked banner", () => {
         {
           stop: () => stopped.push(true),
           addEventListener: () => {},
+          removeEventListener: () => {},
         },
       ],
     }
@@ -273,12 +330,18 @@ describe("AppTab — media-blocked banner", () => {
       await view.requestMedia({ id: "m2", audio: true, video: true })
       expect(view.html()).toContain("microphone and camera")
       await view.answer("Allow device")
-      expect(sent).toHaveLength(1)
+      expect(sent).toHaveLength(2)
       expect(sent[0]).toMatchObject({
         source: "open-bot-shell",
         type: "media-offer",
         id: "m2",
         sdp: "offer-sdp",
+      })
+      expect(sent[1]).toMatchObject({
+        source: "open-bot-shell",
+        type: "media-track-state",
+        id: "m2",
+        tracks: [{ muted: undefined, enabled: undefined }],
       })
       await act(async () => {
         window.dispatchEvent(
@@ -353,16 +416,96 @@ describe("AppTab — media-blocked banner", () => {
       })
       expect(view.html()).toContain("your screen")
       await view.answer("Allow device")
-      expect(sent).toHaveLength(1)
+      expect(sent).toHaveLength(2)
       expect(sent[0]).toMatchObject({
         source: "open-bot-shell",
         type: "media-offer",
         id: "s1",
         sdp: "screen-sdp",
       })
+      expect(sent[1]).toMatchObject({
+        source: "open-bot-shell",
+        type: "media-track-state",
+        id: "s1",
+        tracks: [],
+      })
       view.close()
     } finally {
       navigatorAny.getDisplayMedia = realDisplay
+      navigatorAny.mediaDevices = realDevices
+      ;(globalThis as Record<string, unknown>).RTCPeerConnection = realPC
+    }
+  })
+
+  test("source track mute events are mirrored as media-track-state", async () => {
+    const listeners: Record<string, () => void> = {}
+    let muted = false
+    const stream = {
+      getTracks: () => [
+        {
+          get muted() {
+            return muted
+          },
+          get enabled() {
+            return true
+          },
+          stop: () => {},
+          addEventListener: (kind: string, fn: () => void) => {
+            listeners[kind] = fn
+          },
+          removeEventListener: () => {},
+        },
+      ],
+    }
+    const navigatorAny = navigator as unknown as Record<string, unknown>
+    const realDevices = navigatorAny.mediaDevices
+    const realPC = (globalThis as Record<string, unknown>).RTCPeerConnection
+    navigatorAny.mediaDevices = {
+      getUserMedia: () => Promise.resolve(stream),
+    }
+    ;(globalThis as Record<string, unknown>).RTCPeerConnection = class {
+      localDescription = { type: "offer", sdp: "mute-sdp" }
+      iceGatheringState = "complete"
+      connectionState = "new"
+      onconnectionstatechange: (() => void) | null = null
+      createOffer = () => Promise.resolve({ type: "offer", sdp: "mute-sdp" })
+      setLocalDescription = () => Promise.resolve()
+      setRemoteDescription = () => Promise.resolve()
+      addEventListener = () => {}
+      removeEventListener = () => {}
+      addTrack = () => {}
+      close = () => {}
+    }
+    try {
+      const view = mount()
+      await view.open()
+      const sent: unknown[] = []
+      view.stubFrameWindow({ postMessage: (msg: unknown) => sent.push(msg) })
+      await view.send({
+        type: "media-request",
+        id: "m3",
+        audio: true,
+        video: false,
+      })
+      await view.answer("Allow device")
+      expect(listeners.mute).toBeTypeOf("function")
+      expect(sent.at(-1)).toMatchObject({
+        type: "media-track-state",
+        id: "m3",
+        tracks: [{ muted: false, enabled: true }],
+      })
+      muted = true
+      await act(async () => {
+        listeners.mute()
+        await Promise.resolve()
+      })
+      expect(sent.at(-1)).toMatchObject({
+        type: "media-track-state",
+        id: "m3",
+        tracks: [{ muted: true, enabled: true }],
+      })
+      view.close()
+    } finally {
       navigatorAny.mediaDevices = realDevices
       ;(globalThis as Record<string, unknown>).RTCPeerConnection = realPC
     }
@@ -562,5 +705,105 @@ describe("AppTab — media-blocked banner", () => {
       },
     ])
     view.close()
+  })
+
+  test("a blocked capture explains the browser denial and Retry re-asks", async () => {
+    const restoreDevices = patchNavigator("mediaDevices", {
+      getUserMedia: () =>
+        Promise.reject(
+          new DOMException("Permission denied", "NotAllowedError"),
+        ),
+    })
+    try {
+      const view = mount()
+      await view.open()
+      const sent: unknown[] = []
+      view.stubFrameWindow({ postMessage: (msg: unknown) => sent.push(msg) })
+      await view.requestMedia({ id: "m5", audio: true, video: false })
+      await view.answer("Allow device")
+      expect(view.html()).toContain("Microphone —")
+      expect(view.html()).toContain("the browser blocked the device")
+      expect(view.html()).toContain("address bar")
+      expect(view.html()).toContain("Retry")
+      // The frame still hears the plain rejection.
+      expect(sent[0]).toMatchObject({
+        source: "open-bot-shell",
+        type: "media-denied",
+        id: "m5",
+      })
+      await view.answer("Retry device")
+      expect(view.html()).toContain("This app wants access")
+      view.close()
+    } finally {
+      restoreDevices()
+    }
+  })
+
+  test("an insecure shell names the https fix without a Retry button", async () => {
+    const restore = patchNavigator("mediaDevices", undefined)
+    try {
+      const view = mount()
+      await view.open()
+      view.stubFrameWindow({ postMessage: () => {} })
+      await view.requestMedia({ id: "m6", audio: true, video: false })
+      await view.answer("Allow device")
+      expect(view.html()).toContain("secure context")
+      expect(view.html()).toContain("https")
+      expect(view.html()).not.toContain("Retry")
+      view.close()
+    } finally {
+      restore()
+    }
+  })
+
+  test("a newer shell build reloads the tab once (self-heal)", async () => {
+    sessionStorage.setItem("ob.build", "build-a")
+    const reload = patchReload()
+    try {
+      const view = mount(buildFetch("build-b"))
+      await view.open()
+      await pokeCheck(1600)
+      expect(reload.reloads()).toBe(1)
+      expect(sessionStorage.getItem("ob.build")).toBe("build-b")
+      expect(view.html()).toContain("Dashboard updated")
+      view.close()
+    } finally {
+      reload.restore()
+      sessionStorage.removeItem("ob.build")
+    }
+  })
+
+  test("the same shell build never reloads", async () => {
+    sessionStorage.setItem("ob.build", "same")
+    const reload = patchReload()
+    try {
+      const view = mount(buildFetch("same"))
+      await view.open()
+      await pokeCheck(1600)
+      expect(reload.reloads()).toBe(0)
+      view.close()
+    } finally {
+      reload.restore()
+      sessionStorage.removeItem("ob.build")
+    }
+  })
+
+  test("an open consent defers the self-heal until it is resolved", async () => {
+    sessionStorage.setItem("ob.build", "build-a")
+    const reload = patchReload()
+    try {
+      const view = mount(buildFetch("build-b"))
+      await view.open()
+      await view.requestMedia({ id: "m7", audio: true, video: false })
+      await pokeCheck(1600)
+      expect(reload.reloads()).toBe(0)
+      await view.answer("Deny device")
+      await pokeCheck(1600)
+      expect(reload.reloads()).toBe(1)
+      view.close()
+    } finally {
+      reload.restore()
+      sessionStorage.removeItem("ob.build")
+    }
   })
 })

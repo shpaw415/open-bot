@@ -1,7 +1,7 @@
 import type { Db, User } from "@open-bot/db"
 import { keyVaultPublic, keyVaultSpecById } from "./key-vault"
 import { pluginVaultKeys } from "./plugins-apply"
-import { effectiveUserKey } from "./team"
+import { effectiveUserKey, teamMode } from "./team"
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -10,13 +10,18 @@ function json(body: unknown, status = 200) {
   })
 }
 
-// The agent reads provider keys and the plugin-declared slugs its own
-// manifests let it create (permissions.vaultCreate) — vaultRead-only slugs
-// stay dashboard-managed, values are never listed for them.
-function agentCreatablePluginKeys(db: Db, user: User) {
-  return pluginVaultKeys(db.installedPlugins(user.id)).filter(
-    (key) => key.access === "create",
-  )
+// The agent reads provider keys and every plugin-declared vault slug its own
+// installed manifests declare (permissions.vaultCreate ∪ vaultRead) — keys are
+// per-user, so plugins sharing a slug share one key.
+function agentPluginKeys(db: Db, user: User) {
+  return pluginVaultKeys(db.installedPlugins(user.id))
+}
+
+// Team mode locks the shared provider slugs for every principal (the admin
+// manages them on the Admin page's Team section); plugin-declared vault slugs
+// stay per-user and writable by their owner.
+export function keysTeamLocked(db: Db, slug: string): boolean {
+  return teamMode(db) === "team" && Boolean(keyVaultSpecById(slug))
 }
 
 export function isKeysRequest(pathname: string, method: string): boolean {
@@ -27,7 +32,7 @@ export function isKeysRequest(pathname: string, method: string): boolean {
 }
 
 export function handleKeys(url: URL, db: Db, user: User): Response | null {
-  const pluginKeys = agentCreatablePluginKeys(db, user)
+  const pluginKeys = agentPluginKeys(db, user)
   if (url.pathname === "/api/keys") {
     return json({
       keys: [

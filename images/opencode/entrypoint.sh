@@ -5,7 +5,7 @@ mkdir -p /home/agent/workspace /home/agent/plugins-create /home/agent/.config/op
 if [ -d /opt/image-usr-local ]; then
   mkdir -p /usr/local
   cp -a /opt/image-usr-local/. /usr/local/
-  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-media /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview /usr/local/bin/ob-chrome /usr/local/bin/ob-page 2>/dev/null || true
+  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-media /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview /usr/local/bin/ob-chrome /usr/local/bin/ob-record /usr/local/bin/ob-page /usr/local/bin/ob-process 2>/dev/null || true
 fi
 if [ -e /opt/google/chrome/chrome-sandbox ]; then
   chown root:root /opt/google/chrome/chrome-sandbox
@@ -40,8 +40,12 @@ if [ ! -f /home/agent/.config/opencode/opencode.json ]; then
   cp /opt/open-bot/seed/opencode.json /home/agent/.config/opencode/opencode.json
 fi
 prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. While you work, send no text messages: no plan, no status, no progress notes, no step summaries. Tool calls are silent. Send exactly one message, when the whole job is finished, containing only the final result and any deliverable images. Before that final message on a multi-step job, run the closing checklist: file a product defect or friction with ob-improve, save a user correction or an obvious missing finish with the refine skill, save a found shortcut with the shortcut skill, remember durable facts with openviking_remember, and record promised follow-ups. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command hangs, kill it and move on. Never end the turn while ob-vnc can still advance the task; finish it yourself. Only stop for the user when the screen needs them.'
+# The build agent keeps a runaway guard (256 steps). build-unlimited is the
+# same agent with no step cap — derived here so the prompt stays single-sourced;
+# callers opt in per session (POST /session agent field, control plane maps
+# steps:"unlimited" onto it).
 jq --arg prompt "$prompt" --slurpfile seed /opt/open-bot/seed/opencode.json \
-  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 96 | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
+  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 256 | .agent."build-unlimited" = (.agent.build | .prompt = $prompt | del(.steps)) | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
   /home/agent/.config/opencode/opencode.json > /tmp/oc-perm.json
 mv /tmp/oc-perm.json /home/agent/.config/opencode/opencode.json
 cp /opt/open-bot/seed/openviking-config.json /home/agent/.config/opencode/openviking-config.json
@@ -94,6 +98,18 @@ rm -f /home/agent/.open-bot/apt-restore.done
 run() {
   su -s /bin/sh agent -c "export HOME=/home/agent; $1"
 }
+# CLI subscription providers: merge the claude-code / muse-code entries
+# into opencode.json (idempotent; registry lives in the bridge module),
+# then supervise the OpenAI-compatible bridge on 127.0.0.1:4760 that
+# those providers point at. Login state is synced into auth.json by the
+# control plane; a logged-out CLI simply stays disconnected.
+run "bun /opt/open-bot/cli-bridge/apply-config.ts" || true
+(
+  while true; do
+    run "bun /opt/open-bot/cli-bridge/server.ts" >>/home/agent/.open-bot/cli-bridge-daemon.log 2>&1 || true
+    sleep 5
+  done
+) &
 # Security watchdog: tails the local opencode event stream, triages model
 # exchanges for injection/exfiltration patterns, reports findings to the
 # control plane. No-ops while disabled in ~/.config/open-bot/watchdog.json.

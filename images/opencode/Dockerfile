@@ -2,7 +2,8 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl gh git jq libatomic1 procps sudo unzip \
-    xvfb openbox chromium wmctrl xdotool sqlite3 \
+    gcc libc6-dev make \
+    xvfb openbox chromium wmctrl xdotool sqlite3 ffmpeg \
     python3 python3-pip python3-venv python3-pil \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \
@@ -49,6 +50,16 @@ RUN curl -fsSL https://bun.sh/install | bash \
     && ln -sf /opt/cf-ai/node_modules/.bin/cf-ai /usr/local/bin/cf-ai \
     && chmod -R a+rx /opt/cf-ai
 
+# CLI subscription providers for the cli-bridge (apps/control/src/cli-bridge):
+# Claude Code via npm, Muse as its self-updating launcher script.
+# The bridge reports a missing CLI per-request, so neither install is
+# allowed to fail the image build.
+RUN (npm install -g @anthropic-ai/claude-code && claude --version) \
+    || echo "claude-code install failed; cli-bridge will report it missing"
+RUN (curl -fsSL -o /usr/local/bin/muse https://api.meta.ai/muse-launcher.sh \
+     && chmod 755 /usr/local/bin/muse) \
+    || echo "muse install failed; cli-bridge will report it missing"
+
 COPY images/opencode/gpio-3d /opt/gpio-3d
 RUN python3 -m venv /opt/gpio-3d/venv \
     && /opt/gpio-3d/venv/bin/pip install --no-cache-dir --only-binary=:all: -r /opt/gpio-3d/requirements.txt \
@@ -91,10 +102,13 @@ RUN ln -sf /opt/open-bot/gen-3d.ts /usr/local/bin/gen-3d \
     && chmod 755 /opt/open-bot/gen-3d.ts
 COPY images/opencode/apply-system1.sh /opt/open-bot/apply-system1.sh
 COPY images/opencode/apply-chat-auth.sh /opt/open-bot/apply-chat-auth.sh
+COPY images/opencode/apply-opencode-auth.sh /opt/open-bot/apply-opencode-auth.sh
 COPY images/opencode/apply-watchdog.sh /opt/open-bot/apply-watchdog.sh
 COPY images/opencode/watchdog-daemon.ts /opt/open-bot/watchdog-daemon.ts
 COPY apps/control/src/watchdog-rules.ts /opt/open-bot/watchdog-rules.ts
 COPY apps/control/src/nav /opt/open-bot/nav
+COPY apps/control/src/cli-bridge /opt/open-bot/cli-bridge
+COPY images/opencode/cli-status.sh /opt/open-bot/cli-status.sh
 COPY images/opencode/screen-up.sh /opt/open-bot/screen-up.sh
 COPY images/opencode/screen-down.sh /opt/open-bot/screen-down.sh
 COPY images/opencode/screen-list.sh /opt/open-bot/screen-list.sh
@@ -109,8 +123,12 @@ COPY images/opencode/preview-spawn.ts /opt/open-bot/preview-spawn.ts
 COPY images/opencode/ob-preview.sh /usr/local/bin/ob-preview
 COPY images/opencode/ob-vnc.sh /usr/local/bin/ob-vnc
 COPY images/opencode/ob-app.sh /usr/local/bin/ob-app
+COPY images/opencode/ob-process.sh /usr/local/bin/ob-process
 COPY images/opencode/ob-page.sh /usr/local/bin/ob-page
 COPY images/opencode/ob-chrome.sh /usr/local/bin/ob-chrome
+COPY images/opencode/record.ts /opt/open-bot/record.ts
+COPY images/opencode/xrecord.py /opt/open-bot/xrecord.py
+COPY images/opencode/ob-record.sh /usr/local/bin/ob-record
 COPY images/opencode/screen-heal.sh /opt/open-bot/screen-heal.sh
 COPY images/opencode/xcap.py /opt/open-bot/xcap.py
 COPY images/opencode/xshot.ts /opt/open-bot/xshot.ts
@@ -124,14 +142,15 @@ COPY scripts/ob-improve.sh /usr/local/bin/ob-improve
 COPY images/opencode/ob-memory.sh /usr/local/bin/ob-memory
 COPY images/opencode/ob-tab-sweep.sh /usr/local/bin/ob-tab-sweep
 RUN chmod 755 /usr/local/bin/ob-improve \
-     && chmod 755 /usr/local/bin/ob-chrome /opt/open-bot/screen-heal.sh
+     && chmod 755 /usr/local/bin/ob-chrome /usr/local/bin/ob-record /opt/open-bot/record.ts /opt/open-bot/screen-heal.sh
 RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
-     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-api-key /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /usr/local/bin/ob-memory /usr/local/bin/ob-tab-sweep /opt/open-bot/preview-server.ts /opt/open-bot/preview-spawn.ts \
+     && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-process /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-api-key /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /usr/local/bin/ob-memory /usr/local/bin/ob-tab-sweep /opt/open-bot/preview-server.ts /opt/open-bot/preview-spawn.ts \
     && cp -a /usr/local /opt/image-usr-local \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-watchdog.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/watchdog-daemon.ts /opt/open-bot/watchdog-rules.ts /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/disk-cleanup.sh /opt/open-bot/heal-stale-tools.ts /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-api-key /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /usr/local/bin/ob-memory /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-app /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-system1 /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-project /opt/image-usr-local/bin/ob-report /opt/image-usr-local/bin/ob-thread /opt/image-usr-local/bin/ob-media /opt/image-usr-local/bin/ob-api-key /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview /opt/image-usr-local/bin/ob-memory /opt/image-usr-local/bin/ob-tab-sweep \
+      && chmod 755 /opt/open-bot/cli-status.sh /opt/open-bot/cli-bridge/server.ts /opt/open-bot/cli-bridge/providers.ts /opt/open-bot/cli-bridge/apply-config.ts \
+      && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-opencode-auth.sh /opt/open-bot/apply-watchdog.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/watchdog-daemon.ts /opt/open-bot/watchdog-rules.ts /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/disk-cleanup.sh /opt/open-bot/heal-stale-tools.ts /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-process /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-api-key /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /usr/local/bin/ob-memory /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-app /opt/image-usr-local/bin/ob-process /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-system1 /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-project /opt/image-usr-local/bin/ob-report /opt/image-usr-local/bin/ob-thread /opt/image-usr-local/bin/ob-media /opt/image-usr-local/bin/ob-api-key /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview /opt/image-usr-local/bin/ob-memory /opt/image-usr-local/bin/ob-tab-sweep \
     && touch /opt/open-bot/instance
 
 USER root

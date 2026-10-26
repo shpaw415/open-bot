@@ -9,6 +9,7 @@ import Paper from "@shpaw415/mui-lite/Paper"
 import Typography from "@shpaw415/mui-lite/Typography"
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -848,7 +849,10 @@ function SearchControl({
   }, [onRetry])
 
   const entries = useSearchEntries(me, appTabs, data)
-  const trimmed = query.trim()
+  // Search off the critical path: the input stays live, runSearch recomputes
+  // at a lower priority so a large entry set can never block typing.
+  const deferredQuery = useDeferredValue(query)
+  const trimmed = deferredQuery.trim()
   const groups = useMemo(
     () =>
       trimmed ? runSearch(trimmed, entries) : initialSearchResults(entries),

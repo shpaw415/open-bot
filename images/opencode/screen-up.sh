@@ -171,7 +171,7 @@ for claim in /run/open-bot/screens/*/display; do
   fi
 done
 
-for name in xvfb openbox chromium; do
+for name in xvfb openbox chromium devtools; do
   if [ -f "$run_dir/$name.pid" ]; then
     pid=$(cat "$run_dir/$name.pid")
     kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
@@ -212,6 +212,13 @@ server_pid=$(pgrep -f "^Xvfb :$display " | head -n 1 || true)
 chmod 777 "/tmp/.X11-unix/X$display" || true
 start_group openbox openbox
 start_chromium
+# DevTools recorder: buffers console/network events between CLI calls so
+# ob-chrome console/network can read what happened while no socket was open.
+# It waits for the CDP endpoint itself, so starting before Chromium is ready
+# is fine, and a stale one from an earlier life is skipped.
+if ! pgrep -f "nav/devtools.ts $session" >/dev/null 2>&1; then
+  start_group devtools bun /opt/open-bot/nav/devtools.ts "$session"
+fi
 echo "$display" >"$run_dir/display"
 touch "$run_dir/last-active" 2>/dev/null || true
 audit up start

@@ -8,10 +8,12 @@ import {
   applyMessageDelta,
   chatImageUrl,
   eventTouchesSession,
+  nearBottom,
   type StreamEvent,
   visibleMessages,
 } from "./chat-view"
 import { MarkdownCodeBlock } from "./code-copy"
+import { ChevronDownIcon } from "./icons"
 import { createLatestGuard } from "./latest-guard"
 import { clampPreviewWidth } from "./PreviewView"
 import Stack from "./stack"
@@ -112,6 +114,13 @@ function MemberTranscript({
   const [error, setError] = useState("")
   const messagesRef = useRef<unknown[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
+  const innerRef = useRef<HTMLDivElement | null>(null)
+  const observerRef = useRef<ResizeObserver | null>(null)
+  // Stick-to-bottom like the main chat: pin on new content only while the
+  // reader is at the bottom, so scrolling up to read history survives
+  // streaming deltas and debounced refetches.
+  const stickRef = useRef(true)
+  const [atBottom, setAtBottom] = useState(true)
   // Guard: a load for the previous member must not paint after the switch —
   // same race as the main chat's tick.
   const sessionIdRef = useRef(sessionId)
@@ -189,10 +198,30 @@ function MemberTranscript({
     }
   }, [subscribe, live, sessionId, load])
 
+  useEffect(() => {
+    if (loading) return
+    observerRef.current?.disconnect()
+    observerRef.current = null
+    const node = innerRef.current
+    if (!node || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(() => {
+      const el = scrollRef.current
+      if (!el || !stickRef.current) return
+      el.scrollTop = el.scrollHeight
+    })
+    observer.observe(node)
+    observerRef.current = observer
+    return () => {
+      observer.disconnect()
+      if (observerRef.current === observer) observerRef.current = null
+    }
+  }, [loading])
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only when the transcript changes
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el || !stickRef.current) return
+    el.scrollTop = el.scrollHeight
   }, [messages])
 
   const bubbles = visibleMessages(messages as never)
@@ -215,8 +244,18 @@ function MemberTranscript({
     )
   }
   return (
-    <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }} ref={scrollRef}>
-      <Stack spacing={1} sx={{ p: 1 }}>
+    <Box
+      sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}
+      ref={scrollRef}
+      onScroll={() => {
+        const el = scrollRef.current
+        if (!el) return
+        const stick = nearBottom(el.scrollHeight, el.scrollTop, el.clientHeight)
+        stickRef.current = stick
+        setAtBottom(stick)
+      }}
+    >
+      <Stack spacing={1} sx={{ p: 1 }} ref={innerRef}>
         {bubbles.length === 0 ? (
           <Typography variant="body2" color="textSecondary">
             No messages yet.
@@ -245,6 +284,23 @@ function MemberTranscript({
           })
         )}
       </Stack>
+      {!atBottom && bubbles.length > 0 ? (
+        <div className="ob-jump-wrap">
+          <button
+            type="button"
+            className="ob-jump-latest"
+            onClick={() => {
+              const el = scrollRef.current
+              stickRef.current = true
+              setAtBottom(true)
+              if (el) el.scrollTop = el.scrollHeight
+            }}
+          >
+            <ChevronDownIcon width={16} height={16} />
+            Jump to latest
+          </button>
+        </div>
+      ) : null}
     </Box>
   )
 }

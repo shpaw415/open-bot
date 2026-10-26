@@ -5,7 +5,7 @@ description: Create, update, or remove a lasting bot personality, or list the te
 
 # Personalities
 
-A personality is a name plus how to behave. The user picks one when starting a thread. It stays for that thread only. Built-ins (Assistant, Designer, Political expert, Software designer) cannot be edited.
+A personality is a name plus how to behave. The user picks one when starting a thread. It stays for that thread only. Built-ins (Assistant, Designer, Political expert, Software designer) cannot be renamed, re-instructed, or deleted — but their scope extends: by default they load only the desktop's built-in (seed) skills and MCP servers, and the user can add more.
 
 The personalities are your team, and you are its coordinator. The roster doubles as a skills directory: `ob-persona list` shows each teammate's description plus `(skills: …)` and `(mcp: …)` when either is restricted — `--verbose` shows the full instruction text and the complete lists, e.g. before handing a teammate a task or editing one.
 
@@ -37,12 +37,14 @@ ob-persona remove ID
 Skill scopes: restrict which skills load in threads running the personality.
 `--skills "a,b,c"` replaces the editable list (`--skills-append NAME` or
 `--skill NAME` adds one, repeatable; `--skills-clear` removes the
-restriction). MCP server scopes work the same way on server names:
-`--mcp "a,b"` / `--mcp-append NAME` / `--mcp-clear`. `--mcp none` blocks
-every MCP server for that personality. On a plugin-owned
-personality the editable lists are the extras — the plugin's base lists are
-refused. Restricting changes what future threads load; the current thread is
-unchanged. Names are slugs — never globs.
+restriction). `--skills none` blocks every skill on any personality. MCP
+server scopes work the same way on server names: `--mcp "a,b"` /
+`--mcp-append NAME` / `--mcp-clear`, and `--mcp none` blocks every MCP
+server. On a plugin-owned or built-in personality the editable lists are the
+extras — the base lists are locked (the plugin's declared set, or the
+desktop's built-in skills/MCP servers for a built-in) and base names are
+refused, but `none` still blocks everything. Restricting changes what future
+threads load; the current thread is unchanged. Names are slugs — never globs.
 
 ```sh
 ob-persona add --name "Researcher" --instruction "Dig deep, cite sources." --skills "research,media"

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  effectiveDiskMaxGb,
   memoryLatchedFor,
   memoryPressureDecision,
   memoryRatio,
@@ -66,6 +67,30 @@ describe("memoryRatio", () => {
   test("usage over the cgroup cap", () => {
     expect(memoryRatio({ memUsed: 3, memMax: 4 } as never)).toBe(0.75)
     expect(memoryRatio({ memUsed: 1, memMax: 0 } as never)).toBeNull()
+  })
+})
+
+describe("effectiveDiskMaxGb", () => {
+  test("the per-user cap wins over the host-wide cap", () => {
+    expect(effectiveDiskMaxGb(20, 50)).toBe(20)
+    expect(effectiveDiskMaxGb(20, 0)).toBe(20)
+    expect(effectiveDiskMaxGb(1_000_000, 50)).toBe(1_000_000)
+  })
+
+  test("no per-user cap falls back to the host-wide cap", () => {
+    expect(effectiveDiskMaxGb(null, 50)).toBe(50)
+    expect(effectiveDiskMaxGb(undefined, 50)).toBe(50)
+    expect(effectiveDiskMaxGb(0, 50)).toBe(50)
+    expect(effectiveDiskMaxGb(-5, 50)).toBe(50)
+  })
+
+  test("no cap anywhere means full disk (null on the wire)", () => {
+    expect(effectiveDiskMaxGb(null, 0)).toBe(0)
+    expect(effectiveDiskMaxGb(0, 0)).toBe(0)
+  })
+
+  test("fractional per-user caps floor to whole GB", () => {
+    expect(effectiveDiskMaxGb(10.9, 0)).toBe(10)
   })
 })
 

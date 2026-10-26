@@ -230,6 +230,37 @@ export function validateMcpMap(input: unknown): Record<string, McpEntry> {
   return entries
 }
 
+/**
+ * The opencode daemon spawns MCP servers with a minimal PATH that excludes
+ * /usr/local/bin, where the image installs node/npm/agent CLIs — a plugin
+ * payload whose command (or a `#!/usr/bin/env node` shim behind it) resolves
+ * through PATH fails at spawn even though the same command works in an agent
+ * shell. Local plugin entries therefore inherit the agent PATH unless the
+ * manifest declares its own.
+ */
+export const MCP_AGENT_PATH =
+  "/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+export function withDefaultMcpPath(
+  servers: Record<string, McpEntry>,
+): Record<string, McpEntry> {
+  const result: Record<string, McpEntry> = {}
+  for (const [name, entry] of Object.entries(servers)) {
+    if (
+      entry.type !== "local" ||
+      entry.environment?.PATH // manifest-declared PATH wins verbatim
+    ) {
+      result[name] = entry
+      continue
+    }
+    result[name] = {
+      ...entry,
+      environment: { ...entry.environment, PATH: MCP_AGENT_PATH },
+    }
+  }
+  return result
+}
+
 // Plugin apply path: install/enable merges entries into opencode.json, but a
 // running daemon only reads that file at boot — and restarting the daemon to
 // pick one up drains every live thread first, so the installing agent could
@@ -295,53 +326,94 @@ async function mcpPost(
 }
 
 /**
- * Live-connect freshly merged MCP servers into the desktop's running opencode
- * daemon. Returns one short human-readable status per server ("connected"
- * when tools are already live in new threads); an unreachable desktop yields
- * a note instead — the entry sits in opencode.json and loads at next boot.
+ * The per-server connect decision, injectable so tests cover the force
+ * sequencing without a live daemon (and without cross-file test mocks).
  */
-export async function connectMcpServers(
-  db: Db,
-  userId: string,
+export async function connectMcpServerEntries(
   servers: Record<string, unknown>,
+  io: {
+    statuses: () => Promise<Record<string, { status?: string }>>
+    post: (path: string, body?: unknown) => Promise<void>
+    sleep: (ms: number) => Promise<void>
+  },
+  opts?: { force?: boolean },
 ): Promise<Record<string, string>> {
   const result: Record<string, string> = {}
-  const keys = Object.keys(servers)
-  if (keys.length === 0) return result
-  if (!(await isRunning(names(userId).opencode))) {
-    for (const name of keys)
-      result[name] = "desktop asleep — merges when the desktop starts"
-    return result
-  }
-  const desktop = db.desktop(userId)
-  if (!desktop) {
-    for (const name of keys)
-      result[name] = "desktop asleep — merges when the desktop starts"
-    return result
-  }
-  for (const name of keys) {
-    const known = (await mcpStatuses(userId, desktop))[name]?.status
-    if (known === "connected") {
+  for (const name of Object.keys(servers)) {
+    const known = (await io.statuses())[name]?.status
+    if (known === "connected" && !opts?.force) {
       result[name] = "connected"
       continue
     }
     if (known) {
-      // The daemon knows this server (leftover from an earlier enable) but is
-      // not connected — reconnect in place instead of re-adding.
-      await mcpPost(userId, desktop, `/mcp/${encodeURIComponent(name)}/connect`)
+      if (known === "connected") {
+        // Forced reconnect (plugin update): stop the stale process so the
+        // freshly installed code is what respawns.
+        await io.post(`/mcp/${encodeURIComponent(name)}/disconnect`)
+      }
+      // The daemon knows this server (leftover from an earlier enable, or a
+      // just-disconnected forced reconnect) — reconnect in place instead of
+      // re-adding.
+      await io.post(`/mcp/${encodeURIComponent(name)}/connect`)
     } else {
-      await mcpPost(userId, desktop, "/mcp", { name, config: servers[name] })
+      await io.post("/mcp", { name, config: servers[name] })
     }
     // Local servers spawn asynchronously; let the daemon settle, then trust
     // whatever GET /mcp reports.
-    await Bun.sleep(300)
-    const after = (await mcpStatuses(userId, desktop))[name]?.status
+    await io.sleep(300)
+    const after = (await io.statuses())[name]?.status
     result[name] =
       after === "connected"
         ? "connected"
         : (after ?? "unknown — loads at the next restart")
   }
   return result
+}
+
+/**
+ * Live-connect freshly merged MCP servers into the desktop's running opencode
+ * daemon. Returns one short human-readable status per server ("connected"
+ * when tools are already live in new threads); an unreachable desktop yields
+ * a note instead — the entry sits in opencode.json and loads at next boot.
+ * `force` restarts already-connected servers (plugin apply path: an install
+ * or update ships new server code, so a still-running old process is stale).
+ */
+export async function connectMcpServers(
+  db: Db,
+  userId: string,
+  servers: Record<string, unknown>,
+  opts?: { force?: boolean },
+): Promise<Record<string, string>> {
+  const keys = Object.keys(servers)
+  if (keys.length === 0) return {}
+  if (!(await isRunning(names(userId).opencode))) {
+    return Object.fromEntries(
+      keys.map((name) => [
+        name,
+        "desktop asleep — merges when the desktop starts",
+      ]),
+    )
+  }
+  const desktop = db.desktop(userId)
+  if (!desktop) {
+    return Object.fromEntries(
+      keys.map((name) => [
+        name,
+        "desktop asleep — merges when the desktop starts",
+      ]),
+    )
+  }
+  return connectMcpServerEntries(
+    servers,
+    {
+      statuses: () => mcpStatuses(userId, desktop),
+      post: async (path, body) => {
+        await mcpPost(userId, desktop, path, body)
+      },
+      sleep: (ms) => Bun.sleep(ms),
+    },
+    opts,
+  )
 }
 
 /**

@@ -49,13 +49,14 @@ export function holdSystemLine() {
 export function vncSystemLine(sessionId: string, port: number) {
   return [
     `This thread's screen id (also your session id, for ob-thread --from) is ${sessionId}.`,
-    `Drive it only with ob-chrome, ob-page, ob-nav, or ob-vnc --session ${sessionId}.`,
+    `Drive it only with ob-chrome, ob-page, ob-nav, ob-vnc, or ob-record --session ${sessionId}.`,
     "Do not call vncdo. Do not run xclip or xsel. Paste with ob-vnc paste. Do not pass a host or port.",
     "Do not use 5900, computer:5900, computer::5900, or $OPEN_BOT_VNC.",
     `A single colon is a display number. The vncdo address is ${vncHost(port)}, and ob-vnc already uses it.`,
-    `Go to a page with ob-chrome --session ${sessionId} navigate URL — one cheap command that prints the page url, title, heading and text (navigate alone usually answers the question). It opens a fresh tab on a crashed page and brings the screen back if it died. newtab URL opens a second tab; tabs, switch N, and closetab N manage them. Check where you are with ob-chrome --session ${sessionId} url.`,
+    `Go to a page with ob-chrome --session ${sessionId} navigate URL — one cheap command that prints the page url, title, heading and text (navigate alone usually answers the question). It opens a fresh tab on a crashed page and brings the screen back if it died. Manage tabs with ob-chrome --session ${sessionId} tab list | tab new [URL] | tab switch N | tab close [N] (bare tab lists; the flat tabs/newtab/switch/closetab verbs still work). Check where you are with ob-chrome --session ${sessionId} url.`,
     `Read and act on the page with ob-page --session ${sessionId} (read, scroll, click, type). Reserve ob-nav --session ${sessionId} --goal for a real multi-step page goal; never for a single quote or heading (navigate already returns those), and it costs a decision-model run per step.`,
-    `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}. Add 2 when text is hard to read. That restores the screen. Clicks stay in live-screen pixels.`,
+    `When a page misbehaves, debug with ob-chrome --session ${sessionId}: console (recent console messages and errors), network (request log; network N --body adds one response body), metrics (heap, DOM nodes, layout counts), dom (read the page HTML, --selector for matches), eval "JS" (run JavaScript in the page to inspect or change the DOM), and cache clear --reload to bust the cache while developing.`,
+    `Capture with ob-vnc --session ${sessionId} capture ${capturePath(port)}. Add 2 when text is hard to read. That restores the screen. Clicks stay in live-screen pixels. Record the screen to video for debugging with ob-record --session ${sessionId} start [--fps N] [--duration SEC] [--output FILE], then ob-record --session ${sessionId} stop (status/list inspect recordings; files land in ~/.open-bot/recordings/${sessionId}/, 15fps and a 600s auto-stop by default).`,
     "A relaunch opens a blank page: Chromium was restarted — navigate back with ob-chrome. Do not call the screen dark.",
     `Native apps: install with sudo apt-get and launch with ob-app --session ${sessionId}; a standalone Chrome window is ob-app launch chrome.`,
     "ob-vnc pixels are the last resort.",

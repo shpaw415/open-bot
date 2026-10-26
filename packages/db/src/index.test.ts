@@ -3,7 +3,54 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type CronJob, openDatabase, type User } from "./index"
+import {
+  type CronJob,
+  openDatabase,
+  type User,
+  validCpuCores,
+  validDiskGb,
+  validMemoryMb,
+} from "./index"
+
+describe("desktop limit validators", () => {
+  test("cpu caps accept 0.5 cores and up", () => {
+    expect(validCpuCores(0.5)).toBe(true)
+    expect(validCpuCores(2)).toBe(true)
+    expect(validCpuCores(1.5)).toBe(true)
+    expect(validCpuCores(128)).toBe(true)
+    expect(validCpuCores(0.25)).toBe(false)
+    expect(validCpuCores(0)).toBe(false)
+    expect(validCpuCores(-2)).toBe(false)
+    expect(validCpuCores(Number.NaN)).toBe(false)
+    expect(validCpuCores(Number.POSITIVE_INFINITY)).toBe(false)
+    expect(validCpuCores(null)).toBe(false)
+    expect(validCpuCores("2")).toBe(false)
+  })
+
+  test("memory caps accept 512 MB through 64 GB", () => {
+    expect(validMemoryMb(512)).toBe(true)
+    expect(validMemoryMb(4096)).toBe(true)
+    expect(validMemoryMb(65_536)).toBe(true)
+    expect(validMemoryMb(511)).toBe(false)
+    expect(validMemoryMb(65_537)).toBe(false)
+    expect(validMemoryMb(0)).toBe(false)
+    expect(validMemoryMb(-4096)).toBe(false)
+    expect(validMemoryMb(4.5)).toBe(false)
+    expect(validMemoryMb(null)).toBe(false)
+    expect(validMemoryMb("4096")).toBe(false)
+  })
+
+  test("disk caps accept whole GB from 0", () => {
+    expect(validDiskGb(0)).toBe(true)
+    expect(validDiskGb(50)).toBe(true)
+    expect(validDiskGb(100_000)).toBe(true)
+    expect(validDiskGb(-1)).toBe(false)
+    expect(validDiskGb(10.5)).toBe(false)
+    expect(validDiskGb(100_001)).toBe(false)
+    expect(validDiskGb(null)).toBe(false)
+    expect(validDiskGb("50")).toBe(false)
+  })
+})
 
 function user(
   partial: Partial<User> & Pick<User, "id" | "email" | "role">,
@@ -764,8 +811,10 @@ describe("cron store", () => {
       instruction: "cook",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: 1,
     })
     db.setThreadPersona("a", "ses", "p1")
@@ -789,8 +838,10 @@ describe("personas", () => {
       instruction: "cook simply",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: 1,
     })
     db.setThreadPersona("a", "ses", "p1")
@@ -819,8 +870,10 @@ describe("personas", () => {
       instruction: "cook simply",
       skills: ["research", "media"],
       skillsExtra: ["preview"],
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: 1,
     })
     expect(db.personaById("p1", "a")?.skills).toEqual(["research", "media"])
@@ -849,8 +902,10 @@ describe("personas", () => {
       instruction: "cook",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: ["Stock.Data"],
       mcpExtra: ["files"],
+      mcpNone: false,
       createdAt: 1,
     })
     expect(db.personaById("p1", "a")?.mcp).toEqual(["Stock.Data"])
@@ -864,6 +919,41 @@ describe("personas", () => {
     // an explicitly empty list is the block-all state and survives storage
     db.updatePersona("p1", "a", { mcp: [] })
     expect(db.personaById("p1", "a")?.mcp).toEqual([])
+  })
+
+  test("built-in persona extras upsert per user and wipe with the user", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
+    db.setBuiltinPersonaScope("a", "designer", {
+      skillsExtra: ["research"],
+      mcpExtra: ["files"],
+    })
+    expect(db.builtinPersonaScopes("a")).toEqual([
+      {
+        userId: "a",
+        personaId: "designer",
+        skillsExtra: ["research"],
+        skillsNone: false,
+        mcpExtra: ["files"],
+        mcpNone: false,
+      },
+    ])
+    // other users and built-ins are untouched
+    expect(db.builtinPersonaScopes("b")).toEqual([])
+    // present-set / omitted-keep on the upsert
+    db.setBuiltinPersonaScope("a", "designer", { skillsExtra: ["media"] })
+    const scope = db.builtinPersonaScopes("a")[0]
+    expect(scope?.skillsExtra).toEqual(["media"])
+    expect(scope?.mcpExtra).toEqual(["files"])
+    // null clears one list
+    db.setBuiltinPersonaScope("a", "designer", { mcpExtra: null })
+    expect(db.builtinPersonaScopes("a")[0]?.mcpExtra).toBeNull()
+    // deleting the user removes the rows
+    db.deleteUser("a")
+    expect(db.builtinPersonaScopes("a")).toEqual([])
   })
 })
 

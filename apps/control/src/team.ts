@@ -293,6 +293,61 @@ export function teamWriteLocked(db: Db, role: Role): boolean {
   return teamMode(db) === "team" && role !== "admin"
 }
 
+// Team-mode shared OpenCode provider auth: a snapshot of the admin desktop's
+// auth.json (api and oauth entries) merged into every desktop. Stored in
+// app_settings like every other shared secret; never returned to a browser.
+const OPENCODE_AUTH_KEY = "team_opencode_auth"
+
+export type TeamOpencodeAuth = {
+  entries: Record<string, unknown>
+  capturedAt: number
+}
+
+export function getTeamOpencodeAuth(db: Db): TeamOpencodeAuth | null {
+  const raw = db.getSetting(OPENCODE_AUTH_KEY)
+  if (raw === null) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!isObject(parsed) || !isObject(parsed.entries)) return null
+    return {
+      entries: parsed.entries,
+      capturedAt:
+        typeof parsed.capturedAt === "number" && parsed.capturedAt > 0
+          ? parsed.capturedAt
+          : 0,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function setTeamOpencodeAuth(
+  db: Db,
+  entries: Record<string, unknown>,
+): TeamOpencodeAuth {
+  // CLI subscription providers are per-desktop logins; their dummy
+  // bridge-key auth entries must never ride the shared snapshot (they
+  // would mark other desktops connected without a CLI login there).
+  const { "claude-code": _cc, "muse-code": _mc, ...shared } = entries
+  const snapshot: TeamOpencodeAuth = { entries: shared, capturedAt: Date.now() }
+  db.setSetting(OPENCODE_AUTH_KEY, JSON.stringify(snapshot))
+  return snapshot
+}
+
+export function teamOpencodeAuthPublic(auth: TeamOpencodeAuth | null): {
+  hasAuth: boolean
+  providers: string[]
+  capturedAt: number | null
+} {
+  if (!auth) return { hasAuth: false, providers: [], capturedAt: null }
+  const providers = Object.keys(auth.entries)
+  return {
+    hasAuth: providers.length > 0,
+    providers,
+    capturedAt: auth.capturedAt || null,
+  }
+}
+
 export function objectHasAnyField(
   value: unknown,
   fields: readonly string[],

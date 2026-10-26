@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto"
+import { readFileSync, statSync } from "node:fs"
+import { join } from "node:path"
 import type { Db, InstalledPlugin, User } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import { wakeDesktop } from "./desktop-wake"
 import { desktopPhase, endpoint } from "./docker"
-import { names, pagesOrigin } from "./env"
+import { names, pagesOrigin, webDist } from "./env"
 import { HttpError } from "./http-error"
 import { instanceLanguage } from "./language"
 import { randomToken } from "./passwords"
@@ -1009,6 +1012,33 @@ export function touchPageFrameToken(token: string, now = Date.now()) {
   return grant
 }
 
+// Identity of the deployed dashboard shell. Stamped on every frame-path
+// response (x-open-bot-build) so a long-lived app tab can notice a newer web
+// build on its existing keep-alive HEAD and reload itself once — the shell's
+// JS is otherwise frozen at load and a deploy would strand it (the stale-shell
+// trap that silently killed the media bridge). Content hash of index.html;
+// "none" when the web UI is not built (dev).
+let uiBuildHash: string | null = null
+
+export function uiBuildId(): string {
+  if (uiBuildHash) return uiBuildHash
+  try {
+    const index = join(webDist, "index.html")
+    statSync(index)
+    uiBuildHash = createHash("sha256")
+      .update(readFileSync(index))
+      .digest("hex")
+      .slice(0, 16)
+  } catch {
+    uiBuildHash = "none"
+  }
+  return uiBuildHash
+}
+
+export function resetUiBuildId() {
+  uiBuildHash = null
+}
+
 // Credentialed CORS for the frame path. The sandboxed frame is an opaque
 // origin, so its fetches are cross-origin; edge SSO (Cloudflare Access) only
 // passes them when the request carries the SSO cookie and the response echoes
@@ -1018,6 +1048,7 @@ export function touchPageFrameToken(token: string, now = Date.now()) {
 // knows the token gains nothing by also sending cookies.
 function pageFrameCors(req: Request, response: Response) {
   const headers = new Headers(response.headers)
+  headers.set("x-open-bot-build", uiBuildId())
   headers.set(
     "access-control-allow-origin",
     req.headers.get("origin") ?? "null",

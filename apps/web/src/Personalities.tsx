@@ -32,9 +32,11 @@ export type PersonaInfo = {
   plugin?: { id: string; name: string }
   skills?: string[] | null
   skillsExtra?: string[] | null
+  skillsNone?: boolean
   skillsEffective?: string[] | null
   mcp?: string[] | null
   mcpExtra?: string[] | null
+  mcpNone?: boolean
   mcpEffective?: string[] | null
 }
 
@@ -47,9 +49,14 @@ type Draft = {
   id: string
   name: string
   instruction: string
+  // Built-ins scope to the desktop's seed set; extras extend it.
+  builtin: boolean
   // User personas: the editable base lists (null = all).
   skills: string[] | null
   mcp: string[] | null
+  // Block-all flags: the only way to disable every entry on a locked base.
+  skillsNone: boolean
+  mcpNone: boolean
   // Plugin personas: locked bases plus the user's editable extras.
   pluginName: string | null
   baseLocked: string[] | null
@@ -62,15 +69,23 @@ type Draft = {
 
 function draftFrom(persona: PersonaInfo): Draft {
   const plugin = persona.plugin ?? null
+  // A built-in's locked base is the live seed set (filled from the catalog
+  // when it arrives), so the draft opens in locked mode with an empty base.
+  const builtin = persona.builtin
   return {
     id: persona.id,
     name: persona.name,
     instruction: persona.instruction,
-    skills: plugin ? null : (persona.skills ?? null),
-    mcp: plugin ? null : (persona.mcp ?? null),
+    builtin,
+    skills: builtin || plugin ? null : (persona.skills ?? null),
+    mcp: builtin || plugin ? null : (persona.mcp ?? null),
+    skillsNone: Boolean(persona.skillsNone),
+    mcpNone: Boolean(persona.mcpNone),
     pluginName: plugin?.name ?? null,
-    baseLocked: plugin ? (persona.skills ?? null) : null,
-    mcpBaseLocked: plugin ? (persona.mcp ?? null) : null,
+    // A built-in's base is always locked (empty until the catalog fills the
+    // seed set); a plugin's null base stays unrestricted as before.
+    baseLocked: builtin ? [] : plugin ? (persona.skills ?? null) : null,
+    mcpBaseLocked: builtin ? [] : plugin ? (persona.mcp ?? null) : null,
     extras: persona.skillsExtra ?? [],
     mcpExtras: persona.mcpExtra ?? [],
     skillsTouched: false,
@@ -86,12 +101,14 @@ function mergeLocked(base: string[] | null, extras: string[]): string[] | null {
 }
 
 function restrictedSkills(draft: Draft): string[] | null {
+  if (draft.skillsNone) return []
   if (draft.baseLocked !== null)
     return mergeLocked(draft.baseLocked, draft.extras)
   return draft.skills && draft.skills.length > 0 ? draft.skills : null
 }
 
 function restrictedMcp(draft: Draft): string[] | null {
+  if (draft.mcpNone) return []
   if (draft.mcpBaseLocked !== null)
     return mergeLocked(draft.mcpBaseLocked, draft.mcpExtras)
   return draft.mcp && draft.mcp.length > 0 ? draft.mcp : null
@@ -396,29 +413,36 @@ export function ScopePicker(props: {
             <Typography variant="caption" color="textSecondary">
               {props.loading}
             </Typography>
+          ) : props.noneActive ? (
+            <Alert severity="warning" sx={{ py: 0.75 }}>
+              Every entry is blocked for this personality — click the block chip
+              again to allow entries again.
+            </Alert>
           ) : (
             <Stack spacing={1.5}>
-              {props.baseLocked === null ? (
+              {props.baseLocked === null || props.noneChip ? (
                 <Stack
                   direction="row"
                   spacing={0.75}
                   useFlexGap
                   sx={{ flexWrap: "wrap", rowGap: 0.75 }}
                 >
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    onClick={props.onClearAll}
-                    sx={{
-                      borderRadius: "8px",
-                      color:
-                        !props.noneActive && props.selected.length === 0
-                          ? "rgba(var(--text-main), 0.5)"
-                          : undefined,
-                    }}
-                  >
-                    {props.allChip}
-                  </Chip>
+                  {props.baseLocked === null ? (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      onClick={props.onClearAll}
+                      sx={{
+                        borderRadius: "8px",
+                        color:
+                          props.selected.length === 0
+                            ? "rgba(var(--text-main), 0.5)"
+                            : undefined,
+                      }}
+                    >
+                      {props.allChip}
+                    </Chip>
+                  ) : null}
                   {props.noneChip ? (
                     <Chip
                       size="small"
@@ -427,8 +451,8 @@ export function ScopePicker(props: {
                       sx={{
                         borderRadius: "8px",
                         color: props.noneActive
-                          ? "rgba(var(--text-main), 0.5)"
-                          : undefined,
+                          ? undefined
+                          : "rgba(var(--text-main), 0.5)",
                       }}
                     >
                       {props.noneChip}
@@ -718,6 +742,22 @@ export function Personalities() {
             label: dir.label,
           })),
         )
+        // A built-in's locked base is the live seed set: desktop seed skills
+        // plus every configured MCP server no plugin owns. Filling it here
+        // never dirties the snapshot (the base is not part of it).
+        setDraft((prev) =>
+          prev && prev.builtin
+            ? {
+                ...prev,
+                baseLocked: (body.skills ?? [])
+                  .filter((skill) => skill.seed)
+                  .map((skill) => skill.name),
+                mcpBaseLocked: (body.mcp ?? [])
+                  .filter((server) => !server.plugin)
+                  .map((server) => server.name),
+              }
+            : prev,
+        )
       })
       .catch(() => {
         if (cancelled) return
@@ -738,8 +778,11 @@ export function Personalities() {
       id: "",
       name: "",
       instruction: "",
+      builtin: false,
       skills: null,
       mcp: null,
+      skillsNone: false,
+      mcpNone: false,
       pluginName: null,
       baseLocked: null,
       mcpBaseLocked: null,
@@ -768,6 +811,7 @@ export function Personalities() {
     if (draft.baseLocked !== null) {
       setDraft({
         ...draft,
+        skillsNone: false,
         extras: draft.extras.includes(name)
           ? draft.extras.filter((item) => item !== name)
           : [...draft.extras, name],
@@ -779,7 +823,12 @@ export function Personalities() {
     const next = current.includes(name)
       ? current.filter((item) => item !== name)
       : [...current, name]
-    setDraft({ ...draft, skills: next, skillsTouched: true })
+    setDraft({
+      ...draft,
+      skillsNone: false,
+      skills: next,
+      skillsTouched: true,
+    })
   }
 
   function toggleMcp(name: string) {
@@ -787,6 +836,7 @@ export function Personalities() {
     if (draft.mcpBaseLocked !== null) {
       setDraft({
         ...draft,
+        mcpNone: false,
         mcpExtras: draft.mcpExtras.includes(name)
           ? draft.mcpExtras.filter((item) => item !== name)
           : [...draft.mcpExtras, name],
@@ -798,7 +848,22 @@ export function Personalities() {
     const next = current.includes(name)
       ? current.filter((item) => item !== name)
       : [...current, name]
-    setDraft({ ...draft, mcp: next, mcpTouched: true })
+    setDraft({ ...draft, mcpNone: false, mcp: next, mcpTouched: true })
+  }
+
+  /** Block-all toggles: every skill / server off, on any persona kind. */
+  function toggleSkillsNone() {
+    if (!draft) return
+    setDraft({
+      ...draft,
+      skillsNone: !draft.skillsNone,
+      skillsTouched: true,
+    })
+  }
+
+  function toggleMcpNone() {
+    if (!draft) return
+    setDraft({ ...draft, mcpNone: !draft.mcpNone, mcpTouched: true })
   }
 
   function clearSkills() {
@@ -819,14 +884,24 @@ export function Personalities() {
       const extras = select
         ? [...draft.extras, ...names.filter((n) => !draft.extras.includes(n))]
         : draft.extras.filter((n) => !names.includes(n))
-      setDraft({ ...draft, extras, skillsTouched: true })
+      setDraft({
+        ...draft,
+        skillsNone: select ? false : draft.skillsNone,
+        extras,
+        skillsTouched: true,
+      })
       return
     }
     const current = draft.skills ?? []
     const next = select
       ? [...current, ...names.filter((n) => !current.includes(n))]
       : current.filter((n) => !names.includes(n))
-    setDraft({ ...draft, skills: next, skillsTouched: true })
+    setDraft({
+      ...draft,
+      skillsNone: select ? false : draft.skillsNone,
+      skills: next,
+      skillsTouched: true,
+    })
   }
 
   function toggleMcpGroup(names: string[], select: boolean) {
@@ -838,14 +913,24 @@ export function Personalities() {
             ...names.filter((n) => !draft.mcpExtras.includes(n)),
           ]
         : draft.mcpExtras.filter((n) => !names.includes(n))
-      setDraft({ ...draft, mcpExtras: extras, mcpTouched: true })
+      setDraft({
+        ...draft,
+        mcpNone: select ? false : draft.mcpNone,
+        mcpExtras: extras,
+        mcpTouched: true,
+      })
       return
     }
     const current = draft.mcp ?? []
     const next = select
       ? [...current, ...names.filter((n) => !current.includes(n))]
       : current.filter((n) => !names.includes(n))
-    setDraft({ ...draft, mcp: next, mcpTouched: true })
+    setDraft({
+      ...draft,
+      mcpNone: select ? false : draft.mcpNone,
+      mcp: next,
+      mcpTouched: true,
+    })
   }
 
   function clearMcp() {
@@ -872,6 +957,7 @@ export function Personalities() {
       if (draft.extras.includes(name)) return
       setDraft({
         ...draft,
+        skillsNone: false,
         extras: [...draft.extras, name],
         skillsTouched: true,
       })
@@ -881,6 +967,7 @@ export function Personalities() {
     if (current.includes(name)) return
     setDraft({
       ...draft,
+      skillsNone: false,
       skills: [...current, name],
       skillsTouched: true,
     })
@@ -901,6 +988,7 @@ export function Personalities() {
       if (draft.mcpExtras.includes(name)) return
       setDraft({
         ...draft,
+        mcpNone: false,
         mcpExtras: [...draft.mcpExtras, name],
         mcpTouched: true,
       })
@@ -910,6 +998,7 @@ export function Personalities() {
     if (current.includes(name)) return
     setDraft({
       ...draft,
+      mcpNone: false,
       mcp: [...current, name],
       mcpTouched: true,
     })
@@ -939,19 +1028,38 @@ export function Personalities() {
     try {
       const restricted = restrictedSkills(draft)
       const mcpRestricted = restrictedMcp(draft)
-      const body: Record<string, unknown> = {
-        name: draft.name.trim(),
-        instruction: draft.instruction.trim(),
-      }
-      if (draft.baseLocked !== null) {
-        if (draft.skillsTouched) body.skillsExtra = draft.extras
-      } else if (draft.skillsTouched || restricted) {
-        body.skills = restricted
-      }
-      if (draft.mcpBaseLocked !== null) {
-        if (draft.mcpTouched) body.mcpExtra = draft.mcpExtras
-      } else if (draft.mcpTouched || mcpRestricted) {
-        body.mcp = mcpRestricted
+      const body: Record<string, unknown> = {}
+      if (isBuiltinDraft(draft)) {
+        if (draft.skillsTouched) {
+          body.skillsExtra = draft.extras
+          body.skillsNone = draft.skillsNone
+        }
+        if (draft.mcpTouched) {
+          body.mcpExtra = draft.mcpExtras
+          body.mcpNone = draft.mcpNone
+        }
+      } else {
+        body.name = draft.name.trim()
+        body.instruction = draft.instruction.trim()
+        if (draft.baseLocked !== null) {
+          if (draft.skillsTouched) {
+            body.skillsExtra = draft.extras
+            body.skillsNone = draft.skillsNone
+          }
+        } else if (draft.skillsTouched || restricted) {
+          // a block-all needs no list — the flag carries it
+          if (!draft.skillsNone) body.skills = restricted
+          if (draft.skillsTouched) body.skillsNone = draft.skillsNone
+        }
+        if (draft.mcpBaseLocked !== null) {
+          if (draft.mcpTouched) {
+            body.mcpExtra = draft.mcpExtras
+            body.mcpNone = draft.mcpNone
+          }
+        } else if (draft.mcpTouched || mcpRestricted) {
+          if (!draft.mcpNone) body.mcp = mcpRestricted
+          if (draft.mcpTouched) body.mcpNone = draft.mcpNone
+        }
       }
       const payload = JSON.stringify(body)
       if (draft.id) {
@@ -962,16 +1070,24 @@ export function Personalities() {
       } else {
         await api("/api/personas", { method: "POST", body: payload })
       }
-      const scopeNote = [
-        restricted ? "Only the allowed skills load in new threads." : "",
-        mcpRestricted
-          ? mcpRestricted.length > 0
-            ? "Only the allowed MCP servers load in new threads."
-            : "Every MCP server is blocked in new threads."
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ")
+      const scopeNote = isBuiltinDraft(draft)
+        ? draft.skillsNone || draft.mcpNone
+          ? "Blocked entries stay off; unblock to bring them back."
+          : "Built-in skills and MCP servers stay on; your additions load too."
+        : [
+            restricted
+              ? restricted.length > 0
+                ? "Only the allowed skills load in new threads."
+                : "Every skill is blocked in new threads."
+              : "",
+            mcpRestricted
+              ? mcpRestricted.length > 0
+                ? "Only the allowed MCP servers load in new threads."
+                : "Every MCP server is blocked in new threads."
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ")
       setDraft(null)
       setPristine(null)
       setSaved(
@@ -1007,7 +1123,13 @@ export function Personalities() {
 
   const customCount = personas.filter((persona) => !persona.builtin).length
 
-  const lockedTitle = draft?.pluginName ?? "the plugin"
+  const lockedTitle =
+    draft?.pluginName ?? (draft?.builtin ? "the desktop" : "the plugin")
+
+  /** Built-ins save only extras; name/instruction are fixed. */
+  function isBuiltinDraft(d: Draft): boolean {
+    return d.builtin
+  }
 
   return (
     <ConfigSection
@@ -1037,12 +1159,14 @@ export function Personalities() {
           personas.map((persona) => {
             const restricted = persona.skillsEffective ?? null
             const mcpRestricted = persona.mcpEffective ?? null
+            const builtinExtras = (persona.skillsExtra ?? []).length
+            const builtinMcpExtras = (persona.mcpExtra ?? []).length
             return (
               <ConfigItemCard
                 key={persona.id}
                 avatar={
                   persona.builtin ? (
-                    <Tip title="Built-in — cannot edit or delete">
+                    <Tip title="Built-in — scope extends with added skills, cannot be deleted">
                       <ItemAvatar tone="muted">
                         <LockIcon width={20} height={20} />
                       </ItemAvatar>
@@ -1060,7 +1184,7 @@ export function Personalities() {
                       <PluginBadge plugin={persona.plugin} />
                     ) : null}
                     {persona.builtin ? (
-                      <Tip title="Built-in — cannot edit or delete">
+                      <Tip title="Built-in — scope extends with added skills, cannot be deleted">
                         <LockIcon
                           width={16}
                           height={16}
@@ -1071,14 +1195,46 @@ export function Personalities() {
                         />
                       </Tip>
                     ) : null}
+                    {persona.builtin ? (
+                      <>
+                        <Tip title="Only the desktop's built-in skills load by default">
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            sx={{ borderRadius: "8px", flexShrink: 0 }}
+                          >
+                            Built-in skills
+                            {builtinExtras ? ` +${builtinExtras}` : " only"}
+                          </Chip>
+                        </Tip>
+                        <Tip title="Only the desktop's built-in MCP servers load by default">
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            sx={{ borderRadius: "8px", flexShrink: 0 }}
+                          >
+                            Built-in MCP
+                            {builtinMcpExtras ? ` +${builtinMcpExtras}` : ""}
+                          </Chip>
+                        </Tip>
+                      </>
+                    ) : null}
                     {restricted ? (
-                      <Tip title={`Allowed skills: ${restricted.join(", ")}`}>
+                      <Tip
+                        title={
+                          restricted.length > 0
+                            ? `Allowed skills: ${restricted.join(", ")}`
+                            : "Every skill is blocked for this personality"
+                        }
+                      >
                         <Chip
                           size="small"
                           variant="outlined"
                           sx={{ borderRadius: "8px", flexShrink: 0 }}
                         >
-                          {restricted.length} skills only
+                          {restricted.length === 0
+                            ? "Skills blocked"
+                            : `${restricted.length} skills only`}
                         </Chip>
                       </Tip>
                     ) : null}
@@ -1109,7 +1265,7 @@ export function Personalities() {
                 }
                 description={
                   persona.builtin
-                    ? `${persona.instruction || "Default voice. No extra instructions."} Built-in personalities always have all skills.`
+                    ? `${persona.instruction || "Default voice. No extra instructions."} Only the desktop's built-in skills and MCP servers load by default — add more below.`
                     : persona.instruction ||
                       (restricted
                         ? scopedDescription("skills", restricted)
@@ -1121,7 +1277,16 @@ export function Personalities() {
                 }
                 pluginOwned={Boolean(persona.plugin)}
                 actions={
-                  persona.builtin ? undefined : (
+                  persona.builtin ? (
+                    <Button
+                      size="small"
+                      variant="text"
+                      disabled={busy}
+                      onClick={() => openEdit(persona)}
+                    >
+                      Edit scope
+                    </Button>
+                  ) : (
                     <>
                       <Button
                         size="small"
@@ -1165,38 +1330,60 @@ export function Personalities() {
             }}
           >
             <DialogTitle id={titleId}>
-              {draft.id ? "Edit personality" : "New personality"}
+              {draft.builtin
+                ? `Scope for ${draft.name}`
+                : draft.id
+                  ? "Edit personality"
+                  : "New personality"}
             </DialogTitle>
             <DialogContent>
               <Stack spacing={2} sx={{ mt: 1 }}>
                 {error ? <Alert severity="error">{error}</Alert> : null}
-                <TextField
-                  label="Name"
-                  value={draft.name}
-                  placeholder="Brand designer"
-                  onChange={(event) =>
-                    setDraft({ ...draft, name: event.currentTarget.value })
-                  }
-                />
-                <TextField
-                  label="How to behave"
-                  value={draft.instruction}
-                  multiline
-                  rows={6}
-                  placeholder="Speak as a brand designer. Prefer concrete visual choices. Keep replies short."
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      instruction: event.currentTarget.value,
-                    })
-                  }
-                />
+                {draft.builtin ? (
+                  <Typography variant="caption" color="textSecondary">
+                    Built-in skills and MCP servers always load. Pick extras to
+                    add plugin or custom entries on top — the base cannot be
+                    changed.
+                  </Typography>
+                ) : (
+                  <>
+                    <TextField
+                      label="Name"
+                      value={draft.name}
+                      placeholder="Brand designer"
+                      onChange={(event) =>
+                        setDraft({ ...draft, name: event.currentTarget.value })
+                      }
+                    />
+                    <TextField
+                      label="How to behave"
+                      value={draft.instruction}
+                      multiline
+                      rows={6}
+                      placeholder="Speak as a brand designer. Prefer concrete visual choices. Keep replies short."
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          instruction: event.currentTarget.value,
+                        })
+                      }
+                    />
+                  </>
+                )}
                 <ScopePicker
                   sectionTitle="Allowed skills"
-                  caption="Empty means all skills. A restricted persona loads only the ones listed."
+                  caption={
+                    draft.builtin
+                      ? "Desktop built-in skills always load. Add plugin or custom skills on top."
+                      : "Empty means all skills. A restricted persona loads only the ones listed."
+                  }
                   filterLabel="Search skills"
                   allChip="All skills"
-                  emptyBase="All skills (no restriction declared)"
+                  emptyBase={
+                    draft.builtin
+                      ? "Loading the desktop's built-in skills…"
+                      : "All skills (no restriction declared)"
+                  }
                   noMatch="No skills match the filter."
                   loading="Loading skills…"
                   manualLabel="Add skill by name"
@@ -1222,13 +1409,24 @@ export function Personalities() {
                   onToggle={toggleSkill}
                   onToggleGroup={toggleSkillsGroup}
                   onClearAll={clearSkills}
+                  noneChip="Block all skills"
+                  noneActive={draft.skillsNone}
+                  onBlockAll={toggleSkillsNone}
                 />
                 <ScopePicker
                   sectionTitle="Allowed MCP servers"
-                  caption="Empty means all servers. A restricted persona loads only the listed servers' tools."
+                  caption={
+                    draft.builtin
+                      ? "Desktop built-in MCP servers (the ones no plugin owns) always load. Add servers on top."
+                      : "Empty means all servers. A restricted persona loads only the listed servers' tools."
+                  }
                   filterLabel="Search servers"
                   allChip="All servers"
-                  emptyBase="All servers (no restriction declared)"
+                  emptyBase={
+                    draft.builtin
+                      ? "Loading the desktop's built-in MCP servers…"
+                      : "All servers (no restriction declared)"
+                  }
                   noMatch="No servers match the filter."
                   loading="Loading servers…"
                   manualLabel="Add server by name"
@@ -1254,6 +1452,9 @@ export function Personalities() {
                   onToggle={toggleMcp}
                   onToggleGroup={toggleMcpGroup}
                   onClearAll={clearMcp}
+                  noneChip="Block all servers"
+                  noneActive={draft.mcpNone}
+                  onBlockAll={toggleMcpNone}
                 />
               </Stack>
             </DialogContent>
@@ -1264,11 +1465,13 @@ export function Personalities() {
               <Button
                 variant="contained"
                 disabled={
-                  busy || !draft.name.trim() || !draft.instruction.trim()
+                  busy ||
+                  (!draft.builtin &&
+                    (!draft.name.trim() || !draft.instruction.trim()))
                 }
                 onClick={() => void save()}
               >
-                Save personality
+                {draft.builtin ? "Save scope" : "Save personality"}
               </Button>
             </DialogActions>
           </AccessibleDialog>

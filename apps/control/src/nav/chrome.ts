@@ -1,3 +1,4 @@
+import { unlinkSync } from "node:fs"
 import {
   type CdpSocket,
   clearActiveTabId,
@@ -10,9 +11,19 @@ import {
   readActiveTabId,
   writeActiveTabId,
 } from "./cdp"
+import {
+  type BodyResult,
+  ensureRecorder,
+  eventsDir,
+  eventsFile,
+  readBodyResult,
+  readConsole,
+  readNetwork,
+  writeBodyRequest,
+} from "./devtools"
 
 const USAGE =
-  "usage: chrome.ts PORT SESSION navigate URL | newtab URL | tabs | switch N | closetab N | url | back | forward | reload"
+  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval JS"
 
 export type PageState = {
   url: string
@@ -325,14 +336,394 @@ async function history(
   }
 }
 
-async function reload(port: number, session?: string): Promise<PageState> {
+async function reload(
+  port: number,
+  session?: string,
+  fresh?: boolean,
+): Promise<PageState> {
   const { socket } = await resolvePage(port, session)
   try {
     await socket
-      .call("Page.reload")
+      .call("Page.reload", fresh ? { ignoreCache: true } : undefined)
       .catch(() => evaluate(socket, "location.reload()"))
     await Bun.sleep(900)
     return await readState(socket).catch(() => shapeState(null))
+  } finally {
+    socket.close()
+  }
+}
+
+// ---- devtools verbs ----
+
+// `console --level error --limit 20` and `network --filter api --limit 10 3
+// --body` parse the same way: --key VALUE pairs, bare --flags, everything
+// else is positional (the request index for network).
+export function flagsFrom(argv: string[]): {
+  positional: string[]
+  flags: Record<string, string | boolean>
+} {
+  const positional: string[] = []
+  const flags: Record<string, string | boolean> = {}
+  for (let index = 0; index < argv.length; index += 1) {
+    const item = argv[index]
+    if (!item.startsWith("--")) {
+      positional.push(item)
+      continue
+    }
+    const eq = item.indexOf("=")
+    if (eq > 2) {
+      flags[item.slice(2, eq)] = item.slice(eq + 1)
+      continue
+    }
+    const next = argv[index + 1]
+    if (next !== undefined && !next.startsWith("--")) {
+      flags[item.slice(2)] = next
+      index += 1
+    } else flags[item.slice(2)] = true
+  }
+  return { positional, flags }
+}
+
+function numFlag(
+  flags: Record<string, string | boolean>,
+  key: string,
+  fallback: number,
+): number {
+  const value = typeof flags[key] === "string" ? Number(flags[key]) : NaN
+  return Number.isInteger(value) && value > 0 ? value : fallback
+}
+
+async function consoleCmd(
+  session: string | undefined,
+  flags: Record<string, string | boolean>,
+): Promise<Record<string, unknown>> {
+  ensureRecorder(session)
+  if (!session) throw new Error("console needs a session")
+  const file = eventsFile(session)
+  if (flags.clear === true) {
+    try {
+      unlinkSync(file)
+    } catch {}
+    return { cleared: true }
+  }
+  const level = typeof flags.level === "string" ? flags.level : ""
+  return { console: readConsole(file, level, numFlag(flags, "limit", 40)) }
+}
+
+const TEXTUAL =
+  /json|text|html|xml|javascript|urlencoded|form|csv|event-stream/i
+
+function capBody(text: string): { body: string } {
+  return {
+    body:
+      text.length > 128_000 ? `${text.slice(0, 128_000)}…[truncated]` : text,
+  }
+}
+
+// Bodies come from the recorder's own Network session (getResponseBody is
+// session-scoped), through a one-shot file handshake with a nonce so stale
+// results from an earlier CLI run are ignored.
+async function fetchBody(
+  session: string,
+  requestId: string,
+  mime: string,
+): Promise<{ body: string; bodyBytes?: number }> {
+  const dir = eventsDir(session)
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  writeBodyRequest(dir, { nonce, requestId })
+  const deadline = Date.now() + 8000
+  for (;;) {
+    if (Date.now() > deadline)
+      throw new Error(
+        "no answer from the screen's devtools recorder — retry once",
+      )
+    await Bun.sleep(200)
+    let result: BodyResult | null = null
+    try {
+      result = readBodyResult(dir, nonce)
+    } catch {
+      result = null
+    }
+    if (!result) continue
+    if (!result.ok) {
+      if (/no resource with given identifier/i.test(result.error ?? ""))
+        throw new Error(
+          "response body is no longer buffered — run network N --body again right after the request",
+        )
+      throw new Error(result.error || "body fetch failed")
+    }
+    if (result.base64) {
+      const bytes = Buffer.from(result.body ?? "", "base64")
+      if (!TEXTUAL.test(mime))
+        return {
+          body: `<binary ${bytes.length} bytes>`,
+          bodyBytes: bytes.length,
+        }
+      return capBody(bytes.toString("utf8"))
+    }
+    return capBody(result.body ?? "")
+  }
+}
+
+async function networkCmd(
+  session: string | undefined,
+  positional: string[],
+  flags: Record<string, string | boolean>,
+): Promise<Record<string, unknown>> {
+  ensureRecorder(session)
+  if (!session) throw new Error("network needs a session")
+  const file = eventsFile(session)
+  if (flags.clear === true) {
+    try {
+      unlinkSync(file)
+    } catch {}
+    return { cleared: true }
+  }
+  const filter = typeof flags.filter === "string" ? flags.filter : ""
+  const index = positional[0]
+  if (index !== undefined) {
+    const which = Number(index)
+    if (!Number.isInteger(which) || which < 1)
+      throw new Error(`bad request index ${index}`)
+    // The detail view recomputes the same last-25 window `network` prints, so
+    // the printed `n` stays meaningful.
+    const list = readNetwork(file, filter, 25)
+    const record = list[which - 1]
+    if (!record)
+      throw new Error(
+        `no request ${which} in the current window — run network again to list, passing the same --filter`,
+      )
+    const out: Record<string, unknown> = {
+      n: which,
+      method: record.method,
+      url: record.url,
+      type: record.type,
+      status: record.status,
+      mime: record.mime,
+      bytes: record.bytes,
+      ms: record.ms,
+      fail: record.fail,
+      redirects: record.redirects,
+      requestHeaders: record.requestHeaders,
+      responseHeaders: record.responseHeaders,
+    }
+    if (flags.body === true)
+      Object.assign(out, await fetchBody(session, record.id, record.mime ?? ""))
+    return out
+  }
+  const limit = numFlag(flags, "limit", 25)
+  return {
+    requests: readNetwork(file, filter, limit).map((row, i) => ({
+      n: i + 1,
+      method: row.method,
+      url: row.url,
+      status: row.status,
+      type: row.type,
+      bytes: row.bytes,
+      ms: row.ms,
+      fail: row.fail,
+    })),
+  }
+}
+
+async function metricsCmd(
+  port: number,
+  session: string | undefined,
+): Promise<Record<string, unknown>> {
+  const { socket } = await resolvePage(port, session)
+  try {
+    await socket.call("Performance.enable")
+    const result = (await socket.call("Performance.getMetrics")) as {
+      metrics?: { name: string; value: number }[]
+    }
+    const metrics: Record<string, number> = {}
+    for (const row of result.metrics ?? [])
+      metrics[row.name] = Math.round(row.value * 100) / 100
+    const pageMs = await evaluate(
+      socket,
+      "Math.round(performance.now())",
+    ).catch(() => undefined)
+    return {
+      url: await evaluate(socket, "location.href").catch(() => ""),
+      page_ms: typeof pageMs === "number" ? pageMs : undefined,
+      metrics,
+    }
+  } finally {
+    socket.close()
+  }
+}
+
+// `cache clear` is the dev cache-buster. Plain clear wipes the browser-wide
+// HTTP cache; --origin wipes one origin's stale app data (cache storage,
+// service workers, localStorage, IndexedDB — the layers that survive a
+// reload and break dev iterations). Cookies survive unless --cookies, so a
+// cache bust never silently logs the page out. --reload lands on fresh
+// bytes in the same call.
+async function cacheCmd(
+  port: number,
+  session: string | undefined,
+  positional: string[],
+  flags: Record<string, string | boolean>,
+): Promise<Record<string, unknown>> {
+  const sub = positional[0] ?? ""
+  if (sub !== "clear") throw new Error("cache takes clear")
+  const originFlag = typeof flags.origin === "string" ? flags.origin : ""
+  const { socket } = await resolvePage(port, session)
+  try {
+    let cleared: Record<string, unknown>
+    if (originFlag) {
+      const origin = devOrigin(originFlag)
+      if (!origin)
+        throw new Error(
+          `bad origin ${originFlag} — use a http(s) url or domain`,
+        )
+      // Storage types are the CDP names; the HTTP cache has no per-origin
+      // clear (browser-wide only), so say so instead of pretending.
+      const types = [
+        "cache_storage",
+        "service_workers",
+        "local_storage",
+        "indexeddb",
+      ]
+      if (flags.cookies === true) types.push("cookies")
+      await socket.call("Storage.clearDataForOrigin", {
+        origin,
+        storageTypes: types.join(","),
+      })
+      cleared = {
+        cleared: origin,
+        types,
+        note: "per-origin app data only — plain `cache clear` wipes the browser HTTP cache too",
+      }
+    } else {
+      await socket.call("Network.clearBrowserCache")
+      cleared = { cleared: "browser HTTP cache" }
+    }
+    if (flags.reload !== true) return cleared
+    await socket
+      .call("Page.reload", { ignoreCache: true })
+      .catch(() => undefined)
+    await Bun.sleep(900)
+    return {
+      ...cleared,
+      reloaded: await readState(socket).catch(() => shapeState(null)),
+    }
+  } finally {
+    socket.close()
+  }
+}
+
+const DOM_TOTAL_MAX = 96_000
+const EVAL_MAX = 64_000
+const ELEMENT_HTML_MAX = 8_000
+
+export function capText(
+  text: string,
+  max: number,
+): { text: string; truncated?: boolean } {
+  if (text.length <= max) return { text }
+  return { text: text.slice(0, max), truncated: true }
+}
+
+// Storage.clearDataForOrigin needs a scheme+host origin ("https://x.test"),
+// never a path; bare domains get the scheme like navigate does. The HTTP
+// cache itself is only clearable browser-wide (Network.clearBrowserCache) —
+// origin mode targets the stale-app-data layer instead.
+export function devOrigin(raw: string): string | null {
+  const normalized = normalizeTarget(raw.trim()) ?? raw.trim()
+  try {
+    const url = new URL(normalized)
+    // file:/about: URLs report the literal origin "null" — useless here.
+    if (!/^https?:$/.test(url.protocol)) return null
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
+// `dom` reads the live DOM the navigate state line cannot show: the whole
+// document HTML by default, body innerText with --text, or the outerHTML of
+// a --selector match set (the cheap way to inspect one widget).
+async function domCmd(
+  port: number,
+  session: string | undefined,
+  positional: string[],
+  flags: Record<string, string | boolean>,
+): Promise<Record<string, unknown>> {
+  const { socket } = await resolvePage(port, session)
+  try {
+    const url = await evaluate(socket, "location.href").catch(() => "")
+    const selector =
+      typeof flags.selector === "string"
+        ? flags.selector
+        : (positional[0] ?? "")
+    const limit = numFlag(flags, "limit", 20)
+    if (selector) {
+      const script = `(() => {
+        const sel = ${JSON.stringify(selector)}
+        const all = document.querySelectorAll(sel)
+        const els = [...all].slice(0, ${limit})
+        return { count: all.length, html: els.map((el) => el.outerHTML.slice(0, ${ELEMENT_HTML_MAX})) }
+      })()`
+      const raw = (await evaluate(socket, script)) as {
+        count?: number
+        html?: string[]
+      }
+      const html = (raw.html ?? []).join("\n")
+      const cap = capText(html, DOM_TOTAL_MAX)
+      return {
+        url,
+        selector,
+        count: raw.count ?? 0,
+        shown: (raw.html ?? []).length,
+        html: cap.text,
+        truncated: cap.truncated,
+      }
+    }
+    if (flags.text === true) {
+      const raw = await evaluate(
+        socket,
+        "(document.body ? document.body.innerText : '')",
+      )
+      const cap = capText(String(raw ?? ""), DOM_TOTAL_MAX)
+      return { url, text: cap.text, truncated: cap.truncated }
+    }
+    const raw = await evaluate(socket, "document.documentElement.outerHTML")
+    const cap = capText(String(raw ?? ""), DOM_TOTAL_MAX)
+    return { url, html: cap.text, truncated: cap.truncated }
+  } finally {
+    socket.close()
+  }
+}
+
+// `eval JS` runs in the page: the management lever the DOM read implies —
+// set attributes/classes, inject or remove nodes, call the page's own APIs.
+// evaluate() surfaces page exceptions with the real message.
+async function evalCmd(
+  port: number,
+  session: string | undefined,
+  positional: string[],
+): Promise<Record<string, unknown>> {
+  const expression = positional.join(" ")
+  if (!expression.trim()) throw new Error("eval needs a JavaScript expression")
+  const { socket } = await resolvePage(port, session)
+  try {
+    const value = await evaluate(socket, expression)
+    let serialized: string
+    try {
+      serialized = JSON.stringify(value) ?? String(value)
+    } catch {
+      serialized = String(value)
+    }
+    const url = await evaluate(socket, "location.href").catch(() => "")
+    if (serialized.length <= EVAL_MAX) return { url, value }
+    const cap = capText(serialized, EVAL_MAX)
+    return {
+      url,
+      value: cap.text,
+      truncated: true,
+      note: "result truncated — narrow the expression (slice arrays, pick fields)",
+    }
   } finally {
     socket.close()
   }
@@ -343,7 +734,24 @@ export function verbFrom(argv: string[]): {
   url?: string
   arg?: string
 } {
-  const [verb = "", ...rest] = argv
+  const [head = "", ...tail] = argv
+  // `tab` is the grouped namespace for the flat tab verbs:
+  // `tab [list]` -> tabs, `tab new|open [URL]` -> newtab,
+  // `tab close [N]` -> closetab, `tab switch|select N` -> switch.
+  // The flat verbs stay as aliases so existing calls keep working.
+  if (head === "tab") {
+    const [sub = "list", ...rest] = tail
+    if (sub === "list" || sub === "ls") return { verb: "tabs" }
+    if (sub === "new" || sub === "open" || sub === "create")
+      return verbFrom(["newtab", ...rest])
+    if (sub === "close" || sub === "rm" || sub === "remove")
+      return verbFrom(["closetab", ...rest])
+    if (sub === "switch" || sub === "select" || sub === "use")
+      return verbFrom(["switch", ...rest])
+    return { verb: "tab" }
+  }
+  const verb = head
+  const rest = tail
   if (verb === "navigate" || verb === "newtab") {
     let url = ""
     for (let index = 0; index < rest.length; index += 1) {
@@ -394,9 +802,14 @@ export async function withHeal<T>(
 async function main() {
   const port = Number(process.argv[2])
   const session = process.argv[3]
-  const { verb, url, arg } = verbFrom(process.argv.slice(4))
+  const argv = process.argv.slice(4)
+  const { verb, url, arg } = verbFrom(argv)
   if (!Number.isInteger(port) || !verb) throw new Error(USAGE)
-  let state: PageState | TabLine
+  const { positional, flags } = flagsFrom(argv)
+  // The verb itself arrives as the first positional; every verb that reads
+  // positionals wants the rest.
+  const args = positional[0] === verb ? positional.slice(1) : positional
+  let state: PageState | TabLine | Record<string, unknown>
   if (verb === "navigate")
     state = await withHeal(session, () => navigate(port, session, url ?? ""))
   else if (verb === "newtab")
@@ -415,7 +828,20 @@ async function main() {
   else if (verb === "forward")
     state = await withHeal(session, () => history(port, session, 1))
   else if (verb === "reload")
-    state = await withHeal(session, () => reload(port, session))
+    state = await withHeal(session, () =>
+      reload(port, session, flags.fresh === true),
+    )
+  else if (verb === "console") state = await consoleCmd(session, flags)
+  else if (verb === "network")
+    state = await withHeal(session, () => networkCmd(session, args, flags))
+  else if (verb === "metrics")
+    state = await withHeal(session, () => metricsCmd(port, session))
+  else if (verb === "dom")
+    state = await withHeal(session, () => domCmd(port, session, args, flags))
+  else if (verb === "eval")
+    state = await withHeal(session, () => evalCmd(port, session, args))
+  else if (verb === "cache")
+    state = await withHeal(session, () => cacheCmd(port, session, args, flags))
   else throw new Error(USAGE)
   console.log(JSON.stringify(state))
 }

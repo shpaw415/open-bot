@@ -1,5 +1,14 @@
 import type { Db, Role, User, UserKeyFields } from "@open-bot/db"
-import { desktopPhase, destroyDesktop, stopDesktop } from "./docker"
+import { validCpuCores, validDiskGb, validMemoryMb } from "@open-bot/db"
+import {
+  applyDesktopCpuLimit,
+  applyDesktopMemoryLimit,
+  captureOpencodeAuth,
+  desktopPhase,
+  destroyDesktop,
+  hostCpuCores,
+  stopDesktop,
+} from "./docker"
 import type { EventHub } from "./events"
 import { handleAdminImprovements } from "./improvements"
 import {
@@ -19,13 +28,20 @@ import { randomToken } from "./passwords"
 import { DISK_CAP_KEY, desktopDiskMaxGb, MAX_DISK_CAP_GB } from "./stats"
 import {
   getTeamConfig,
+  getTeamOpencodeAuth,
   redactTeamConfig,
   resolveQuota,
   saveTeamConfig,
+  setTeamOpencodeAuth,
   type TeamConfig,
   type TeamProviderOverlay,
+  teamOpencodeAuthPublic,
 } from "./team"
-import { applyTeamChange, teamKeysPublic } from "./team-apply"
+import {
+  applyTeamChange,
+  refreshTeamOpencodeAuth,
+  teamKeysPublic,
+} from "./team-apply"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
 import {
   deleteUserMedia,
@@ -311,7 +327,26 @@ export async function handleAdmin(
       secrets,
       catalog: keyVaultPublic(),
       keys: teamKeysPublic(db),
+      opencodeAuth: teamOpencodeAuthPublic(getTeamOpencodeAuth(db)),
     })
+  }
+  if (
+    url.pathname === "/api/admin/team/opencode-auth/sync" &&
+    req.method === "POST"
+  ) {
+    // Recapture the admin desktop's provider auth and fan it out. The admin
+    // desktop must be running — the auth file lives only there.
+    const refreshed = await refreshTeamOpencodeAuth(db, actor.id, hub)
+    if (!refreshed) {
+      return json(
+        {
+          error:
+            "could not read the provider auth from your desktop — start it, then synchronize again",
+        },
+        409,
+      )
+    }
+    return json({ opencodeAuth: refreshed })
   }
   if (url.pathname === "/api/admin/team" && req.method === "PUT") {
     const body = (await readJson(req)) as Partial<TeamConfig>
@@ -374,28 +409,48 @@ export async function handleAdmin(
       const { userId: _userId, ...fields } = key
       db.setTeamKey(spec.id, fields)
     }
+    // The importing admin's OpenCode provider auth rides along: team mode
+    // shares it like the keys. Best effort — the desktop may be asleep.
+    const capturedAuth = await captureOpencodeAuth(actor.id).catch(() => null)
+    if (capturedAuth) setTeamOpencodeAuth(db, capturedAuth)
     const saved = saveTeamConfig(db, {
       mode: "team",
       providers: providerOverlayFromUser(db, actor.id),
     })
     await applyTeamChange(db, hub, { configChanged: true })
     const { config, secrets } = redactTeamConfig(saved)
-    return json({ config, secrets, keys: teamKeysPublic(db) })
+    return json({
+      config,
+      secrets,
+      keys: teamKeysPublic(db),
+      opencodeAuth: teamOpencodeAuthPublic(getTeamOpencodeAuth(db)),
+    })
   }
   if (url.pathname === "/api/admin/team/quotas" && req.method === "GET") {
     const config = getTeamConfig(db)
     const now = Date.now()
+    let hostCores: number | null = null
+    try {
+      hostCores = await hostCpuCores()
+    } catch {
+      hostCores = null
+    }
     return json({
       default: config.quotaDefaultTokens,
       behavior: config.quotaBehavior,
+      hostCores,
       users: db.listUsers().map((user) => {
         const quota = resolveQuota(db, user.id, now)
+        const desktop = db.desktop(user.id)
         return {
           userId: user.id,
           email: user.email,
           weeklyTokens: db.getUserQuota(user.id)?.weeklyTokens ?? null,
           used: quota.used,
           limitTokens: quota.limitTokens,
+          memoryMb: desktop?.memoryMb ?? null,
+          diskGb: desktop?.diskGb ?? null,
+          cpuCores: desktop?.cpuCores ?? null,
         }
       }),
     })
@@ -414,10 +469,108 @@ export async function handleAdmin(
         400,
       )
     }
+    const memoryRaw = body.memoryMb
+    if (
+      memoryRaw !== undefined &&
+      memoryRaw !== null &&
+      !validMemoryMb(memoryRaw)
+    ) {
+      return json(
+        {
+          error: `memoryMb must be an integer between 512 and 65536, or null`,
+        },
+        400,
+      )
+    }
+    const diskRaw = body.diskGb
+    if (diskRaw !== undefined && diskRaw !== null && !validDiskGb(diskRaw)) {
+      return json(
+        { error: "diskGb must be a non-negative integer, or null" },
+        400,
+      )
+    }
+    const cpuRaw = body.cpuCores
+    if (cpuRaw !== undefined && cpuRaw !== null && !validCpuCores(cpuRaw)) {
+      return json(
+        {
+          error: "cpuCores must be a number of at least 0.5, or null",
+        },
+        400,
+      )
+    }
+    if (cpuRaw !== undefined && cpuRaw !== null) {
+      let hostCores: number
+      try {
+        hostCores = await hostCpuCores()
+      } catch (error) {
+        return json(
+          {
+            error: `could not read the host CPU count: ${
+              error instanceof Error ? error.message : error
+            }`,
+          },
+          500,
+        )
+      }
+      if ((cpuRaw as number) > hostCores) {
+        return json(
+          {
+            error: `cpuCores cannot exceed the host's ${hostCores} cores`,
+          },
+          400,
+        )
+      }
+    }
     db.setUserQuota(userId, raw as number | null)
+    if ("memoryMb" in body || "diskGb" in body || "cpuCores" in body) {
+      db.updateDesktopLimits(userId, {
+        ...("memoryMb" in body ? { memoryMb: memoryRaw as number | null } : {}),
+        ...("diskGb" in body ? { diskGb: diskRaw as number | null } : {}),
+        ...("cpuCores" in body ? { cpuCores: cpuRaw as number | null } : {}),
+      })
+    }
+    let memoryApplied: boolean | null = null
+    if ("memoryMb" in body) {
+      try {
+        memoryApplied = await applyDesktopMemoryLimit(
+          userId,
+          memoryRaw as number | null,
+        )
+      } catch (error) {
+        return json(
+          {
+            error: `saved, but the running desktop could not be retuned: ${
+              error instanceof Error ? error.message : error
+            }`,
+          },
+          500,
+        )
+      }
+    }
+    let cpuApplied: boolean | null = null
+    if ("cpuCores" in body) {
+      try {
+        cpuApplied = await applyDesktopCpuLimit(userId, cpuRaw as number | null)
+      } catch (error) {
+        return json(
+          {
+            error: `saved, but the running desktop could not be retuned: ${
+              error instanceof Error ? error.message : error
+            }`,
+          },
+          500,
+        )
+      }
+    }
+    const desktop = db.desktop(userId)
     return json({
       ok: true,
       weeklyTokens: db.getUserQuota(userId)?.weeklyTokens ?? null,
+      memoryMb: desktop?.memoryMb ?? null,
+      diskGb: desktop?.diskGb ?? null,
+      cpuCores: desktop?.cpuCores ?? null,
+      memoryApplied,
+      cpuApplied,
     })
   }
   const improvement = await handleAdminImprovements(req, url, db)

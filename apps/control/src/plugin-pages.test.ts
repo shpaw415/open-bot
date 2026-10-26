@@ -1,4 +1,5 @@
 import { describe, expect, mock, setSystemTime, test } from "bun:test"
+import vm from "node:vm"
 import type { InstalledPlugin, User } from "@open-bot/db"
 import * as dockerModule from "./docker"
 import {
@@ -27,6 +28,7 @@ import {
   strippedHeaders,
   sweepIdlePluginPageServers,
   touchPluginPageActivity,
+  uiBuildId,
 } from "./plugin-pages"
 import {
   FRAME_STORAGE_SHIM,
@@ -438,7 +440,7 @@ describe("plugin pages", () => {
     )
     // Headless documents still get the shim first.
     const bare = rewritePreviewHtml("<p>hi</p>", "/api/pages/_frame/tok", true)
-    expect(bare.startsWith("<script>")).toBe(true)
+    expect(bare.startsWith(`<script data-cfasync="false">`)).toBe(true)
     expect(bare).toContain("<base")
     // A page with its own <base> keeps it (root-relative href rewritten to the
     // frame prefix) and still gets the shim on top.
@@ -447,7 +449,7 @@ describe("plugin pages", () => {
       "/api/pages/_frame/tok",
       true,
     )
-    expect(owned.startsWith(`<script>`)).toBe(true)
+    expect(owned.startsWith(`<script data-cfasync="false">`)).toBe(true)
     expect(owned).toContain(`<base href="/api/pages/_frame/tok/x/">`)
   })
 
@@ -531,6 +533,10 @@ describe("plugin pages", () => {
       expect(framed?.headers.get("access-control-allow-credentials")).toBe(
         "true",
       )
+      // The shell-build stamp: an open app tab compares it on its keep-alive
+      // HEAD and reloads itself once when a newer web deploy landed.
+      expect(framed?.headers.get("x-open-bot-build")).toBeTruthy()
+      expect(framed?.headers.get("x-open-bot-build")).toBe(uiBuildId())
       const framedBody = await framed?.text()
       expect(framedBody).toContain(FRAME_STORAGE_SHIM)
       expect(framedBody).toContain('credentials="include"')
@@ -848,6 +854,9 @@ describe("strippedHeaders", () => {
 describe("FRAME_STORAGE_SHIM — media bridge", () => {
   test("insecure frames bridge devices, location and clipboard through the shell", () => {
     expect(FRAME_STORAGE_SHIM).toContain("isSecureContext")
+    // Rocket Loader opt-out (first attribute, per Cloudflare's contract) —
+    // the zone rewriter once deferred the shim past the page's own scripts.
+    expect(FRAME_STORAGE_SHIM).toStartWith(`<script data-cfasync="false">`)
     expect(FRAME_STORAGE_SHIM).toContain('type:"media-request"')
     expect(FRAME_STORAGE_SHIM).toContain('type:"media-answer"')
     expect(FRAME_STORAGE_SHIM).toContain('type:"media-release"')
@@ -877,11 +886,172 @@ describe("FRAME_STORAGE_SHIM — executable script", () => {
     // never ran — opaque-origin frames crashed on their first storage read
     // (Bun's HMR client included) while the containment tests stayed green.
     const inner = FRAME_STORAGE_SHIM.slice(
-      "<script>".length,
+      FRAME_STORAGE_SHIM.indexOf(">") + 1,
       -"</script>".length,
     )
     expect(inner.startsWith("(function(){")).toBe(true)
     expect(() => new Function(inner)).not.toThrow()
+  })
+
+  test("device-permission queries answer prompt; unknown names pass through; getUserMedia bridges", async () => {
+    // Chrome reports microphone/camera "denied" on an opaque origin without
+    // ever prompting, so pages that pre-check permissions never call
+    // getUserMedia and the consent bar never appears. The shim must answer
+    // "prompt" for device names and keep the native path for everything else.
+    const inner = FRAME_STORAGE_SHIM.slice(
+      FRAME_STORAGE_SHIM.indexOf(">") + 1,
+      -"</script>".length,
+    )
+    const posted: unknown[] = []
+    class FakePC {}
+    class FakeStream {}
+    class FakeES {}
+    class FakeXHR {
+      withCredentials = false
+      send() {}
+    }
+    const sandbox: Record<string, unknown> = {
+      Promise,
+      console,
+      setTimeout,
+      clearTimeout,
+      DOMException,
+      RTCPeerConnection: FakePC,
+      MediaStream: FakeStream,
+      EventSource: FakeES,
+      XMLHttpRequest: FakeXHR,
+    }
+    sandbox.window = sandbox
+    sandbox.parent = { postMessage: (msg: unknown) => posted.push(msg) }
+    sandbox.navigator = {
+      permissions: { query: () => Promise.resolve({ state: "denied" }) },
+    }
+    sandbox.isSecureContext = false
+    sandbox.origin = "null"
+    sandbox.location = { origin: "null" }
+    vm.createContext(sandbox)
+    vm.runInContext(inner, sandbox)
+    const nav = sandbox.navigator as {
+      permissions: {
+        query: (d: { name: string }) => Promise<{ state?: string }>
+      }
+      mediaDevices: { getUserMedia: (c: unknown) => Promise<unknown> }
+    }
+    expect(await nav.permissions.query({ name: "microphone" })).toMatchObject({
+      state: "prompt",
+    })
+    expect(await nav.permissions.query({ name: "camera" })).toMatchObject({
+      state: "prompt",
+    })
+    expect(await nav.permissions.query({ name: "push" })).toMatchObject({
+      state: "denied",
+    })
+    // Fire-and-forget, but handled: the bridge's 12 s timeout rejects later
+    // and an unhandled rejection would error the run between tests.
+    nav.mediaDevices.getUserMedia({ audio: true }).catch(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(posted).toEqual([
+      {
+        type: "media-request",
+        id: "m1",
+        display: false,
+        audio: true,
+        video: false,
+        source: "open-bot-frame",
+      },
+    ])
+  })
+
+  test("a secure-context opaque frame still bridges — https dashboards are the common case", async () => {
+    // Regression: a sandboxed frame on an https page inherits isSecureContext
+    // = true, so the old `!isSecureContext` guard skipped the bridge and the
+    // page called Chrome's native getUserMedia, which always rejects on an
+    // opaque origin with SecurityError "Invalid security origin" — the
+    // plugin's generic mic-denied banner with no consent bar. The guard must
+    // key on the opaque origin (location.origin === "null").
+    const inner = FRAME_STORAGE_SHIM.slice(
+      FRAME_STORAGE_SHIM.indexOf(">") + 1,
+      -"</script>".length,
+    )
+    const posted: unknown[] = []
+    const sandbox: Record<string, unknown> = {
+      Promise,
+      console,
+      setTimeout,
+      clearTimeout,
+      DOMException,
+      RTCPeerConnection: class {},
+      MediaStream: class {},
+      EventSource: class {},
+      XMLHttpRequest: class {
+        withCredentials = false
+        send() {}
+      },
+    }
+    sandbox.window = sandbox
+    sandbox.parent = { postMessage: (msg: unknown) => posted.push(msg) }
+    sandbox.navigator = {
+      permissions: { query: () => Promise.resolve({ state: "denied" }) },
+    }
+    sandbox.isSecureContext = true
+    sandbox.origin = "null"
+    sandbox.location = { origin: "null" }
+    vm.createContext(sandbox)
+    vm.runInContext(inner, sandbox)
+    const nav = sandbox.navigator as {
+      mediaDevices: { getUserMedia: (c: unknown) => Promise<unknown> }
+    }
+    nav.mediaDevices.getUserMedia({ audio: true }).catch(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(posted).toEqual([
+      {
+        type: "media-request",
+        id: "m1",
+        display: false,
+        audio: true,
+        video: false,
+        source: "open-bot-frame",
+      },
+    ])
+  })
+
+  test("a real-origin secure frame keeps the native media flow", () => {
+    const inner = FRAME_STORAGE_SHIM.slice(
+      FRAME_STORAGE_SHIM.indexOf(">") + 1,
+      -"</script>".length,
+    )
+    const sandbox: Record<string, unknown> = {
+      Promise,
+      console,
+      setTimeout,
+      clearTimeout,
+      DOMException,
+      EventSource: class {},
+      XMLHttpRequest: class {
+        withCredentials = false
+        send() {}
+      },
+    }
+    const nativeGum = () => Promise.reject(new Error("native"))
+    sandbox.window = sandbox
+    sandbox.navigator = {
+      mediaDevices: { getUserMedia: nativeGum },
+    }
+    sandbox.isSecureContext = true
+    sandbox.origin = "https://pages.example"
+    sandbox.location = { origin: "https://pages.example" }
+    vm.createContext(sandbox)
+    vm.runInContext(inner, sandbox)
+    const nav = sandbox.navigator as {
+      mediaDevices: { getUserMedia: (c: unknown) => Promise<unknown> }
+    }
+    expect(nav.mediaDevices.getUserMedia).toBe(nativeGum)
+  })
+
+  test("the ui build id is stable per boot and content-derived", () => {
+    const first = uiBuildId()
+    expect(first).toBeTruthy()
+    expect(uiBuildId()).toBe(first)
   })
 
   test("the shim precedes Bun dev-server injected scripts in framed HTML", () => {

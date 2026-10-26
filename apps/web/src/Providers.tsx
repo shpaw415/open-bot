@@ -15,7 +15,7 @@ import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import type { Terminal } from "@xterm/xterm"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { api, waitForDesktop } from "./api"
+import { api, isTeamLockedError, waitForDesktop } from "./api"
 import { Chip } from "./chip"
 import { useMobile } from "./hooks"
 import {
@@ -34,6 +34,15 @@ type AuthMethod = { type?: string; label?: string }
 type ProviderAuth = Record<string, AuthMethod[]>
 type CatalogEntry = { id: string; name: string }
 type ProviderOption = { id: string; label: string }
+type CliProviderItem = {
+  id: string
+  label: string
+  description: string
+  installed: boolean | null
+  loggedIn: boolean | null
+  account: string | null
+  models: { id: string; name: string }[]
+}
 
 const PROVIDER_PRIORITY = [
   "opencode",
@@ -334,6 +343,9 @@ export function Providers() {
   const [connected, setConnected] = useState<string[]>([])
   const [loginId, setLoginId] = useState("")
   const [loginBusy, setLoginBusy] = useState(false)
+  const [cliItems, setCliItems] = useState<CliProviderItem[]>([])
+  const [cliAvailable, setCliAvailable] = useState(true)
+  const [teamLockedAuth, setTeamLockedAuth] = useState(false)
   const mobile = useMobile()
 
   const providerIds = useMemo(() => Object.keys(auth), [auth])
@@ -357,14 +369,19 @@ export function Providers() {
       await waitForDesktop()
       const body = await api<{
         providers?: { catalog?: CatalogEntry[]; connected?: string[] }
+        cliProviders?: { available?: boolean; items?: CliProviderItem[] }
         auth?: ProviderAuth
+        team?: { mode?: string; lockedAuth?: boolean }
       }>("/api/providers")
       const nextCatalog = body.providers?.catalog ?? []
       const nextAuth = body.auth ?? {}
       const nextConnected = body.providers?.connected ?? []
       setConnected(nextConnected)
       setCatalog(nextCatalog)
+      setCliItems(body.cliProviders?.items ?? [])
+      setCliAvailable(body.cliProviders?.available !== false)
       setAuth(nextAuth)
+      setTeamLockedAuth(Boolean(body.team?.lockedAuth))
       const options = mergedOptions(
         nextCatalog,
         Object.keys(nextAuth),
@@ -381,8 +398,9 @@ export function Providers() {
     }
   }
 
-  async function startLogin() {
-    if (!provider) {
+  async function startLogin(targetProvider?: string) {
+    const picked = targetProvider ?? provider
+    if (!picked) {
       setError("pick a provider first")
       return
     }
@@ -392,13 +410,19 @@ export function Providers() {
       const body = await api<{ id: string }>("/api/providers/login", {
         method: "POST",
         body: JSON.stringify({
-          provider,
-          method: method || undefined,
+          provider: picked,
+          method: targetProvider ? undefined : method || undefined,
         }),
       })
       setLoginId(body.id)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "login failed")
+      setError(
+        isTeamLockedError(caught)
+          ? "Fournisseurs gérés par l’équipe en mode équipe."
+          : caught instanceof Error
+            ? caught.message
+            : "login failed",
+      )
     } finally {
       setLoginBusy(false)
     }
@@ -413,14 +437,27 @@ export function Providers() {
       })
       await load()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "logout failed")
+      setError(
+        isTeamLockedError(caught)
+          ? "Fournisseurs gérés par l’équipe en mode équipe."
+          : caught instanceof Error
+            ? caught.message
+            : "logout failed",
+      )
     }
   }
 
   const onLoginExit = useCallback((code: number | null) => {
     if (code !== 0) return
-    void api<{ providers?: { connected?: string[] } }>("/api/providers")
-      .then((body) => setConnected(body.providers?.connected ?? []))
+    void api<{
+      providers?: { connected?: string[] }
+      cliProviders?: { available?: boolean; items?: CliProviderItem[] }
+    }>("/api/providers")
+      .then((body) => {
+        setConnected(body.providers?.connected ?? [])
+        setCliItems(body.cliProviders?.items ?? [])
+        setCliAvailable(body.cliProviders?.available !== false)
+      })
       .catch((caught) =>
         setError(caught instanceof Error ? caught.message : "failed"),
       )
@@ -532,15 +569,21 @@ export function Providers() {
                       },
                     }}
                   />
-                  <Button
-                    size="small"
-                    variant="text"
-                    startIcon={<LogoutIcon />}
-                    onClick={() => void logoutProvider(id)}
-                    sx={{ flexShrink: 0 }}
-                  >
-                    Log out
-                  </Button>
+                  {teamLockedAuth ? (
+                    <Typography variant="caption" color="textSecondary">
+                      Géré par l’équipe
+                    </Typography>
+                  ) : (
+                    <Button
+                      size="small"
+                      variant="text"
+                      startIcon={<LogoutIcon />}
+                      onClick={() => void logoutProvider(id)}
+                      sx={{ flexShrink: 0 }}
+                    >
+                      Log out
+                    </Button>
+                  )}
                 </ListItem>
               ))}
             </List>
@@ -559,136 +602,232 @@ export function Providers() {
           }}
         >
           <Typography variant="subtitle1" sx={{ mb: 1 }}>
-            Add provider
+            {teamLockedAuth
+              ? "Fournisseurs gérés par l’équipe"
+              : "Add provider"}
           </Typography>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-            Chat models come from the providers connected here.
-          </Typography>
-          <Stack spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
-            {loading ? (
-              <Stack spacing={1}>
-                <Skeleton height={44} />
-                <Skeleton height={44} />
-              </Stack>
-            ) : providerOptions.length === 0 ? (
-              <Typography variant="body2" color="textSecondary">
-                Press “Connect & reload” to list provider ids.
-              </Typography>
-            ) : (
-              <>
-                <AutoComplete
-                  options={providerOptions}
-                  value={query}
-                  onChange={(event) => setQuery(event.currentTarget.value)}
-                  onFilter={(opt, input) => {
-                    const needle = input.trim().toLowerCase()
-                    if (!needle) return true
-                    return (
-                      opt.label.toLowerCase().includes(needle) ||
-                      opt.id.toLowerCase().includes(needle)
-                    )
-                  }}
-                  formatInput={(opt) => opt.label}
-                  onSelect={(opt) => {
-                    setProvider(opt.id)
-                    setMethod("")
-                    setQuery(opt.label)
-                  }}
-                  SlotProps={{
-                    input: {
-                      id: "ob-provider-ac",
-                      label: "Provider",
-                      sx: { width: "100%" },
-                      variant: "outlined",
-                    },
-                    listButton: { className: "ob-provider-ac" },
-                  }}
-                  listItemRender={(opt) => (
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      sx={{ alignItems: "center", minWidth: 0 }}
-                    >
-                      <Typography variant="body2" sx={{ flexShrink: 0 }}>
-                        {opt.label}
-                      </Typography>
-                      {opt.id !== opt.label ? (
-                        <Typography
-                          variant="caption"
-                          color="textSecondary"
-                          sx={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {opt.id}
-                        </Typography>
-                      ) : null}
-                    </Stack>
-                  )}
-                />
-                {methods.length > 0 ? (
-                  <Select
-                    name="method"
-                    label="Method (optional)"
-                    value={method}
-                    onSelect={setMethod}
-                  >
-                    {[
-                      <option key="default" value="">
-                        default
-                      </option>,
-                      ...methods.map((item, index) => (
-                        <option
-                          key={`${item.label ?? item.type ?? index}`}
-                          value={item.label ?? item.type ?? ""}
-                        >
-                          {item.label ?? item.type ?? `method ${index + 1}`}
-                        </option>
-                      )),
-                    ]}
-                  </Select>
-                ) : (
-                  <Typography variant="caption" color="textSecondary">
-                    No OAuth sign-in for this one — the terminal asks for an API
-                    key and stores it.
-                  </Typography>
-                )}
-              </>
-            )}
-            <Button
-              variant="contained"
-              startIcon={<LoginIcon />}
-              onClick={() => void startLogin()}
-              disabled={!provider || loginBusy}
-            >
-              {loginBusy ? "Starting…" : "opencode auth login"}
-            </Button>
-
-            <Box
-              sx={{
-                flex: 1,
-                minHeight: mobile ? 220 : 280,
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              {loginId ? (
-                <LoginTerminal loginId={loginId} onExit={onLoginExit} />
-              ) : (
-                <Typography variant="body2" color="textSecondary">
-                  Start login to open the terminal.
-                </Typography>
-              )}
-            </Box>
-            <Typography variant="caption" color="textSecondary">
-              Keys go straight through to `opencode auth login` in your desktop.
-              A success restarts OpenCode.
+          {teamLockedAuth ? (
+            <Typography variant="body2" color="textSecondary">
+              En mode équipe, les fournisseurs OpenCode sont configurés par
+              l’admin (Admin → Équipe). Les fournisseurs partagés apparaissent
+              dans la liste « Connected » de chaque desktop.
             </Typography>
-          </Stack>
+          ) : (
+            <>
+              <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
+                Chat models come from the providers connected here.
+              </Typography>
+              <Stack spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
+                {loading ? (
+                  <Stack spacing={1}>
+                    <Skeleton height={44} />
+                    <Skeleton height={44} />
+                  </Stack>
+                ) : providerOptions.length === 0 ? (
+                  <Typography variant="body2" color="textSecondary">
+                    Press “Connect & reload” to list provider ids.
+                  </Typography>
+                ) : (
+                  <>
+                    <AutoComplete
+                      options={providerOptions}
+                      value={query}
+                      onChange={(event) => setQuery(event.currentTarget.value)}
+                      onFilter={(opt, input) => {
+                        const needle = input.trim().toLowerCase()
+                        if (!needle) return true
+                        return (
+                          opt.label.toLowerCase().includes(needle) ||
+                          opt.id.toLowerCase().includes(needle)
+                        )
+                      }}
+                      formatInput={(opt) => opt.label}
+                      onSelect={(opt) => {
+                        setProvider(opt.id)
+                        setMethod("")
+                        setQuery(opt.label)
+                      }}
+                      SlotProps={{
+                        input: {
+                          id: "ob-provider-ac",
+                          label: "Provider",
+                          sx: { width: "100%" },
+                          variant: "outlined",
+                        },
+                        listButton: { className: "ob-provider-ac" },
+                      }}
+                      listItemRender={(opt) => (
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          sx={{ alignItems: "center", minWidth: 0 }}
+                        >
+                          <Typography variant="body2" sx={{ flexShrink: 0 }}>
+                            {opt.label}
+                          </Typography>
+                          {opt.id !== opt.label ? (
+                            <Typography
+                              variant="caption"
+                              color="textSecondary"
+                              sx={{
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {opt.id}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      )}
+                    />
+                    {methods.length > 0 ? (
+                      <Select
+                        name="method"
+                        label="Method (optional)"
+                        value={method}
+                        onSelect={setMethod}
+                      >
+                        {[
+                          <option key="default" value="">
+                            default
+                          </option>,
+                          ...methods.map((item, index) => (
+                            <option
+                              key={`${item.label ?? item.type ?? index}`}
+                              value={item.label ?? item.type ?? ""}
+                            >
+                              {item.label ?? item.type ?? `method ${index + 1}`}
+                            </option>
+                          )),
+                        ]}
+                      </Select>
+                    ) : (
+                      <Typography variant="caption" color="textSecondary">
+                        No OAuth sign-in for this one — the terminal asks for an
+                        API key and stores it.
+                      </Typography>
+                    )}
+                  </>
+                )}
+                <Button
+                  variant="contained"
+                  startIcon={<LoginIcon />}
+                  onClick={() => void startLogin()}
+                  disabled={!provider || loginBusy}
+                >
+                  {loginBusy ? "Starting…" : "opencode auth login"}
+                </Button>
+
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: mobile ? 220 : 280,
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  {loginId ? (
+                    <LoginTerminal loginId={loginId} onExit={onLoginExit} />
+                  ) : (
+                    <Typography variant="body2" color="textSecondary">
+                      Start login to open the terminal.
+                    </Typography>
+                  )}
+                </Box>
+                <Typography variant="caption" color="textSecondary">
+                  Keys go straight through to `opencode auth login` in your
+                  desktop. A success restarts OpenCode.
+                </Typography>
+              </Stack>
+            </>
+          )}
         </Paper>
       </Stack>
+
+      <Paper variant="outlined" sx={{ p: 1.5 }}>
+        <Typography variant="subtitle1" sx={{ mb: 0.5 }}>
+          CLI subscriptions
+        </Typography>
+        <Typography variant="body2" color="textSecondary" sx={{ mb: 1.5 }}>
+          Claude Code and Muse cannot plug into OpenCode as model APIs — they
+          are standalone agents. Log in with your subscription here and the
+          desktop bridges them in as chat providers: the CLI runs its own tool
+          loop in the workspace with the same OpenViking MCP tools, the same
+          skills, your OpenCode MCP servers, and the ob-* tools on PATH. Only
+          OpenCode-native subagents stay behind. Pick the model in the composer
+          like any other provider.
+        </Typography>
+        {!cliAvailable ? (
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
+            This desktop image predates the CLI bridge. Rebuild images, then
+            sleep and start the desktop.
+          </Alert>
+        ) : null}
+        <Stack spacing={1.5}>
+          {cliItems.map((item) => (
+            <Stack
+              key={item.id}
+              direction={mobile ? "column" : "row"}
+              spacing={1}
+              sx={{ alignItems: mobile ? "stretch" : "center" }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  sx={{ alignItems: "center" }}
+                >
+                  <Typography variant="subtitle2">{item.label}</Typography>
+                  {item.loggedIn ? (
+                    <Chip size="small">
+                      {item.account
+                        ? `Connected · ${item.account}`
+                        : "Connected"}
+                    </Chip>
+                  ) : item.installed === false ? (
+                    <Chip size="small">Not installed</Chip>
+                  ) : (
+                    <Chip size="small">Not logged in</Chip>
+                  )}
+                </Stack>
+                <Typography variant="caption" color="textSecondary">
+                  {item.models.map((model) => model.name).join(" · ")}
+                </Typography>
+              </Box>
+              {teamLockedAuth ? (
+                <Typography variant="caption" color="textSecondary">
+                  Géré par l’équipe
+                </Typography>
+              ) : item.loggedIn ? (
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={<LogoutIcon />}
+                  onClick={() => void logoutProvider(item.id)}
+                >
+                  Log out
+                </Button>
+              ) : (
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={<LoginIcon />}
+                  disabled={loginBusy || item.installed === false}
+                  onClick={() => void startLogin(item.id)}
+                >
+                  Log in
+                </Button>
+              )}
+            </Stack>
+          ))}
+        </Stack>
+        <Typography variant="caption" color="textSecondary" sx={{ mt: 1 }}>
+          Login runs in the terminal above (`claude auth login` / `muse login`
+          inside your desktop). The credential stays in the desktop — only the
+          login state is reflected to OpenCode.
+        </Typography>
+      </Paper>
     </Stack>
   )
 }

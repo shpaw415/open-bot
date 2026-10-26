@@ -31,7 +31,10 @@ function page(id: string, url: string) {
 }
 
 test("closes unresponsive targets and keeps healthy ones", async () => {
-  targets = [page("dead", "https://heavy.test/"), page("live", "https://ok.test/")]
+  targets = [
+    page("dead", "https://heavy.test/"),
+    page("live", "https://ok.test/"),
+  ]
   const closed: string[] = []
   const result = await sweepZombies(9224, {
     probe: async (_port, target) =>
@@ -44,13 +47,20 @@ test("closes unresponsive targets and keeps healthy ones", async () => {
   expect(result.swept).toBe(2)
   expect(closed).toEqual(["dead"])
   expect(result.closed).toEqual([
-    { id: "dead", url: "https://heavy.test/", reason: "cdp call timed out: Runtime.evaluate" },
+    {
+      id: "dead",
+      url: "https://heavy.test/",
+      reason: "cdp call timed out: Runtime.evaluate",
+    },
   ])
   expect(result.kept).toBe(1)
 })
 
 test("a refused close is not counted", async () => {
-  targets = [page("dead", "https://heavy.test/"), page("live", "https://ok.test/")]
+  targets = [
+    page("dead", "https://heavy.test/"),
+    page("live", "https://ok.test/"),
+  ]
   const result = await sweepZombies(9224, {
     probe: async (_port, target) =>
       target.id === "dead" ? "target detached" : null,

@@ -3,8 +3,14 @@ import type { Db, User } from "@open-bot/db"
 
 let phase = "running"
 let failDeletes = false
+let death: {
+  running: boolean
+  oomKilled: boolean
+  exitCode: number | null
+} | null = null
 
 mock.module("./docker", () => ({
+  desktopDeathInfo: async () => death,
   desktopExec: () => {
     throw new Error("not mocked")
   },
@@ -157,6 +163,7 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch
   phase = "running"
+  death = null
 })
 
 function request(method: string, path: string, body?: unknown, database?: Db) {
@@ -624,6 +631,35 @@ describe("GET /api/councils/:name/status", () => {
           role: "",
           title: "",
           status: "unknown",
+          lastReply: "",
+        },
+      ],
+    })
+  })
+
+  test("a dead desktop reports desktop_down members with OOM info", async () => {
+    installStatusFetch()
+    const store = makeDb()
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push({
+      councilId: council.id,
+      userId: "user-1",
+      sessionId: "s1",
+      role: "",
+      createdAt: 1,
+    })
+    phase = "sleeping"
+    death = { running: false, oomKilled: true, exitCode: 137 }
+    const res = await statusRequest("auth-review", store.db)
+    expect(await res.json()).toEqual({
+      name: "auth-review",
+      desktop: { running: false, oomKilled: true, exitCode: 137 },
+      members: [
+        {
+          sessionId: "s1",
+          role: "",
+          title: "",
+          status: "desktop_down",
           lastReply: "",
         },
       ],

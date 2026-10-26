@@ -1029,6 +1029,9 @@ body.ob-preview-dragging iframe {
 }
 
 .ob-media-wrap {
+  /* Markdown media renders as a span (inline-safe inside <p>); force the
+     block layout the div callers relied on. */
+  display: block;
   position: relative;
   width: fit-content;
   max-width: 100%;

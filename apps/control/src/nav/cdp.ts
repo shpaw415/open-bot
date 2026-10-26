@@ -180,7 +180,11 @@ export async function connectCdp(
   }
 }
 
-export function openSocket(url: string) {
+// onEvent receives every CDP message that is not a response to a pending
+// call — the domain events (Runtime.consoleAPICalled, Network.*, Log.*) the
+// devtools recorder buffers between CLI calls. Callers without it keep the
+// old drop-unknown-messages behavior.
+export function openSocket(url: string, onEvent?: (message: unknown) => void) {
   const ws = new WebSocket(url)
   const pending = new Map<
     number,
@@ -197,7 +201,10 @@ export function openSocket(url: string) {
       result?: unknown
       error?: { message?: string }
     }
-    if (!message.id || !pending.has(message.id)) return
+    if (!message.id || !pending.has(message.id)) {
+      if (onEvent) onEvent(message)
+      return
+    }
     const waiter = pending.get(message.id)
     pending.delete(message.id)
     if (!waiter) return

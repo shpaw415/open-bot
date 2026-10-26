@@ -171,6 +171,7 @@ const CONFIG_TAB_KEYWORDS: Record<string, string[]> = {
   endpoints: ["webhooks", "publics", "endpoints", "url"],
   backup: ["sauvegarde", "restauration", "backup"],
   hardware: ["disque", "memoire vive", "cpu", "materiel"],
+  processes: ["processus", "process", "taches", "kill", "tuer", "arrêter"],
   reports: ["rapports", "bogues", "frictions", "bugs"],
   security: ["protection", "watchdog", "surveillance", "securite"],
 }

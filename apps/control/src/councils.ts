@@ -1,6 +1,6 @@
 import type { Db, User } from "@open-bot/db"
 import { lastAssistantText } from "./delegations"
-import { desktopPhase, endpoint } from "./docker"
+import { desktopDeathInfo, desktopPhase, endpoint } from "./docker"
 import type { EventHub } from "./events"
 import { cleanupDeletedThread } from "./threads"
 
@@ -156,9 +156,24 @@ async function councilStatus(
     status: "unknown",
     lastReply: "",
   }))
+  // A dead desktop is a definite member state, not an unknown one — an OOM
+  // kill used to leave every member reading neutral `unknown`/`idle` while
+  // nothing ran at all.
+  let desktop: Record<string, unknown> | null = null
   try {
     const phase = await desktopPhase(user.id)
-    if (phase === "running" && rows.length > 0) {
+    if (phase !== "running") {
+      const death = await desktopDeathInfo(user.id)
+      if (death && !death.running) {
+        desktop = {
+          running: false,
+          oomKilled: death.oomKilled,
+          exitCode: death.exitCode,
+        }
+        for (const member of members) member.status = "desktop_down"
+      }
+    }
+    if (!desktop && phase === "running" && rows.length > 0) {
       const base = await endpoint(user.id, "opencode", 4096)
       const desktop = db.desktop(user.id)
       const headers = desktop
@@ -212,7 +227,7 @@ async function councilStatus(
   } catch {
     // keep the degraded rows; status is a convenience view
   }
-  return json({ name: council.name, members })
+  return json({ name: council.name, members, ...(desktop ? { desktop } : {}) })
 }
 
 // One call for the viewer pane: membership from the control plane plus the

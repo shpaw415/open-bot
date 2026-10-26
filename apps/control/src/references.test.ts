@@ -129,8 +129,10 @@ describe("resolve reference line", () => {
       instruction: "cook simply",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: 0,
     })
     const line = await resolveReferenceLine(
@@ -177,8 +179,10 @@ describe("resolve reference line", () => {
       instruction: "x",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: 0,
     })
     db.createPersona({
@@ -188,8 +192,10 @@ describe("resolve reference line", () => {
       instruction: "y",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: 1,
     })
     const line = await resolveReferenceLine(
@@ -294,8 +300,10 @@ describe("resolve reference line", () => {
       instruction: "cook",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: 0,
     })
     const line = await resolveReferenceLine(

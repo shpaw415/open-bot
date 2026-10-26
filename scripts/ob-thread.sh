@@ -11,7 +11,7 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-thread start [--title TEXT] [--persona NAME] [--display] [--hidden] [--dir NAME] [--council NAME] [--role TEXT] [--from SESSION_ID] [--message TEXT]
+  ob-thread start [--title TEXT] [--persona NAME] [--display] [--hidden] [--dir NAME] [--council NAME] [--role TEXT] [--from SESSION_ID] [--steps unlimited] [--message TEXT]
   ob-thread list
   ob-thread read ID [N]
   ob-thread wait ID [--timeout MIN]
@@ -51,6 +51,12 @@ id — the screen id in your system line. Without it the control plane guesses
 the one busy chat; the start output tells you whether the wake is armed
 ("wake"). When the team finishes you get a [council: NAME] or [teammate]
 message here — read the results and report; it is not a user reply.
+
+--steps unlimited removes the agent step cap for this thread. Every agent
+run stops after 256 steps; a long job that gets cut there ends mid-task.
+Pass --steps unlimited on jobs you expect to run long — big builds, deep
+research, multi-phase council members. A cut turn cannot resume itself, so
+decide before you start, not after.
 
 list shows the hidden threads created through this tool.
 
@@ -99,7 +105,7 @@ Examples:
   ob-thread start --persona "Software manager" --title "Add export" --message "Implement CSV export in ~/project/report-app"
   ob-thread start --title "Invoice follow-up" --dir "Billing" --display
   ob-thread start --council auth-review --from ses_YOURID --role Researcher --title "OAuth paths" --message "Map every OAuth path in ~/project/api"
-  ob-thread start --council auth-review --from ses_YOURID --role Reviewer --title "Token storage" --message "Review token storage in ~/project/api"
+  ob-thread start --council auth-review --from ses_YOURID --role Reviewer --steps unlimited --title "Token storage" --message "Review token storage in ~/project/api"
   ob-thread councils
   ob-thread council status auth-review
   ob-thread read ses_member123 4
@@ -156,6 +162,7 @@ case "$cmd" in
     role=""
     from=""
     display=""
+    steps=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --title)
@@ -179,6 +186,9 @@ case "$cmd" in
         --from)
           [ $# -ge 2 ] || { usage; exit 2; }
           from="$2"; shift 2 ;;
+        --steps)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          steps="$2"; shift 2 ;;
         --display)
           display=1; shift ;;
         --hidden)
@@ -187,6 +197,10 @@ case "$cmd" in
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
     done
+    if [ -n "$steps" ] && [ "$steps" != "unlimited" ]; then
+      echo "ob-thread: --steps only accepts unlimited" >&2
+      exit 2
+    fi
     if [ -n "$dir" ] && [ "$display" = "0" ]; then
       echo "ob-thread: --dir applies to visible threads and cannot be combined with --hidden" >&2
       exit 2
@@ -229,6 +243,9 @@ case "$cmd" in
     fi
     if [ -n "$from" ]; then
       body=$(printf '%s' "$body" | jq --arg from "$from" '. + {from: $from}')
+    fi
+    if [ -n "$steps" ]; then
+      body=$(printf '%s' "$body" | jq '. + {steps: "unlimited"}')
     fi
     out=$(request POST /api/threads "$body")
     fail_on_error "$out"
@@ -276,7 +293,11 @@ case "$cmd" in
         out=$(request GET "/api/councils/$(urlencode "$name")/status")
         fail_on_error "$out"
         printf '%s' "$out" | jq -r '
-          if (.members | length) == 0 then "(no members)"
+          if .desktop and .desktop.running == false then
+            "desktop is down" +
+            (if .desktop.oomKilled then " (OOM-killed — check memory: fewer members, fewer browser tabs, capped build jobs)" else "" end) +
+            "\n" + "revive the desktop, then rerun the council"
+          elif (.members | length) == 0 then "(no members)"
           else
             .members[] |
             "- [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(.status)\(if .title != "" then " — " + .title else "" end))" +

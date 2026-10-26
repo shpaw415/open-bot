@@ -187,6 +187,9 @@ export type TeamQuotaUser = {
   weeklyTokens: number | null
   used: number
   limitTokens: number | null
+  memoryMb: number | null
+  diskGb: number | null
+  cpuCores: number | null
 }
 
 export type TeamAdminBody = {
@@ -194,11 +197,19 @@ export type TeamAdminBody = {
   secrets: TeamSecretMarkers
   catalog: TeamCatalogEntry[]
   keys: TeamKeyState[]
+  opencodeAuth?: TeamOpencodeAuthState
+}
+
+export type TeamOpencodeAuthState = {
+  hasAuth: boolean
+  providers: string[]
+  capturedAt: number | null
 }
 
 export type TeamQuotasBody = {
   default: number | null
   behavior: "block" | "warn"
+  hostCores: number | null
   users: TeamQuotaUser[]
 }
 
@@ -247,13 +258,34 @@ export function fetchTeamQuotas(): Promise<TeamQuotasBody> {
   return api<TeamQuotasBody>("/api/admin/team/quotas")
 }
 
+export function syncTeamOpencodeAuth(): Promise<{
+  opencodeAuth: TeamOpencodeAuthState & { applied: number; failed: number }
+}> {
+  return api<{
+    opencodeAuth: TeamOpencodeAuthState & { applied: number; failed: number }
+  }>("/api/admin/team/opencode-auth/sync", { method: "POST" })
+}
+
 export function saveTeamUserQuota(
   userId: string,
   weeklyTokens: number | null,
-): Promise<unknown> {
+  limits?: {
+    memoryMb?: number | null
+    diskGb?: number | null
+    cpuCores?: number | null
+  },
+): Promise<{
+  ok: boolean
+  weeklyTokens: number | null
+  memoryMb: number | null
+  diskGb: number | null
+  cpuCores: number | null
+  memoryApplied: boolean | null
+  cpuApplied: boolean | null
+}> {
   return api("/api/admin/team/quota", {
     method: "PUT",
-    body: JSON.stringify({ userId, weeklyTokens }),
+    body: JSON.stringify({ userId, weeklyTokens, ...limits }),
   })
 }
 

@@ -13,6 +13,14 @@ import {
 } from "@open-bot/db"
 import { manualPackages } from "./apt-snapshot"
 import {
+  CLI_BRIDGE_KEY,
+  type CliId,
+  type CliStatus,
+  cliProviderById,
+  cliProviders,
+  parseCliStatus,
+} from "./cli-bridge/providers"
+import {
   computerImage,
   controlName,
   githubToken,
@@ -42,6 +50,26 @@ export function startError(userId: string) {
 /** In-flight start promise for a user, if one is running. */
 export function currentStart(userId: string) {
   return starting.get(userId)
+}
+
+// Serializes desktop start/stop/destroy per user. A stop racing a start used
+// to slip between the start's isRunning checks and its waitHttp, leaving the
+// start polling containers that were being torn down for the full timeout
+// while every ensure() caller joined the hung job ("stuck in starting").
+const lifecycleLocks = new Map<string, Promise<unknown>>()
+
+async function withLifecycle<T>(
+  userId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = lifecycleLocks.get(userId) ?? Promise.resolve()
+  const job = previous.catch(() => {}).then(fn)
+  lifecycleLocks.set(userId, job)
+  try {
+    return await job
+  } finally {
+    if (lifecycleLocks.get(userId) === job) lifecycleLocks.delete(userId)
+  }
 }
 
 export function controlBase(network: string) {
@@ -262,8 +290,14 @@ async function waitHttp(
 ) {
   const start = Date.now()
   let last = "not started"
+  // A container that stays non-running for this long is dead (crashed or
+  // torn down mid-start) — waiting out the full timeout only wedges every
+  // queued caller behind it.
+  const downMs = 10_000
+  let downSince: number | null = null
   while (Date.now() - start < ms) {
     if (await isRunning(name)) {
+      downSince = null
       try {
         const ip = await containerIp(name, network)
         const response = await fetch(`http://${ip}:${port}${path}`, {
@@ -274,6 +308,11 @@ async function waitHttp(
         last = `${response.status}`
       } catch (error) {
         last = error instanceof Error ? error.message : "unreachable"
+      }
+    } else {
+      if (downSince === null) downSince = Date.now()
+      else if (Date.now() - downSince > downMs) {
+        throw new Error(`${name} stopped while starting`)
       }
     }
     await Bun.sleep(1000)
@@ -363,15 +402,17 @@ export async function startDesktop(
   const existing = starting.get(userId)
   if (existing) return existing
   startErrors.delete(userId)
-  const job = startDesktopInner(
-    userId,
-    desktop,
-    viking,
-    image,
-    system1,
-    video,
-    model3d,
-    chatKeys,
+  const job = withLifecycle(userId, () =>
+    startDesktopInner(
+      userId,
+      desktop,
+      viking,
+      image,
+      system1,
+      video,
+      model3d,
+      chatKeys,
+    ),
   )
     .catch((error: unknown) => {
       startErrors.set(
@@ -383,6 +424,33 @@ export async function startDesktop(
     .finally(() => starting.delete(userId))
   starting.set(userId, job)
   return job
+}
+
+/**
+ * Waits for a desktop container's HTTP endpoint, healing one failure mode:
+ * a container that died between startDesktopInner's isRunning check and this
+ * wait (boot crash, or torn down mid-start) is recreated once and waited on
+ * again instead of failing the whole start. `healed` reports that a
+ * recreation happened so callers can re-run their first-boot syncs.
+ */
+async function waitReadyWithHeal(
+  name: string,
+  network: string,
+  port: number,
+  path: string,
+  headers: HeadersInit | undefined,
+  ms: number,
+  runArgs: string[],
+): Promise<{ ip: string; healed: boolean }> {
+  try {
+    const ip = await waitHttp(name, network, port, path, headers, ms)
+    return { ip, healed: false }
+  } catch (error) {
+    if (await isRunning(name)) throw error
+    await removeAndRunDetached(name, runArgs)
+    const ip = await waitHttp(name, network, port, path, headers, ms)
+    return { ip, healed: true }
+  }
 }
 
 async function startDesktopInner(
@@ -434,7 +502,11 @@ async function startDesktopInner(
   await ensureVolume(n.x11)
   const base = llmBase(n.network)
 
-  if (!(await isRunning(n.viking))) {
+  // Lazy: viking is only guaranteed non-null when the provider gate passed,
+  // so the config (and args) must not be built while the container runs.
+  // Validation lives here so a heal-path recreation without configured
+  // models fails with the same 503 as a cold start.
+  const vikingArgs = (): string[] => {
     if (!vikingProviderReady(viking)) {
       throw new HttpError(
         503,
@@ -442,7 +514,7 @@ async function startDesktopInner(
         "viking_models_missing",
       )
     }
-    await removeAndRunDetached(n.viking, [
+    return [
       "--name",
       n.viking,
       "--network",
@@ -462,90 +534,97 @@ async function startDesktopInner(
       "-v",
       `${n.vikingData}:/data`,
       vikingImage,
-    ])
+    ]
   }
-  const vikingIp = await waitHttp(
+  if (!(await isRunning(n.viking))) {
+    await removeAndRunDetached(n.viking, vikingArgs())
+  }
+  const vikingReady = await waitReadyWithHeal(
     n.viking,
     n.network,
     1933,
     "/health",
     undefined,
     180000,
+    vikingArgs(),
   )
-  await ensureVikingUser(`http://${vikingIp}:1933`, desktop.vikingKey)
+  await ensureVikingUser(`http://${vikingReady.ip}:1933`, desktop.vikingKey)
 
   let createdOpencode = false
+  const opencodeArgs = [
+    "--name",
+    n.opencode,
+    "--network",
+    n.network,
+    "--network-alias",
+    "opencode",
+    "--label",
+    "open-bot-role=opencode",
+    "--label",
+    `open-bot-user=${n.key}`,
+    // Per-user RAM and CPU caps from the Admin page; the 4g / 2-core
+    // defaults keep the pre-limits behavior when the user has no override.
+    "--memory",
+    desktop.memoryMb && desktop.memoryMb > 0 ? `${desktop.memoryMb}m` : "4g",
+    "--cpus",
+    desktop.cpuCores && desktop.cpuCores > 0 ? String(desktop.cpuCores) : "2",
+    "--shm-size",
+    "1g",
+    "--security-opt",
+    "apparmor=unconfined",
+    "--cap-add",
+    "SYS_ADMIN",
+    "-e",
+    "HOME=/home/agent",
+    "-e",
+    `OPEN_BOT_LLM_URL=${base}`,
+    "-e",
+    `OPEN_BOT_LLM_TOKEN=${desktop.llmToken}`,
+    "-e",
+    `OPEN_BOT_CONTROL_URL=${controlBase(n.network)}`,
+    "-e",
+    `OPENCODE_SERVER_PASSWORD=${desktop.opencodePassword}`,
+    "-e",
+    "OPENCODE_SERVER_USERNAME=opencode",
+    "-e",
+    "OPENCODE_DISABLE_AUTOUPDATE=1",
+    "-e",
+    "OPENVIKING_URL=http://viking:1933",
+    "-e",
+    `OPENVIKING_API_KEY=${vikingUserKey(desktop.vikingKey)}`,
+    "-e",
+    `OPENVIKING_PEER_ID=user-${n.key}`,
+    "-e",
+    "OPENVIKING_RECALL_PEER_SCOPE=actor",
+    "-e",
+    `OPEN_BOT_MODEL_PROVIDER=${desktop.selectedProvider ?? ""}`,
+    "-e",
+    `OPEN_BOT_MODEL=${desktop.selectedModel ?? ""}`,
+    ...(githubToken ? ["-e", `GITHUB_TOKEN=${githubToken}`] : []),
+    "-v",
+    `${n.usrLocal}:/usr/local`,
+    "-v",
+    `${n.home}:/home/agent`,
+    "-v",
+    `${n.x11}:/tmp/.X11-unix`,
+    opencodeImage,
+  ]
   if (!(await isRunning(n.opencode))) {
     createdOpencode = true
     await captureAptSnapshot(n.opencode, n.home)
-    await removeAndRunDetached(n.opencode, [
-      "--name",
-      n.opencode,
-      "--network",
-      n.network,
-      "--network-alias",
-      "opencode",
-      "--label",
-      "open-bot-role=opencode",
-      "--label",
-      `open-bot-user=${n.key}`,
-      "--memory",
-      "4g",
-      "--cpus",
-      "2",
-      "--shm-size",
-      "1g",
-      "--security-opt",
-      "apparmor=unconfined",
-      "--cap-add",
-      "SYS_ADMIN",
-      "-e",
-      "HOME=/home/agent",
-      "-e",
-      `OPEN_BOT_LLM_URL=${base}`,
-      "-e",
-      `OPEN_BOT_LLM_TOKEN=${desktop.llmToken}`,
-      "-e",
-      `OPEN_BOT_CONTROL_URL=${controlBase(n.network)}`,
-      "-e",
-      `OPENCODE_SERVER_PASSWORD=${desktop.opencodePassword}`,
-      "-e",
-      "OPENCODE_SERVER_USERNAME=opencode",
-      "-e",
-      "OPENCODE_DISABLE_AUTOUPDATE=1",
-      "-e",
-      "OPENVIKING_URL=http://viking:1933",
-      "-e",
-      `OPENVIKING_API_KEY=${vikingUserKey(desktop.vikingKey)}`,
-      "-e",
-      `OPENVIKING_PEER_ID=user-${n.key}`,
-      "-e",
-      "OPENVIKING_RECALL_PEER_SCOPE=actor",
-      "-e",
-      `OPEN_BOT_MODEL_PROVIDER=${desktop.selectedProvider ?? ""}`,
-      "-e",
-      `OPEN_BOT_MODEL=${desktop.selectedModel ?? ""}`,
-      ...(githubToken ? ["-e", `GITHUB_TOKEN=${githubToken}`] : []),
-      "-v",
-      `${n.usrLocal}:/usr/local`,
-      "-v",
-      `${n.home}:/home/agent`,
-      "-v",
-      `${n.x11}:/tmp/.X11-unix`,
-      opencodeImage,
-    ])
+    await removeAndRunDetached(n.opencode, opencodeArgs)
   }
   const auth = `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`
-  await waitHttp(
+  const opencodeReady = await waitReadyWithHeal(
     n.opencode,
     n.network,
     4096,
     "/global/health",
-    {
-      authorization: auth,
-    },
+    { authorization: auth },
     300000,
+    opencodeArgs,
   )
+  if (opencodeReady.healed) createdOpencode = true
   if (createdOpencode) {
     try {
       await syncImageAuth(
@@ -610,6 +689,16 @@ async function startDesktopInner(
         if (!message.includes("missing chat setup")) throw error
       }
     }
+    // CLI subscription providers: reflect each CLI's real login state in
+    // opencode's auth.json (dummy bridge key), so a logged-in CLI shows
+    // as connected and a logged-out one drops out of the model picker.
+    try {
+      const cli = await syncCliAuth(userId, auth)
+      if (cli.applied) await restartOpencode(userId, { desktop })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ""
+      if (!message.includes("missing chat setup")) throw error
+    }
   }
   if (createdOpencode && desktopReadyHook) {
     const job = desktopReadyHook(userId)
@@ -636,38 +725,108 @@ async function startDesktopInner(
     })
   }
 
+  const computerArgs = [
+    "--name",
+    n.computer,
+    "--network",
+    n.network,
+    "--network-alias",
+    "computer",
+    "--label",
+    "open-bot-role=computer",
+    "--label",
+    `open-bot-user=${n.key}`,
+    "--memory",
+    "512m",
+    "--cpus",
+    "0.5",
+    "-v",
+    `${n.x11}:/tmp/.X11-unix`,
+    computerImage,
+  ]
   if (!(await isRunning(n.computer))) {
-    await removeAndRunDetached(n.computer, [
-      "--name",
-      n.computer,
-      "--network",
-      n.network,
-      "--network-alias",
-      "computer",
-      "--label",
-      "open-bot-role=computer",
-      "--label",
-      `open-bot-user=${n.key}`,
-      "--memory",
-      "512m",
-      "--cpus",
-      "0.5",
-      "-v",
-      `${n.x11}:/tmp/.X11-unix`,
-      computerImage,
-    ])
+    await removeAndRunDetached(n.computer, computerArgs)
   }
-  await waitHttp(n.computer, n.network, 6080, "/vnc.html", undefined, 60000)
+  await waitReadyWithHeal(
+    n.computer,
+    n.network,
+    6080,
+    "/vnc.html",
+    undefined,
+    60000,
+    computerArgs,
+  )
   startFileWatch(userId)
 }
 
 export async function stopDesktop(userId: string) {
+  await withLifecycle(userId, () => stopDesktopInner(userId))
+}
+
+async function stopDesktopInner(userId: string) {
   markSlept(userId)
   stopFileWatch(userId)
   const n = names(userId)
   await sh(["docker", "stop", "-t", "5", n.computer], undefined, 90_000)
   await sh(["docker", "stop", "-t", "10", n.opencode], undefined, 90_000)
   await sh(["docker", "stop", "-t", "15", n.viking], undefined, 90_000)
+}
+
+// Applies an admin-set RAM change to the opencode container without a
+// restart. Only a running container is touched: stopped/absent ones are
+// removed and recreated from the DB value on their next start. memory-swap
+// rides along at docker's run default (2x memory) so raising the cap never
+// trips the smaller-than-memoryswap guard.
+export async function applyDesktopMemoryLimit(
+  userId: string,
+  memoryMb: number | null,
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const cap = memoryMb && memoryMb > 0 ? memoryMb : 4096
+  const result = await sh(
+    [
+      "docker",
+      "update",
+      "--memory",
+      `${cap}m`,
+      "--memory-swap",
+      `${cap * 2}m`,
+      n.opencode,
+    ],
+    undefined,
+    30_000,
+  )
+  if (result.code !== 0) {
+    throw new Error(
+      result.stderr.trim() || result.stdout.trim() || "docker update failed",
+    )
+  }
+  return true
+}
+
+// Same contract as applyDesktopMemoryLimit, for the opencode CPU allotment:
+// live docker update on a running container, false when the desktop is
+// asleep so the DB value applies on its next start. null/0 restores the
+// 2-core default. Fractions are fine (docker --cpus accepts e.g. 1.5).
+export async function applyDesktopCpuLimit(
+  userId: string,
+  cpuCores: number | null,
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const cap = cpuCores && cpuCores > 0 ? cpuCores : 2
+  const result = await sh(
+    ["docker", "update", "--cpus", String(cap), n.opencode],
+    undefined,
+    30_000,
+  )
+  if (result.code !== 0) {
+    throw new Error(
+      result.stderr.trim() || result.stdout.trim() || "docker update failed",
+    )
+  }
+  return true
 }
 
 // Desktops stopped on purpose (sleep button, idle sweeper, recycle) so the
@@ -690,6 +849,21 @@ export async function containerExists(name: string) {
     30_000,
   )
   return result.code === 0
+}
+
+// Host CPU core count as docker sees it — authoritative for the desktop CPU
+// allotment, since the control container's own os.cpus() view can differ.
+export async function hostCpuCores() {
+  const result = await sh(
+    ["docker", "info", "-f", "{{.NCPU}}"],
+    undefined,
+    30_000,
+  )
+  const cores = Number.parseInt(result.stdout.trim(), 10)
+  if (!Number.isFinite(cores) || cores < 1) {
+    throw new Error("could not read the host CPU count")
+  }
+  return cores
 }
 
 /**
@@ -728,6 +902,10 @@ export async function desktopBusy(
 }
 
 export async function destroyDesktop(userId: string) {
+  await withLifecycle(userId, () => destroyDesktopInner(userId))
+}
+
+async function destroyDesktopInner(userId: string) {
   markSlept(userId)
   stopFileWatch(userId)
   const n = names(userId)
@@ -752,6 +930,41 @@ export async function desktopPhase(userId: string) {
   if (starting.has(userId)) return "starting" as const
   if (await isRunning(n.opencode)) return "running" as const
   return "sleeping" as const
+}
+
+export type DesktopDeath = {
+  running: boolean
+  oomKilled: boolean
+  exitCode: number | null
+}
+
+/**
+ * Why a not-running desktop is not running: docker's own view of the opencode
+ * container. Null when the answer is not definite (container gone mid-recreate,
+ * docker unreachable) — callers keep their transient handling in that case.
+ */
+export async function desktopDeathInfo(
+  userId: string,
+): Promise<DesktopDeath | null> {
+  const out = await sh(
+    [
+      "docker",
+      "inspect",
+      "-f",
+      "{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}",
+      names(userId).opencode,
+    ],
+    undefined,
+    15_000,
+  ).catch(() => null)
+  if (!out || out.code !== 0) return null
+  const [running, oomKilled, exitCode] = out.stdout.trim().split(/\s+/)
+  if (running !== "true" && running !== "false") return null
+  return {
+    running: running === "true",
+    oomKilled: oomKilled === "true",
+    exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : null,
+  }
 }
 
 export async function endpoint(
@@ -1305,6 +1518,226 @@ export async function syncChatAuth(
   const changed = Array.isArray(parsed.changed) ? parsed.changed : []
   const removed = Array.isArray(parsed.removed) ? parsed.removed : []
   return { applied: changed.length > 0 || removed.length > 0, changed, removed }
+}
+
+/**
+ * Probe the CLI subscription providers (Claude Code, Muse) inside a
+ * desktop via cli-status.sh. Returns null when the container is down or
+ * the image predates the probe — callers treat that as "unknown", never
+ * as logged out.
+ */
+export async function probeCliProviders(
+  userId: string,
+): Promise<CliStatus[] | null> {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return null
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/cli-status.sh",
+    ],
+    undefined,
+    30_000,
+  )
+  if (result.code !== 0) return null
+  try {
+    return parseCliStatus(JSON.parse(result.stdout))
+  } catch {
+    return null
+  }
+}
+
+const cliProbeCache = new Map<
+  string,
+  { at: number; status: CliStatus[] | null }
+>()
+const CLI_PROBE_TTL_MS = 30_000
+
+/**
+ * Cached probeCliProviders for hot read paths (/api/models runs on every
+ * composer mount; the probe execs into the desktop). syncCliAuth refreshes
+ * the entry, so a login/logout is visible immediately.
+ */
+export async function probeCliProvidersCached(
+  userId: string,
+): Promise<CliStatus[] | null> {
+  const hit = cliProbeCache.get(userId)
+  if (hit && Date.now() - hit.at < CLI_PROBE_TTL_MS) return hit.status
+  const status = await probeCliProviders(userId)
+  cliProbeCache.set(userId, { at: Date.now(), status })
+  return status
+}
+
+/**
+ * Reflect the CLIs' login state in opencode's auth.json through the same
+ * apply-chat-auth path as API keys: a logged-in CLI gets the dummy
+ * bridge key (provider turns "connected"), a logged-out or missing CLI
+ * gets revoked. An unreadable probe is a no-op.
+ */
+export async function syncCliAuth(
+  userId: string,
+  auth: string,
+): Promise<{ applied: boolean; status: CliStatus[] | null }> {
+  const status = await probeCliProviders(userId)
+  cliProbeCache.set(userId, { at: Date.now(), status })
+  if (!status) return { applied: false, status: null }
+  const byId = new Map(status.map((row) => [row.id, row]))
+  const entries: ChatKeyEntry[] = []
+  const revoke: ChatKeyEntry[] = []
+  for (const provider of cliProviders) {
+    const row = byId.get(provider.id)
+    if (row?.installed && row.loggedIn) {
+      entries.push({ slug: provider.id, key: CLI_BRIDGE_KEY })
+    } else {
+      revoke.push({ slug: provider.id, key: CLI_BRIDGE_KEY })
+    }
+  }
+  const synced = await syncChatAuth(userId, auth, entries, revoke)
+  return { applied: synced.applied, status }
+}
+
+/**
+ * Interactive subscription login for a CLI provider (`claude auth
+ * login`, `muse login`) over the same PTY path as spawnLogin.
+ */
+export function spawnCliLogin(
+  userId: string,
+  providerId: CliId,
+  opts: {
+    cols: number
+    rows: number
+    onData: (data: Uint8Array) => void
+  },
+): LoginProc {
+  const provider = cliProviderById(providerId)
+  if (!provider) throw new Error(`unknown CLI provider: ${providerId}`)
+  const n = names(userId)
+  const args = [
+    "docker",
+    "exec",
+    "-it",
+    "-u",
+    "agent",
+    "-e",
+    "HOME=/home/agent",
+    "-e",
+    "TERM=xterm-256color",
+    "-w",
+    "/home/agent/workspace",
+    n.opencode,
+    provider.bin,
+    ...provider.loginArgs,
+  ]
+  const proc = Bun.spawn(args, {
+    terminal: {
+      cols: opts.cols,
+      rows: opts.rows,
+      data(_terminal: unknown, data: Uint8Array) {
+        opts.onData(data.slice())
+      },
+    },
+  } as Parameters<typeof Bun.spawn>[1])
+  const terminal = (
+    proc as {
+      terminal?: LoginProc["terminal"] & { setRawMode(enabled: boolean): void }
+    }
+  ).terminal
+  if (!terminal) throw new Error("login pty missing")
+  terminal.setRawMode(true)
+  return {
+    terminal,
+    exited: proc.exited,
+    kill() {
+      proc.kill()
+    },
+  }
+}
+
+/**
+ * Read the full OpenCode provider auth (api + oauth entries) from a desktop.
+ * Returns null when the container is down or the file is absent/invalid —
+ * callers treat that as "nothing to share", never as an empty snapshot.
+ */
+export async function captureOpencodeAuth(
+  userId: string,
+): Promise<Record<string, unknown> | null> {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return null
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "cat",
+      "/home/agent/.local/share/opencode/auth.json",
+    ],
+    undefined,
+    15_000,
+  )
+  if (result.code !== 0) return null
+  try {
+    const parsed: unknown = JSON.parse(result.stdout)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Team fan-out half: merge the shared auth snapshot into a desktop via
+ * apply-opencode-auth.sh (any entry type; same-provider ids overwritten,
+ * other providers preserved). Returns the provider ids that changed.
+ */
+export async function syncOpencodeAuth(
+  userId: string,
+  entries: Record<string, unknown>,
+): Promise<{ changed: string[] }> {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return { changed: [] }
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-opencode-auth.sh",
+    ],
+    JSON.stringify({ entries }),
+    120_000,
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing opencode auth setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write opencode auth")
+  }
+  let parsed: { changed?: string[] } = {}
+  try {
+    parsed = JSON.parse(result.stdout.trim() || "{}")
+  } catch {
+    parsed = {}
+  }
+  return { changed: Array.isArray(parsed.changed) ? parsed.changed : [] }
 }
 
 export type PluginToolFile = {

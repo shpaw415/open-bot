@@ -296,6 +296,16 @@ describe("plugins router", () => {
     expect(db.cronJobs("a")).toHaveLength(1)
   })
 
+  test("a new guard seeds the shared thread sessionId from a sibling guard", () => {
+    const first = ensureGuardCron(db, user(), manifest)
+    db.setCronSession(first, "s-shared")
+    ensureGuardCron(db, user(), { ...manifest, id: "other-pro" })
+    const other = db
+      .cronJobs("a")
+      .find((job) => job.name === "plugin:other-pro:guard")
+    expect(other?.sessionId).toBe("s-shared")
+  })
+
   test("stores marketplace API keys in the real generated format", async () => {
     const key = "obm_Mx4Bp9Qw7Tk2Zr8Nv5Lj3Hd6Fg1Sy0C_"
 

@@ -63,9 +63,18 @@ mock.module("./docker", () => {
 })
 mock.module("./mcp", () => ({
   ...mcpModule,
-  connectMcpServers: async () => ({}),
+  connectMcpServers: async (
+    _db: unknown,
+    _userId: string,
+    servers: unknown,
+    opts: unknown,
+  ) => {
+    mcpConnectCalls.push({ servers, opts })
+    return {}
+  },
   disconnectMcpServers: async () => {},
 }))
+const mcpConnectCalls: { servers: unknown; opts: unknown }[] = []
 
 function row(
   pluginId: string,
@@ -471,6 +480,7 @@ describe("setPluginEnabled", () => {
     syncPluginAuthMode = "ok"
     syncOpencodeMode = "ok"
     opencodePatches.length = 0
+    mcpConnectCalls.length = 0
     noopHeavyDocker = true
     clearPendingPluginConfigSyncs()
   })
@@ -578,8 +588,18 @@ describe("setPluginEnabled", () => {
       addAgents: Record<string, unknown>
       addAgentTools: Record<string, unknown>
     }
-    expect(patch.addMcp).toEqual(oc.mcp)
+    // Local plugin MCP entries inherit the agent PATH (the daemon spawns them
+    // with a minimal one), and the hot-connect is forced so an updated
+    // plugin's new server code replaces any stale running process.
+    expect(patch.addMcp).toEqual({
+      effectcraft: {
+        type: "local",
+        command: ["bun", "gate.ts"],
+        environment: { PATH: mcpModule.MCP_AGENT_PATH },
+      },
+    })
     expect(patch.addAgents).toEqual(oc.agents)
     expect(patch.addAgentTools).toEqual(oc.agentTools)
+    expect(mcpConnectCalls.at(-1)?.opts).toEqual({ force: true })
   })
 })

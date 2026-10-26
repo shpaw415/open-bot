@@ -12,7 +12,7 @@ A shortcut is a named faster path in this desktop's OpenViking. It is not a sche
 Search this desktop before repeating a multi-step desktop or shell path:
 
 - `openviking_search` and `openviking_find` for the task
-- `openviking_read` any skill whose name starts with `shortcut-` (`viking://user/skills/<name>/SKILL.md`)
+- `openviking_read` any skill whose name starts with `shortcut-` (`viking://~/skills/<name>/SKILL.md`)
 
 If one matches, follow it.
 
@@ -31,7 +31,7 @@ Do not stop the task to ask. Save alongside the work. In the final reply, one se
 
 Name: `shortcut-<verb>`, at most 64 characters. Do not use the name `shortcut`.
 
-Read `X-API-Key` from `~/.openviking/ovcli.conf`. Do not print it.
+Read `api_key` from `~/.openviking/ovcli.conf`. Do not print it.
 
 Create:
 

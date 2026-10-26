@@ -87,6 +87,10 @@ function layout(metrics: unknown) {
   return { width: Math.round(width), height: Math.round(height) }
 }
 
+function ratioText(value: number): string {
+  return String(Math.round(value * 100) / 100)
+}
+
 async function main() {
   const port = Number(process.argv[2])
   const file = process.argv[3]
@@ -135,14 +139,24 @@ async function main() {
     if (!shot.data) throw new Error("empty screenshot")
     await Bun.write(file, Buffer.from(shot.data, "base64"))
     const statePath = `/home/agent/.open-bot/capture-${port}.json`
+    const fx = (width * scale) / current.width
+    const fy = (height * scale) / current.height
     await Bun.write(
       statePath,
-      `${JSON.stringify({ factor: scale, ox, oy, ts: Date.now(), origin })}\n`,
+      `${JSON.stringify({ factor: fx, yFactor: fy, ox, oy, ts: Date.now(), origin })}\n`,
     )
     const offsetText = origin ? `offset ${ox},${oy}` : "offset unknown"
+    const factorText =
+      Math.abs(fx - fy) < 0.01
+        ? ratioText(fx)
+        : `x${ratioText(fx)} y${ratioText(fy)}`
     console.log(
-      `capture ${width * scale}x${height * scale} live ${current.width}x${current.height} factor ${scale} ${offsetText}`,
+      `capture ${width * scale}x${height * scale} live ${current.width}x${current.height} factor ${factorText} ${offsetText}`,
     )
+    if (scale >= 2)
+      console.error(
+        "note: a scaled capture pauses the page's rendering for a moment; if you are measuring on-page FPS, capture again after waiting ~15 seconds",
+      )
   } finally {
     await socket
       .call("Emulation.clearDeviceMetricsOverride")

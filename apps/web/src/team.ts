@@ -82,6 +82,34 @@ export function parseQuotaCapInput(raw: string): ParsedQuotaCap {
   return { ok: true, value: Math.floor(value) }
 }
 
+// Mirrors MEMORY_MIN_MB / MEMORY_MAX_MB in @open-bot/db (the web app does not
+// depend on that package): the admin RAM field is GB, 0.5–64.
+const MEMORY_MIN_MB = 512
+const MEMORY_MAX_MB = 65_536
+
+// Empty inherits the 4 GB container default (null), otherwise a desktop RAM
+// cap in GB (one decimal allowed) parsed into MB.
+export function parseMemoryInput(raw: string): ParsedQuotaCap {
+  const text = raw.trim()
+  if (text === "") return { ok: true, value: null }
+  const gb = Number(text)
+  if (!Number.isFinite(gb) || gb <= 0) return { ok: false }
+  const mb = Math.round(gb * 1024)
+  if (mb < MEMORY_MIN_MB || mb > MEMORY_MAX_MB) return { ok: false }
+  return { ok: true, value: mb }
+}
+
+// Mirrors CPU_MIN_CORES in @open-bot/db: the admin CPU field is cores,
+// 0.5 minimum, one decimal allowed. The host core count is the real upper
+// bound and is validated by the control plane where the host is known.
+export function parseCpuCoresInput(raw: string): ParsedQuotaCap {
+  const text = raw.trim()
+  if (text === "") return { ok: true, value: null }
+  const cores = Number(text)
+  if (!Number.isFinite(cores) || cores < 0.5) return { ok: false }
+  return { ok: true, value: Math.round(cores * 10) / 10 }
+}
+
 const TEAM_SECRET_FIELDS = new Set(["apiKey", "gatewayToken"])
 
 export function isTeamSecretField(field: string): boolean {

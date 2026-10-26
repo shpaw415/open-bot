@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Db, InstalledPlugin, User } from "@open-bot/db"
-import { handleKeys, isKeysRequest } from "./api-keys"
+import { handleKeys, isKeysRequest, keysTeamLocked } from "./api-keys"
 
 type FakeKey = {
   apiKey: string
@@ -118,7 +118,7 @@ describe("handleKeys", () => {
 })
 
 describe("plugin vault keys", () => {
-  test("list adds vaultCreate plugin slugs, not vaultRead-only ones", async () => {
+  test("list adds every plugin-declared slug, create or read", async () => {
     const db = fakeDb({}, [
       pluginRow("weather", { vaultCreate: ["weatherapi"] }, "Weather"),
       pluginRow("alerts", { vaultRead: ["hookdeck"] }, "Alerts"),
@@ -135,9 +135,16 @@ describe("plugin vault keys", () => {
       plugin: true,
       hasKey: false,
     })
-    expect(
-      body.keys.find((k: { slug: string }) => k.slug === "hookdeck"),
-    ).toBeUndefined()
+    const hookdeck = body.keys.find(
+      (k: { slug: string }) => k.slug === "hookdeck",
+    )
+    expect(hookdeck).toEqual({
+      slug: "hookdeck",
+      label: "Alerts · hookdeck",
+      chatProvider: false,
+      plugin: true,
+      hasKey: false,
+    })
   })
 
   test("detail returns a plugin create key with blank gateway fields", async () => {
@@ -168,14 +175,14 @@ describe("plugin vault keys", () => {
     })
   })
 
-  test("a vaultRead-only slug is unknown to the agent", async () => {
+  test("a vaultRead-only slug prints the same way", async () => {
     const db = fakeDb({ hookdeck: { apiKey: "hkey" } }, [
       pluginRow("alerts", { vaultRead: ["hookdeck"] }, "Alerts"),
     ])
     const res = handleKeys(url("/api/keys/hookdeck"), db, user)
-    expect(res?.status).toBe(400)
+    expect(res?.status).toBe(200)
     const body = JSON.parse((await res?.text()) ?? "{}")
-    expect(body.error).toContain("unknown key slug: hookdeck")
+    expect(body.apiKey).toBe("hkey")
   })
 
   test("unknown-slug 400 lists plugin create slugs as valid", async () => {
@@ -215,5 +222,29 @@ describe("plugin vault keys", () => {
     const db = fakeDb({}, [], { xai: { apiKey: "shared-xai" } })
     const res = handleKeys(url("/api/keys/xai"), db, user)
     expect(res?.status).toBe(404)
+  })
+})
+
+describe("keysTeamLocked", () => {
+  test("team mode locks shared provider slugs only", () => {
+    const db = fakeDb(
+      {},
+      [pluginRow("weather", { vaultCreate: ["weatherapi"] }, "Weather")],
+      {},
+      "team",
+    )
+    expect(keysTeamLocked(db, "xai")).toBe(true)
+    expect(keysTeamLocked(db, "weatherapi")).toBe(false)
+  })
+
+  test("personal mode locks nothing", () => {
+    const db = fakeDb({}, [], {}, "personal")
+    expect(keysTeamLocked(db, "xai")).toBe(false)
+    expect(keysTeamLocked(db, "weatherapi")).toBe(false)
+  })
+
+  test("unknown slugs are never team-locked", () => {
+    const db = fakeDb({}, [], {}, "team")
+    expect(keysTeamLocked(db, "nope")).toBe(false)
   })
 })

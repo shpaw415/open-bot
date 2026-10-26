@@ -55,6 +55,12 @@ export function Model3dView({ src, alt }: { src: string; alt?: string }) {
         const controls = new OrbitControls(camera, renderer.domElement)
         controls.enableDamping = true
         controls.dampingFactor = 0.08
+        // OrbitControls pins touch-action:none, which eats every vertical
+        // scroll gesture on touch screens (two stacked viewers made the chat
+        // unscrollable on mobile). pan-y lets the browser keep vertical
+        // panning: one-finger drag scrolls the page, horizontal drag rotates,
+        // pinch still zooms through the controls.
+        renderer.domElement.style.touchAction = "pan-y"
 
         const gltf = await new Promise<any>((resolve, reject) => {
           new GLTFLoader().load(src, resolve, undefined, reject)
@@ -152,13 +158,13 @@ export function Model3dView({ src, alt }: { src: string; alt?: string }) {
       sx={{
         position: "relative",
         width: "100%",
-        height: 300,
+        height: { xs: 220, sm: 300 },
         borderRadius: 1,
         overflow: "hidden",
         border: "1px solid",
         borderColor: "divider",
         bgcolor: "background.default",
-        touchAction: "none",
+        touchAction: "pan-y",
       }}
       title={alt || "3D model"}
     >

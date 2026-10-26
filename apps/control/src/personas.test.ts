@@ -5,14 +5,23 @@ import { join } from "node:path"
 import { emptyAppliedLog, openDatabase } from "@open-bot/db"
 
 // The catalog route and the mcp config read probe the desktop through
-// docker; keep every test in this file off the real docker binary.
-let fakeExec: { code: number; stdout: string } | null = null
+// docker; keep every test in this file off the real docker binary. Both
+// probes ride opencodeExec, so the fake dispatches on the command shape.
+let fakeExec: {
+  code: number
+  stdout: string
+  seeds?: { code: number; stdout: string }
+  mcp?: { code: number; stdout: string }
+} | null = null
 mock.module("./docker", () => ({
   endpoint: async () => "http://viking:1933",
   isRunning: async () => false,
-  opencodeExec: () => {
-    if (fakeExec) return fakeExec
-    throw new Error("not mocked")
+  opencodeExec: (_userId: string, argv: string[]) => {
+    if (!fakeExec) throw new Error("not mocked")
+    const command = argv.join(" ")
+    if (command.includes("SKILL.md")) return fakeExec.seeds ?? fakeExec
+    if (command.includes("jq")) return fakeExec.mcp ?? fakeExec
+    return fakeExec
   },
   restartOpencode: async () => {},
 }))
@@ -46,6 +55,8 @@ function addCustom(
   skillsExtra: string[] | null = null,
   mcp: string[] | null = null,
   mcpExtra: string[] | null = null,
+  skillsNone = false,
+  mcpNone = false,
 ) {
   db.createPersona({
     id,
@@ -54,8 +65,10 @@ function addCustom(
     instruction: "run the team",
     skills,
     skillsExtra,
+    skillsNone,
     mcp,
     mcpExtra,
+    mcpNone,
     createdAt: Date.now(),
   })
 }
@@ -125,8 +138,10 @@ describe("findPersona", () => {
       instruction: "x",
       skills: null,
       skillsExtra: null,
+      skillsNone: false,
       mcp: null,
       mcpExtra: null,
+      mcpNone: false,
       createdAt: Date.now(),
     })
     const match = findPersona(db, "u", "Software manager")
@@ -222,7 +237,7 @@ describe("persona skill scopes", () => {
     expect(persona?.mcp).toEqual([])
     expect(persona?.mcpEffective).toEqual([])
     fakeExec = { code: 0, stdout: JSON.stringify({ stock: {}, files: {} }) }
-    await expect(personaScope("u", persona)).resolves.toEqual([
+    await expect(personaScope(db, "u", persona)).resolves.toEqual([
       { permission: "stock_*", pattern: "*", action: "deny" },
       { permission: "files_*", pattern: "*", action: "deny" },
     ])
@@ -230,14 +245,14 @@ describe("persona skill scopes", () => {
     db.updatePersona("p1", "u", { mcpExtra: ["stock"] })
     fakeExec = { code: 0, stdout: JSON.stringify({ stock: {} }) }
     await expect(
-      personaScope("u", resolvePersona(db, "u", "p1")),
+      personaScope(db, "u", resolvePersona(db, "u", "p1")),
     ).resolves.toEqual([
       { permission: "stock_*", pattern: "*", action: "deny" },
     ])
     // block-all with zero configured servers needs no rules
     fakeExec = { code: 0, stdout: JSON.stringify({}) }
     await expect(
-      personaScope("u", resolvePersona(db, "u", "p1")),
+      personaScope(db, "u", resolvePersona(db, "u", "p1")),
     ).resolves.toBeNull()
     fakeExec = null
   })
@@ -250,7 +265,7 @@ describe("persona skill scopes", () => {
       code: 0,
       stdout: JSON.stringify({ stock: {}, files: {}, context7: {} }),
     }
-    await expect(personaScope("u", persona)).resolves.toEqual([
+    await expect(personaScope(db, "u", persona)).resolves.toEqual([
       { permission: "skill", pattern: "*", action: "deny" },
       { permission: "skill", pattern: "research", action: "allow" },
       { permission: "files_*", pattern: "*", action: "deny" },
@@ -258,7 +273,7 @@ describe("persona skill scopes", () => {
     ])
     // the mcp config read failing degrades to the skills-only ruleset
     fakeExec = null
-    await expect(personaScope("u", persona)).resolves.toEqual([
+    await expect(personaScope(db, "u", persona)).resolves.toEqual([
       { permission: "skill", pattern: "*", action: "deny" },
       { permission: "skill", pattern: "research", action: "allow" },
     ])
@@ -266,14 +281,14 @@ describe("persona skill scopes", () => {
     addCustom(db, "p2", "Broker", null, null, ["stock"])
     fakeExec = { code: 0, stdout: JSON.stringify({ stock: {}, files: {} }) }
     await expect(
-      personaScope("u", resolvePersona(db, "u", "p2")),
+      personaScope(db, "u", resolvePersona(db, "u", "p2")),
     ).resolves.toEqual([
       { permission: "files_*", pattern: "*", action: "deny" },
     ])
     // unrestricted personas produce no ruleset
     addCustom(db, "p3", "Baker")
     await expect(
-      personaScope("u", resolvePersona(db, "u", "p3")),
+      personaScope(db, "u", resolvePersona(db, "u", "p3")),
     ).resolves.toBeNull()
     fakeExec = null
   })
@@ -416,6 +431,281 @@ describe("persona skill scopes", () => {
   })
 })
 
+describe("built-in persona scopes", () => {
+  function openWithPluginMcp() {
+    const db = open()
+    db.createUser({
+      id: "u",
+      email: "u@localhost",
+      passwordHash: "hash",
+      role: "user",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    })
+    db.createInstalledPlugin({
+      id: "row-1",
+      userId: "u",
+      pluginId: "stock-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify({
+        id: "stock-pro",
+        name: "Stock Pro",
+        opencode: { mcp: { stock: { type: "local", command: ["x"] } } },
+      }),
+      readme: null,
+      enabled: true,
+      source: "marketplace",
+      localPath: null,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    return db
+  }
+
+  test("the base is seed skills plus non-plugin MCP servers, extended by extras", async () => {
+    const db = openWithPluginMcp()
+    db.setBuiltinPersonaScope("u", "designer", {
+      skillsExtra: ["framer-motion"],
+      mcpExtra: ["context7"],
+    })
+    fakeExec = {
+      code: 0,
+      stdout: JSON.stringify({ stock: {}, files: {} }),
+      seeds: { code: 0, stdout: "research\tResearch\nmedia\tMedia\n" },
+    }
+    const persona = resolvePersona(db, "u", "designer")
+    expect(persona?.skillsExtra).toEqual(["framer-motion"])
+    expect(persona?.mcpExtra).toEqual(["context7"])
+    // seed skills + extras are allowed; the plugin-owned `stock` server is
+    // denied while the unowned `files` server and the `context7` extra stay.
+    await expect(personaScope(db, "u", persona)).resolves.toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+      { permission: "skill", pattern: "research", action: "allow" },
+      { permission: "skill", pattern: "media", action: "allow" },
+      { permission: "skill", pattern: "framer-motion", action: "allow" },
+      { permission: "stock_*", pattern: "*", action: "deny" },
+    ])
+    fakeExec = null
+  })
+
+  test("a failed probe degrades to unrestricted instead of blocking", async () => {
+    const db = openWithPluginMcp()
+    fakeExec = null
+    await expect(
+      personaScope(db, "u", resolvePersona(db, "u", "designer")),
+    ).resolves.toBeNull()
+  })
+
+  test("PUT accepts extras and refuses base, name, and instruction edits", async () => {
+    const db = openWithPluginMcp()
+    const put = (id: string, body: unknown) =>
+      handlePersonas(
+        new Request(`http://control/api/personas/${id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        new URL(`http://control/api/personas/${id}`),
+        db,
+        { id: "u" } as never,
+      ) as Promise<Response>
+
+    const extras = await put("designer", {
+      skillsExtra: ["research", "media"],
+      mcpExtra: ["context7"],
+    })
+    expect(extras.status).toBe(200)
+    const saved = (await extras.json()) as {
+      skillsExtra: string[] | null
+      mcpExtra: string[] | null
+      skillsEffective: string[] | null
+    }
+    expect(saved.skillsExtra).toEqual(["research", "media"])
+    expect(saved.mcpExtra).toEqual(["context7"])
+    // the locked base is not enumerable synchronously
+    expect(saved.skillsEffective).toBeNull()
+
+    const renamed = await put("designer", { name: "Artist" })
+    expect(renamed.status).toBe(400)
+    const reinstructed = await put("designer", { instruction: "x" })
+    expect(reinstructed.status).toBe(400)
+    const baseSkills = await put("designer", { skills: ["research"] })
+    expect(baseSkills.status).toBe(409)
+    const baseMcp = await put("designer", { mcp: ["files"] })
+    expect(baseMcp.status).toBe(409)
+    const empty = await put("designer", {})
+    expect(empty.status).toBe(400)
+
+    // present-set / omitted-keep like plugin personas
+    const kept = await put("designer", { skillsExtra: ["research"] })
+    expect(kept.status).toBe(200)
+    expect(
+      ((await kept.json()) as { mcpExtra: string[] | null }).mcpExtra,
+    ).toEqual(["context7"])
+    const cleared = await put("designer", { skillsExtra: null })
+    expect(
+      ((await cleared.json()) as { skillsExtra: string[] | null }).skillsExtra,
+    ).toBeNull()
+  })
+})
+
+describe("persona block-all", () => {
+  test("block-all flags disable every skill and server on any persona kind", async () => {
+    const db = open()
+    // custom persona: flags alone block everything, even with no lists
+    addCustom(db, "p1", "Airgapped", null, null, null, null, true, true)
+    const persona = resolvePersona(db, "u", "p1")
+    expect(persona?.skillsEffective).toEqual([])
+    expect(persona?.mcpEffective).toEqual([])
+    // the skill deny-all is a lone catch-all: the whole skill tool goes away
+    expect(skillRuleset(persona)).toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+    ])
+    fakeExec = { code: 0, stdout: JSON.stringify({ stock: {}, files: {} }) }
+    await expect(personaScope(db, "u", persona)).resolves.toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+      { permission: "stock_*", pattern: "*", action: "deny" },
+      { permission: "files_*", pattern: "*", action: "deny" },
+    ])
+    // an explicit base list replaces the block-all (the API clears the flag
+    // when a list arrives; direct db writes clear it explicitly)
+    db.updatePersona("p1", "u", {
+      skills: ["research"],
+      mcp: ["stock"],
+      skillsNone: false,
+      mcpNone: false,
+    })
+    const listed = resolvePersona(db, "u", "p1")
+    expect(listed?.skillsEffective).toEqual(["research"])
+    expect(listed?.mcpEffective).toEqual(["stock"])
+    fakeExec = null
+    // the line names the blocked state instead of enumerating
+    addCustom(db, "p2", "Muted", null, null, null, null, true, false)
+    const line = personaSystem(resolvePersona(db, "u", "p2"))
+    expect(line).toContain("No skills load in this thread")
+    expect(line).not.toContain("No MCP server")
+  })
+
+  test("built-in block-all skips the probes and blocks outright", async () => {
+    const db = open()
+    fakeExec = null
+    db.createUser({
+      id: "u",
+      email: "u@localhost",
+      passwordHash: "hash",
+      role: "user",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    })
+    db.setBuiltinPersonaScope("u", "designer", {
+      skillsNone: true,
+      mcpNone: true,
+    })
+    // no fakeExec: the flags must short-circuit the seed probe — the skill
+    // deny-all applies even when the desktop cannot answer; the MCP half
+    // degrades (config unreadable → skills-only rules)
+    const persona = resolvePersona(db, "u", "designer")
+    expect(persona?.skillsNone).toBe(true)
+    expect(persona?.mcpNone).toBe(true)
+    await expect(personaScope(db, "u", persona)).resolves.toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+    ])
+    // with the config readable, every configured server is denied too
+    fakeExec = { code: 0, stdout: JSON.stringify({ stock: {}, files: {} }) }
+    await expect(personaScope(db, "u", persona)).resolves.toEqual([
+      { permission: "skill", pattern: "*", action: "deny" },
+      { permission: "stock_*", pattern: "*", action: "deny" },
+      { permission: "files_*", pattern: "*", action: "deny" },
+    ])
+    fakeExec = null
+    const line = personaSystem(persona)
+    expect(line).toContain("No skills load in this thread")
+    expect(line).toContain("No MCP server loads in this thread")
+  })
+
+  test("PUT accepts the block-all flags on custom, plugin, and built-in personas", async () => {
+    const db = open()
+    db.createUser({
+      id: "u",
+      email: "u@localhost",
+      passwordHash: "hash",
+      role: "user",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    })
+    db.createInstalledPlugin({
+      id: "row-1",
+      userId: "u",
+      pluginId: "weather-pro",
+      version: "1.0.0",
+      manifest: JSON.stringify({ id: "weather-pro", name: "Weather Pro" }),
+      readme: null,
+      enabled: true,
+      source: "marketplace",
+      localPath: null,
+      applied: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    addCustom(db, "p-user", "Team lead")
+    addCustom(db, "p-plugin", "Meteorologist", ["weather"])
+    db.setInstalledPluginApplied("u", "weather-pro", {
+      ...emptyAppliedLog(),
+      personaIds: ["p-plugin"],
+    })
+    const put = (id: string, body: unknown) =>
+      handlePersonas(
+        new Request(`http://control/api/personas/${id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        new URL(`http://control/api/personas/${id}`),
+        db,
+        { id: "u" } as never,
+      ) as Promise<Response>
+
+    const userBlocked = await put("p-user", { skillsNone: true })
+    expect(userBlocked.status).toBe(200)
+    expect(
+      ((await userBlocked.json()) as { skillsEffective: string[] | null })
+        .skillsEffective,
+    ).toEqual([])
+    // a non-boolean flag is rejected
+    const bad = await put("p-user", { skillsNone: "yes" })
+    expect(bad.status).toBe(400)
+    // plugin persona: the user may block the plugin's surfaces outright
+    const pluginBlocked = await put("p-plugin", { mcpNone: true })
+    expect(pluginBlocked.status).toBe(200)
+    expect(
+      ((await pluginBlocked.json()) as { mcpEffective: string[] | null })
+        .mcpEffective,
+    ).toEqual([])
+    // a base list replaces the block-all
+    const listed = await put("p-user", { skills: ["research"] })
+    const listedBody = (await listed.json()) as {
+      skillsEffective: string[] | null
+      skillsNone: boolean
+    }
+    expect(listedBody.skillsEffective).toEqual(["research"])
+    expect(listedBody.skillsNone).toBe(false)
+    // built-in: block + unblock through the scope row
+    const builtinBlocked = await put("designer", { skillsNone: true })
+    expect(builtinBlocked.status).toBe(200)
+    expect(
+      ((await builtinBlocked.json()) as { skillsNone: boolean }).skillsNone,
+    ).toBe(true)
+    const builtinFreed = await put("designer", { skillsNone: false })
+    expect(
+      ((await builtinFreed.json()) as { skillsNone: boolean }).skillsNone,
+    ).toBe(false)
+  })
+})
+
 describe("nameSimilarity", () => {
   test("is 1 for identical strings and counts transpositions as one edit", () => {
     expect(nameSimilarity("software manager", "software manager")).toBe(1)
@@ -471,20 +761,29 @@ describe("listPersonas", () => {
 })
 
 describe("persona system line", () => {
-  test("assistant adds nothing", () => {
+  test("assistant injects only the built-in scope clauses", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
     )
-    expect(personaSystem(resolvePersona(db, "u", ASSISTANT_ID))).toBeNull()
+    const line = personaSystem(resolvePersona(db, "u", ASSISTANT_ID))
+    expect(line).toContain("built-in skills")
+    expect(line).toContain("built-in MCP servers")
+    expect(line).not.toContain("answer as")
+    expect(line).not.toContain("does not replace desktop, memory, or safety")
   })
 
-  test("a built-in voice is injected and does not replace rules", () => {
+  test("a built-in voice is injected, lists its additions, and does not replace rules", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
     )
+    db.setBuiltinPersonaScope("u", "designer", {
+      skillsExtra: ["framer-motion"],
+    })
     const line = personaSystem(resolvePersona(db, "u", "designer"))
     expect(line).toContain("answer as Designer")
     expect(line).toContain("does not replace desktop, memory, or safety rules")
+    expect(line).toContain("built-in skills plus these added ones")
+    expect(line).toContain("framer-motion")
   })
 
   test("unknown id does not inject", () => {

@@ -3,37 +3,43 @@ import { evaluate, HIT_SCRIPT, pageSocket, type Socket } from "./hittest"
 
 type CaptureState = {
   factor: number
+  yFactor: number
   ox: number
   oy: number
   ts?: number
   origin?: boolean
 }
 
+const FACTOR_MAX = 10
+
+function ratio(value: unknown): number | null {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 1 || n > FACTOR_MAX) return null
+  return n
+}
+
 function loadState(path: string): CaptureState {
-  if (!existsSync(path)) return { factor: 1, ox: 0, oy: 0, origin: true }
+  if (!existsSync(path))
+    return { factor: 1, yFactor: 1, ox: 0, oy: 0, origin: true }
   try {
     const raw = JSON.parse(readFileSync(path, "utf8"))
-    const factor = Number(raw?.factor)
+    const factor = ratio(raw?.factor)
     const ox = Number(raw?.ox)
     const oy = Number(raw?.oy)
-    if (
-      !Number.isInteger(factor) ||
-      factor < 1 ||
-      factor > 3 ||
-      !Number.isInteger(ox) ||
-      !Number.isInteger(oy)
-    ) {
-      return { factor: 1, ox: 0, oy: 0, origin: true }
+    if (factor === null || !Number.isInteger(ox) || !Number.isInteger(oy)) {
+      return { factor: 1, yFactor: 1, ox: 0, oy: 0, origin: true }
     }
+    const yFactor = ratio(raw?.yFactor) ?? factor
     return {
       factor,
+      yFactor,
       ox,
       oy,
       ts: Number(raw?.ts) || undefined,
       origin: raw?.origin !== false,
     }
   } catch {
-    return { factor: 1, ox: 0, oy: 0, origin: true }
+    return { factor: 1, yFactor: 1, ox: 0, oy: 0, origin: true }
   }
 }
 
@@ -44,7 +50,7 @@ export function toLive(
 ): { x: number; y: number } {
   return {
     x: Math.floor(imageX / state.factor) + state.ox,
-    y: Math.floor(imageY / state.factor) + state.oy,
+    y: Math.floor(imageY / state.yFactor) + state.oy,
   }
 }
 
@@ -74,7 +80,12 @@ async function main() {
       `warning: capture state is ${Math.round((Date.now() - state.ts) / 60_000)} minutes old; if the window moved since, capture again`,
     )
   }
-  if (state.factor === 1 && state.ox === 0 && state.oy === 0) {
+  if (
+    state.factor === 1 &&
+    state.yFactor === 1 &&
+    state.ox === 0 &&
+    state.oy === 0
+  ) {
     console.error(
       "note: no scaled capture is recorded for this screen; image coordinates were used as live coordinates",
     )

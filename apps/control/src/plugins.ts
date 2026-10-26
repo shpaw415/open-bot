@@ -8,7 +8,7 @@ import {
   pluginPermissionSummary,
   validateConfigValue,
 } from "@open-bot/plugin-kit"
-import { nextRunMs } from "./cron"
+import { GUARD_JOB_RE, nextRunMs } from "./cron"
 import {
   githubToken,
   marketplaceToken,
@@ -548,6 +548,16 @@ export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
   const existing = db.cronJobs(user.id).find((job) => job.name === name)
   const message = guardMessage(manifest)
   const script = guardScript(manifest)
+  // A new install on a desktop that already guards other plugins delivers
+  // through the same shared thread on its first fire instead of spawning
+  // another one.
+  const siblingSession =
+    existing?.sessionId ??
+    db
+      .cronJobs(user.id)
+      .find((job) => job.id !== existing?.id && GUARD_JOB_RE.test(job.name))
+      ?.sessionId ??
+    null
   const row: CronJob = {
     id: existing?.id ?? crypto.randomUUID(),
     userId: user.id,
@@ -559,7 +569,7 @@ export function ensureGuardCron(db: Db, user: User, manifest: PluginManifest) {
     atMs: null,
     enabled: true,
     deleteAfterRun: false,
-    sessionId: existing?.sessionId ?? null,
+    sessionId: siblingSession,
     createdAt: existing?.createdAt ?? Date.now(),
     lastRunAt: existing?.lastRunAt ?? null,
     nextRunAt: null,

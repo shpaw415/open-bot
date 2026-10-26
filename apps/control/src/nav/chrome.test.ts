@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
 import type { PageTarget } from "./cdp"
 import {
+  capText,
+  devOrigin,
+  flagsFrom,
   matchTab,
   normalizeTarget,
   schemeError,
@@ -9,7 +12,7 @@ import {
 } from "./chrome"
 
 const USAGE =
-  "usage: chrome.ts PORT navigate URL | newtab URL | tabs | switch N | closetab N | url | back | forward | reload"
+  "usage: chrome.ts PORT navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval JS"
 
 test("navigate target adds the scheme to a bare domain", () => {
   expect(normalizeTarget("example.com")).toBe("https://example.com")
@@ -80,6 +83,31 @@ test("verbs parse positional and --url forms", () => {
   expect(verbFrom(["browse"])).toEqual({ verb: "browse" })
 })
 
+test("tab namespace maps onto the flat tab verbs", () => {
+  expect(verbFrom(["tab"])).toEqual({ verb: "tabs" })
+  expect(verbFrom(["tab", "list"])).toEqual({ verb: "tabs" })
+  expect(verbFrom(["tab", "new", "https://a.test/"])).toEqual({
+    verb: "newtab",
+    url: "https://a.test/",
+  })
+  expect(verbFrom(["tab", "new"])).toEqual({ verb: "newtab", url: "" })
+  expect(verbFrom(["tab", "open", "--url", "https://b.test/"])).toEqual({
+    verb: "newtab",
+    url: "https://b.test/",
+  })
+  expect(verbFrom(["tab", "close"])).toEqual({ verb: "closetab", arg: "" })
+  expect(verbFrom(["tab", "close", "2"])).toEqual({
+    verb: "closetab",
+    arg: "2",
+  })
+  expect(verbFrom(["tab", "switch", "3"])).toEqual({ verb: "switch", arg: "3" })
+  expect(verbFrom(["tab", "select", "docs"])).toEqual({
+    verb: "switch",
+    arg: "docs",
+  })
+  expect(verbFrom(["tab", "bogus"])).toEqual({ verb: "tab" })
+})
+
 test("page state shapes to a flat json line", () => {
   expect(
     shapeState({ url: "https://a.test/", title: "A", heading: "H", text: "x" }),
@@ -101,6 +129,7 @@ test("page state shapes to a flat json line", () => {
 test("usage names every verb", () => {
   for (const verb of [
     "navigate",
+    "tab",
     "newtab",
     "tabs",
     "switch",
@@ -109,9 +138,61 @@ test("usage names every verb", () => {
     "back",
     "forward",
     "reload",
+    "console",
+    "network",
+    "metrics",
+    "dom",
+    "eval",
+    "cache",
   ]) {
     expect(USAGE).toContain(verb)
   }
+})
+
+test("capText truncates with a marker flag only when needed", () => {
+  expect(capText("hello", 10)).toEqual({ text: "hello" })
+  expect(capText("hello world", 5)).toEqual({ text: "hello", truncated: true })
+  expect(capText("abc", 3).truncated).toBeUndefined()
+})
+
+test("devOrigin reduces urls and bare domains to scheme+host origins", () => {
+  expect(devOrigin("https://app.test/a/b?x=1")).toBe("https://app.test")
+  expect(devOrigin("http://127.0.0.1:8124/page.html")).toBe(
+    "http://127.0.0.1:8124",
+  )
+  expect(devOrigin("example.test")).toBe("https://example.test")
+  expect(devOrigin("  Example.Test/path  ")).toBe("https://example.test")
+  // Only http(s) origins are usable for per-origin clears; file:/about:
+  // report the literal origin "null".
+  expect(devOrigin("file:///tmp/x.html")).toBeNull()
+  expect(devOrigin("not a domain")).toBeNull()
+  expect(devOrigin("")).toBeNull()
+})
+
+test("devtools flags parse values, bare flags and positionals", () => {
+  // The verb itself arrives as the first positional; main strips it before
+  // the network index is read.
+  expect(flagsFrom(["console", "--level", "error"])).toEqual({
+    positional: ["console"],
+    flags: { level: "error" },
+  })
+  expect(flagsFrom(["network", "3", "--body"])).toEqual({
+    positional: ["network", "3"],
+    flags: { body: true },
+  })
+  expect(flagsFrom(["network", "--filter=api", "--limit", "5"])).toEqual({
+    positional: ["network"],
+    flags: { filter: "api", limit: "5" },
+  })
+  expect(flagsFrom(["console", "--clear"])).toEqual({
+    positional: ["console"],
+    flags: { clear: true },
+  })
+  // A flag consuming the next token must not swallow a later positional.
+  expect(flagsFrom(["network", "--limit", "5", "2"])).toEqual({
+    positional: ["network", "2"],
+    flags: { limit: "5" },
+  })
 })
 
 const tabTargets: PageTarget[] = [

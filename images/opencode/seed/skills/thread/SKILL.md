@@ -29,6 +29,10 @@ Rules:
   follow-up messages to that thread later.
 - Titles cannot start with `worker:` or `cron-run:`; those prefixes are
   reserved.
+- `--steps unlimited` removes the agent step cap for this thread. Every turn
+  stops after 256 steps and a cut turn cannot resume itself — use it for
+  jobs you expect to run long (big builds, deep research, multi-phase work)
+  and decide before starting, not after the cap hit.
 
 ## Folders (topics)
 

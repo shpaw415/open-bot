@@ -25,7 +25,14 @@ mock.module("./env", () => ({
   names: () => ({ opencode: "ob-oc-test" }),
 }))
 
-const { handleMcp, pluginMcpOwners, validateMcpEntry } = await import("./mcp")
+const {
+  MCP_AGENT_PATH,
+  connectMcpServerEntries,
+  handleMcp,
+  pluginMcpOwners,
+  validateMcpEntry,
+  withDefaultMcpPath,
+} = await import("./mcp")
 const { httpErrorResponse } = await import("./http-error")
 
 type HubEvent = { type: string }
@@ -347,5 +354,88 @@ describe("handleMcp mutations", () => {
       dbWith([]),
     )
     expect(response?.status).toBe(502)
+  })
+})
+
+describe("withDefaultMcpPath", () => {
+  test("local plugin entries inherit the agent PATH; declared PATH and remote entries stay verbatim", () => {
+    const result = withDefaultMcpPath({
+      gate: { type: "local", command: ["node", "gate.ts"] },
+      custom: {
+        type: "local",
+        command: ["x"],
+        environment: { PATH: "/opt/bin", FOO: "1" },
+      },
+      remote: { type: "remote", url: "https://example.test/mcp" },
+    })
+    expect(result.gate.environment).toEqual({ PATH: MCP_AGENT_PATH })
+    expect(result.custom.environment).toEqual({ PATH: "/opt/bin", FOO: "1" })
+    expect(result.remote.environment).toBeUndefined()
+  })
+})
+
+describe("connectMcpServerEntries", () => {
+  function fakeIo(initial: Record<string, string>) {
+    const statuses = { ...initial }
+    const calls: { path: string; body?: unknown }[] = []
+    return {
+      calls,
+      io: {
+        statuses: async () =>
+          Object.fromEntries(
+            Object.entries(statuses).map(([name, status]) => [
+              name,
+              { status },
+            ]),
+          ),
+        post: async (path: string, body?: unknown) => {
+          calls.push({ path, body })
+          const reconnect = path.match(/^\/mcp\/([^/]+)\/(connect|disconnect)$/)
+          if (reconnect) {
+            statuses[reconnect[1]] =
+              reconnect[2] === "disconnect" ? "disconnected" : "connected"
+            return
+          }
+          if (path === "/mcp") {
+            const name = (body as { name: string }).name
+            statuses[name] = "connected"
+          }
+        },
+        sleep: async (ms: number) => {
+          calls.push({ path: `sleep:${ms}` })
+        },
+      },
+    }
+  }
+
+  const servers = { gate: { type: "local", command: ["node", "gate.ts"] } }
+
+  test("skips already-connected servers by default", async () => {
+    const { io, calls } = fakeIo({ gate: "connected" })
+    const statuses = await connectMcpServerEntries(servers, io)
+    expect(statuses).toEqual({ gate: "connected" })
+    expect(calls.filter((call) => call.path.endsWith("/connect"))).toHaveLength(
+      0,
+    )
+  })
+
+  test("force restarts a connected server through disconnect + connect", async () => {
+    const { io, calls } = fakeIo({ gate: "connected" })
+    const statuses = await connectMcpServerEntries(servers, io, { force: true })
+    expect(statuses).toEqual({ gate: "connected" })
+    expect(calls.map((call) => call.path)).toEqual([
+      "/mcp/gate/disconnect",
+      "/mcp/gate/connect",
+      "sleep:300",
+    ])
+  })
+
+  test("an unknown server is added, not connected", async () => {
+    const { io, calls } = fakeIo({})
+    await connectMcpServerEntries(servers, io)
+    expect(calls[0]).toEqual({
+      path: "/mcp",
+      body: { name: "gate", config: servers.gate },
+    })
   })
 })

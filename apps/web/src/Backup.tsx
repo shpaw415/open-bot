@@ -389,12 +389,15 @@ function RestoreDialog({
                   {admin ? (
                     <CheckBox
                       checked={Boolean(selected[user.userId])}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        // currentTarget is nulled after dispatch; the
+                        // updater runs at render time, so capture first.
+                        const checked = event.currentTarget.checked
                         setSelected((prev) => ({
                           ...prev,
-                          [user.userId]: event.currentTarget.checked,
+                          [user.userId]: checked,
                         }))
-                      }
+                      }}
                     />
                   ) : null}
                   <Typography variant="body2">

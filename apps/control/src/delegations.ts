@@ -1,4 +1,4 @@
-import type { Db, DelegationKind } from "@open-bot/db"
+import type { Db, DelegationKind, User } from "@open-bot/db"
 import { desktopPhase, endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
 
@@ -166,6 +166,31 @@ export function recordDelegation(
   })
 }
 
+// Dashboard read for the thread list's delegated-busy indicator: every
+// delegation watch row as creator → subject pairs. The client lifts a hidden
+// subject's busy state onto the creator's row (a council member's `worker:`
+// thread never appears in the list, so the coordinating thread is the only
+// place its activity can show). Cookie and LLM-token auth, like councils.
+export function isDelegationsPath(pathname: string): boolean {
+  return pathname === "/api/delegations"
+}
+
+export function handleDelegations(
+  req: Request,
+  url: URL,
+  db: Db,
+  user: User,
+): Response | null {
+  if (url.pathname !== "/api/delegations" || req.method !== "GET") return null
+  const watches = db.delegationWatchesAll(user.id).map((row) => ({
+    kind: row.kind,
+    creator: row.creatorSessionId,
+    subject: row.subjectSessionId,
+    councilId: row.councilId,
+  }))
+  return Response.json({ watches })
+}
+
 export function dispatchDelegationWakes(
   db: Db,
   userId: string,
@@ -237,20 +262,22 @@ export function lastAssistantText(messages: unknown): string {
   return ""
 }
 
+type WatchRow = {
+  id: string
+  kind: DelegationKind
+  creatorSessionId: string
+  subjectSessionId: string
+  councilId: string | null
+  wokenAt: number | null
+  pending: boolean
+}
+
 async function deliver(
   db: Db,
   userId: string,
   ctx: { base: string; headers: Record<string, string> },
   status: StatusMap,
-  rows: {
-    id: string
-    kind: DelegationKind
-    creatorSessionId: string
-    subjectSessionId: string
-    councilId: string | null
-    wokenAt: number | null
-    pending: boolean
-  }[],
+  rows: WatchRow[],
 ): Promise<void> {
   const groups = new Map<
     string,
@@ -258,7 +285,7 @@ async function deliver(
       kind: DelegationKind
       creator: string
       councilId: string | null
-      ids: string[]
+      rows: WatchRow[]
     }
   >()
   for (const row of rows) {
@@ -267,40 +294,48 @@ async function deliver(
       kind: row.kind,
       creator: row.creatorSessionId,
       councilId: row.councilId,
-      ids: [],
+      rows: [],
     }
-    group.ids.push(row.id)
+    group.rows.push(row)
     groups.set(key, group)
   }
   for (const group of groups.values()) {
-    let ids: string[]
+    let rows2Wake: WatchRow[]
     if (group.kind === "council" && group.councilId) {
       const siblings = db.delegationWatchesByCouncil(userId, group.councilId)
       // Marking the whole group (not just the idling member's row) is what
       // makes the wake once-per-completion: a member that idled earlier in
       // this cycle must not re-arm a duplicate wake later. Pending rows are
       // included — they are the deferred delivery itself.
-      ids = siblings.filter((row) => row.wokenAt === null).map((row) => row.id)
+      rows2Wake = siblings.filter((row) => row.wokenAt === null)
       const allIdle = siblings.every(
         (row) => !isBusy(status, row.subjectSessionId),
       )
       if (!allIdle) continue
     } else {
-      ids = group.ids
+      rows2Wake = group.rows
     }
-    if (ids.length === 0) continue
+    if (rows2Wake.length === 0) continue
     if (isBusy(status, group.creator)) {
       // The coordinator is mid-turn; deliver on its next idle instead of
       // injecting into a running conversation.
-      db.markDelegationsPending(userId, ids)
+      db.markDelegationsPending(
+        userId,
+        rows2Wake.map((row) => row.id),
+      )
       continue
     }
     const flightKey = `${userId}:${group.creator}`
     if (inFlight.has(flightKey)) continue
     inFlight.add(flightKey)
     try {
-      const ok = await promptCreator(db, userId, ctx, group.creator, group)
-      if (ok) db.markDelegationsWoken(userId, ids, Date.now())
+      const ok = await promptCreator(db, userId, ctx, group, rows2Wake)
+      if (ok)
+        db.markDelegationsWoken(
+          userId,
+          rows2Wake.map((row) => row.id),
+          Date.now(),
+        )
       else
         console.error(
           `delegation wake to ${group.creator} failed — rows stay armed`,
@@ -311,25 +346,68 @@ async function deliver(
   }
 }
 
+// Subject titles + last-reply tails for the wake text: the coordinator gets
+// the report even before it reads anything, and the session ids it needs for
+// `ob-thread read` are spelled out instead of assumed.
+async function subjectSummaries(
+  ctx: { base: string; headers: Record<string, string> },
+  subjects: string[],
+): Promise<Map<string, { title: string; reply: string }>> {
+  const sessions = await fetchJson<{ id?: unknown; title?: unknown }[]>(
+    ctx.base,
+    ctx.headers,
+    "/session",
+  )
+  const titles = new Map<string, string>()
+  if (Array.isArray(sessions)) {
+    for (const item of sessions) {
+      if (typeof item?.id === "string" && typeof item.title === "string")
+        titles.set(item.id, item.title.replace(/^worker:/, ""))
+    }
+  }
+  const summaries = new Map<string, { title: string; reply: string }>()
+  for (const id of subjects) {
+    const messages = await fetchJson(
+      ctx.base,
+      ctx.headers,
+      `/session/${encodeURIComponent(id)}/message`,
+    )
+    summaries.set(id, {
+      title: titles.get(id) ?? "",
+      reply: lastAssistantText(messages),
+    })
+  }
+  return summaries
+}
+
 async function promptCreator(
   db: Db,
   userId: string,
   ctx: { base: string; headers: Record<string, string> },
-  creator: string,
   group: {
     kind: DelegationKind
     councilId: string | null
-    ids: string[]
+    rows: WatchRow[]
     creator: string
   },
+  rowsToWake: WatchRow[],
 ): Promise<boolean> {
-  const text = wakeText(db, userId, group)
+  const subjects = [
+    ...new Set(
+      (group.kind === "council" && group.councilId
+        ? db.delegationWatchesByCouncil(userId, group.councilId)
+        : rowsToWake
+      ).map((row) => row.subjectSessionId),
+    ),
+  ]
+  const summaries = await subjectSummaries(ctx, subjects)
+  const text = wakeText(db, userId, group, subjects, summaries)
   const body: Record<string, unknown> = {
     parts: [{ type: "text", text }],
   }
   await applyThinkingEffort(db, userId, body)
   const res = await fetch(
-    `${ctx.base}/session/${encodeURIComponent(creator)}/prompt_async`,
+    `${ctx.base}/session/${encodeURIComponent(group.creator)}/prompt_async`,
     {
       method: "POST",
       headers: { ...ctx.headers, "content-type": "application/json" },
@@ -346,12 +424,30 @@ function wakeText(
   group: {
     kind: DelegationKind
     councilId: string | null
-    ids: string[]
+    rows: WatchRow[]
     creator: string
   },
+  subjects: string[],
+  summaries: Map<string, { title: string; reply: string }>,
 ): string {
   if (group.kind === "persona") {
-    return "[teammate] Your delegated teammate finished its current work. This is an automatic wake-up, not a user reply. Read its reply with `ob-thread read <session-id>` — or the files you asked it to write — then report the outcome to the user in this thread."
+    const lines: string[] = []
+    for (const id of subjects) {
+      const summary = summaries.get(id)
+      const label = summary?.title
+        ? `"${summary.title}"`
+        : "your delegated teammate"
+      lines.push(`Teammate ${label} (${id}) finished its current work.`)
+      lines.push(
+        summary?.reply
+          ? `Last reply:\n${summary.reply}`
+          : "(no text reply — read the full transcript)",
+      )
+    }
+    lines.push(
+      "This is an automatic wake-up, not a user reply. Read the full transcript with `ob-thread read <session-id>` (the ids are above) — or the files you asked for — then report the outcome to the user in this thread. If a read says the session is gone, the workspace files are still there.",
+    )
+    return `[teammate] ${lines.join("\n")}`
   }
   const council = group.councilId
     ? db.councilById(group.councilId, userId)
@@ -359,6 +455,12 @@ function wakeText(
   const name = council?.name ?? group.councilId ?? "council"
   const count = group.councilId
     ? db.delegationWatchesByCouncil(userId, group.councilId).length
-    : group.ids.length
-  return `[council: ${name}] All ${count} member${count === 1 ? "" : "s"} finished their work. This is an automatic wake-up, not a user reply. Read what they produced — \`ob-thread council status ${name}\` prints each member's status and last reply, \`ob-thread read <session-id>\` prints a transcript, and files you asked them to write are on disk — then report the outcome to the user in this thread. Close the team with \`ob-thread council close ${name}\` once the work is delivered.`
+    : subjects.length
+  const idList = subjects
+    .map((id) => {
+      const summary = summaries.get(id)
+      return summary?.title ? `${id} (${summary.title})` : id
+    })
+    .join(", ")
+  return `[council: ${name}] All ${count} member${count === 1 ? "" : "s"} finished their work. This is an automatic wake-up, not a user reply. Member session ids: ${idList}. Read what they produced — \`ob-thread council status ${name}\` prints each member's status and last reply, \`ob-thread read <session-id>\` prints a transcript, and files you asked them to write are on disk — then report the outcome to the user in this thread. Close the team with \`ob-thread council close ${name}\` once the work is delivered.`
 }

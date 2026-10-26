@@ -18,6 +18,7 @@ import {
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
   useCallback,
+  useDeferredValue,
   useEffect,
   useId,
   useMemo,
@@ -25,8 +26,6 @@ import {
   useState,
 } from "react"
 import { createPortal } from "react-dom"
-import Markdown, { type Components, defaultUrlTransform } from "react-markdown"
-import remarkGfm from "remark-gfm"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -50,12 +49,11 @@ import {
 } from "./CouncilView"
 import type { CronJobInfo } from "./CronView"
 import { orbState } from "./chat-controls"
-import { ChatLink } from "./chat-link"
+import { ChatMarkdown } from "./chat-markdown"
 import {
   ACTIVITY_LABEL,
   applyMessageDelta,
   type ChatMessage,
-  chatImageUrl,
   eventTouchesSession,
   handoffStamp,
   lastHandoffStamp,
@@ -79,7 +77,6 @@ import {
   vncFrameSrc,
 } from "./chat-view"
 import { Chip } from "./chip"
-import { MarkdownCodeBlock } from "./code-copy"
 import { ComposerPickers } from "./composer-controls"
 import {
   clearComposerSeed,
@@ -87,6 +84,11 @@ import {
   formatFrAgo,
   peekComposerSeed,
 } from "./dashboard-data"
+import {
+  type DelegationWatch,
+  delegatedBusyIds,
+  parseDelegationWatches,
+} from "./delegations"
 import { useOverlayA11y } from "./dialog-a11y"
 import {
   blankDraftKey,
@@ -144,7 +146,6 @@ import {
 import { createLatestGuard } from "./latest-guard"
 import { MediaDownloadButton, MediaFullscreenButton } from "./MediaDownload"
 import { MediaVault } from "./MediaVault"
-import { Model3dView } from "./Model3dView"
 import {
   dropCachedMessages,
   getCachedMessages,
@@ -177,12 +178,7 @@ import {
   PreviewPane,
 } from "./PreviewView"
 import { type PluginCardSpec, PluginCards, usePlugins } from "./plugin-ui"
-import {
-  ProjectRefLink,
-  ProjectRefsContext,
-  remarkProjectRefs,
-  useProjectRefs,
-} from "./project-refs"
+import { ProjectRefsContext } from "./project-refs"
 import ReferenceOverlay from "./ReferenceOverlay"
 import {
   collectPluginMentionSources,
@@ -460,71 +456,6 @@ function AppLauncher({
     </Box>
   )
 }
-
-function chatUrl(url: string, key: string): string {
-  if (key === "src") return chatImageUrl(url)
-  return defaultUrlTransform(url)
-}
-
-// Stable module-level identities so memoized markdown skips re-parsing when
-// only surrounding state (e.g. the composer draft) changes.
-const markdownPlugins = [remarkGfm]
-
-const markdownComponents: Components = {
-  pre: MarkdownCodeBlock,
-  a: ({ href, children, ...rest }) => {
-    if (href?.startsWith("#project-ref/"))
-      return <ProjectRefLink href={href}>{children}</ProjectRefLink>
-    return (
-      <ChatLink href={href} {...rest}>
-        {children}
-      </ChatLink>
-    )
-  },
-  img: ({ src, alt }) => {
-    if (!src) return null
-    if (/\.(mp4|webm)$/i.test(src)) {
-      return (
-        <div className="ob-media-wrap">
-          {/* biome-ignore lint/a11y/useMediaCaption: generated clips ship without captions */}
-          <video src={src} controls preload="metadata" />
-          <MediaDownloadButton src={src} />
-          <MediaFullscreenButton src={src} alt={alt ?? ""} />
-        </div>
-      )
-    }
-    if (src.startsWith("/api/workspace/model3d") || /\.glb$/i.test(src)) {
-      return <Model3dView src={src} alt={alt ?? ""} />
-    }
-    return (
-      <div className="ob-media-wrap">
-        <img src={src} alt={alt ?? ""} />
-        <MediaDownloadButton src={src} />
-        <MediaFullscreenButton src={src} alt={alt ?? ""} />
-      </div>
-    )
-  },
-}
-
-const ChatMarkdown = memo(function ChatMarkdown({ text }: { text: string }) {
-  const refs = useProjectRefs()
-  const plugins = useMemo(
-    () =>
-      refs.length
-        ? [...markdownPlugins, () => remarkProjectRefs(refs)]
-        : markdownPlugins,
-    [refs],
-  )
-  return (
-    <Markdown
-      remarkPlugins={plugins}
-      urlTransform={chatUrl}
-      components={markdownComponents}
-    >
-      {text}
-    </Markdown>
-  )
-})
 
 type PluginRenderer = { title: string; spec: PluginCardSpec[] }
 
@@ -1050,7 +981,10 @@ const ThreadsPanel = memo(function ThreadsPanel({
   )
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [threadQuery, setThreadQuery] = useState("")
-  const query = threadQuery.trim().toLowerCase()
+  // Filter off the critical path: the input stays live, the thread list
+  // recomputes at a lower priority so a big list can never block typing.
+  const deferredThreadQuery = useDeferredValue(threadQuery)
+  const query = deferredThreadQuery.trim().toLowerCase()
   const matchesQuery = (item: SessionInfo) =>
     !query ||
     threadTitle(item).toLowerCase().includes(query) ||
@@ -1282,16 +1216,6 @@ const ThreadsPanel = memo(function ThreadsPanel({
                 onClick={actions.newFolder}
               >
                 <FolderIcon width={18} height={18} />
-              </IconButton>
-            </Tip>
-            <Tip title="Nouvelle conversation">
-              <IconButton
-                size="small"
-                aria-label="Nouvelle conversation"
-                disabled={actionBusy}
-                onClick={actions.create}
-              >
-                <AddIcon width={18} height={18} />
               </IconButton>
             </Tip>
           </>
@@ -2782,6 +2706,7 @@ export function Workspace({
   const [sessionId, setSessionId] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
+  const [messagesError, setMessagesError] = useState(false)
   const [mediaMap, setMediaMap] = useState<MediaMap>(new Map())
   const draftRef = useRef("")
   const draftSessionRef = useRef("")
@@ -2829,6 +2754,10 @@ export function Workspace({
   const [menuThread, setMenuThread] = useState<SessionInfo | null>(null)
   const [dirs, setDirs] = useState<ThreadDirInfo[]>([])
   const [threadDirMap, setThreadDirMap] = useState<Record<string, string>>({})
+  // Delegation watches (GET /api/delegations): creator → subject pairs so a
+  // hidden member's busy state (council `worker:` threads the list filters
+  // out) can show as the owner thread's spinner.
+  const [delegations, setDelegations] = useState<DelegationWatch[]>([])
   // set when a notice (bell or native) opens a thread; `seq` distinguishes
   // repeat notices for the same thread so the panel re-expands its folder
   const [notifyFocus, setNotifyFocus] = useState<{
@@ -2845,6 +2774,9 @@ export function Workspace({
   const [folderMenuDir, setFolderMenuDir] = useState<ThreadDirInfo | null>(null)
   const [moveMenuThread, setMoveMenuThread] = useState<SessionInfo | null>(null)
   const [newThreadDir, setNewThreadDir] = useState("")
+  // Blank-composer pick: bind the new session to the no-step-cap agent so a
+  // long coordinating turn is never cut at the default 256-step guard.
+  const [newUnlimitedSteps, setNewUnlimitedSteps] = useState(false)
   const [renameTarget, setRenameTarget] = useState<SessionInfo | null>(null)
   const [renameTitle, setRenameTitle] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<SessionInfo | null>(null)
@@ -3329,8 +3261,18 @@ export function Workspace({
     for (const item of sessions) {
       if (threadBusy(item.id)) set.add(item.id)
     }
+    // Delegated work is invisible on its own row (hidden council members are
+    // filtered out of the list), so a hidden busy member lifts its spinner
+    // onto the coordinating thread. Visible subjects spin on their own row.
+    for (const id of delegatedBusyIds(
+      delegations,
+      threadBusy,
+      new Set(sessions.map((item) => item.id)),
+    )) {
+      set.add(id)
+    }
     return set
-  }, [sessions, threadBusy])
+  }, [sessions, threadBusy, delegations])
   const personaLabel = useCallback(
     (id: string) => {
       const pid = threadPersona[id]
@@ -3514,6 +3456,7 @@ export function Workspace({
         assignmentBody,
         dirsBody,
         dirAssignBody,
+        delegationBody,
       ] = await Promise.all([
         // The desktop routes start the desktop server-side (ensure), so a
         // failed poll here means "unavailable right now" — never an empty
@@ -3537,6 +3480,7 @@ export function Workspace({
         api<{ threads?: { sessionId: string; dirId: string }[] }>(
           "/api/thread-dirs/assignments",
         ).catch(() => null),
+        api<unknown>("/api/delegations").catch(() => null),
       ])
       setSessions(
         (Array.isArray(list) ? (list as SessionInfo[]) : [])
@@ -3570,6 +3514,7 @@ export function Workspace({
         }
         setThreadDirMap(dirAssigned)
       }
+      if (delegationBody) setDelegations(parseDelegationWatches(delegationBody))
     } catch (caught) {
       // desktop may have gone to sleep; the next tick retries — but the
       // failure is never rendered as "no conversations".
@@ -3703,14 +3648,15 @@ export function Workspace({
   }, [running, models.length, modelsLoading, loadModels])
 
   // event-driven refresh: the socket announces changes, we refetch lazily.
-  // A cached transcript paints instantly; the fetch below still reconciles.
+  // A cached transcript paints instantly; messagesLoading stays set until the
+  // first successful reconciliation fetch, so a stale cache never hides the
+  // catch-up in silence.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the refs reset when the thread or desktop changes
   useEffect(() => {
     const cached = sessionId ? getCachedMessages(sessionId) : undefined
     if (cached) {
       messagesJsonRef.current = cached.payload
       setMessages(cached.messages)
-      setMessagesLoading(false)
     } else {
       messagesJsonRef.current = ""
       setMessages([])
@@ -3719,6 +3665,7 @@ export function Workspace({
     stickRef.current = true
     setAtBottom(true)
     setMediaMap(new Map())
+    setMessagesError(false)
   }, [sessionId, running])
 
   const loadMedia = useCallback(async () => {
@@ -3764,6 +3711,14 @@ export function Workspace({
       tickGuard.current.isCurrent(seq) && sessionIdRef.current === id
     try {
       const messageRes = await fetch(`/api/opencode/session/${id}/message`)
+      // A failed fetch (desktop restarting, session gone) must not wipe the
+      // transcript or poison the cache with an empty payload: painted
+      // messages stay, and an empty view surfaces the error row instead.
+      if (!messageRes.ok) {
+        if (isCurrent() && messagesRef.current.length === 0)
+          setMessagesError(true)
+        return
+      }
       const body = await messageRes.json()
       // A late response for the previous thread must not overwrite the
       // view, the message refs, or the delta upsert base (messagesRef).
@@ -3776,7 +3731,10 @@ export function Workspace({
         setMessages(next)
         putCachedMessages(id, payload, next)
       }
+      setMessagesError(false)
     } catch {
+      if (isCurrent() && messagesRef.current.length === 0)
+        setMessagesError(true)
       return
     } finally {
       if (isCurrent()) setMessagesLoading(false)
@@ -3974,15 +3932,17 @@ export function Workspace({
         // Re-opening the visible thread: setSessionId would be a React
         // no-op, so neither the cache-paint effect nor the tick effect
         // re-runs — repaint from cache and force a reconciliation fetch.
+        // The catch-up stays visible until the fetch lands.
         const cached = getCachedMessages(id)
         if (cached) {
           messagesJsonRef.current = cached.payload
           messagesRef.current = cached.messages
           setMessages(cached.messages)
-          setMessagesLoading(false)
         }
         stickRef.current = true
         setAtBottom(true)
+        setMessagesError(false)
+        setMessagesLoading(true)
         scheduleTick()
       } else {
         setSessionId(id)
@@ -4355,6 +4315,7 @@ export function Workspace({
         blankChatRef.current = false
         setNewPersonaId("assistant")
         setNewThreadDir("")
+        setNewUnlimitedSteps(false)
         setHasBlankDraft(false)
         clearBlankDraft(localStorage, me.id)
         clearComposerSeed()
@@ -4457,6 +4418,7 @@ export function Workspace({
     blankChatRef.current = true
     setNewPersonaId("assistant")
     setNewThreadDir(dirId)
+    setNewUnlimitedSteps(false)
     if (sessionId) {
       setSessionId("")
       setMessages([])
@@ -4548,6 +4510,7 @@ export function Workspace({
         ? { personaId: newPersonaId }
         : {}),
       ...(newThreadDir ? { dirId: newThreadDir } : {}),
+      ...(newUnlimitedSteps ? { steps: "unlimited" } : {}),
     })
   }
 
@@ -5277,6 +5240,20 @@ export function Workspace({
                         )),
                       ]}
                     </Select>
+                    <CheckBox
+                      checked={newUnlimitedSteps}
+                      aria-label="Sans limite d'étapes"
+                      disabled={actionBusy}
+                      onChange={() => setNewUnlimitedSteps((value) => !value)}
+                      sx={{ ml: 0.5 }}
+                    />
+                    <Typography
+                      variant="caption"
+                      color="textSecondary"
+                      title="Sans la limite de 256 étapes par tour — pour les longues tâches (conseils, gros builds)"
+                    >
+                      Sans limite d'étapes
+                    </Typography>
                   </Stack>
                 ) : null}
                 {stopping ? (
@@ -5294,6 +5271,24 @@ export function Workspace({
                   </Stack>
                 ) : null}
                 {stopping ? <Divider /> : null}
+                {/* Opening a thread with a cached transcript paints it
+                    instantly; this row says the catch-up fetch is still
+                    reconciling against opencode. */}
+                {messagesLoading && shown.length > 0 ? (
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    className="ob-status-row"
+                    sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
+                  >
+                    <CircularProgress size={1.2} />
+                    <Typography variant="caption" color="textSecondary">
+                      {THREADS_UI.messagesCatchingUp}
+                    </Typography>
+                  </Stack>
+                ) : null}
+                {messagesLoading && shown.length > 0 ? <Divider /> : null}
                 <Box
                   className="ob-chat-log"
                   ref={outputRef}
@@ -5372,6 +5367,27 @@ export function Workspace({
                           width="56%"
                         />
                       </Stack>
+                    </Stack>
+                  ) : messagesError && shown.length === 0 ? (
+                    <Stack
+                      alignItems="center"
+                      justifyContent="center"
+                      sx={{ flex: 1, minHeight: 160, textAlign: "center" }}
+                      spacing={1}
+                    >
+                      <Typography variant="subtitle1" component="p">
+                        {THREADS_UI.messagesLoadFailed}
+                      </Typography>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => {
+                          setMessagesLoading(true)
+                          scheduleTick()
+                        }}
+                      >
+                        {THREADS_UI.retry}
+                      </Button>
                     </Stack>
                   ) : shown.length === 0 ? (
                     <Stack
