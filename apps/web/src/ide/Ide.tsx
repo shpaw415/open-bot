@@ -12,6 +12,7 @@ import {
   useState,
 } from "react"
 import { api } from "../api"
+import { searchParam, useBackLayer, usePaneNav } from "../back-nav"
 import { useDirtyFlag } from "../dirty-form"
 import { confirmDiscard } from "../discard-guard"
 import { type EventStream, useDebounced, useMobile } from "../hooks"
@@ -31,6 +32,7 @@ import {
   SearchIcon,
   TerminalIcon,
 } from "../icons"
+import { PARAM_FILE } from "../routes"
 import { useThemeMode } from "../theme"
 import {
   baseName,
@@ -282,6 +284,8 @@ export function Ide({
   onThreadDock?: (el: HTMLDivElement | null) => void
 }) {
   const mobile = useMobile()
+  const paneNav = usePaneNav()
+  const { pushSearch } = paneNav
   const { mode } = useThemeMode()
   const vscode = useMemo(() => vscodeTheme(mode), [mode])
   const [root, setRoot] = useState<TreeEntry[] | null>(null)
@@ -546,6 +550,21 @@ export function Ide({
     [previews, project.id, saved, showToast],
   )
 
+  // The active file rides ?file= (replace — tab switches do not stack
+  // history; Back still leaves the project in one step, and a reload or
+  // shared link reopens the same file).
+  const initialFileRef = useRef(searchParam(paneNav.search, PARAM_FILE))
+  useEffect(() => {
+    const file = initialFileRef.current
+    if (!file) return
+    initialFileRef.current = ""
+    void openFile(file)
+  }, [openFile])
+  useEffect(() => {
+    if (initialFileRef.current) return
+    pushSearch({ [PARAM_FILE]: active }, { replace: true })
+  }, [active, pushSearch])
+
   const toggleDir = useCallback(
     (dir: string) => {
       const isOpen = expanded[dir]
@@ -650,6 +669,15 @@ export function Ide({
     void ensureQuickFiles()
     window.setTimeout(() => quickInputRef.current?.focus(), 30)
   }, [ensureQuickFiles])
+
+  // Modal IDE chrome follows the app-wide Back contract: the quick-open
+  // palette and the phone explorer (backdrop overlay) dismiss on Back
+  // before it can leave the project.
+  useBackLayer(quickOpen, () => setQuickOpen(false), { name: "quick-open" })
+  useBackLayer(sidebar, () => setSidebar(false), {
+    name: "explorer",
+    enabled: mobile,
+  })
 
   const results = useMemo(
     () =>

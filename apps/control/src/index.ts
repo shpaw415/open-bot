@@ -18,6 +18,7 @@ import {
   sleptRecently,
   startDesktop,
   stopDesktop,
+  syncAgentCap,
   syncWatchdogConfig,
 } from "./docker"
 import {
@@ -40,6 +41,10 @@ import { createServer, eventTarget } from "./server"
 import { startStatsSampler } from "./stats"
 import { startStuckWatch } from "./stuck"
 import { pushTeamOpencodeAuth } from "./team-apply"
+import {
+  dispatchThreadQueueFlush,
+  flushThreadQueuesForUser,
+} from "./thread-queue"
 import { resolveWatchdogConfig, watchdogContainerPayload } from "./watchdog"
 import { onUpstreamEvent } from "./workspace-snapshots"
 
@@ -86,10 +91,12 @@ const hub = new EventHub(
     onUpstreamEvent(db, userId, event)
     dispatchPluginHooks(db, userId, event)
     dispatchDelegationWakes(db, userId, event)
+    dispatchThreadQueueFlush(db, hub, userId, event)
   },
 )
 onDesktopReady((userId) => {
   hub.ensurePump(userId)
+  flushThreadQueuesForUser(db, hub, userId)
   // The boot re-apply rewrites setup state and the applied init log; a finished
   // run refreshes any Plugins page watching this desktop.
   return reapplyPluginSetup(db, userId).then(() => {
@@ -101,6 +108,16 @@ onDesktopReady((userId) => {
 // rides along: every wake recreates the container, and the daemon picks the
 // refreshed file up on its next mtime poll.
 onDesktopUp(async (userId) => {
+  await syncAgentCap(userId, db.desktop(userId)?.agentStepCap ?? null, {
+    db,
+    hub,
+  }).catch((error: unknown) => {
+    console.error(
+      `agent cap sync failed for ${userId}: ${
+        error instanceof Error ? error.message : error
+      }`,
+    )
+  })
   await flushPendingPluginConfigs(db, userId)
   const resolved = resolveWatchdogConfig(db, userId)
   await syncWatchdogConfig(

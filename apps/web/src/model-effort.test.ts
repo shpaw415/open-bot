@@ -21,9 +21,10 @@ function makeDeps(options?: { dropEffortOnModelMove?: boolean }) {
   }
   const waiters: (() => void)[] = []
 
+  const at = (sessionId?: string) => (sessionId ? `@${sessionId}` : "")
   const deps: SettingsSaverDeps = {
-    async putModel(key) {
-      calls.push(`putModel:${key}`)
+    async putModel(key, sessionId) {
+      calls.push(`putModel:${key}${at(sessionId)}`)
       await gate()
       if (state.failModel) throw state.failModel
       state.modelKey = key
@@ -31,14 +32,14 @@ function makeDeps(options?: { dropEffortOnModelMove?: boolean }) {
       // drops it when the new model does not support it.
       if (options?.dropEffortOnModelMove) state.effort = ""
     },
-    async putThinking(effort) {
-      calls.push(`putThinking:${effort}`)
+    async putThinking(effort, sessionId) {
+      calls.push(`putThinking:${effort}${at(sessionId)}`)
       await gate()
       if (state.failEffort) throw state.failEffort
       state.effort = effort
     },
-    async fetchMe() {
-      calls.push("fetchMe")
+    async fetchMe(sessionId) {
+      calls.push(`fetchMe${at(sessionId)}`)
       await gate()
       const info: MeLike["model"] = {
         providerID: state.modelKey.split("/")[0],
@@ -47,16 +48,16 @@ function makeDeps(options?: { dropEffortOnModelMove?: boolean }) {
       }
       return { model: info }
     },
-    adoptServer(me) {
+    adoptServer(me, sessionId) {
       calls.push(
-        `adopt:${me.model?.providerID}/${me.model?.modelID}:${me.model?.thinkingEffort ?? ""}`,
+        `adopt:${me.model?.providerID}/${me.model?.modelID}:${me.model?.thinkingEffort ?? ""}${at(sessionId)}`,
       )
     },
-    revertModel(previous) {
-      calls.push(`revertModel:${previous}`)
+    revertModel(previous, sessionId) {
+      calls.push(`revertModel:${previous}${at(sessionId)}`)
     },
-    revertEffort(previous) {
-      calls.push(`revertEffort:${previous}`)
+    revertEffort(previous, sessionId) {
+      calls.push(`revertEffort:${previous}${at(sessionId)}`)
     },
     setEffortSaving(saving) {
       calls.push(`effortSaving:${saving ? "on" : "off"}`)
@@ -233,6 +234,35 @@ describe("settings saver — model / effort coordination", () => {
       "adopt:p/b:high",
     )
     expect(env.saver.busy()).toBe(false)
+  })
+
+  test("a save carries its thread through put, fetch, adopt, and revert", async () => {
+    const env = makeDeps()
+    // Picking a model on thread ses_a must write and reconcile against
+    // ses_a only — the caller scopes its state updates by this id, so a
+    // late completion can never paint thread ses_b's picker.
+    env.saver.selectModel({ value: "p/b", previous: "p/a", sessionId: "ses_a" })
+    env.saver.selectEffort({ value: "high", previous: "", sessionId: "ses_a" })
+    await flush(env.waiters)
+    expect(env.calls).toContain("putModel:p/b@ses_a")
+    expect(env.calls).toContain("putThinking:high@ses_a")
+    expect(env.calls.filter((call) => call.startsWith("fetchMe"))).toEqual([
+      "fetchMe@ses_a",
+      "fetchMe@ses_a",
+    ])
+    expect(env.calls.filter((call) => call.startsWith("adopt")).pop()).toBe(
+      "adopt:p/b:high@ses_a",
+    )
+
+    const failing = makeDeps()
+    failing.state.failModel = new Error("offline")
+    failing.saver.selectModel({
+      value: "p/b",
+      previous: "p/a",
+      sessionId: "ses_b",
+    })
+    await flush(failing.waiters)
+    expect(failing.calls).toContain("revertModel:p/a@ses_b")
   })
 
   test("an invalid model key never starts a save", () => {

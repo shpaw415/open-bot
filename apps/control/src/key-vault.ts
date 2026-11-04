@@ -6,8 +6,11 @@ import type {
   UserKey,
   VideoProvider,
 } from "@open-bot/db"
-import { system1FieldError } from "./system1"
+import { imageProviderById } from "./image-providers"
+import { model3dProviderById } from "./model3d-providers"
+import { system1FieldError, system1ProviderById } from "./system1"
 import { effectiveUserKey, getTeamConfig } from "./team"
+import { videoProviderById } from "./video-providers"
 
 type VaultFill = Pick<
   UserKey,
@@ -75,10 +78,25 @@ export type KeyVaultField = {
   label: string
   placeholder: string
   required: boolean
+  secret?: boolean
 }
 
+export type KeyVaultSlug =
+  | "cloudflare"
+  | "openai"
+  | "google"
+  | "xai"
+  | "anthropic"
+  | "openrouter"
+  | "stability"
+  | "replicate"
+  | "fal"
+  | "meshy"
+  | "tripo"
+  | "laya"
+
 export type KeyVaultSpec = {
-  id: string
+  id: KeyVaultSlug
   label: string
   description: string
   chatProvider: boolean
@@ -91,6 +109,7 @@ const apiKeyField = (label: string, placeholder: string): KeyVaultField => ({
   label,
   placeholder,
   required: true,
+  secret: true,
 })
 
 export const keyVault: KeyVaultSpec[] = [
@@ -119,6 +138,7 @@ export const keyVault: KeyVaultSpec[] = [
         label: "Gateway token",
         placeholder: "cf-aig-authorization token (optional)",
         required: false,
+        secret: true,
       },
       {
         id: "gatewaySlug",
@@ -257,52 +277,21 @@ export function keyVaultPublic() {
   )
 }
 
-const imageKeySlugs: Record<string, string> = {
-  "cloudflare-workers-ai": "cloudflare",
-  "xai-gateway": "cloudflare",
-  xai: "xai",
-  openai: "openai",
-  google: "google",
-  stability: "stability",
-  replicate: "replicate",
-}
-
-const videoKeySlugs: Record<string, string> = {
-  "xai-gateway": "cloudflare",
-  xai: "xai",
-  openai: "openai",
-  google: "google",
-  replicate: "replicate",
-  fal: "fal",
-}
-
-const model3dKeySlugs: Record<string, string> = {
-  meshy: "meshy",
-  tripo: "tripo",
-  replicate: "replicate",
-  fal: "fal",
-}
-
-const system1KeySlugs: Record<string, string> = {
-  "cloudflare-jev": "cloudflare",
-  "cloudflare-clef": "cloudflare",
-  laya: "laya",
-}
-
+// Vault slugs live on each provider's catalog spec — one source of truth.
 export function imageVaultSlug(providerId: string) {
-  return imageKeySlugs[providerId] ?? ""
+  return imageProviderById(providerId)?.vaultSlug ?? ""
 }
 
 export function videoVaultSlug(providerId: string) {
-  return videoKeySlugs[providerId] ?? ""
+  return videoProviderById(providerId)?.vaultSlug ?? ""
 }
 
 export function model3dVaultSlug(providerId: string) {
-  return model3dKeySlugs[providerId] ?? ""
+  return model3dProviderById(providerId)?.vaultSlug ?? ""
 }
 
 export function system1VaultSlug(providerId: string) {
-  return system1KeySlugs[providerId] ?? ""
+  return system1ProviderById(providerId)?.vaultSlug ?? ""
 }
 
 export function chatVaultSlugs() {

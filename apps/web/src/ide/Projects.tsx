@@ -7,13 +7,14 @@ import { CircularProgress } from "@shpaw415/mui-lite/Progress"
 import Skeleton from "@shpaw415/mui-lite/Skeleton"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { type ReactNode, useCallback, useEffect, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "../AccessibleDialog"
 import { api } from "../api"
+import { patchSearch, searchParam, usePaneNav } from "../back-nav"
 import { Chip } from "../chip"
 import type { EventStream } from "../hooks"
 import { useMobile } from "../hooks"
@@ -25,6 +26,7 @@ import {
   RefreshIcon,
 } from "../icons"
 import { OPEN_PROJECT_EVENT, takePendingProject } from "../open-project"
+import { PARAM_FILE, PARAM_PROJECT, workspacePath } from "../routes"
 import Stack from "../stack"
 import { Tip } from "../Tip"
 import { Ide } from "./Ide"
@@ -489,9 +491,40 @@ export function Projects({
   // "Open this project" pipeline (search results, future links): an event
   // for the mounted view, plus a pending slot for the race where the pick
   // navigated to /projects and this view mounts after the event fired.
+  // The open project rides ?id= (and its file ?file=): Back returns to
+  // the list, Forward/reload reopen the IDE where the user left it.
+  const paneNav = usePaneNav()
+  const { pushSearch, backOr } = paneNav
+  const paneNavRef = useRef(paneNav)
+  paneNavRef.current = paneNav
+  const locationSearch = paneNav.search
+  const projectParam = searchParam(locationSearch, PARAM_PROJECT)
+  const appliedProjectRef = useRef(projectParam)
   const [pendingOpen, setPendingOpen] = useState("")
+
+  function openProject(project: ProjectInfo) {
+    appliedProjectRef.current = project.id
+    setSelected(project)
+    pushSearch({ [PARAM_PROJECT]: project.id, [PARAM_FILE]: null })
+  }
+
+  useEffect(() => {
+    if (appliedProjectRef.current === projectParam) return
+    appliedProjectRef.current = projectParam
+    if (!projectParam) {
+      if (selected) {
+        setSelected(null)
+        load()
+      }
+      return
+    }
+    if (selected?.id !== projectParam) setPendingOpen(projectParam)
+  }, [projectParam, selected, load])
   useEffect(() => {
     const onOpen = (event: Event) => {
+      // Split panes each mount this view; only the active pane answers
+      // the global open-project event.
+      if (!paneNavRef.current.active) return
       const id = (event as CustomEvent<{ projectId?: string }>).detail
         ?.projectId
       if (!id) return
@@ -509,7 +542,7 @@ export function Projects({
     // URL restore: /projects?id=X selects that project through the same
     // pipeline — no second mechanism. Back/Forward and reload then land on
     // the same project; an unknown or removed id just stays on the list.
-    const fromUrl = new URLSearchParams(location.search).get("id")
+    const fromUrl = new URLSearchParams(paneNavRef.current.search).get("id")
     if (fromUrl) setPendingOpen(fromUrl)
   }, [])
   useEffect(() => {
@@ -518,7 +551,12 @@ export function Projects({
     if (!found) return
     setSelected(found)
     setPendingOpen("")
-  }, [pendingOpen, projects])
+    appliedProjectRef.current = found.id
+    // Event-driven opens (search pick) join the history stack; deep
+    // links and traversals already carry the param.
+    if (searchParam(paneNavRef.current.search, PARAM_PROJECT) !== found.id)
+      pushSearch({ [PARAM_PROJECT]: found.id })
+  }, [pendingOpen, projects, pushSearch])
 
   async function create() {
     const trimmed = name.trim()
@@ -539,7 +577,7 @@ export function Projects({
       setCreateOpen(false)
       setName("")
       setFolder("")
-      setSelected(body.project)
+      openProject(body.project)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "create failed")
     } finally {
@@ -579,12 +617,18 @@ export function Projects({
           threadBar={threadBar}
           onThreadDock={onThreadDock}
           onBack={() => {
+            appliedProjectRef.current = ""
             setSelected(null)
-            // Back to the list also drops the ?id= deep link so a reload
-            // lands on the list, not back inside the project.
-            if (location.search)
-              history.replaceState(null, "", location.pathname)
             load()
+            // Traverse to the entry the user came from; on a fresh deep
+            // link, navigate to the bare list (Forward returns here).
+            backOr(
+              workspacePath("projects") +
+                patchSearch(paneNav.search, {
+                  [PARAM_PROJECT]: null,
+                  [PARAM_FILE]: null,
+                }),
+            )
           }}
         />
       </Box>
@@ -699,7 +743,7 @@ export function Projects({
                     key={project.id}
                     project={project}
                     plugin
-                    onOpen={setSelected}
+                    onOpen={openProject}
                     onRemove={setRemoving}
                   />
                 ))}
@@ -717,7 +761,7 @@ export function Projects({
                     key={project.id}
                     project={project}
                     plugin={false}
-                    onOpen={setSelected}
+                    onOpen={openProject}
                     onRemove={setRemoving}
                   />
                 ))}

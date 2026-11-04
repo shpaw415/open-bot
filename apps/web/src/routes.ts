@@ -296,3 +296,31 @@ export function configPath(tab: ConfigTab | ""): string {
 export function pluginPath(tab: PluginTab): string {
   return `/${tab.key}`
 }
+
+/**
+ * In-page (search-param) destinations. Content the user opens inside a
+ * page — a chat thread, a media album/item, a project, a council — rides
+ * the query string so Back/Forward/reload restore the exact screen,
+ * app-style. Param names are single-sourced here.
+ */
+export const PARAM_THREAD = "thread"
+export const PARAM_ALBUM = "album"
+export const PARAM_ITEM = "item"
+export const PARAM_PROJECT = "id"
+export const PARAM_FILE = "file"
+export const PARAM_COUNCIL = "council"
+export const PARAM_MEMBER = "member"
+export const PARAM_PREVIEW = "preview"
+/** Split file previewer: the desktop path open beside the thread. */
+export const PARAM_FILEVIEW = "fileview"
+export const PARAM_JOB = "job"
+export const PARAM_ADMIN_TAB = "tab"
+/** Global split screen: the second pane's full URL (see split.ts). */
+export const PARAM_SPLIT = "split"
+
+/** Conversations URL naming one open thread: /chat?thread=<id>. */
+export function chatThreadPath(sessionId: string): string {
+  return sessionId
+    ? `${CHAT_PATH}?${PARAM_THREAD}=${encodeURIComponent(sessionId)}`
+    : CHAT_PATH
+}

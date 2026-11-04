@@ -10,6 +10,7 @@ import {
 import Menu from "@shpaw415/mui-lite/Menu"
 import TextField from "@shpaw415/mui-lite/TextField"
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
+import { useBackLayer } from "./back-nav"
 import { effortLabel, effortOptions } from "./chat-controls"
 import { ChevronDownIcon, StarBorderIcon, StarIcon } from "./icons"
 import {
@@ -145,6 +146,8 @@ export function ComposerPickers({
     setEffortOpen(false)
     effortBtnRef.current?.focus()
   }
+  useBackLayer(modelOpen, closeModel, { name: "menu" })
+  useBackLayer(effortOpen, closeEffort, { name: "menu" })
 
   const pickModel = (id: string) => {
     setModelOpen(false)

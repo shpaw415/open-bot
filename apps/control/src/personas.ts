@@ -13,6 +13,7 @@ import { vikingSkillList } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
 export const ASSISTANT_ID = "assistant"
+export const PLUGIN_CREATOR_ID = "plugin-creator"
 export const NAME_MAX = 48
 export const INSTRUCTION_MAX = 2000
 export const SKILLS_MAX = 64
@@ -68,40 +69,13 @@ export const builtins: PersonaView[] = [
     mcpEffective: null,
   },
   {
-    id: "designer",
-    name: "Designer",
+    // Lean on purpose: this line is injected on every prompt, so the
+    // detailed conventions live in the plugin-creator seed skill (read per
+    // surface) and the instruction only carries the operating loop.
+    id: PLUGIN_CREATOR_ID,
+    name: "Open-bot Plugin Creator",
     instruction:
-      "Talk about visual design, layout, typography, and how things should look and feel. Prefer concrete design choices. Write code only when asked.",
-    builtin: true,
-    skills: null,
-    skillsExtra: null,
-    skillsNone: false,
-    skillsEffective: null,
-    mcp: null,
-    mcpExtra: null,
-    mcpNone: false,
-    mcpEffective: null,
-  },
-  {
-    id: "political-expert",
-    name: "Political expert",
-    instruction:
-      "Explain institutions, incentives, and tradeoffs. Stay factual. Do not campaign, endorse a party, or invent polling.",
-    builtin: true,
-    skills: null,
-    skillsExtra: null,
-    skillsNone: false,
-    skillsEffective: null,
-    mcp: null,
-    mcpExtra: null,
-    mcpNone: false,
-    mcpEffective: null,
-  },
-  {
-    id: "software-designer",
-    name: "Software designer",
-    instruction:
-      "Talk about product shape, interfaces, and architecture in plain language. Write code only when asked.",
+      "You build open-bot plugins end to end. First search the marketplace and install a fitting maintained plugin instead of building. When building, choose the smallest shape that covers the ask — skill-only, then tools, then cron script/auto, then declarative cards, then an app page, MCP last — and load the plugin-creator skill's guide for that surface before writing code. Scaffold with ob-plugin new; write TypeScript for Bun with no dependencies unless justified; keep files small and edit the scaffold instead of rewriting it. Read only the schema fields you use; never re-read a file you just wrote. Do deterministic work in code, not prompts: tools print one compact JSON line, loops a script can run (paging, scraping, click-next navigation, extraction) happen inside one script or tool call — never as repeated agent steps — and cron is script-first (script, then auto): a check that finds nothing new prints nothing and never wakes the agent. Test cheapest first: validate, run tools, curl APIs, browser only for UI, then stress-test the installed payload. Pages follow the dashboard theme and language. Ship only when validate, tests, CONFIG.md, and the privacy check pass. Keep replies terse: what changed, what passed, what is next.",
     builtin: true,
     skills: null,
     skillsExtra: null,
@@ -118,6 +92,14 @@ export const builtins: PersonaView[] = [
 // every configured MCP server no plugin owns — computed at apply time, so the
 // base fields here stay null and the user's extras plus block-all flags come
 // from builtin_persona_scopes. Custom/plugin personas keep null = unrestricted.
+// The Assistant is the exception on skills only: its locked base is every
+// skill (seed, plugin, and custom), so it can run any plugin integration
+// without per-skill extras. Its MCP base stays the seed set like the other
+// built-ins, and an explicit skillsNone still blocks everything.
+export function builtinLoadsAllSkills(persona: PersonaView): boolean {
+  return persona.id === ASSISTANT_ID
+}
+
 function builtinPersonaView(
   db: Db,
   userId: string,
@@ -128,7 +110,9 @@ function builtinPersonaView(
     .find((scope) => scope.personaId === item.id)
   return {
     ...item,
-    skillsExtra: row?.skillsExtra ?? null,
+    // Stale extras stored for the Assistant are redundant under its
+    // all-skills base — report none instead of a meaningless "+N".
+    skillsExtra: item.id === ASSISTANT_ID ? null : (row?.skillsExtra ?? null),
     skillsNone: Boolean(row?.skillsNone),
     mcpExtra: row?.mcpExtra ?? null,
     mcpNone: Boolean(row?.mcpNone),
@@ -279,7 +263,9 @@ export function mcpDenyRules(
 
 // Built-in personas: the locked base is computed live — seed skills from the
 // desktop disk plus every configured MCP server without a plugin owner — and
-// extended by the stored extras. A none flag blocks everything outright and
+// extended by the stored extras. The Assistant skips the skill half entirely
+// (no skill rules = every skill loads, plugin and custom included); only its
+// MCP half stays seed-based. A none flag blocks everything outright and
 // skips the probe (blocking works even when the desktop cannot answer). A
 // probe failure otherwise degrades to unrestricted (never blocks the
 // prompt): empty seed listing → skills stay unscoped, unreadable MCP config
@@ -292,6 +278,8 @@ async function builtinScopeRules(
   let skillRules: ScopeRule[] | null
   if (persona.skillsNone) {
     skillRules = skillRulesetFromList([])
+  } else if (builtinLoadsAllSkills(persona)) {
+    skillRules = null
   } else {
     try {
       const seeds = await seedSkillDescriptions(userId)
@@ -507,11 +495,13 @@ export function findPersona(
 function builtinScopeLine(persona: PersonaView): string {
   const scope = persona.skillsNone
     ? " No skills load in this thread. If the request needs one, say this personality does not include skills instead of improvising."
-    : ` Only the desktop's built-in skills${
-        (persona.skillsExtra ?? []).length
-          ? ` plus these added ones: ${(persona.skillsExtra ?? []).join(", ")}`
-          : ""
-      } load in this thread. If the request needs a plugin or custom skill, say this personality does not include it instead of improvising.`
+    : builtinLoadsAllSkills(persona)
+      ? " All skills load in this thread, including plugin and custom skills."
+      : ` Only the desktop's built-in skills${
+          (persona.skillsExtra ?? []).length
+            ? ` plus these added ones: ${(persona.skillsExtra ?? []).join(", ")}`
+            : ""
+        } load in this thread. If the request needs a plugin or custom skill, say this personality does not include it instead of improvising.`
   const mcpScope = persona.mcpNone
     ? " No MCP server loads in this thread. If the request needs one, say this personality does not include MCP instead of improvising."
     : ` Only the desktop's built-in MCP servers${
@@ -554,8 +544,11 @@ export function mergeSystem(existing: unknown, line: string): string {
 // PATCHes the session permission ruleset (array replaces, null clears).
 // Rules persist in opencode.db, so this survives restarts; the per-prompt
 // re-apply on persona-bound threads covers edits and binding moves anyway.
-// Fire-and-forget: a failure degrades to unrestricted, never blocks the
-// prompt.
+// An empty ruleset normally sends nothing — except for the Assistant, whose
+// all-skills base must also clear a stale seed-only ruleset persisted on a
+// session from before the base widened (PATCH null, or the MCP-only array
+// when there are MCP denies to keep). Fire-and-forget: a failure degrades
+// to unrestricted, never blocks the prompt.
 export async function applyPersonaScope(
   db: Db,
   userId: string,
@@ -565,14 +558,17 @@ export async function applyPersonaScope(
   persona: PersonaView | null,
 ): Promise<void> {
   const ruleset = await personaScope(db, userId, persona)
-  if (!ruleset || ruleset.length === 0) return
+  const permission = ruleset && ruleset.length > 0 ? ruleset : null
+  const clearStale =
+    persona !== null && builtinLoadsAllSkills(persona) && !persona.skillsNone
+  if (permission === null && !clearStale) return
   try {
     const res = await fetch(
       `${base}/session/${encodeURIComponent(sessionId)}`,
       {
         method: "PATCH",
         headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ permission: ruleset }),
+        body: JSON.stringify({ permission }),
         signal: AbortSignal.timeout(10_000),
       },
     )
@@ -889,7 +885,8 @@ async function createPersona(req: Request, db: Db, user: User) {
 async function updatePersona(req: Request, db: Db, user: User, id: string) {
   // Built-in personas accept only extras extensions and the block-all flags
   // (same model as plugin-owned personas); their locked base is the
-  // desktop's seed set.
+  // desktop's seed set — except the Assistant's skills, locked to every
+  // skill, so a non-empty skillsExtra for it has nothing to add.
   if (builtins.some((item) => item.id === id)) {
     const body = (await req.json().catch(() => null)) as {
       name?: unknown
@@ -911,7 +908,9 @@ async function updatePersona(req: Request, db: Db, user: User, id: string) {
       return json(
         {
           error:
-            "built-in skills and MCP servers are fixed to the desktop's seed set — extend with skillsExtra/mcpExtra or block with skillsNone/mcpNone instead",
+            id === ASSISTANT_ID
+              ? "the Assistant loads every skill and the desktop's built-in MCP servers — extend MCP with mcpExtra or block with skillsNone/mcpNone instead"
+              : "built-in skills and MCP servers are fixed to the desktop's seed set — extend with skillsExtra/mcpExtra or block with skillsNone/mcpNone instead",
         },
         409,
       )
@@ -924,6 +923,14 @@ async function updatePersona(req: Request, db: Db, user: User, id: string) {
     if (body.skillsExtra !== undefined) {
       const list = parseSkillList(body.skillsExtra)
       if ("error" in list) return json({ error: list.error }, 400)
+      if (id === ASSISTANT_ID && (list.skills?.length ?? 0) > 0)
+        return json(
+          {
+            error:
+              "the Assistant already loads every skill — there is nothing to add; block skills with skillsNone instead",
+          },
+          409,
+        )
       changes.skillsExtra = list.skills
     }
     if (body.skillsNone !== undefined) {

@@ -168,16 +168,16 @@ test("click script tolerates an ancestor cover and names a real one", async () =
   expect(script).toContain("center.className === 'string'")
 })
 
-test("probe ranks text entry, search, content, anchors, chrome — in that order", async () => {
+test("probe ranks modal, text entry, search, content, anchors, chrome — in that order", async () => {
   const { PROBE } = (await import("./cdp")) as { PROBE: string }
   expect(PROBE.startsWith("(() => {")).toBe(true)
   expect(PROBE).toContain(
     'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]',
   )
-  const allAt = PROBE.indexOf("const tiers = [[], [], [], [], []]")
-  const sortAt = PROBE.indexOf("const reserve = Math.min(tiers[3].length, 6)")
+  const allAt = PROBE.indexOf("const tiers = [[], [], [], [], [], []]")
+  const sortAt = PROBE.indexOf("const reserve = Math.min(tiers[4].length, 6)")
   const sliceAt = PROBE.indexOf(
-    "out.push(...tiers[3].slice(0, Math.min(reserve, remaining())))",
+    "out.push(...actFirst(tiers[4]).slice(0, Math.min(reserve, remaining())))",
   )
   expect(allAt).toBeGreaterThan(-1)
   expect(sortAt).toBeGreaterThan(allAt)
@@ -185,13 +185,21 @@ test("probe ranks text entry, search, content, anchors, chrome — in that order
   expect(PROBE).toContain(
     'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]), [role="textbox"], [role="searchbox"]',
   )
+  // The topmost modal's controls outrank everything behind it.
   expect(PROBE).toContain(
-    "if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 0",
+    `document.querySelectorAll('dialog[open], [aria-modal="true"], [role="alertdialog"]')`,
   )
-  expect(PROBE).toContain("if (el.closest('[role=\"search\"]')) tier = 1")
-  expect(PROBE).toContain("tier = el.closest(chrome) ? 3 : 2")
+  expect(PROBE).toContain("if (topModal && topModal.contains(el)) tier = 0")
   expect(PROBE).toContain(
-    "elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length + tiers[4].length > max",
+    "if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 1",
+  )
+  expect(PROBE).toContain("if (el.closest('[role=\"search\"]')) tier = 2")
+  expect(PROBE).toContain("tier = el.closest(chrome) ? 4 : 3")
+  // Covered (non-actionable) controls sort last within every tier.
+  expect(PROBE).toContain("const actFirst = (list)")
+  expect(PROBE).toContain("list.filter((item) => item.actionable)")
+  expect(PROBE).toContain(
+    "elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length + tiers[4].length + tiers[5].length > max",
   )
   expect(PROBE).not.toContain("if (out.length >= max) break")
 })
@@ -217,6 +225,74 @@ test("probe and actions cross shadow boundaries", async () => {
     expect(actionScript(action as never)).toContain("walk(shadow)")
   }
   expect(obnavFindExpr('"n3"')).toContain("walk(document)")
+})
+
+test("find falls back to the probe fingerprint when the stamped node is gone", async () => {
+  const { PROBE, obnavFindExpr } = (await import("./cdp")) as {
+    PROBE: string
+    obnavFindExpr: (idExpr: string) => string
+  }
+  // The probe records (fingerprint, occurrence) per id for exactly this.
+  expect(PROBE).toContain("bag.fp[id] = { k: fpKey, n: fpNth }")
+  const expr = obnavFindExpr('"n7"')
+  expect(expr).toContain("bag.fp[id]")
+  expect(expr).toContain('found.setAttribute("data-obnav", id)')
+
+  // Behavioral: two "Send" buttons, the stamped second one was replaced by
+  // a live-DOM re-render (attribute nowhere). The fallback must re-stamp
+  // and return the replacement second twin, not the first.
+  const attrs = new Map<object, Map<string, string>>()
+  const fakeEl = (label: string) => {
+    const el: Record<string, unknown> = {
+      tagName: "BUTTON",
+      id: "",
+      innerText: label,
+      shadowRoot: null,
+      getAttribute: (name: string) =>
+        attrs.get(el as object)?.get(name) ?? null,
+      setAttribute: (name: string, value: string) => {
+        if (!attrs.has(el as object)) attrs.set(el as object, new Map())
+        attrs.get(el as object)?.set(name, value)
+      },
+      getBoundingClientRect: () => ({
+        width: 80,
+        height: 30,
+        bottom: 40,
+        top: 10,
+        right: 90,
+        left: 10,
+      }),
+    }
+    return el
+  }
+  const first = fakeEl("Send")
+  const replacement = fakeEl("Send")
+  const other = fakeEl("Cancel")
+  const all = [first, other, replacement]
+  const documentFake = {
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => (selector === "*" ? all : all),
+  }
+  const windowFake = {
+    innerWidth: 1000,
+    innerHeight: 800,
+    __obnav: {
+      fp: { n7: { k: "BUTTON||Send", n: 1 } },
+      map: { set: () => undefined },
+    },
+  }
+  const run = new Function(
+    "window",
+    "document",
+    "getComputedStyle",
+    `return (${expr})`,
+  ) as (w: unknown, d: unknown, g: unknown) => unknown
+  const found = run(windowFake, documentFake, () => ({
+    visibility: "visible",
+    display: "block",
+  }))
+  expect(found).toBe(replacement as unknown)
+  expect(attrs.get(replacement as object)?.get("data-obnav")).toBe("n7")
 })
 
 test("normalize carries scroll position through the snapshot", () => {

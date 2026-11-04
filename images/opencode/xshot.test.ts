@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { shotSize } from "./xshot"
+import { captureTransform, pngSize, shotSize } from "./xshot"
+
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24)
+  bytes.set([0x89, 0x50, 0x4e, 0x47], 0)
+  const view = new DataView(bytes.buffer)
+  view.setUint32(16, width)
+  view.setUint32(20, height)
+  return bytes
+}
 
 describe("screenshot resolution", () => {
   test("accepts a scale or a size", () => {
@@ -16,5 +25,50 @@ describe("screenshot resolution", () => {
     expect(() => shotSize("4")).toThrow()
     expect(() => shotSize("100x100")).toThrow()
     expect(() => shotSize("sharp")).toThrow()
+  })
+})
+
+describe("capture transform", () => {
+  test("pngSize reads the IHDR dimensions and rejects non-PNG bytes", () => {
+    expect(pngSize(pngHeader(3840, 2400))).toEqual({
+      width: 3840,
+      height: 2400,
+    })
+    expect(pngSize(new Uint8Array(24))).toBeNull()
+    expect(pngSize(pngHeader(10, 10).slice(0, 12))).toBeNull()
+  })
+
+  test("factor is measured from the PNG, and the CSS offset scales by dpr", () => {
+    // 2x clip-scale shot under 3x page zoom: PNG = css * 2 * 3, and the
+    // window origin the page reports (CSS px) must land in device px.
+    const transform = captureTransform({
+      pngWidth: 1920,
+      pngHeight: 1200,
+      cssWidth: 320,
+      cssHeight: 200,
+      dpr: 3,
+      oxCss: 4,
+      oyCss: 125,
+    })
+    expect(transform.factor).toBe(6)
+    expect(transform.yFactor).toBe(6)
+    expect(transform.ox).toBe(12)
+    expect(transform.oy).toBe(375)
+    expect(transform.dpr).toBe(3)
+  })
+
+  test("at dpr 1 the transform is the plain ratio and offset", () => {
+    const transform = captureTransform({
+      pngWidth: 3822,
+      pngHeight: 2148,
+      cssWidth: 1911,
+      cssHeight: 1074,
+      dpr: 1,
+      oxCss: 4,
+      oyCss: 125,
+    })
+    expect(transform.factor).toBe(2)
+    expect(transform.ox).toBe(4)
+    expect(transform.oy).toBe(125)
   })
 })

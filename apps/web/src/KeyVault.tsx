@@ -17,6 +17,7 @@ type VaultField = {
   label: string
   placeholder: string
   required: boolean
+  secret?: boolean
 }
 
 type VaultSpec = {
@@ -49,7 +50,11 @@ type KeyVaultForm = {
   sources: Record<string, string | null>
 }
 
+// Falls back to the well-known secret ids for catalogs that predate the
+// per-field `secret` flag.
 const secretFields = new Set(["apiKey", "gatewayToken"])
+const isSecretField = (field: VaultField) =>
+  field.secret ?? secretFields.has(field.id)
 
 function fieldSaved(entry: VaultEntry | undefined, field: string) {
   if (!entry) return false
@@ -242,11 +247,11 @@ export function KeyVault({ isAdmin = false }: { isAdmin?: boolean }) {
               <TextField
                 key={field.id}
                 label={
-                  hasSaved && secretFields.has(field.id)
+                  hasSaved && isSecretField(field)
                     ? `${field.label} (blank keeps the saved key)`
                     : field.label
                 }
-                type={secretFields.has(field.id) ? "password" : "text"}
+                type={isSecretField(field) ? "password" : "text"}
                 value={fieldValue(spec.id, field.id)}
                 placeholder={field.placeholder}
                 onChange={(event) =>

@@ -459,9 +459,20 @@ async function main() {
     await runTripoBridge(rest, auth)
     return
   }
+  // --help/-h are usage, never a prompt — a stray flag must not become a
+  // paid generation (a bare `--help` was previously submitted as the text).
+  if (args.includes("-h") || args.includes("--help") || command === "help") {
+    console.log(
+      'usage: gen-3d "prompt" [-o out.glb] | gen-3d status [ID] | gen-3d download ID [-o out.glb] | gen-3d resume ID [-o out.glb] | gen-3d tripo <args>',
+    )
+    process.exit(0)
+  }
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "-o" || args[i] === "--output") {
       out = args[++i] ?? ""
+    } else if (args[i].startsWith("-")) {
+      // Unknown flags fail loudly instead of silently becoming the prompt.
+      fail(`unknown option: ${args[i]} — run \`gen-3d --help\` for usage`)
     } else if (prompt === "") {
       prompt = args[i]
     }

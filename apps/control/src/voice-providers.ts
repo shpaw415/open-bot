@@ -1,5 +1,22 @@
 import type { Db, VoiceConfig } from "@open-bot/db"
 import { effectiveUserKey, getTeamConfig, objectHasAnyField } from "./team"
+import {
+  AURA_TTS_MODEL,
+  canonicalVoiceProviderId,
+  DEEPGRAM_STT_MODEL,
+  defaultVoiceFor,
+  languageCode,
+  normalizeVoiceModel,
+  type SttConfig,
+  TTS_MAX_CHARS,
+  type TtsConfig,
+  type VoiceKind,
+  voiceModelSpec,
+  voiceProviderForKind,
+  voiceVaultSlug,
+} from "./voice-catalog"
+
+export * from "./voice-catalog"
 
 const VOICE_SHARED_SIDE_FIELDS = ["provider", "accountId", "apiKey", "model"]
 
@@ -17,7 +34,9 @@ export function voiceSharedFieldsPresent(
 // Merge a PUT body onto the saved voice config, field by field: an absent
 // section or field keeps the stored value, a present field replaces it (blank
 // clears). Provider config is shared in team mode; voice/language are
-// per-user, which is why a team-mode partial PUT carries only those.
+// per-user, which is why a team-mode partial PUT carries only those. The
+// provider must belong to the side it is saved on, and an explicitly sent
+// model must be one that provider offers.
 export function applyVoicePatch(
   current: VoiceConfig,
   body: Record<string, unknown>,
@@ -38,11 +57,14 @@ export function applyVoicePatch(
       raw.provider === undefined
         ? savedProvider
         : String(raw.provider ?? "").trim()
-    const spec = rawProvider ? voiceProviderById(rawProvider) : undefined
+    const spec = rawProvider
+      ? voiceProviderForKind(rawProvider, side)
+      : undefined
     if (rawProvider && !spec) {
       return { next: current, error: "unsupported speech provider" }
     }
-    const sameProvider = savedProvider === (spec?.id ?? "")
+    const sameProvider =
+      canonicalVoiceProviderId(savedProvider) === (spec?.id ?? "")
     next[`${side}Provider`] = spec?.id ?? ""
     next[`${side}AccountId`] =
       raw.accountId === undefined
@@ -56,15 +78,34 @@ export function applyVoicePatch(
           ? savedApiKey
           : ""
         : String(raw.apiKey ?? "").trim() || (sameProvider ? savedApiKey : "")
-    next[`${side}Model`] =
-      raw.model === undefined
-        ? savedModel || spec?.defaultModel || ""
-        : String(raw.model ?? "").trim() || spec?.defaultModel || ""
+    if (raw.model === undefined) {
+      next[`${side}Model`] = spec
+        ? normalizeVoiceModel(spec, sameProvider ? savedModel : "")
+        : ""
+    } else {
+      const wanted = String(raw.model ?? "").trim()
+      if (spec && wanted) {
+        if (spec.models.length === 0) {
+          return {
+            next: current,
+            error: `${spec.label} does not take a model`,
+          }
+        }
+        if (!voiceModelSpec(spec, normalizeVoiceModel(spec, wanted))) {
+          return {
+            next: current,
+            error: `unsupported model for ${spec.label}: ${wanted}`,
+          }
+        }
+      }
+      next[`${side}Model`] = spec ? normalizeVoiceModel(spec, wanted) : ""
+    }
     if (side === "tts") {
       next.ttsVoice =
         raw.voice === undefined
           ? current.ttsVoice
-          : String(raw.voice ?? "").trim() || spec?.defaultVoice || ""
+          : String(raw.voice ?? "").trim() ||
+            (spec ? defaultVoiceFor(spec, next.ttsModel) : "")
     }
   }
   next.language =
@@ -72,195 +113,6 @@ export function applyVoicePatch(
       ? current.language
       : String(body.language ?? "").trim()
   return { next, error: null }
-}
-
-export type VoiceField = {
-  label: string
-  placeholder: string
-  required: boolean
-}
-
-export type VoiceProviderSpec = {
-  id: string
-  label: string
-  kind: "stt" | "tts"
-  defaultModel: string
-  modelOptional: boolean
-  defaultVoice: string
-  account: VoiceField | null
-  secret: VoiceField
-}
-
-export const TTS_MAX_CHARS = 4000
-export const STT_MAX_BYTES = 25 * 1024 * 1024
-export const ttsMaxChars = (text: string) => text.slice(0, TTS_MAX_CHARS)
-
-export const WORKERS_AI_STT_DEFAULT_MODEL = "@cf/openai/whisper-large-v3-turbo"
-// Rows saved before the turbo default keep the old model literally; run them
-// on turbo instead (the old model takes no language hint and is much weaker).
-const LEGACY_WORKERS_AI_STT_MODEL = "@cf/openai/whisper"
-// Only whisper turbo accepts the language/vad extras — smaller whisper
-// deployments reject unknown fields.
-const WORKERS_AI_STT_EXTRAS_MODELS = new Set([WORKERS_AI_STT_DEFAULT_MODEL])
-const DEEPGRAM_STT_DEFAULT_MODEL = "@cf/deepgram/nova-3"
-
-export const voiceProviders: VoiceProviderSpec[] = [
-  {
-    id: "openai-stt",
-    label: "OpenAI (Whisper)",
-    kind: "stt",
-    defaultModel: "whisper-1",
-    modelOptional: false,
-    defaultVoice: "",
-    account: null,
-    secret: {
-      label: "API key",
-      placeholder: "OpenAI API key",
-      required: true,
-    },
-  },
-  {
-    id: "groq-stt",
-    label: "Groq (Whisper)",
-    kind: "stt",
-    defaultModel: "whisper-large-v3",
-    modelOptional: false,
-    defaultVoice: "",
-    account: null,
-    secret: {
-      label: "API key",
-      placeholder: "Groq API key",
-      required: true,
-    },
-  },
-  {
-    id: "workers-ai-stt",
-    label: "Cloudflare Workers AI (Whisper)",
-    kind: "stt",
-    defaultModel: WORKERS_AI_STT_DEFAULT_MODEL,
-    modelOptional: false,
-    defaultVoice: "",
-    account: {
-      label: "Account ID",
-      placeholder: "Cloudflare account ID",
-      required: true,
-    },
-    secret: {
-      label: "API token",
-      placeholder: "Cloudflare API token",
-      required: true,
-    },
-  },
-  {
-    id: "deepgram-stt",
-    label: "Cloudflare Workers AI (Deepgram Nova-3)",
-    kind: "stt",
-    defaultModel: DEEPGRAM_STT_DEFAULT_MODEL,
-    modelOptional: false,
-    defaultVoice: "",
-    account: {
-      label: "Account ID",
-      placeholder: "Cloudflare account ID",
-      required: true,
-    },
-    secret: {
-      label: "API token",
-      placeholder: "Cloudflare API token",
-      required: true,
-    },
-  },
-  {
-    id: "openai-tts",
-    label: "OpenAI",
-    kind: "tts",
-    defaultModel: "gpt-4o-mini-tts",
-    modelOptional: false,
-    defaultVoice: "alloy",
-    account: null,
-    secret: {
-      label: "API key",
-      placeholder: "OpenAI API key",
-      required: true,
-    },
-  },
-  {
-    id: "xai-tts",
-    label: "xAI (Grok voice)",
-    kind: "tts",
-    defaultModel: "",
-    modelOptional: true,
-    defaultVoice: "eve",
-    account: null,
-    secret: {
-      label: "API key",
-      placeholder: "xAI API key",
-      required: true,
-    },
-  },
-  {
-    id: "workers-ai-tts",
-    label: "Cloudflare Workers AI (Melotts)",
-    kind: "tts",
-    defaultModel: "@cf/myshell-ai/melotts",
-    modelOptional: false,
-    defaultVoice: "",
-    account: {
-      label: "Account ID",
-      placeholder: "Cloudflare account ID",
-      required: true,
-    },
-    secret: {
-      label: "API token",
-      placeholder: "Cloudflare API token",
-      required: true,
-    },
-  },
-]
-
-export function voiceProviderById(id: string) {
-  return voiceProviders.find((item) => item.id === id)
-}
-
-export function voiceProvidersPublic() {
-  return voiceProviders.map((item) => ({
-    id: item.id,
-    label: item.label,
-    kind: item.kind,
-    defaultModel: item.defaultModel,
-    modelOptional: item.modelOptional,
-    defaultVoice: item.defaultVoice,
-    account: item.account,
-    secret: {
-      label: item.secret.label,
-      placeholder: item.secret.placeholder,
-    },
-  }))
-}
-
-const voiceVaultSlugs: Record<string, string> = {
-  "workers-ai-stt": "cloudflare",
-  "deepgram-stt": "cloudflare",
-  "workers-ai-tts": "cloudflare",
-  "xai-tts": "xai",
-  "openai-stt": "openai",
-  "openai-tts": "openai",
-}
-
-export function voiceVaultSlug(providerId: string) {
-  return voiceVaultSlugs[providerId] ?? ""
-}
-
-export function voiceReady(value: VoiceConfig, side: "stt" | "tts"): boolean {
-  const providerId = side === "stt" ? value.sttProvider : value.ttsProvider
-  const accountId = side === "stt" ? value.sttAccountId : value.ttsAccountId
-  const apiKey = side === "stt" ? value.sttApiKey : value.ttsApiKey
-  const model = side === "stt" ? value.sttModel : value.ttsModel
-  const spec = voiceProviderById(providerId)
-  if (!spec) return false
-  if (spec.account?.required && accountId.trim() === "") return false
-  if (apiKey.trim() === "") return false
-  if (!spec.modelOptional && model.trim() === "") return false
-  return true
 }
 
 export type ResolvedVoice = {
@@ -288,6 +140,10 @@ export function resolveVoiceConfig(db: Db, userId: string): ResolvedVoice {
         ttsModel: overlay.ttsModel ?? "",
       }
     : raw
+  // Saved rows and team overlays can still carry the pre-consolidation
+  // Cloudflare ids; everything downstream sees the canonical ones.
+  merged.sttProvider = canonicalVoiceProviderId(merged.sttProvider)
+  merged.ttsProvider = canonicalVoiceProviderId(merged.ttsProvider)
   const sttVault = effectiveUserKey(
     db,
     userId,
@@ -317,45 +173,11 @@ export function resolveVoiceConfig(db: Db, userId: string): ResolvedVoice {
   }
 }
 
-// "fr-CA" and "fr" both normalize to "fr"; "auto" and "" mean unspecified.
-export function languageCode(language: string): string {
-  const code = language.trim().toLowerCase().split("-")[0] ?? ""
-  return /^[a-z]{2}$/.test(code) ? code : ""
-}
-
-const CF_ACCOUNT_PATTERN = /^[a-f0-9]{32}$/i
-const MIN_KEY_CHARS = 20
-
-// Catches obviously-wrong credentials before a save: a Cloudflare account
-// email instead of the 32-char Account ID, or a truncated API key. Blank
-// fields stay legal — they resolve from the vault instead.
-export function voiceConfigError(value: VoiceConfig): string | null {
-  for (const side of ["stt", "tts"] as const) {
-    const providerId = side === "stt" ? value.sttProvider : value.ttsProvider
-    if (!providerId) continue
-    const spec = voiceProviderById(providerId)
-    if (!spec) continue
-    const accountId = side === "stt" ? value.sttAccountId : value.ttsAccountId
-    const apiKey = side === "stt" ? value.sttApiKey : value.ttsApiKey
-    if (
-      spec.account?.required &&
-      accountId.trim() &&
-      !CF_ACCOUNT_PATTERN.test(accountId.trim())
-    ) {
-      return `${spec.label}: the Account ID must be the 32-character Cloudflare ID (or leave it blank to reuse the vault key)`
-    }
-    if (apiKey.trim() && apiKey.trim().length < MIN_KEY_CHARS) {
-      return `${spec.label}: that API key looks too short to be valid (or leave it blank to reuse the vault key)`
-    }
-  }
-  return null
-}
-
 // Turn provider failures into something the Config page can act on.
 async function providerError(
   response: Response,
   label: string,
-  kind: "stt" | "tts",
+  kind: VoiceKind,
 ): Promise<string> {
   const detail = (await response.text().catch(() => "")).slice(0, 200)
   if (response.status === 401 || response.status === 403) {
@@ -435,161 +257,181 @@ function cloudflareEnvelopeError(body: {
 function modelPath(model: string): string {
   return model.split("/").map(encodeURIComponent).join("/")
 }
+
+function cloudflareRunUrl(accountId: string, model: string): string {
+  return `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${modelPath(model)}`
+}
+
 export type FetchImpl = (
   input: string | URL,
   init?: RequestInit,
 ) => Promise<Response>
 
 export type SttInput = {
-  providerId: string
-  apiKey: string
-  accountId: string
-  model: string
+  config: SttConfig
   language: string
   audio: Uint8Array
   mime: string
   fetchImpl?: FetchImpl
 }
 
-export async function runStt(input: SttInput): Promise<string> {
-  const fetchImpl = input.fetchImpl ?? fetch
-  if (input.providerId === "workers-ai-stt") {
-    const model =
-      !input.model || input.model === LEGACY_WORKERS_AI_STT_MODEL
-        ? WORKERS_AI_STT_DEFAULT_MODEL
-        : input.model
-    const payload: Record<string, unknown> = {
-      // The whisper REST schema wants raw bytes as a JSON number array,
-      // not a base64 string.
-      audio: Array.from(input.audio),
-    }
-    const language = languageCode(input.language)
-    if (WORKERS_AI_STT_EXTRAS_MODELS.has(model)) {
-      if (language) payload.language = language
-      payload.vad_filter = true
-    }
-    const response = await providerFetch(
-      fetchImpl,
-      "Cloudflare Workers AI",
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(model)}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${input.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      },
-      60_000,
-    )
-    if (!response.ok)
-      throw new Error(
-        await providerError(response, "Cloudflare Workers AI", "stt"),
-      )
-    const body = await providerJson<{
-      result?: { text?: unknown; transcription_info?: { text?: unknown } }
-      errors?: unknown
-      success?: unknown
-    }>(response, "Cloudflare Workers AI")
-    const envelope = cloudflareEnvelopeError(body)
-    if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
-    const text = body.result?.text ?? body.result?.transcription_info?.text
-    if (text === undefined)
-      throw new Error("Cloudflare Workers AI returned no transcription")
-    return typeof text === "string" ? text.trim() : ""
-  }
-  if (input.providerId === "deepgram-stt") {
-    const model = input.model || DEEPGRAM_STT_DEFAULT_MODEL
-    const payload: Record<string, unknown> = {
-      audio: Array.from(input.audio),
-      smart_format: true,
-      punctuate: true,
-    }
-    const language = languageCode(input.language)
-    if (language) payload.language = language
-    const response = await providerFetch(
-      fetchImpl,
-      "Cloudflare Workers AI",
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(model)}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${input.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      },
-      60_000,
-    )
-    if (!response.ok)
-      throw new Error(
-        await providerError(response, "Cloudflare Workers AI", "stt"),
-      )
-    const body = await providerJson<{
-      result?: {
-        results?: {
-          channels?: {
-            alternatives?: { transcript?: unknown }[]
-          }[]
-        }
-      }
-      errors?: unknown
-      success?: unknown
-    }>(response, "Cloudflare Workers AI")
-    const envelope = cloudflareEnvelopeError(body)
-    if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
-    const transcript =
-      body.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript
-    if (transcript === undefined)
-      throw new Error("Cloudflare Workers AI returned no transcription")
-    return typeof transcript === "string" ? transcript.trim() : ""
-  }
-  const endpoints: Record<string, string> = {
-    "openai-stt": "https://api.openai.com/v1/audio/transcriptions",
-    "groq-stt": "https://api.groq.com/openai/v1/audio/transcriptions",
-  }
-  const endpoint = endpoints[input.providerId]
-  if (!endpoint) throw new Error("unsupported speech provider")
-  const label =
-    voiceProviderById(input.providerId)?.label ?? "the speech provider"
-  const form = new FormData()
-  const bytes = new Uint8Array(input.audio)
-  form.append(
-    "file",
-    new Blob([bytes.buffer as ArrayBuffer], {
-      type: input.mime || "audio/webm",
-    }),
-    "audio.webm",
-  )
-  form.append("model", input.model)
+async function cloudflareStt(
+  config: Extract<SttConfig, { provider: "cloudflare-stt" }>,
+  input: SttInput,
+  fetchImpl: FetchImpl,
+): Promise<string> {
   const language = languageCode(input.language)
-  if (language) form.append("language", language)
+  const deepgram = config.model === DEEPGRAM_STT_MODEL
+  // The whisper REST schema wants raw bytes as a JSON number array, not a
+  // base64 string; nova-3 takes the same array plus formatting flags.
+  const payload: Record<string, unknown> = { audio: Array.from(input.audio) }
+  if (deepgram) {
+    payload.smart_format = true
+    payload.punctuate = true
+  } else {
+    payload.vad_filter = true
+  }
+  if (language) payload.language = language
   const response = await providerFetch(
     fetchImpl,
-    label,
-    endpoint,
+    "Cloudflare Workers AI",
+    cloudflareRunUrl(config.accountId, config.model),
     {
       method: "POST",
-      headers: { authorization: `Bearer ${input.apiKey}` },
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+    60_000,
+  )
+  if (!response.ok)
+    throw new Error(
+      await providerError(response, "Cloudflare Workers AI", "stt"),
+    )
+  const body = await providerJson<{
+    result?: {
+      text?: unknown
+      transcription_info?: { text?: unknown }
+      results?: {
+        channels?: { alternatives?: { transcript?: unknown }[] }[]
+      }
+    }
+    errors?: unknown
+    success?: unknown
+  }>(response, "Cloudflare Workers AI")
+  const envelope = cloudflareEnvelopeError(body)
+  if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
+  const text = deepgram
+    ? body.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript
+    : (body.result?.text ?? body.result?.transcription_info?.text)
+  if (text === undefined)
+    throw new Error("Cloudflare Workers AI returned no transcription")
+  return typeof text === "string" ? text.trim() : ""
+}
+
+// OpenAI, Groq and xAI all take multipart transcription posts; xAI is the
+// odd one out: its `file` part must come after every other parameter.
+async function multipartStt(
+  input: SttInput,
+  fetchImpl: FetchImpl,
+  target: { url: string; label: string; apiKey: string; model: string },
+  fileLast: boolean,
+): Promise<string> {
+  const form = new FormData()
+  const bytes = new Uint8Array(input.audio)
+  const file = () =>
+    form.append(
+      "file",
+      new Blob([bytes.buffer as ArrayBuffer], {
+        type: input.mime || "audio/webm",
+      }),
+      "audio.webm",
+    )
+  const params = () => {
+    form.append("model", target.model)
+    const language = languageCode(input.language)
+    if (language) form.append("language", language)
+  }
+  if (fileLast) {
+    params()
+    file()
+  } else {
+    file()
+    params()
+  }
+  const response = await providerFetch(
+    fetchImpl,
+    target.label,
+    target.url,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${target.apiKey}` },
       body: form,
     },
     60_000,
   )
   if (!response.ok) {
-    throw new Error(await providerError(response, label, "stt"))
+    throw new Error(await providerError(response, target.label, "stt"))
   }
-  const body = await providerJson<{ text?: unknown }>(response, label)
+  const body = await providerJson<{ text?: unknown }>(response, target.label)
   if (body.text === undefined)
-    throw new Error(`${label} returned no transcription`)
+    throw new Error(`${target.label} returned no transcription`)
   return typeof body.text === "string" ? body.text.trim() : ""
 }
 
+export async function runStt(input: SttInput): Promise<string> {
+  const fetchImpl = input.fetchImpl ?? fetch
+  const config = input.config
+  switch (config.provider) {
+    case "cloudflare-stt":
+      return cloudflareStt(config, input, fetchImpl)
+    case "openai-stt":
+      return multipartStt(
+        input,
+        fetchImpl,
+        {
+          url: "https://api.openai.com/v1/audio/transcriptions",
+          label: "OpenAI (Whisper)",
+          apiKey: config.apiKey,
+          model: config.model,
+        },
+        false,
+      )
+    case "groq-stt":
+      return multipartStt(
+        input,
+        fetchImpl,
+        {
+          url: "https://api.groq.com/openai/v1/audio/transcriptions",
+          label: "Groq (Whisper)",
+          apiKey: config.apiKey,
+          model: config.model,
+        },
+        false,
+      )
+    case "xai-stt":
+      return multipartStt(
+        input,
+        fetchImpl,
+        {
+          url: "https://api.x.ai/v1/stt",
+          label: "xAI (Grok Voice Transcribe)",
+          apiKey: config.apiKey,
+          model: config.model,
+        },
+        true,
+      )
+    default: {
+      const exhaustive: never = config
+      throw new Error(`unsupported speech provider: ${String(exhaustive)}`)
+    }
+  }
+}
+
 export type TtsInput = {
-  providerId: string
-  apiKey: string
-  accountId: string
-  model: string
-  voice: string
+  config: TtsConfig
   language: string
   text: string
   fetchImpl?: FetchImpl
@@ -597,100 +439,133 @@ export type TtsInput = {
 
 export type TtsAudio = { bytes: Uint8Array; mime: string }
 
+async function cloudflareTts(
+  config: Extract<TtsConfig, { provider: "cloudflare-tts" }>,
+  input: TtsInput,
+  fetchImpl: FetchImpl,
+  text: string,
+): Promise<TtsAudio> {
+  const aura = config.model === AURA_TTS_MODEL
+  const response = await providerFetch(
+    fetchImpl,
+    "Cloudflare Workers AI",
+    cloudflareRunUrl(config.accountId, config.model),
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        aura
+          ? { text, speaker: config.voice || "angus", encoding: "mp3" }
+          : { prompt: text, lang: languageCode(input.language) || "en" },
+      ),
+    },
+    120_000,
+  )
+  if (!response.ok)
+    throw new Error(
+      await providerError(response, "Cloudflare Workers AI", "tts"),
+    )
+  if (aura) {
+    // Aura streams raw audio back; a JSON body here is the error envelope.
+    const contentType = response.headers.get("content-type") ?? ""
+    if (contentType.includes("json")) {
+      const body = await providerJson<{
+        errors?: unknown
+        success?: unknown
+      }>(response, "Cloudflare Workers AI")
+      const envelope = cloudflareEnvelopeError(body)
+      throw new Error(
+        `Cloudflare Workers AI failed: ${envelope ?? "no audio returned"}`,
+      )
+    }
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      mime: contentType.split(";")[0] || "audio/mpeg",
+    }
+  }
+  const body = await providerJson<{
+    result?: { audio?: unknown }
+    errors?: unknown
+    success?: unknown
+  }>(response, "Cloudflare Workers AI")
+  const envelope = cloudflareEnvelopeError(body)
+  if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
+  const audio = typeof body.result?.audio === "string" ? body.result.audio : ""
+  if (!audio) throw new Error("Cloudflare Workers AI returned no audio")
+  return {
+    bytes: new Uint8Array(Buffer.from(audio, "base64")),
+    mime: "audio/mp3",
+  }
+}
+
 export async function runTts(input: TtsInput): Promise<TtsAudio> {
   const fetchImpl = input.fetchImpl ?? fetch
   const text = input.text.slice(0, TTS_MAX_CHARS)
   if (text.trim() === "") throw new Error("text is required")
-  if (input.providerId === "openai-tts") {
-    const response = await providerFetch(
-      fetchImpl,
-      "OpenAI",
-      "https://api.openai.com/v1/audio/speech",
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${input.apiKey}`,
-          "content-type": "application/json",
+  const config = input.config
+  switch (config.provider) {
+    case "openai-tts": {
+      const response = await providerFetch(
+        fetchImpl,
+        "OpenAI",
+        "https://api.openai.com/v1/audio/speech",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${config.apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: config.model,
+            input: text,
+            voice: config.voice || "alloy",
+            response_format: "mp3",
+          }),
         },
-        body: JSON.stringify({
-          model: input.model || "gpt-4o-mini-tts",
-          input: text,
-          voice: input.voice || "alloy",
-          response_format: "mp3",
-        }),
-      },
-      120_000,
-    )
-    if (!response.ok)
-      throw new Error(await providerError(response, "OpenAI", "tts"))
-    return {
-      bytes: new Uint8Array(await response.arrayBuffer()),
-      mime: "audio/mpeg",
-    }
-  }
-  if (input.providerId === "xai-tts") {
-    const language = languageCode(input.language) || "en"
-    const response = await providerFetch(
-      fetchImpl,
-      "xAI",
-      "https://api.x.ai/v1/tts",
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${input.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          voice_id: input.voice || "eve",
-          language,
-        }),
-      },
-      120_000,
-    )
-    if (!response.ok)
-      throw new Error(await providerError(response, "xAI", "tts"))
-    return {
-      bytes: new Uint8Array(await response.arrayBuffer()),
-      mime: response.headers.get("content-type")?.split(";")[0] || "audio/wav",
-    }
-  }
-  if (input.providerId === "workers-ai-tts") {
-    const response = await providerFetch(
-      fetchImpl,
-      "Cloudflare Workers AI",
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/ai/run/${modelPath(input.model || "@cf/myshell-ai/melotts")}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${input.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          prompt: text,
-          lang: languageCode(input.language) || "en",
-        }),
-      },
-      120_000,
-    )
-    if (!response.ok)
-      throw new Error(
-        await providerError(response, "Cloudflare Workers AI", "tts"),
+        120_000,
       )
-    const body = await providerJson<{
-      result?: { audio?: unknown }
-      errors?: unknown
-      success?: unknown
-    }>(response, "Cloudflare Workers AI")
-    const envelope = cloudflareEnvelopeError(body)
-    if (envelope) throw new Error(`Cloudflare Workers AI failed: ${envelope}`)
-    const audio =
-      typeof body.result?.audio === "string" ? body.result.audio : ""
-    if (!audio) throw new Error("Cloudflare Workers AI returned no audio")
-    return {
-      bytes: new Uint8Array(Buffer.from(audio, "base64")),
-      mime: "audio/mp3",
+      if (!response.ok)
+        throw new Error(await providerError(response, "OpenAI", "tts"))
+      return {
+        bytes: new Uint8Array(await response.arrayBuffer()),
+        mime: "audio/mpeg",
+      }
+    }
+    case "xai-tts": {
+      const response = await providerFetch(
+        fetchImpl,
+        "xAI",
+        "https://api.x.ai/v1/tts",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${config.apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            text,
+            voice_id: config.voice || "eve",
+            language: languageCode(input.language) || "en",
+          }),
+        },
+        120_000,
+      )
+      if (!response.ok)
+        throw new Error(await providerError(response, "xAI", "tts"))
+      return {
+        bytes: new Uint8Array(await response.arrayBuffer()),
+        mime:
+          response.headers.get("content-type")?.split(";")[0] || "audio/wav",
+      }
+    }
+    case "cloudflare-tts":
+      return cloudflareTts(config, input, fetchImpl, text)
+    default: {
+      const exhaustive: never = config
+      throw new Error(`unsupported speech provider: ${String(exhaustive)}`)
     }
   }
-  throw new Error("unsupported speech provider")
 }

@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto"
 import type { Db, InstalledPlugin } from "@open-bot/db"
-import type { PluginManifest } from "@open-bot/plugin-kit"
+import { type PluginManifest, publicRouteAllowed } from "@open-bot/plugin-kit"
 import { wakeDesktop } from "./desktop-wake"
 import { endpoint } from "./docker"
 import { HttpError } from "./http-error"
@@ -185,13 +185,16 @@ export function clearWebhookState() {
   hits.clear()
 }
 
-function webhookHeaders(headers: Headers, token: string) {
+export function webhookHeaders(headers: Headers, token: string) {
   const out = new Headers(headers)
   out.delete("host")
   out.delete("accept-encoding")
   out.delete("cookie")
   out.delete("authorization")
   out.delete(SECRET_HEADER)
+  // The owner token is dashboard-only proof: an external caller must never
+  // be able to present one through this surface, forged or leaked.
+  out.delete("x-open-bot-owner-token")
   out.set("x-open-bot-page-token", token)
   return out
 }
@@ -296,6 +299,14 @@ export async function handlePluginWebhook(
   const row = target.row
   const user = db.userById(row.userId)
   if (!user || user.disabled || !db.desktop(row.userId)) {
+    return new Response("not found", { status: 404 })
+  }
+  // Manifest allowlist: a private path is indistinguishable from a missing
+  // endpoint, and is rejected before throttle/wake so probing private
+  // routes costs the desktop nothing. Absent list = legacy all-public.
+  const publicRoutes = (row.manifest as PluginManifest).dashboard?.pages
+    ?.publicRoutes
+  if (!publicRouteAllowed(publicRoutes, parsed.rest)) {
     return new Response("not found", { status: 404 })
   }
   const retry = webhookRetryAfter(row.userId, row.pluginId)

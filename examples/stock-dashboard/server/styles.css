@@ -1,9 +1,36 @@
+/* Follow the dashboard theme (it defaults to the OS setting): light default
+   plus prefers-color-scheme overrides — never ship your own theme toggle.
+   Every color goes through a variable; a raw hex outside :root is a bug. */
+:root {
+  --bg: #eef0f4;
+  --surface: #ffffff;
+  --text: #171a20;
+  --muted: #5b6472;
+  --border: #d8dde6;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --danger: #b42318;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1014;
+    --surface: #171b21;
+    --text: #f3f4f6;
+    --muted: #9aa4b2;
+    --border: #2a2f38;
+    --accent: #4a6cf7;
+    --danger: #f97066;
+  }
+}
+
 body {
   font-family: system-ui, sans-serif;
   margin: 0;
   padding: 24px;
-  background: #111;
-  color: #eee;
+  background: var(--bg);
+  color: var(--text);
 }
 
 h1 {
@@ -20,10 +47,10 @@ form {
 
 input {
   padding: 8px;
-  border-radius: 6px;
-  border: 1px solid #444;
-  background: #1c1c1c;
-  color: #eee;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
 }
 
 input[name="name"] {
@@ -37,10 +64,10 @@ input[name="qty"] {
 
 button {
   padding: 8px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   border: 0;
-  background: #4a6cf7;
-  color: white;
+  background: var(--accent);
+  color: var(--accent-text);
   cursor: pointer;
 }
 
@@ -53,10 +80,12 @@ th,
 td {
   text-align: left;
   padding: 8px;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid var(--border);
 }
 
 td button {
-  background: #7a2f2f;
+  background: var(--surface);
+  color: var(--danger);
+  border: 1px solid var(--border);
   padding: 4px 10px;
 }

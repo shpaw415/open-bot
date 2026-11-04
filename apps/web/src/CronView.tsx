@@ -17,8 +17,10 @@ import AccessibleDialog, {
   DialogTitle,
 } from "./AccessibleDialog"
 import { api, type Me } from "./api"
+import { patchSearch, usePaneNav } from "./back-nav"
 import { PluginBadge } from "./ConfigList"
 import { ChatLink } from "./chat-link"
+import { chatUrlTransform } from "./chat-markdown"
 import { Chip } from "./chip"
 import {
   atMsToLocalInput,
@@ -30,6 +32,7 @@ import {
   parseJobs,
 } from "./dashboard-data"
 import { confirmDiscard, snapshotDirty } from "./discard-guard"
+import { remarkAgentFiles } from "./file-refs"
 import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
   AddIcon,
@@ -43,6 +46,7 @@ import {
 } from "./icons"
 import { ModelSelect } from "./ModelSelect"
 import type { PersonaInfo } from "./Personalities"
+import { PARAM_JOB } from "./routes"
 import Stack from "./stack"
 import { Tip } from "./Tip"
 
@@ -172,7 +176,14 @@ function formatFrFull(ts: number | null): string {
   return formatFrWhen(ts)
 }
 
-export function CronView({ me }: { me: Me }) {
+export function CronView({
+  me,
+  onOpenThread,
+}: {
+  me: Me
+  /** Opens the job's delivery thread (where its results are published). */
+  onOpenThread?: (sessionId: string) => void
+}) {
   const mobile = useMobile()
   const { subscribe } = useEventStream(true)
   const [jobs, setJobs] = useState<CronJobInfo[]>([])
@@ -209,6 +220,17 @@ export function CronView({ me }: { me: Me }) {
   const [error, setError] = useState("")
   const [models, setModels] = useState<Model[]>([])
   const [personas, setPersonas] = useState<PersonaInfo[]>([])
+  // The editor is a URL screen (?job=<id>|new): opening pushes, Back
+  // closes it through the same discard confirm as Escape/Cancel.
+  const paneNav = usePaneNav()
+  const { pushSearch, backOr } = paneNav
+  const locationSearch = paneNav.search
+  const jobParam = jobIdFromSearch(locationSearch)
+  const jobsLoadedRef = useRef(false)
+  /** Param value the open form belongs to ("" = closed). */
+  const formJobRef = useRef("")
+  const addOpenRef = useRef(addOpen)
+  addOpenRef.current = addOpen
 
   const loadJobs = useCallback(async () => {
     try {
@@ -216,6 +238,7 @@ export function CronView({ me }: { me: Me }) {
       // silent "no automations".
       const body = await api<unknown>("/api/cron")
       setJobs(parseJobs(body) as CronJobInfo[])
+      jobsLoadedRef.current = true
       setLoadError("")
     } catch (caught) {
       // A failed load keeps the last good list and says so — never a fake
@@ -257,26 +280,31 @@ export function CronView({ me }: { me: Me }) {
       .catch(() => {})
   }, [loadJobs, loadNotices])
 
-  // Dashboard alert deep link: /automations?job=ID opens that exact job's
-  // editor once the list arrives. The query is then cleaned so Back and a
-  // reload don't reopen the dialog. A job that vanished (deleted) stays
-  // closed — the list itself is the answer.
-  const pendingJobIdRef = useRef<string>(
-    typeof location === "undefined" ? "" : jobIdFromSearch(location.search),
-  )
-  const handledJobIdRef = useRef<string>("")
-  // openForm reads and writes state only; re-running per render is a no-op.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: openForm is render-local
+  // The editor follows ?job= both ways: a deep link (dashboard alert),
+  // a reload or Forward opens that job's editor once the list arrives;
+  // Back removes the param and closes through the discard confirm. A
+  // job that vanished resolves to the list — the param is stripped.
+  // openForm/requestCloseForm read and write state only; re-running per
+  // render is a no-op.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: param-driven effect; the form helpers are render-fresh closures over refs, state setters and the identity-stable pane nav
   useEffect(() => {
-    const id = pendingJobIdRef.current
-    if (!id || handledJobIdRef.current === id) return
-    const job = jobs.find((item) => item.id === id)
-    if (!job) return
-    handledJobIdRef.current = id
-    openForm(job)
-    if (typeof history !== "undefined")
-      history.replaceState(null, "", location.pathname)
-  }, [jobs])
+    if (jobParam === formJobRef.current) return
+    if (!jobParam) {
+      if (addOpenRef.current) requestCloseForm(true)
+      return
+    }
+    if (jobParam === "new" && !jobs.some((item) => item.id === "new")) {
+      openForm(undefined, { push: false })
+      return
+    }
+    const job = jobs.find((item) => item.id === jobParam)
+    if (job) {
+      openForm(job, { push: false })
+      return
+    }
+    if (jobsLoadedRef.current)
+      pushSearch({ [PARAM_JOB]: null }, { replace: true })
+  }, [jobParam, jobs])
 
   useEffect(() => {
     return subscribe((event) => {
@@ -321,7 +349,7 @@ export function CronView({ me }: { me: Me }) {
     }
   }
 
-  function openForm(job?: CronJobInfo) {
+  function openForm(job?: CronJobInfo, opts?: { push?: boolean }) {
     const next = cronFormState(job)
     setEditId(job?.id ?? null)
     setName(next.name as string)
@@ -349,11 +377,33 @@ export function CronView({ me }: { me: Me }) {
     setFormError("")
     setPristine(next)
     setAddOpen(true)
+    formJobRef.current = job?.id ?? "new"
+    if (opts?.push !== false) pushSearch({ [PARAM_JOB]: job?.id ?? "new" })
   }
 
-  /** Escape, backdrop and Cancel share this: real edits ask first. */
-  function requestCloseForm() {
-    if (saving) return
+  /** Close + leave the ?job= entry (Back to the list entry). */
+  function closeForm() {
+    formJobRef.current = ""
+    setAddOpen(false)
+    backOr(
+      paneNav.pathname + patchSearch(paneNav.search, { [PARAM_JOB]: null }),
+    )
+  }
+
+  /**
+   * Escape, backdrop, Cancel and Back share this: real edits ask first.
+   * From a pop the entry is already left — a refused discard re-pushes
+   * the editor's entry so the form (and its edits) stay exactly put.
+   */
+  function requestCloseForm(fromPop = false) {
+    const restore = () => {
+      if (fromPop && formJobRef.current)
+        pushSearch({ [PARAM_JOB]: formJobRef.current })
+    }
+    if (saving) {
+      restore()
+      return
+    }
     const current: Record<string, unknown> = {
       name,
       message,
@@ -368,9 +418,17 @@ export function CronView({ me }: { me: Me }) {
       runKind,
       script,
     }
-    if (snapshotDirty(pristine, current) && !confirmDiscard()) return
+    if (snapshotDirty(pristine, current) && !confirmDiscard()) {
+      restore()
+      return
+    }
     setPristine(null)
-    setAddOpen(false)
+    if (fromPop) {
+      formJobRef.current = ""
+      setAddOpen(false)
+    } else {
+      closeForm()
+    }
   }
 
   function openNotice(notice: CronNotice) {
@@ -392,6 +450,20 @@ export function CronView({ me }: { me: Me }) {
     const notice = notices.find((item) => item.jobId === job.id)
     if (notice) openNotice(notice)
   }
+
+  /**
+   * The thread this job publishes its results into (`job.sessionId`, set
+   * when the delivery thread is created on the first run). Guard jobs
+   * share one delivery thread, so several jobs can name the same id.
+   */
+  function openJobThread(job: CronJobInfo) {
+    if (job.sessionId) onOpenThread?.(job.sessionId)
+  }
+
+  /** Delivery thread of the result currently shown, when its job is known. */
+  const resultSessionId = result
+    ? (jobs.find((item) => item.id === result.jobId)?.sessionId ?? null)
+    : null
 
   /** Interval form state → wire seconds; null = invalid (caller reports). */
   function currentEverySeconds(): number | null {
@@ -520,7 +592,7 @@ export function CronView({ me }: { me: Me }) {
         })
       }
       setPristine(null)
-      setAddOpen(false)
+      closeForm()
       await loadJobs()
     } catch (caught) {
       setFormError(
@@ -782,6 +854,16 @@ export function CronView({ me }: { me: Me }) {
                       Résultat
                     </Button>
                   ) : null}
+                  {job.sessionId && onOpenThread ? (
+                    <Button
+                      size="small"
+                      variant="text"
+                      disabled={Boolean(busyId)}
+                      onClick={() => openJobThread(job)}
+                    >
+                      Ouvrir le fil
+                    </Button>
+                  ) : null}
                   <IconButton
                     size="small"
                     aria-label={`Supprimer ${job.name}`}
@@ -814,7 +896,8 @@ export function CronView({ me }: { me: Me }) {
       {addOpen ? (
         <AccessibleDialog
           open
-          onClose={requestCloseForm}
+          onClose={() => requestCloseForm()}
+          disableBackClose
           aria-labelledby={addTitleId}
         >
           <DialogTitle id={addTitleId}>
@@ -1015,7 +1098,7 @@ export function CronView({ me }: { me: Me }) {
             </Stack>
           </DialogContent>
           <DialogActions>
-            <Button variant="text" onClick={requestCloseForm}>
+            <Button variant="text" onClick={() => requestCloseForm()}>
               Annuler
             </Button>
             <Button
@@ -1079,7 +1162,8 @@ export function CronView({ me }: { me: Me }) {
             {result.summary?.trim() ? (
               <div className="ob-md">
                 <Markdown
-                  remarkPlugins={[remarkGfm]}
+                  remarkPlugins={[remarkGfm, remarkAgentFiles]}
+                  urlTransform={chatUrlTransform}
                   components={{ a: ChatLink }}
                 >
                   {result.summary}
@@ -1095,6 +1179,19 @@ export function CronView({ me }: { me: Me }) {
             <Button variant="text" onClick={() => setResult(null)}>
               Fermer
             </Button>
+            {resultSessionId && onOpenThread ? (
+              <Button
+                variant="contained"
+                startIcon={<ChatIcon />}
+                onClick={() => {
+                  const sessionId = resultSessionId
+                  setResult(null)
+                  onOpenThread(sessionId)
+                }}
+              >
+                Ouvrir le fil
+              </Button>
+            ) : null}
           </DialogActions>
         </AccessibleDialog>
       ) : null}

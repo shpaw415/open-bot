@@ -84,10 +84,16 @@ export async function evaluate(
 
 export const HIT_SCRIPT = `
 (liveX, liveY) => {
+  // liveX/liveY are screen device pixels; screenX/innerWidth and
+  // elementFromPoint all speak CSS pixels. Under browser page zoom (or any
+  // devicePixelRatio != 1) the two spaces differ by exactly dpr — skipping
+  // the division made valid points read as "outside the browser window"
+  // and landed hits on the wrong element.
+  const dpr = window.devicePixelRatio || 1
   const left = window.screenX + (window.outerWidth - window.innerWidth) / 2
   const top = window.screenY + (window.outerHeight - window.innerHeight)
-  const x = liveX - left
-  const y = liveY - top
+  const x = liveX / dpr - left
+  const y = liveY / dpr - top
   if (
     !Number.isFinite(x) ||
     !Number.isFinite(y) ||
@@ -96,7 +102,12 @@ export const HIT_SCRIPT = `
     x > window.innerWidth ||
     y > window.innerHeight
   ) {
-    return { hit: "outside the browser window" }
+    return {
+      hit: "outside the browser window",
+      dpr,
+      viewport: { x: Math.round(x), y: Math.round(y) },
+      inner: { width: window.innerWidth, height: window.innerHeight },
+    }
   }
   const el = document.elementFromPoint(x, y)
   if (!el) return { hit: "no element at that point" }
@@ -130,6 +141,8 @@ export const HIT_SCRIPT = `
     id: el.id || undefined,
     label: label || undefined,
     text: text || undefined,
+    dpr,
+    viewport: { x: Math.round(x), y: Math.round(y) },
     ancestor:
       ancestor && ancestor !== el ? describe(ancestor) : undefined,
   }

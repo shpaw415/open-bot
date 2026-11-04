@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -39,6 +45,33 @@ test("prints usage without a prompt", async () => {
   const result = await run(home)
   expect(result.code).toBe(1)
   expect(result.stderr).toContain("usage")
+})
+
+test("--help prints usage and never starts a generation", async () => {
+  const home = mkdtempSync(join(tmpdir(), "gen-3d-"))
+  // Fully configured provider: the old code submitted "--help" as the prompt
+  // and billed a generation.
+  seed(home, { provider: "tripo", model: "latest" }, { token: "t" })
+  for (const argv of [
+    ["--help"],
+    ["-h"],
+    ["help"],
+    ["--help", "-o", "x.glb"],
+  ]) {
+    const result = await run(home, ...argv)
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("usage: gen-3d")
+  }
+  expect(existsSync(join(home, ".open-bot/gen-3d-jobs.json"))).toBe(false)
+})
+
+test("unknown flags fail as usage errors, not prompts", async () => {
+  const home = mkdtempSync(join(tmpdir(), "gen-3d-"))
+  seed(home, { provider: "tripo", model: "latest" }, { token: "t" })
+  const result = await run(home, "--model", "fancy", "a ceramic owl")
+  expect(result.code).toBe(1)
+  expect(result.stderr).toContain("unknown option: --model")
+  expect(result.stderr).toContain("gen-3d --help")
 })
 
 test("points at the gpio-3d fallback when nothing is configured", async () => {

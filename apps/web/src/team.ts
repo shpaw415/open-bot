@@ -5,6 +5,7 @@ import {
   type TeamInfo,
   type TeamProviderOverlay,
 } from "./api"
+import { canonicalVoiceProviderId } from "./voice-catalog"
 
 export const PERSONAL_TEAM: TeamInfo = {
   mode: "personal",
@@ -110,7 +111,15 @@ export function parseCpuCoresInput(raw: string): ParsedQuotaCap {
   return { ok: true, value: Math.round(cores * 10) / 10 }
 }
 
-const TEAM_SECRET_FIELDS = new Set(["apiKey", "gatewayToken"])
+// Mirrors SECRET_KEY_FIELDS + gatewayToken in apps/control/src/team.ts.
+// The voice keys belong here: without them a blank field clears the stored
+// shared key on every overlay save instead of keeping it.
+const TEAM_SECRET_FIELDS = new Set([
+  "apiKey",
+  "gatewayToken",
+  "sttApiKey",
+  "ttsApiKey",
+])
 
 export function isTeamSecretField(field: string): boolean {
   return TEAM_SECRET_FIELDS.has(field)
@@ -212,14 +221,36 @@ export const TEAM_OVERLAY_SECTIONS: TeamOverlaySection[] = [
     description:
       "Shared speech providers. Each user keeps their own voice and language.",
     fields: [
-      { field: "sttProvider", label: "STT provider" },
-      { field: "sttAccountId", label: "STT account ID" },
+      {
+        field: "sttProvider",
+        label: "STT provider",
+        placeholder: "openai-stt · groq-stt · xai-stt · cloudflare-stt",
+      },
+      {
+        field: "sttAccountId",
+        label: "STT account ID (Cloudflare only)",
+      },
       { field: "sttApiKey", label: "STT API key" },
-      { field: "sttModel", label: "STT model" },
-      { field: "ttsProvider", label: "TTS provider" },
-      { field: "ttsAccountId", label: "TTS account ID" },
+      {
+        field: "sttModel",
+        label: "STT model",
+        placeholder: "@cf/openai/whisper-large-v3-turbo",
+      },
+      {
+        field: "ttsProvider",
+        label: "TTS provider",
+        placeholder: "openai-tts · xai-tts · cloudflare-tts",
+      },
+      {
+        field: "ttsAccountId",
+        label: "TTS account ID (Cloudflare only)",
+      },
       { field: "ttsApiKey", label: "TTS API key" },
-      { field: "ttsModel", label: "TTS model" },
+      {
+        field: "ttsModel",
+        label: "TTS model (none for xAI)",
+        placeholder: "@cf/myshell-ai/melotts",
+      },
     ],
   },
   {
@@ -247,6 +278,13 @@ export function overlayDraft(
     draft[section] = Object.fromEntries(
       fields.map((field) => [field.field, values?.[field.field] ?? ""]),
     )
+  }
+  // Stored overlays can still carry the pre-consolidation Workers AI ids;
+  // the voice selects only speak the canonical ones.
+  const voice = draft.voice
+  if (voice) {
+    voice.sttProvider = canonicalVoiceProviderId(voice.sttProvider ?? "")
+    voice.ttsProvider = canonicalVoiceProviderId(voice.ttsProvider ?? "")
   }
   return draft
 }

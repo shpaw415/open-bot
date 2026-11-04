@@ -6,6 +6,7 @@ import {
   procStartTime,
   type RecordState,
   resolveOutput,
+  stopFinalization,
 } from "./record"
 
 test("record args default to 15fps capped at 600s", () => {
@@ -111,6 +112,44 @@ test("liveness follows the pid and rejects a reused pid", async () => {
   await proc.exited
   expect(isAlive(state)).toBe(false)
   expect(isAlive({ ...state, pid: 0, startTime: 0 })).toBe(false)
+})
+
+test("stop finalization trusts a readable probe over the kill path", () => {
+  // A playable file must never report finalized:false with no reason.
+  expect(
+    stopFinalization({
+      forcedKill: false,
+      probeSeconds: 140.8,
+      stillAlive: false,
+    }),
+  ).toEqual({ finalized: true, probeValid: true })
+  expect(
+    stopFinalization({ forcedKill: true, probeSeconds: 12, stillAlive: false }),
+  ).toEqual({ finalized: true, probeValid: true })
+  // No ffprobe answer: a graceful SIGINT exit still finalizes the trailer.
+  expect(
+    stopFinalization({
+      forcedKill: false,
+      probeSeconds: null,
+      stillAlive: false,
+    }),
+  ).toEqual({ finalized: true, probeValid: false })
+  const forced = stopFinalization({
+    forcedKill: true,
+    probeSeconds: null,
+    stillAlive: false,
+  })
+  expect(forced.finalized).toBe(false)
+  expect(forced.probeValid).toBe(false)
+  expect(forced.warning).toContain("forced kill")
+  expect(forced.warning).toContain("ffprobe")
+  const alive = stopFinalization({
+    forcedKill: true,
+    probeSeconds: 3,
+    stillAlive: true,
+  })
+  expect(alive.finalized).toBe(false)
+  expect(alive.warning).toContain("still running")
 })
 
 test("webm output switches to the vp8 realtime encoder", () => {

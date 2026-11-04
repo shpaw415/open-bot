@@ -5,17 +5,28 @@ import {
   sanitizeCouncilName,
   sanitizeRole,
 } from "./councils"
-import { createSession, UNLIMITED_STEPS_AGENT } from "./cron"
+import { createSession, splitModelRef, UNLIMITED_STEPS_AGENT } from "./cron"
 import { recordDelegation, resolveDelegationCreator } from "./delegations"
 import { desktopDeathInfo, desktopPhase, endpoint } from "./docker"
-import { applyThinkingEffort } from "./effort"
+import {
+  applyModelChoice,
+  resolveThreadModel,
+  type ThreadModelChoice,
+  type ThreadModelRow,
+  threadModelChoice,
+  validateModelChoice,
+} from "./effort"
+import { pageMessages, parseMessagePageQuery } from "./messages-page"
 import { trimDashboardMessages } from "./messages-trim"
 import {
   ASSISTANT_ID,
+  builtinLoadsAllSkills,
   findPersona,
   type PersonaMatch,
+  type PersonaView,
   personaScope,
   personaSystem,
+  resolvePersona,
 } from "./personas"
 import { ensureThreadScreen, stopThreadScreen } from "./screens"
 import {
@@ -42,6 +53,11 @@ export function isThreadRequest(pathname: string, method: string): boolean {
   )
     return true
   if (method === "GET" && /^\/api\/threads\/[^/]+\/status$/.test(pathname))
+    return true
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/api\/threads\/[^/]+\/model$/.test(pathname)
+  )
     return true
   return (
     method === "POST" && /^\/api\/threads\/[^/]+\/(?:stop|post)$/.test(pathname)
@@ -136,6 +152,202 @@ export function threadTitleError(title: string): string | null {
   return null
 }
 
+/**
+ * Explicit per-thread model + reasoning effort from a start body:
+ * `model: "provider/model"` (or the `{providerID, modelID}` object) and
+ * `effort: "high"` (`thinkingEffort` accepted as the same field's other
+ * spelling). Null choice = desktop defaults. Shape errors are 400s here;
+ * whether the model/effort actually exists on the desktop is
+ * validateModelChoice's job once the provider list is readable.
+ */
+export function parseThreadModelChoice(
+  body: Record<string, unknown>,
+): { choice: ThreadModelChoice | null } | { error: string } {
+  let providerID: string | null = null
+  let modelID: string | null = null
+  if (body.model !== undefined) {
+    if (typeof body.model === "string") {
+      if (body.model.trim()) {
+        const split = splitModelRef(body.model)
+        if ("error" in split) return { error: split.error }
+        providerID = split.providerId
+        modelID = split.modelId
+      }
+    } else if (
+      body.model &&
+      typeof body.model === "object" &&
+      !Array.isArray(body.model)
+    ) {
+      const record = body.model as Record<string, unknown>
+      const provider = record.providerID ?? record.providerId
+      const model = record.modelID ?? record.modelId
+      if (typeof provider !== "string" || typeof model !== "string")
+        return { error: "model must be provider/model" }
+      const split = splitModelRef(`${provider.trim()}/${model.trim()}`)
+      if ("error" in split) return { error: split.error }
+      providerID = split.providerId
+      modelID = split.modelId
+    } else {
+      return { error: "model must be provider/model" }
+    }
+  }
+  const effortRaw =
+    body.effort !== undefined ? body.effort : body.thinkingEffort
+  let effort: string | null = null
+  if (effortRaw !== undefined) {
+    if (typeof effortRaw !== "string")
+      return { error: "effort must be a string" }
+    const trimmed = effortRaw.trim()
+    if (trimmed) {
+      if (/\s/.test(trimmed) || trimmed.length > 40)
+        return { error: "effort must be a single level name (e.g. high)" }
+      effort = trimmed
+    }
+  }
+  if (!providerID && !effort) return { choice: null }
+  return { choice: { providerID, modelID, effort } }
+}
+
+/**
+ * A hot model update for a live thread (`ob-thread model`, or the flags on
+ * `ob-thread post`). Each half is tri-state: absent = keep the stored pick,
+ * null (or an empty string) = clear it back to the desktop default, a value
+ * = set it. Shape errors are 400s here, like parseThreadModelChoice.
+ */
+export type ThreadModelUpdate = {
+  model?: { providerID: string; modelID: string } | null
+  effort?: string | null
+}
+
+export function parseThreadModelUpdate(
+  body: Record<string, unknown>,
+): { update: ThreadModelUpdate } | { error: string } {
+  const update: ThreadModelUpdate = {}
+  if ("model" in body) {
+    const raw = body.model
+    if (raw === null || (typeof raw === "string" && !raw.trim())) {
+      update.model = null
+    } else {
+      const parsed = parseThreadModelChoice({ model: raw })
+      if ("error" in parsed) return { error: parsed.error }
+      if (!parsed.choice?.providerID || !parsed.choice.modelID)
+        return { error: "model must be provider/model" }
+      update.model = {
+        providerID: parsed.choice.providerID,
+        modelID: parsed.choice.modelID,
+      }
+    }
+  }
+  const effortKey = "effort" in body ? "effort" : "thinkingEffort"
+  if (effortKey in body) {
+    const raw = body[effortKey]
+    if (raw === null || (typeof raw === "string" && !raw.trim())) {
+      update.effort = null
+    } else {
+      const parsed = parseThreadModelChoice({ effort: raw })
+      if ("error" in parsed) return { error: parsed.error }
+      update.effort = parsed.choice?.effort ?? null
+    }
+  }
+  return { update }
+}
+
+/** Stored pick with an update's halves applied — the thread's next pick. */
+export function mergeThreadModelUpdate(
+  stored: ThreadModelRow | null,
+  update: ThreadModelUpdate,
+): ThreadModelChoice {
+  const current = threadModelChoice(stored)
+  return {
+    providerID:
+      update.model !== undefined
+        ? (update.model?.providerID ?? null)
+        : (current?.providerID ?? null),
+    modelID:
+      update.model !== undefined
+        ? (update.model?.modelID ?? null)
+        : (current?.modelID ?? null),
+    effort:
+      update.effort !== undefined ? update.effort : (current?.effort ?? null),
+  }
+}
+
+function persistThreadModel(
+  db: Db,
+  userId: string,
+  sessionId: string,
+  choice: ThreadModelChoice,
+) {
+  if (!choice.providerID && !choice.modelID && !choice.effort) {
+    db.clearThreadModel(userId, sessionId)
+    return
+  }
+  db.setThreadModel({
+    userId,
+    sessionId,
+    providerId: choice.providerID,
+    modelId: choice.modelID,
+    effort: choice.effort,
+  })
+}
+
+/**
+ * Validates a merged pick for a hot update. An explicitly passed effort the
+ * model does not offer is refused (same 400 as start, naming the levels);
+ * an effort merely carried over from the stored pick that the new model
+ * does not offer is dropped and reported — the dashboard picker's rule, so
+ * switching models never strands the caller on a stale variant.
+ */
+async function resolveModelUpdate(
+  db: Db,
+  userId: string,
+  stored: ThreadModelRow | null,
+  update: ThreadModelUpdate,
+): Promise<
+  | { choice: ThreadModelChoice; effortDropped: string | null }
+  | { error: string }
+> {
+  const merged = mergeThreadModelUpdate(stored, update)
+  const error = await validateModelChoice(db, userId, merged)
+  if (!error) return { choice: merged, effortDropped: null }
+  const effortExplicit = update.effort !== undefined && update.effort !== null
+  if (!effortExplicit && merged.effort) {
+    const dropped: ThreadModelChoice = { ...merged, effort: null }
+    if (!(await validateModelChoice(db, userId, dropped)))
+      return { choice: dropped, effortDropped: merged.effort }
+  }
+  return { error }
+}
+
+/**
+ * One thread's model view for the agent routes: the effective pick (stored
+ * halves over the desktop default) plus the explicit per-thread halves, so
+ * the caller can tell what is pinned to this thread from what is inherited.
+ */
+function threadModelView(db: Db, userId: string, sessionId: string) {
+  const desktop = db.desktop(userId)
+  const resolved = resolveThreadModel(db.threadModel(userId, sessionId), {
+    providerID: desktop?.selectedProvider ?? null,
+    modelID: desktop?.selectedModel ?? null,
+    thinkingEffort: desktop?.thinkingEffort ?? null,
+  })
+  return {
+    id: sessionId,
+    model:
+      resolved.providerID && resolved.modelID
+        ? `${resolved.providerID}/${resolved.modelID}`
+        : null,
+    effort: resolved.thinkingEffort,
+    thread: {
+      model:
+        resolved.thread?.providerID && resolved.thread.modelID
+          ? `${resolved.thread.providerID}/${resolved.thread.modelID}`
+          : null,
+      effort: resolved.thread?.effort ?? null,
+    },
+  }
+}
+
 export function hiddenThreadTitle(title: string): string {
   return title
     ? `${WORKER_TITLE_PREFIX}${title}`
@@ -182,6 +394,14 @@ export async function handleThreads(
     if (!id) return json({ error: "not found" }, 404)
     return threadStatus(id, db, agent)
   }
+  const model = url.pathname.match(/^\/api\/threads\/([^/]+)\/model$/)
+  if (model && (req.method === "GET" || req.method === "POST")) {
+    const id = decodeURIComponent(model[1] ?? "")
+    if (!id) return json({ error: "not found" }, 404)
+    return req.method === "GET"
+      ? getThreadModel(id, db, agent)
+      : setThreadModelRoute(req, id, db, agent)
+  }
   return json({ error: "not found" }, 404)
 }
 
@@ -223,7 +443,18 @@ export async function handleOpencodeRead(
     return json({ error: "message list failed" }, 502)
   const parsed: unknown = await upstream.json().catch(() => null)
   if (!Array.isArray(parsed)) return json({ error: "message list failed" }, 502)
-  return json(trimDashboardMessages(parsed))
+  // Same optional paging as the dashboard route (?limit/&before; see
+  // messages-page.ts). No params keeps the plain array `ob-thread read`
+  // and its jq pipeline are built on.
+  const pageQuery = parseMessagePageQuery(url.searchParams)
+  if (!pageQuery) return json(trimDashboardMessages(parsed))
+  const page = pageMessages(parsed, pageQuery)
+  if (!page)
+    return json(
+      { error: "unknown before cursor", code: "message_cursor_unknown" },
+      400,
+    )
+  return json({ ...page, messages: trimDashboardMessages(page.messages) })
 }
 
 // Runs after opencode confirms a session deletion: drops the control-plane
@@ -235,6 +466,8 @@ export async function cleanupDeletedThread(
   sessionId: string,
 ): Promise<void> {
   db.clearThreadPersona(userId, sessionId)
+  db.clearThreadModel(userId, sessionId)
+  db.clearThreadQueue(userId, sessionId)
   db.clearThreadTitle(userId, sessionId)
   db.clearThreadDir(userId, sessionId)
   db.clearCouncilMember(userId, sessionId)
@@ -262,6 +495,35 @@ async function opencodeBase(db: Db, agent: User): Promise<ResolvedOpencode> {
   } catch {
     return { error: json({ error: "desktop is not reachable" }, 502) }
   }
+}
+
+// The system line every agent-thread prompt carries: persona line (when
+// bound) + the screen id line, with the raced screen ensure the dashboard
+// prompt path runs. Shared by the first prompt (startThread) and every
+// ob-thread post follow-up — posts used to carry no system line at all, so
+// a council member briefed via post (or created without --message) never
+// learned its own screen/session id and could not drive ob-chrome/ob-vnc.
+export async function threadPromptSystem(
+  db: Db,
+  userId: string,
+  sessionId: string,
+  persona: PersonaView | null,
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const screen = await Promise.race([
+    ensureThreadScreen(db, userId, sessionId).catch(() => null),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 4000)
+    }),
+  ])
+  clearTimeout(timer)
+  return [
+    personaSystem(persona),
+    screen?.system ??
+      `This thread's screen id (also your session id, for ob-thread --from) is ${sessionId}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
+  ]
+    .filter((item): item is string => Boolean(item))
+    .join("\n\n")
 }
 
 async function startThread(req: Request, db: Db, agent: User) {
@@ -302,10 +564,15 @@ async function startThread(req: Request, db: Db, agent: User) {
   const role = typeof body.role === "string" ? sanitizeRole(body.role) : ""
   if (role === null) return json({ error: "role must be a string" }, 400)
   // steps:"unlimited" binds the session to the no-step-cap agent variant —
-  // long council members and background jobs that would outlive 256 steps.
+  // long council members and background jobs that would outlive the step cap.
   if (body.steps !== undefined && body.steps !== "unlimited")
     return json({ error: 'steps must be "unlimited" or omitted' }, 400)
   const unlimitedSteps = body.steps === "unlimited"
+  // Per-thread model/effort pick — one per council member, so a council can
+  // mix a cheap researcher with a deep-reasoning reviewer.
+  const parsedChoice = parseThreadModelChoice(body)
+  if ("error" in parsedChoice) return json({ error: parsedChoice.error }, 400)
+  const modelChoice = parsedChoice.choice
   const effectiveVisible = visible && !councilName
   if (body.message !== undefined && typeof body.message !== "string")
     return json({ error: "message must be a string" }, 400)
@@ -340,6 +607,12 @@ async function startThread(req: Request, db: Db, agent: User) {
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
 
+  // Refuse a provably wrong model/effort before creating anything, so the
+  // caller fixes the flag instead of getting a thread whose first prompt
+  // can never run. Unverifiable picks (provider list unreadable) pass.
+  const modelError = await validateModelChoice(db, agent.id, modelChoice)
+  if (modelError) return json({ error: modelError }, 400)
+
   // Delegation wake-up: councils and persona teammates re-prompt the
   // coordinating thread when they finish. The creator is the caller's own
   // session (`from`) or, unprovided, the one busy chat on the desktop.
@@ -350,13 +623,37 @@ async function startThread(req: Request, db: Db, agent: User) {
     ? await resolveDelegationCreator(base, headers, fromRaw)
     : { creator: null, warning: null }
 
+  // Model inheritance: a delegated member with no explicit --model runs the
+  // coordinating thread's own pick, not the desktop default. Members used
+  // to start on the default provider even when the parent thread ran
+  // another — and died idle on that provider's exhausted quota while the
+  // parent's provider had room. An inherited pick that no longer validates
+  // (provider since disconnected) drops to the default instead of failing
+  // the delegation.
+  let effectiveChoice: ThreadModelChoice | null = modelChoice
+  let modelInherited = false
+  if (!effectiveChoice && delegation.creator) {
+    const parent = db.threadModel?.(agent.id, delegation.creator) ?? null
+    if (parent && (parent.providerId || parent.modelId || parent.effort)) {
+      const inherited: ThreadModelChoice = {
+        providerID: parent.providerId,
+        modelID: parent.modelId,
+        effort: parent.effort,
+      }
+      if (!(await validateModelChoice(db, agent.id, inherited))) {
+        effectiveChoice = inherited
+        modelInherited = true
+      }
+    }
+  }
+
   const effectiveTitle = effectiveVisible ? title : hiddenThreadTitle(title)
   // Overlap guard (best effort): two workers with the same title on the same
   // files corrupt each other's edits, and nothing else warns about it. Never
   // blocks — the coordinator decides.
   const overlapWarning = effectiveVisible
     ? null
-    : await runningTitleMatch(base, headers, effectiveTitle)
+    : await hiddenStartWarning(base, headers, effectiveTitle)
   const ruleset = await personaScope(db, agent.id, persona?.persona ?? null)
   let sessionId: string
   try {
@@ -394,6 +691,14 @@ async function startThread(req: Request, db: Db, agent: User) {
     })
   }
   if (persona) db.setThreadPersona(agent.id, sessionId, persona.persona.id)
+  if (effectiveChoice)
+    db.setThreadModel({
+      userId: agent.id,
+      sessionId,
+      providerId: effectiveChoice.providerID,
+      modelId: effectiveChoice.modelID,
+      effort: effectiveChoice.effort,
+    })
   if (delegation.creator) {
     recordDelegation(
       db,
@@ -405,31 +710,17 @@ async function startThread(req: Request, db: Db, agent: User) {
     )
   }
   if (message) {
-    // Same raced ensure the dashboard prompt path runs: agent-started threads
-    // (ob-thread start, council members, persona teammates) carry the screen
-    // id line from the first prompt, so the browser CLIs work immediately. A
-    // failed ensure never fails the thread — the fallback line covers it.
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const screen = await Promise.race([
-      ensureThreadScreen(db, agent.id, sessionId).catch(() => null),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), 4000)
-      }),
-    ])
-    clearTimeout(timer)
     const promptBody: Record<string, unknown> = {
       parts: [{ type: "text", text: message }],
     }
-    const personaLine = personaSystem(persona?.persona ?? null)
-    const line = [
-      personaLine,
-      screen?.system ??
-        `This thread's screen id (also your session id, for ob-thread --from) is ${sessionId}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
-    ]
-      .filter((item): item is string => Boolean(item))
-      .join("\n\n")
+    const line = await threadPromptSystem(
+      db,
+      agent.id,
+      sessionId,
+      persona?.persona ?? null,
+    )
     if (line) promptBody.system = line
-    await applyThinkingEffort(db, agent.id, promptBody)
+    await applyModelChoice(db, agent.id, promptBody, effectiveChoice)
     const posted = await fetch(
       `${base}/session/${encodeURIComponent(sessionId)}/prompt_async`,
       {
@@ -454,14 +745,17 @@ async function startThread(req: Request, db: Db, agent: User) {
       matched: persona.matched,
     }
     if (persona.persona.builtin) {
-      // Built-ins have a live seed base, not a stored list — report the
-      // default plus the user's additions (or a block-all).
+      // Built-ins have a live base, not a stored list — report the default
+      // plus the user's additions (or a block-all). The Assistant's skill
+      // base is every skill; the others keep the seed default.
       personaInfo.skills = persona.persona.skillsNone
         ? { blocked: true }
-        : {
-            seedDefault: true,
-            extra: (persona.persona.skillsExtra ?? []).length,
-          }
+        : builtinLoadsAllSkills(persona.persona)
+          ? { all: true }
+          : {
+              seedDefault: true,
+              extra: (persona.persona.skillsExtra ?? []).length,
+            }
       personaInfo.mcp = persona.persona.mcpNone
         ? { blocked: true }
         : { seedDefault: true, extra: (persona.persona.mcpExtra ?? []).length }
@@ -483,6 +777,10 @@ async function startThread(req: Request, db: Db, agent: User) {
   }
   if (dir) result.dir = dir
   if (council) result.council = council
+  if (effectiveChoice?.providerID && effectiveChoice.modelID)
+    result.model = `${effectiveChoice.providerID}/${effectiveChoice.modelID}`
+  if (effectiveChoice?.effort) result.effort = effectiveChoice.effort
+  if (modelInherited) result.modelInherited = true
   if (watchesDelegation)
     result.wake = {
       armed: Boolean(delegation.creator),
@@ -497,9 +795,13 @@ async function startThread(req: Request, db: Db, agent: User) {
   return json(result, 201)
 }
 
-// One opencode round trip: is a same-titled top-level worker currently
-// running a turn? Null on any failure — the warning is best effort.
-async function runningTitleMatch(
+// One opencode round trip for a hidden start, best effort (null on any
+// failure). A same-titled busy worker gets the specific warning; otherwise
+// any busy worker threads are named — every worker shares this desktop's
+// filesystem, and parallel members writing one tree silently overwrote
+// each other often enough that the coordinator should hear who else is
+// live before launching more of them.
+async function hiddenStartWarning(
   base: string,
   headers: Record<string, string>,
   effectiveTitle: string,
@@ -523,17 +825,30 @@ async function runningTitleMatch(
       string,
       { type?: unknown } | undefined
     > | null
-    if (!Array.isArray(sessions)) return null
+    if (!Array.isArray(sessions) || !statusMap) return null
+    const busy = (item: { id?: unknown }) =>
+      typeof item.id === "string" &&
+      statusMap[item.id as string]?.type !== undefined &&
+      statusMap[item.id as string]?.type !== "idle"
     const match = sessions.find(
+      (item) => !item.parentID && item.title === effectiveTitle && busy(item),
+    )
+    if (match && typeof match.id === "string")
+      return `another worker with this title is already running (${match.id}) — parallel briefs on the same files can corrupt each other's edits`
+    const others = sessions.filter(
       (item) =>
         !item.parentID &&
-        item.title === effectiveTitle &&
-        typeof item.id === "string" &&
-        statusMap?.[item.id as string]?.type !== undefined &&
-        statusMap[item.id as string]?.type !== "idle",
+        typeof item.title === "string" &&
+        item.title.startsWith(WORKER_TITLE_PREFIX) &&
+        busy(item),
     )
-    if (!match || typeof match.id !== "string") return null
-    return `another worker with this title is already running (${match.id}) — parallel briefs on the same files can corrupt each other's edits`
+    if (others.length === 0) return null
+    const titles = others
+      .slice(0, 4)
+      .map((item) => String(item.title).replace(/^worker:/, ""))
+      .join(", ")
+    const more = others.length > 4 ? ` and ${others.length - 4} more` : ""
+    return `${others.length} other worker thread${others.length === 1 ? " is" : "s are"} running on this shared filesystem right now (${titles}${more}) — parallel members must own separate trees/files or their writes can overwrite each other`
   } catch {
     return null
   }
@@ -662,6 +977,52 @@ async function manageableThread(
   return { session: { id } }
 }
 
+// How long a prompt may sit with no status entry before it counts as never
+// started rather than still starting. A queued prompt behind a busy turn
+// keeps that turn's busy entry, so absence plus age means nothing is coming
+// to run it (a lost prompt_async, an opencode restart mid-admission).
+export const STARTING_GRACE_MS = 120_000
+
+// Turn state read off the message list when the status map has no entry:
+// a completed newest assistant turn is idle; a newest prompt (or an
+// in-flight-shaped assistant row) older than the grace window is stalled;
+// anything fresher — or unreadable — stays starting so the create/post race
+// keeps `ob-thread wait` polling.
+export function turnStateFromMessages(
+  messages: unknown,
+  now = Date.now(),
+): "idle" | "stalled" | "starting" {
+  if (!Array.isArray(messages)) return "starting"
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const info = (
+      messages[i] as {
+        info?: {
+          role?: unknown
+          finish?: unknown
+          error?: unknown
+          summary?: unknown
+          time?: { created?: unknown; completed?: unknown }
+        }
+      } | null
+    )?.info
+    if (!info || (info.role !== "user" && info.role !== "assistant")) continue
+    if (info.role === "assistant" && info.summary === true) continue
+    const created =
+      typeof info.time?.created === "number" ? info.time.created : null
+    if (info.role === "assistant") {
+      const done =
+        (typeof info.finish === "string" && info.finish !== "") ||
+        (typeof info.error === "object" && info.error !== null) ||
+        typeof info.time?.completed === "number"
+      if (done) return "idle"
+    }
+    return created !== null && now - created > STARTING_GRACE_MS
+      ? "stalled"
+      : "starting"
+  }
+  return "starting"
+}
+
 // Reports whether a managed thread is still running a turn. `ob-thread wait`
 // polls this to block on a teammate or council member without holding a raw
 // sleep loop; the same manageable scope as stop/post applies. A dead desktop
@@ -701,15 +1062,27 @@ async function threadStatus(id: string, db: Db, agent: User) {
     return json({ error: "status failed" }, 502)
   const entry = body[id]
   if (!entry) {
-    // A session absent from the status map has not registered a turn yet —
-    // one session read separates a just-created row (still starting, so
-    // `ob-thread wait` must keep polling) from a just-deleted one, which
-    // keeps the 404 contract instead of faking a done idle.
+    // Absence from the status map is ambiguous: a just-created session has
+    // not registered a turn yet, but opencode also drops the entry once a
+    // turn ends (and loses the whole map on restart) — reading every absent
+    // entry as "starting" stranded finished teammates there forever. One
+    // session read keeps the 404 contract for a just-deleted row; the
+    // message list then separates finished (idle) and never-started
+    // (stalled) threads from a genuinely starting one.
     const probe = await fetch(`${base}/session/${encodeURIComponent(id)}`, {
       headers,
       signal: AbortSignal.timeout(10_000),
     }).catch(() => null)
     if (!probe || !probe.ok) return json({ error: "session not found" }, 404)
+    const list = await fetch(
+      `${base}/session/${encodeURIComponent(id)}/message`,
+      { headers, signal: AbortSignal.timeout(10_000) },
+    ).catch(() => null)
+    const messages = list?.ok ? await list.json().catch(() => null) : null
+    const derived = turnStateFromMessages(messages)
+    if (derived === "idle") return json({ id, running: false, state: "idle" })
+    if (derived === "stalled")
+      return json({ id, running: false, state: "stalled" })
     return json({ id, running: true, state: "starting" })
   }
   const state = typeof entry.type === "string" ? entry.type : "idle"
@@ -741,15 +1114,51 @@ async function postThread(req: Request, id: string, db: Db, agent: User) {
       { error: `message is limited to ${MESSAGE_LIMIT} characters` },
       400,
     )
+  // Optional hot model switch riding this turn: the new pick stamps this
+  // prompt and persists for later turns. Absent halves keep the stored pick.
+  const parsedUpdate = parseThreadModelUpdate(body)
+  if ("error" in parsedUpdate) return json({ error: parsedUpdate.error }, 400)
+  const update = parsedUpdate.update
+  const hasUpdate = update.model !== undefined || update.effort !== undefined
   const resolved = await opencodeBase(db, agent)
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
   const allowed = await manageableThread(id, base, headers, db, agent)
   if (!("session" in allowed)) return allowed
+  // A provably wrong switch refuses the whole post before anything is sent,
+  // like start refuses before creating — the caller fixes the flag and
+  // retries instead of the message landing on an unintended model.
+  const storedRow = db.threadModel(agent.id, id)
+  let choice = threadModelChoice(storedRow)
+  let effortDropped: string | null = null
+  if (hasUpdate) {
+    const next = await resolveModelUpdate(db, agent.id, storedRow, update)
+    if ("error" in next) return json({ error: next.error }, 400)
+    choice = next.choice
+    effortDropped = next.effortDropped
+  }
   const promptBody: Record<string, unknown> = {
     parts: [{ type: "text", text: body.message }],
   }
-  await applyThinkingEffort(db, agent.id, promptBody)
+  // Posts carry the same persona + screen system line as the first prompt:
+  // a member created without --message is briefed through here, and every
+  // member needs its screen/session id on each turn to drive the browser.
+  const binding = db.threadPersona(agent.id, id)
+  let boundPersona: PersonaView | null = null
+  try {
+    boundPersona = binding
+      ? resolvePersona(db, agent.id, binding.personaId)
+      : null
+  } catch {
+    // The persona line is best effort — a resolution failure must not lose
+    // the follow-up prompt itself.
+    boundPersona = null
+  }
+  const line = await threadPromptSystem(db, agent.id, id, boundPersona)
+  if (line) promptBody.system = line
+  // A follow-up into a member keeps the model/effort it was created with —
+  // or the switch this post carries, which then becomes the stored pick.
+  await applyModelChoice(db, agent.id, promptBody, choice)
   const posted = await fetch(
     `${base}/session/${encodeURIComponent(id)}/prompt_async`,
     {
@@ -760,5 +1169,59 @@ async function postThread(req: Request, id: string, db: Db, agent: User) {
     },
   ).catch(() => null)
   if (!posted || !posted.ok) return json({ error: "post failed" }, 502)
-  return json({ id, posted: true })
+  const result: Record<string, unknown> = { id, posted: true }
+  if (hasUpdate && choice) {
+    // Persist only once the turn carrying the switch actually landed, so a
+    // failed post leaves the thread on its previous pick.
+    persistThreadModel(db, agent.id, id, choice)
+    if (choice.providerID && choice.modelID)
+      result.model = `${choice.providerID}/${choice.modelID}`
+    if (choice.effort) result.effort = choice.effort
+    if (effortDropped) result.effortDropped = effortDropped
+  }
+  return json(result)
+}
+
+// Reads a managed thread's current model pick (`ob-thread model ID`).
+async function getThreadModel(id: string, db: Db, agent: User) {
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const allowed = await manageableThread(id, base, headers, db, agent)
+  if (!("session" in allowed)) return allowed
+  return json(threadModelView(db, agent.id, id))
+}
+
+// Hot-switches a managed thread's model pick without posting
+// (`ob-thread model ID --model …`). The model is stamped per prompt, so the
+// change takes effect on the thread's next turn — a turn already running
+// keeps its model, and nothing restarts or is recreated.
+async function setThreadModelRoute(
+  req: Request,
+  id: string,
+  db: Db,
+  agent: User,
+) {
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+  const parsed = parseThreadModelUpdate(body)
+  if ("error" in parsed) return json({ error: parsed.error }, 400)
+  const update = parsed.update
+  if (update.model === undefined && update.effort === undefined)
+    return json({ error: "model or effort is required" }, 400)
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const allowed = await manageableThread(id, base, headers, db, agent)
+  if (!("session" in allowed)) return allowed
+  const next = await resolveModelUpdate(
+    db,
+    agent.id,
+    db.threadModel(agent.id, id),
+    update,
+  )
+  if ("error" in next) return json({ error: next.error }, 400)
+  persistThreadModel(db, agent.id, id, next.choice)
+  const view: Record<string, unknown> = threadModelView(db, agent.id, id)
+  if (next.effortDropped) view.effortDropped = next.effortDropped
+  return json(view)
 }

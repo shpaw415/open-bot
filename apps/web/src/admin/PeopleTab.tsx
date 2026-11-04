@@ -21,6 +21,7 @@ import AccessibleDialog, {
   DialogContent,
   DialogTitle,
 } from "../AccessibleDialog"
+import { useBackLayer } from "../back-nav"
 import { Chip } from "../chip"
 import {
   BlockIcon,
@@ -76,6 +77,7 @@ export function PeopleTab({
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState<10 | 25 | 50 | 100>(10)
   const [menuId, setMenuId] = useState<string | null>(null)
+  useBackLayer(Boolean(menuId), () => setMenuId(null), { name: "menu" })
   const [pendingDelete, setPendingDelete] = useState<AdminUser | null>(null)
   const [pendingReset, setPendingReset] = useState<AdminUser | null>(null)
   const [resetBackup, setResetBackup] = useState(true)

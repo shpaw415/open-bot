@@ -6,20 +6,18 @@ import { useEffect, useState } from "react"
 import { api } from "./api"
 import { ConfigSection } from "./ConfigSection"
 import { NavigationIcon } from "./icons"
+import { CatalogModelSelect } from "./ProviderFields"
+import {
+  hasField,
+  isCustomModel,
+  type System1PublicSpec,
+  specForId,
+} from "./provider-catalog"
 import Stack from "./stack"
 import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
 
-type System1Spec = {
-  id: string
-  label: string
-  defaultModel: string
-  endpointPlaceholder: string
-  keyRequired: boolean
-  gatewayToken: boolean
-}
-
 type System1Form = {
-  providers: System1Spec[]
+  providers: System1PublicSpec[]
   provider: string
   endpoint: string
   model: string
@@ -54,17 +52,18 @@ export function System1() {
   const [hasKey, setHasKey] = useState(false)
   const [hasGatewayToken, setHasGatewayToken] = useState(false)
   const [keySource, setKeySource] = useState<"setup" | "vault" | null>(null)
-  const [providers, setProviders] = useState<System1Spec[]>([])
+  const [providers, setProviders] = useState<System1PublicSpec[]>([])
   const [provider, setProvider] = useState("")
   const [endpoint, setEndpoint] = useState("")
   const [apiKey, setApiKey] = useState("")
   const [gatewayToken, setGatewayToken] = useState("")
   const [model, setModel] = useState("")
+  const [modelCustom, setModelCustom] = useState(false)
   const [accountId, setAccountId] = useState("")
   const [gatewayId, setGatewayId] = useState("")
   const [slug, setSlug] = useState("jev")
 
-  const spec = providers.find((item) => item.id === provider) ?? providers[0]
+  const spec = specForId(providers, provider) ?? providers[0]
   const vault = useVaultOverride(keySource)
 
   useEffect(() => {
@@ -74,6 +73,12 @@ export function System1() {
         setProvider(body.provider || body.providers?.[0]?.id || "")
         setEndpoint(body.endpoint)
         setModel(body.model)
+        setModelCustom(
+          isCustomModel(
+            specForId(body.providers ?? [], body.provider),
+            body.model,
+          ),
+        )
         setAccountId(body.accountId)
         setGatewayId(body.gatewayId)
         setSlug(body.slug || "jev")
@@ -87,7 +92,7 @@ export function System1() {
   }, [])
 
   function fillEndpoint(nextProvider: string, nextEndpoint: string) {
-    const next = providers.find((item) => item.id === nextProvider)
+    const next = specForId(providers, nextProvider)
     if (!next) return nextEndpoint
     if (nextEndpoint.trim()) return nextEndpoint
     if (next.id === "cloudflare-jev") {
@@ -102,9 +107,10 @@ export function System1() {
   }
 
   function pickProvider(id: string) {
-    const next = providers.find((item) => item.id === id)
-    const prev = providers.find((item) => item.id === provider)
+    const next = specForId(providers, id)
+    const prev = specForId(providers, provider)
     setProvider(id)
+    setModelCustom(false)
     setSaved("")
     setEndpoint((current) => {
       if (current.trim() && current !== prev?.endpointPlaceholder)
@@ -204,6 +210,7 @@ export function System1() {
       setSlug("jev")
       setProvider(first?.id ?? "")
       setModel(first?.defaultModel ?? "")
+      setModelCustom(false)
       setSaved("Removed.")
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "remove failed")
@@ -241,7 +248,7 @@ export function System1() {
             </option>
           ))}
         </Select>
-        {spec?.id === "cloudflare-jev" ? (
+        {hasField(spec, "gatewayId") ? (
           <Stack spacing={1.5}>
             <TextField
               label={vault.locked ? "Account ID (from vault)" : "Account ID"}
@@ -274,7 +281,7 @@ export function System1() {
             />
           </Stack>
         ) : null}
-        {spec?.id === "cloudflare-clef" ? (
+        {hasField(spec, "accountId") && !hasField(spec, "gatewayId") ? (
           <TextField
             label={vault.locked ? "Account ID (from vault)" : "Account ID"}
             value={accountId}
@@ -313,7 +320,7 @@ export function System1() {
             <VaultOverrideButton onClick={vault.override} />
           ) : null}
         </Stack>
-        {spec?.gatewayToken ? (
+        {hasField(spec, "gatewayToken") ? (
           <TextField
             label={
               vault.locked
@@ -329,16 +336,20 @@ export function System1() {
             onChange={(event) => setGatewayToken(event.currentTarget.value)}
           />
         ) : null}
-        <TextField
-          label={
-            spec?.id === "cloudflare-clef"
-              ? "Model (clef or clef-flash)"
-              : "Model"
-          }
-          value={model}
-          placeholder={spec?.defaultModel || "omit to let the server choose"}
-          onChange={(event) => setModel(event.currentTarget.value)}
-        />
+        {spec ? (
+          <CatalogModelSelect
+            name="system1-model"
+            spec={spec}
+            model={model}
+            custom={modelCustom}
+            freePlaceholder="omit to let the server choose"
+            onPick={(next, custom) => {
+              setModel(next)
+              setModelCustom(custom)
+              setSaved("")
+            }}
+          />
+        ) : null}
         <Stack direction="row" spacing={1}>
           <Button
             variant="contained"

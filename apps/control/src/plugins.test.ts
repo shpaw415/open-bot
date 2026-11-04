@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test"
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { User } from "@open-bot/db"
@@ -8,7 +8,7 @@ import type { PluginManifest } from "@open-bot/plugin-kit"
 import * as dockerModule from "./docker"
 import * as pluginArtifactModule from "./plugin-artifact"
 import * as pluginPages from "./plugin-pages"
-import { ensureGuardCron, handlePlugins } from "./plugins"
+import { ensureGuardCron, guardScript, handlePlugins } from "./plugins"
 import {
   applyPluginInstall,
   applyPluginUninstall,
@@ -290,10 +290,92 @@ describe("plugins router", () => {
     expect(jobs[0]?.everySeconds).toBe(86_400)
     expect(jobs[0]?.enabled).toBe(true)
     expect(jobs[0]?.message).toContain("weather-pro")
+    // script-first: the check runs as a script and only a [cron-agent]
+    // marker on new/changed items may wake the agent
+    expect(jobs[0]?.runKind).toBe("auto")
+    expect(jobs[0]?.script).toContain("[cron-agent]")
+    expect(jobs[0]?.script).toContain("plugin-guards/weather-pro.seen")
 
     const second = ensureGuardCron(db, user(), manifest)
     expect(second).toBe(first)
     expect(db.cronJobs("a")).toHaveLength(1)
+  })
+
+  test("the guard script wakes the agent only on new or changed items", () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-guard-"))
+    const bin = join(home, "bin")
+    const fixtures = join(home, "fixtures")
+    mkdirSync(bin)
+    mkdirSync(fixtures)
+    writeFileSync(join(fixtures, "issues.txt"), "#1 crash on empty input\n")
+    writeFileSync(join(fixtures, "prs.txt"), "")
+    writeFileSync(join(fixtures, "comments.txt"), "")
+    const stub = (name: string, body: string) =>
+      writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, {
+        mode: 0o755,
+      })
+    stub(
+      "gh",
+      `[ -f "$HOME/fixtures/gh-fails" ] && exit 1
+case "$1 $2" in
+"issue list") cat "$HOME/fixtures/issues.txt" ;;
+"pr list") cat "$HOME/fixtures/prs.txt" ;;
+*) exit 2 ;;
+esac`,
+    )
+    stub(
+      "ob-plugin",
+      `[ "$1" = comments ] && cat "$HOME/fixtures/comments.txt"`,
+    )
+    const scriptPath = join(home, "guard.sh")
+    writeFileSync(
+      scriptPath,
+      guardScript(manifest as unknown as PluginManifest),
+    )
+    const run = () => {
+      const proc = Bun.spawnSync(["bash", scriptPath], {
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+        },
+      })
+      return {
+        code: proc.exitCode,
+        stdout: new TextDecoder().decode(proc.stdout),
+      }
+    }
+
+    // first run: everything is new
+    const first = run()
+    expect(first.code).toBe(0)
+    expect(first.stdout).toContain("[cron-agent]")
+    expect(first.stdout).toContain("crash on empty input")
+    // second run: nothing new — the auto cron stays silent
+    expect(run().stdout).toBe("")
+    // a new issue wakes again, with only the new item
+    writeFileSync(
+      join(fixtures, "issues.txt"),
+      "#1 crash on empty input\n#2 typo in the readme\n",
+    )
+    const third = run()
+    expect(third.stdout).toContain("typo in the readme")
+    expect(third.stdout).not.toContain("crash on empty input")
+    // a failed check must not advance the seen state
+    writeFileSync(
+      join(fixtures, "issues.txt"),
+      "#1 crash on empty input\n#2 typo in the readme\n#3 settings not saved\n",
+    )
+    writeFileSync(join(fixtures, "gh-fails"), "")
+    expect(run().code).not.toBe(0)
+    unlinkSync(join(fixtures, "gh-fails"))
+    expect(run().stdout).toContain("settings not saved")
+    // an updated issue (changed line) re-wakes too
+    writeFileSync(
+      join(fixtures, "issues.txt"),
+      "#1 crash on empty input (updated 2026-11-02)\n#2 typo in the readme\n#3 settings not saved\n",
+    )
+    expect(run().stdout).toContain("crash on empty input")
   })
 
   test("a new guard seeds the shared thread sessionId from a sibling guard", () => {
@@ -989,6 +1071,7 @@ describe("plugins router", () => {
       running: true,
       port: 4740,
       pid: 5,
+      desktop: "running",
     })
     const restart = spyOn(
       pluginPages,
@@ -1008,7 +1091,12 @@ describe("plugins router", () => {
 
       // A stopped server stays lazy: install never boots it, the first
       // request does.
-      runtime.mockResolvedValue({ running: false, port: null, pid: null })
+      runtime.mockResolvedValue({
+        running: false,
+        port: null,
+        pid: null,
+        desktop: "running",
+      })
       restart.mockClear()
       const stopped = await applyPluginInstall(db, user(), {
         id: "weather-pro",

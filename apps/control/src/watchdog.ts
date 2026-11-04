@@ -9,6 +9,10 @@ import { endpoint } from "./docker"
 import { applyThinkingEffort } from "./effort"
 import type { EventHub } from "./events"
 import { sha256 } from "./passwords"
+import { providerBaseUrl, watchdogProviderById } from "./watchdog-catalog"
+
+export * from "./watchdog-catalog"
+
 import { effectiveUserKey, getTeamConfig, objectHasAnyField } from "./team"
 import { redactSecrets } from "./watchdog-rules"
 
@@ -81,60 +85,6 @@ export const WATCHDOG_FINDING_KEEP = 200
 export const WATCHDOG_DEDUPE_MS = 10 * 60_000
 export const WATCHDOG_INGEST_RATE = 60
 const RATE_WINDOW_MS = 60 * 60_000
-
-export type WatchdogProviderSpec = {
-  id: string
-  label: string
-  defaultModel: string
-  /** Cloudflare Workers AI path-style models need the account id. */
-  accountRequired: boolean
-  baseUrl: string | null
-  vaultSlug: string
-}
-
-export const watchdogProviders: WatchdogProviderSpec[] = [
-  {
-    id: "workers-ai",
-    label: "Cloudflare Workers AI",
-    defaultModel: "@cf/mistralai/mistral-small-3.1-24b-instruct",
-    accountRequired: true,
-    baseUrl: "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1",
-    vaultSlug: "cloudflare",
-  },
-  {
-    id: "openai",
-    label: "OpenAI",
-    defaultModel: "gpt-4o-mini",
-    accountRequired: false,
-    baseUrl: "https://api.openai.com/v1",
-    vaultSlug: "openai",
-  },
-  {
-    id: "xai",
-    label: "xAI",
-    defaultModel: "grok-3-mini",
-    accountRequired: false,
-    baseUrl: "https://api.x.ai/v1",
-    vaultSlug: "xai",
-  },
-  {
-    id: "custom",
-    label: "Custom (OpenAI-compatible)",
-    defaultModel: "",
-    accountRequired: false,
-    baseUrl: null,
-    vaultSlug: "",
-  },
-]
-
-export function watchdogProviderById(id: string) {
-  return watchdogProviders.find((item) => item.id === id)
-}
-
-export function providerBaseUrl(spec: WatchdogProviderSpec, accountId: string) {
-  if (!spec.baseUrl) return ""
-  return spec.baseUrl.replace("{accountId}", encodeURIComponent(accountId))
-}
 
 export type ResolvedWatchdog = {
   value: WatchdogConfig

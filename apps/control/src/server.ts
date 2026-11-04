@@ -6,6 +6,7 @@ import {
   type CronJob,
   type CronScheduleKind,
   type Db,
+  DEFAULT_AGENT_STEP_CAP,
   type ImageProvider,
   type Model3dProvider,
   type System1Provider,
@@ -14,6 +15,7 @@ import {
   type VideoProvider,
   type VikingProvider,
   type VoiceConfig,
+  validAgentStepCap,
   vikingProviderReady,
 } from "@open-bot/db"
 import { handleAdmin } from "./admin"
@@ -46,9 +48,13 @@ import {
   type ChatKeyEntry,
   currentStart,
   desktopPhase,
+  disconnectOpencodeProvider,
+  enableOpencodeProvider,
   endpoint,
   isRunning,
+  opencodeDisabledProviders,
   opencodeExec,
+  pendingRestart,
   probeCliProviders,
   probeCliProvidersCached,
   restartOpencode,
@@ -58,6 +64,7 @@ import {
   startDesktop,
   startError,
   stopDesktop,
+  syncAgentCap,
   syncChatAuth,
   syncCliAuth,
   syncImageAuth,
@@ -65,15 +72,16 @@ import {
   syncSystem1,
   syncVideoAuth,
   syncWatchdogConfig,
-  writeAgentUpload,
   writeProjectFile,
 } from "./docker"
 import {
-  applyThinkingEffort,
   basicOpencodeAuth as basic,
   clearModelVariants,
   fetchModelVariants,
+  resolveThreadModel,
   supportsEffort,
+  type ThreadModelChoice,
+  validateModelChoice,
 } from "./effort"
 import { cookieSecure, names, webDist } from "./env"
 import type { EventHub, EventsSocketData, Upstream } from "./events"
@@ -85,7 +93,6 @@ import {
   imageProviders,
 } from "./image-providers"
 import { handleImprovementPost } from "./improvements"
-import { JOINED_REPLY, prepareJoinedPrompt } from "./join-file"
 import {
   fillImageFromVault,
   fillModel3dFromVault,
@@ -117,6 +124,7 @@ import {
 } from "./login-urls"
 import { handleMcp } from "./mcp"
 import { handleMedia, isMediaRequest } from "./media-vault"
+import { pageMessages, parseMessagePageQuery } from "./messages-page"
 import { trimDashboardMessages } from "./messages-trim"
 import {
   model3dAuthReady,
@@ -126,11 +134,8 @@ import {
 } from "./model3d-providers"
 import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords"
 import {
-  applyPersonaScope,
   handlePersonas,
-  mergeSystem,
   personaScope,
-  personaSystem,
   resolvePersona,
   seedSkillDescriptions,
 } from "./personas"
@@ -155,12 +160,7 @@ import {
   resyncPluginsForLanguage,
   resyncPluginsForVaultSlug,
 } from "./plugins-apply"
-import {
-  mintPreviewToken,
-  PREVIEW_REPLY,
-  proxyPreview,
-  readPreviewPort,
-} from "./preview"
+import { mintPreviewToken, proxyPreview, readPreviewPort } from "./preview"
 import {
   desktopProcesses,
   killDesktopProcess,
@@ -176,7 +176,7 @@ import {
   resolveCustomProjectPath,
   slugifyName,
 } from "./projects"
-import { resolveReferenceLine } from "./references"
+import { prepareDashboardPrompt } from "./prompt-send"
 import {
   desktopReports,
   isReportStatus,
@@ -187,7 +187,6 @@ import { startReset } from "./reset"
 import { ResetApprovals } from "./reset-approvals"
 import {
   ensureThreadScreen,
-  holdSystemLine,
   resolveRootSession,
   screenHeld,
   setScreenHold,
@@ -211,7 +210,7 @@ import {
 } from "./team"
 import { refreshTeamOpencodeAuth } from "./team-apply"
 import { handleThreadDirs } from "./thread-dirs"
-import { claimThreadTitle, promptText, refineThreadTitle } from "./thread-title"
+import { handleThreadQueue, isThreadQueuePath } from "./thread-queue"
 import {
   cleanupDeletedThread,
   handleOpencodeRead,
@@ -239,6 +238,11 @@ import {
 import { vikingUserKey } from "./viking-user"
 import {
   applyVoicePatch,
+  canonicalVoiceProviderId,
+  defaultVoiceFor,
+  normalizeVoiceModel,
+  parseSttConfig,
+  parseTtsConfig,
   resolveVoiceConfig,
   runStt,
   runTts,
@@ -259,25 +263,17 @@ import {
   watchdogConfigError,
   watchdogContainerPayload,
   watchdogProviderById,
-  watchdogProviders,
+  watchdogProviderPublic,
   watchdogSharedFieldsPresent,
 } from "./watchdog"
+import { agentFilePath, workspaceFileResponse } from "./workspace-file"
+import { workspaceImagePath, workspaceImageResponse } from "./workspace-image"
 import {
-  IMAGE_REPLY,
-  workspaceImagePath,
-  workspaceImageResponse,
-} from "./workspace-image"
-import {
-  MODEL3D_REPLY,
   workspaceModel3dPath,
   workspaceModel3dResponse,
 } from "./workspace-model3d"
 import { MEDIA_DIR, snapshotUrlFor } from "./workspace-snapshots"
-import {
-  VIDEO_REPLY,
-  workspaceVideoPath,
-  workspaceVideoResponse,
-} from "./workspace-video"
+import { workspaceVideoPath, workspaceVideoResponse } from "./workspace-video"
 
 type ProxySocket = {
   kind: "proxy"
@@ -551,8 +547,9 @@ async function createOpencodeSession(
   base: string,
   auth: HeadersInit,
   db: Db,
-  userId: string,
+  user: User,
 ) {
+  const userId = user.id
   const parsed = (await req.json().catch(() => ({}))) as Record<string, unknown>
   const raw =
     parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
@@ -573,15 +570,60 @@ async function createOpencodeSession(
   // the web speaks the steps semantic, the control plane owns the mapping.
   if (raw.steps !== undefined && raw.steps !== "unlimited")
     return json({ error: 'steps must be "unlimited" or omitted' }, 400)
+  // The blank composer's model/effort pick becomes this new thread's own
+  // pick (never the desktop default). A team-locked or provably invalid
+  // pick is dropped, never blocks creation — the client re-reads the
+  // thread's effective model before its first prompt.
+  let threadPick: ThreadModelChoice | null = null
+  if (raw.model !== undefined || raw.thinkingEffort !== undefined) {
+    let providerID: string | null = null
+    let modelID: string | null = null
+    if (raw.model !== undefined && raw.model !== null) {
+      const model = raw.model
+      if (typeof model !== "object" || Array.isArray(model))
+        return json({ error: "invalid model" }, 400)
+      const record = model as Record<string, unknown>
+      providerID =
+        typeof record.providerID === "string" ? record.providerID : ""
+      modelID = typeof record.modelID === "string" ? record.modelID : ""
+      if (!providerID || !modelID) return json({ error: "invalid model" }, 400)
+    }
+    const rawEffort = raw.thinkingEffort
+    if (
+      rawEffort !== undefined &&
+      rawEffort !== null &&
+      typeof rawEffort !== "string"
+    )
+      return json({ error: "invalid thinking effort" }, 400)
+    const effort =
+      typeof rawEffort === "string" && rawEffort.trim() !== ""
+        ? rawEffort.trim()
+        : null
+    if (effort && effort.length > 32)
+      return json({ error: "invalid thinking effort" }, 400)
+    if (providerID || effort) threadPick = { providerID, modelID, effort }
+    const team = getTeamConfig(db)
+    if (
+      threadPick &&
+      team.mode === "team" &&
+      team.lockModelPicker &&
+      user.role !== "admin"
+    )
+      threadPick = null
+    if (threadPick && (await validateModelChoice(db, userId, threadPick)))
+      threadPick = null
+  }
   const rest = { ...raw }
   delete rest.personaId
   delete rest.dirId
   delete rest.agent
+  delete rest.model
+  delete rest.thinkingEffort
   if (raw.steps === "unlimited") rest.agent = UNLIMITED_STEPS_AGENT
   // Persona skill scopes ride the session-create body as opencode permission
   // rules — one write, no restart, persisted in opencode.db. Built-in
-  // personas (Assistant included) are seed-scoped, so they apply like any
-  // other persona.
+  // personas apply like any other persona (the Assistant contributes only
+  // MCP rules — its skills are locked to all).
   if (personaId) {
     const ruleset = await personaScope(
       db,
@@ -612,6 +654,21 @@ async function createOpencodeSession(
       if (created.id) db.setThreadPersona(userId, created.id, personaId)
     } catch {
       // return the upstream body even if the id cannot be stored
+    }
+  }
+  if (upstream.ok && threadPick) {
+    try {
+      const created = JSON.parse(text) as { id?: string }
+      if (created.id)
+        db.setThreadModel({
+          userId,
+          sessionId: created.id,
+          providerId: threadPick.providerID,
+          modelId: threadPick.modelID,
+          effort: threadPick.effort,
+        })
+    } catch {
+      // return the upstream body even if the pick cannot be stored
     }
   }
   return new Response(text, {
@@ -846,6 +903,7 @@ function pluginKeyCatalog(db: Db, userId: string) {
         label: "API key",
         placeholder: `${key.slug} API key`,
         required: true,
+        secret: true,
       },
       {
         id: "accountId",
@@ -885,6 +943,49 @@ function effectiveSelection(db: Db, user: User) {
       ? (overlay?.model ?? desktop?.selectedModel ?? null)
       : (desktop?.selectedModel ?? overlay?.model ?? null),
   }
+}
+
+/**
+ * Effective model + effort for one dashboard thread, plus the explicit
+ * per-thread pick (`thread`, null halves = desktop default). The team
+ * lock wins over any stored pick, mirroring /api/me.
+ */
+function threadModelPayload(db: Db, user: User, sessionId: string) {
+  const desktop = db.desktop(user.id)
+  const selection = effectiveSelection(db, user)
+  const team = getTeamConfig(db)
+  const locked =
+    team.mode === "team" && team.lockModelPicker && user.role !== "admin"
+  const resolved = resolveThreadModel(
+    locked ? null : db.threadModel(user.id, sessionId),
+    {
+      providerID: selection.provider,
+      modelID: selection.model,
+      thinkingEffort: desktop?.thinkingEffort ?? null,
+    },
+  )
+  return {
+    model: {
+      providerID: resolved.providerID,
+      modelID: resolved.modelID,
+      thinkingEffort: resolved.thinkingEffort,
+    },
+    thread: resolved.thread
+      ? {
+          providerID: resolved.thread.providerID,
+          modelID: resolved.thread.modelID,
+          thinkingEffort: resolved.thread.effort,
+        }
+      : null,
+  }
+}
+
+/** Optional `sessionId` on a model/thinking PUT body; "" = desktop-wide. */
+function bodySessionId(body: Record<string, unknown>): string | null {
+  const raw = body.sessionId
+  if (raw === undefined || raw === null || raw === "") return ""
+  if (typeof raw !== "string") return null
+  return raw.trim()
 }
 
 async function skillsClient(user: User, db: Db) {
@@ -1472,6 +1573,11 @@ async function api(
     if (handled) return handled
     return json({ error: "not found" }, 404)
   }
+  if (isThreadQueuePath(url.pathname)) {
+    const handled = await handleThreadQueue(req, url, db, user, hub)
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
+  }
   if (isCatalogDirsPath) {
     const handled = handleCatalogDirs(req, url, db, user, hub)
     if (handled) return handled
@@ -1603,6 +1709,8 @@ async function api(
       role: user.role,
       mustChangePassword: user.mustChangePassword,
       language: instanceLanguage(db),
+      agentStepCap: desktop?.agentStepCap ?? null,
+      agentStepCapDefault: DEFAULT_AGENT_STEP_CAP,
       desktop: phase,
       model: desktop
         ? {
@@ -1844,7 +1952,9 @@ async function api(
   if (url.pathname === "/api/keys" && req.method === "GET") {
     const team = getTeamConfig(db)
     const shared = team.mode === "team"
-    const catalogSlugs = new Set(keyVaultPublic().map((item) => item.id))
+    const catalogSlugs = new Set<string>(
+      keyVaultPublic().map((item) => item.id),
+    )
     const entry = (key: {
       slug: string
       accountId: string
@@ -2099,10 +2209,19 @@ async function api(
     const ttsSpec = voiceProviderById(saved.ttsProvider)
     const resolved = resolveVoiceConfig(db, user.id)
     const shared = teamMode(db) === "team"
+    // Saved rows may still carry the pre-consolidation Cloudflare provider
+    // ids and the retired whisper model; the form only speaks canonical
+    // ids and catalog models.
+    const sttModel = sttSpec
+      ? normalizeVoiceModel(sttSpec, saved.sttModel)
+      : saved.sttModel
+    const ttsModel = ttsSpec
+      ? normalizeVoiceModel(ttsSpec, saved.ttsModel)
+      : saved.ttsModel
     return json({
       providers: voiceProvidersPublic(),
       stt: {
-        provider: saved.sttProvider,
+        provider: canonicalVoiceProviderId(saved.sttProvider),
         // When the vault fills the credentials, show its account id so the
         // locked field displays what is actually used (account ids are not
         // secret; the key itself never leaves the server).
@@ -2110,20 +2229,21 @@ async function api(
           resolved.sttSource === "vault"
             ? resolved.value.sttAccountId
             : saved.sttAccountId,
-        model: saved.sttModel || sttSpec?.defaultModel || "",
+        model: sttModel,
         hasKey: hasKey(shared, saved.sttApiKey, resolved.value.sttApiKey),
         keySource: (shared ? resolved.value.sttProvider : saved.sttProvider)
           ? resolved.sttSource
           : null,
       },
       tts: {
-        provider: saved.ttsProvider,
+        provider: canonicalVoiceProviderId(saved.ttsProvider),
         accountId:
           resolved.ttsSource === "vault"
             ? resolved.value.ttsAccountId
             : saved.ttsAccountId,
-        model: saved.ttsModel || ttsSpec?.defaultModel || "",
-        voice: saved.ttsVoice || ttsSpec?.defaultVoice || "",
+        model: ttsModel,
+        voice:
+          saved.ttsVoice || (ttsSpec ? defaultVoiceFor(ttsSpec, ttsModel) : ""),
         hasKey: hasKey(shared, saved.ttsApiKey, resolved.value.ttsApiKey),
         keySource: (shared ? resolved.value.ttsProvider : saved.ttsProvider)
           ? resolved.ttsSource
@@ -2186,13 +2306,7 @@ async function api(
     const findings = db.watchdogFindings(user.id, { limit: 200 })
     const shared = teamMode(db) === "team"
     return json({
-      providers: watchdogProviders.map((item) => ({
-        id: item.id,
-        label: item.label,
-        defaultModel: item.defaultModel,
-        accountRequired: item.accountRequired,
-        needsBaseUrl: item.baseUrl === null,
-      })),
+      providers: watchdogProviderPublic(),
       config: {
         enabled: saved.enabled,
         stopOnHigh: saved.stopOnHigh,
@@ -2292,12 +2406,21 @@ async function api(
   }
   if (url.pathname === "/api/stt" && req.method === "POST") {
     const resolved = resolveVoiceConfig(db, user.id)
-    const spec = voiceProviderById(resolved.value.sttProvider)
-    if (!spec || spec.kind !== "stt") {
+    if (!resolved.value.sttProvider) {
       return json({ error: "configure a speech-to-text provider first" }, 400)
     }
     if (resolved.sttSource === "missing") {
       return json({ error: "the speech-to-text provider has no API key" }, 400)
+    }
+    const sttConfig = parseSttConfig(resolved.value)
+    if (!sttConfig) {
+      return json(
+        {
+          error:
+            "the speech-to-text provider is missing a required field or model",
+        },
+        400,
+      )
     }
     const form = await req.formData().catch(() => null)
     const file = form?.get("audio")
@@ -2310,10 +2433,7 @@ async function api(
     const audio = new Uint8Array(await file.arrayBuffer())
     try {
       const text = await runStt({
-        providerId: spec.id,
-        apiKey: resolved.value.sttApiKey,
-        accountId: resolved.value.sttAccountId,
-        model: resolved.value.sttModel || spec.defaultModel,
+        config: sttConfig,
         language: resolved.value.language,
         audio,
         mime: file.type,
@@ -2336,20 +2456,25 @@ async function api(
     const text = String(body.text ?? "")
     if (!text.trim()) return json({ error: "text is required" }, 400)
     const resolved = resolveVoiceConfig(db, user.id)
-    const spec = voiceProviderById(resolved.value.ttsProvider)
-    if (!spec || spec.kind !== "tts") {
+    if (!resolved.value.ttsProvider) {
       return json({ error: "configure a text-to-speech provider first" }, 400)
     }
     if (resolved.ttsSource === "missing") {
       return json({ error: "the text-to-speech provider has no API key" }, 400)
     }
+    const ttsConfig = parseTtsConfig(resolved.value)
+    if (!ttsConfig) {
+      return json(
+        {
+          error:
+            "the text-to-speech provider is missing a required field or model",
+        },
+        400,
+      )
+    }
     try {
       const audio = await runTts({
-        providerId: spec.id,
-        apiKey: resolved.value.ttsApiKey,
-        accountId: resolved.value.ttsAccountId,
-        model: resolved.value.ttsModel || spec.defaultModel,
-        voice: resolved.value.ttsVoice || spec.defaultVoice,
+        config: ttsConfig,
         language: resolved.value.language,
         text: ttsMaxChars(text),
       })
@@ -2817,10 +2942,16 @@ async function api(
     // (image predates cli-status.sh) reports unknown, never logged out.
     const cliStatus = await probeCliProviders(user.id).catch(() => null)
     const cliById = new Map((cliStatus ?? []).map((row) => [row.id, row]))
+    // Providers disconnected at the config level (see the logout route):
+    // the daemon excludes them, but the picker keeps them re-connectable.
+    const disabled = await opencodeDisabledProviders(user.id).catch(
+      () => [] as string[],
+    )
     return json({
       providers: {
         catalog,
         connected: providers?.connected ?? [],
+        disabled,
       },
       cliProviders: {
         available: cliStatus !== null,
@@ -2869,6 +3000,11 @@ async function api(
     }
     await ensure(user, db)
     const body = await readJson(req)
+    // A provider disconnected at the config level (logout fallback) is
+    // excluded by the daemon; re-enable it so this login can proceed.
+    if (typeof body.provider === "string" && !isCliProviderId(body.provider)) {
+      await enableOpencodeProvider(user.id, body.provider).catch(() => false)
+    }
     const id = crypto.randomUUID()
     const session: LoginSession = {
       id,
@@ -2983,25 +3119,114 @@ async function api(
         output: result.stdout || result.stderr,
       })
     }
+    const providerId = String(body.provider ?? "")
     const result = await opencodeExec(user.id, [
       "opencode",
       "auth",
       "logout",
-      String(body.provider ?? ""),
+      providerId,
     ])
-    if (result.code === 0 && user.role === "admin" && teamMode(db) === "team") {
-      // The admin just removed a provider: refresh the shared snapshot.
-      void refreshTeamOpencodeAuth(db, user.id, hub).catch((error: unknown) => {
-        console.error(
-          `team opencode auth refresh after logout failed: ${
-            error instanceof Error ? error.message : error
-          }`,
-        )
-      })
+    if (result.code !== 0) {
+      // Providers connected through opencode.json config or an env var
+      // have no auth.json entry: `opencode auth logout` exits 1 with
+      // "Unknown configured provider" and the provider stays connected.
+      // Disconnect it at the config level instead.
+      const disconnected = await disconnectOpencodeProvider(
+        user.id,
+        providerId,
+      ).catch(() => false)
+      if (!disconnected) {
+        return json({
+          ok: false,
+          output: result.stdout || result.stderr,
+        })
+      }
+      let note: string | undefined
+      try {
+        await restartOpencode(user.id, { db, desktop, hub })
+        if (pendingRestart(user.id)) {
+          note =
+            "provider disconnected — OpenCode restarts once running threads finish"
+        }
+      } catch {
+        note = "provider disconnected, but OpenCode did not restart"
+      }
+      return json({ ok: true, output: result.stdout || result.stderr, note })
+    }
+    let note: string | undefined
+    if (user.role === "admin" && teamMode(db) === "team") {
+      // The admin just removed a provider: refresh the shared snapshot
+      // before the restart below so the deleted entry cannot ride the
+      // stale snapshot back at the next boot.
+      await refreshTeamOpencodeAuth(db, user.id, hub).catch(
+        (error: unknown) => {
+          console.error(
+            `team opencode auth refresh after logout failed: ${
+              error instanceof Error ? error.message : error
+            }`,
+          )
+        },
+      )
+    }
+    // The daemon caches its provider list until it restarts, so without a
+    // restart the removed provider keeps reporting connected (same reason
+    // finishLogin restarts after a login).
+    try {
+      await restartOpencode(user.id, { db, desktop, hub })
+      if (pendingRestart(user.id)) {
+        note =
+          "provider removed — OpenCode restarts once running threads finish"
+      }
+    } catch {
+      note = "provider removed, but OpenCode did not restart"
     }
     return json({
-      ok: result.code === 0,
+      ok: true,
       output: result.stdout || result.stderr,
+      note,
+    })
+  }
+  if (url.pathname === "/api/agent-cap" && req.method === "GET") {
+    const desktop = db.desktop(user.id)
+    return json({
+      stepCap: desktop?.agentStepCap ?? null,
+      defaultStepCap: DEFAULT_AGENT_STEP_CAP,
+      effectiveStepCap: desktop?.agentStepCap ?? DEFAULT_AGENT_STEP_CAP,
+    })
+  }
+  if (url.pathname === "/api/agent-cap" && req.method === "PUT") {
+    const body = await readJson(req)
+    const raw = (body as { stepCap?: unknown }).stepCap
+    if (raw !== null && !validAgentStepCap(raw)) {
+      return json(
+        { error: "stepCap must be an integer between 1 and 100000, or null" },
+        400,
+      )
+    }
+    db.updateDesktopAgentStepCap(user.id, raw)
+    let applied = false
+    let note: string | undefined
+    try {
+      applied = await syncAgentCap(user.id, raw, {
+        db,
+        desktop: db.desktop(user.id),
+        hub,
+      })
+    } catch (error: unknown) {
+      note = error instanceof Error ? error.message : "agent cap sync failed"
+    }
+    return json({
+      ok: true,
+      stepCap: raw,
+      defaultStepCap: DEFAULT_AGENT_STEP_CAP,
+      effectiveStepCap: raw ?? DEFAULT_AGENT_STEP_CAP,
+      applied,
+      ...(note ? { note } : {}),
+      ...(!applied && !note
+        ? {
+            note: "saved — applies when the desktop next starts",
+          }
+        : {}),
     })
   }
   if (url.pathname === "/api/language" && req.method === "PUT") {
@@ -3038,6 +3263,11 @@ async function api(
         : {}),
     })
   }
+  if (url.pathname === "/api/thread-model" && req.method === "GET") {
+    const sessionId = url.searchParams.get("sessionId") ?? ""
+    if (!sessionId) return json({ error: "sessionId required" }, 400)
+    return json(threadModelPayload(db, user, sessionId))
+  }
   if (url.pathname === "/api/model" && req.method === "PUT") {
     const body = await readJson(req)
     const providerID = String(body.providerID ?? "")
@@ -3061,7 +3291,42 @@ async function api(
         : null
     if (explicitEffort && explicitEffort.length > 32)
       return json({ error: "invalid thinking effort" }, 400)
+    const sessionId = bodySessionId(body)
+    if (sessionId === null)
+      return json({ error: "sessionId must be a string" }, 400)
     const desktop = await ensure(user, db)
+    if (sessionId) {
+      // Per-thread pick (composer on an open thread): only this thread's
+      // row changes — no desktop default write, no opencode.json rewrite,
+      // no restart. The thread's own effort carries over while the new
+      // model supports it; no effort pick stays "desktop default".
+      const current = resolveThreadModel(db.threadModel(user.id, sessionId), {
+        providerID: desktop.selectedProvider,
+        modelID: desktop.selectedModel,
+        thinkingEffort: desktop.thinkingEffort,
+      })
+      let effort: string | null =
+        explicitEffort ?? current.thread?.effort ?? null
+      if (effort) {
+        clearModelVariants(user.id)
+        try {
+          const variants = await fetchModelVariants(user.id, desktop)
+          if (!supportsEffort(variants, providerID, modelID, effort))
+            effort = null
+        } catch {
+          if (explicitEffort)
+            return json({ error: "could not verify thinking effort" }, 502)
+        }
+      }
+      db.setThreadModel({
+        userId: user.id,
+        sessionId,
+        providerId: providerID,
+        modelId: modelID,
+        effort,
+      })
+      return json({ ok: true, ...threadModelPayload(db, user, sessionId) })
+    }
     // An explicit effort is validated against the new model; a saved one is
     // carried over only while the new model still supports it.
     let effort: string | null = explicitEffort
@@ -3099,7 +3364,54 @@ async function api(
       rawEffort && rawEffort.trim() !== "" ? rawEffort.trim() : null
     if (effort && effort.length > 32)
       return json({ error: "invalid thinking effort" }, 400)
+    const sessionId = bodySessionId(body)
+    if (sessionId === null)
+      return json({ error: "sessionId must be a string" }, 400)
     const desktop = await ensure(user, db)
+    if (sessionId) {
+      // Per-thread effort: validated against the thread's effective model
+      // (its own pick, else the desktop default) and stored on its row
+      // only — the desktop-wide effort is untouched.
+      const current = resolveThreadModel(db.threadModel(user.id, sessionId), {
+        providerID: desktop.selectedProvider,
+        modelID: desktop.selectedModel,
+        thinkingEffort: desktop.thinkingEffort,
+      })
+      if (!current.providerID || !current.modelID)
+        return json({ error: "pick a default model first" }, 400)
+      if (effort) {
+        clearModelVariants(user.id)
+        try {
+          const variants = await fetchModelVariants(user.id, desktop)
+          if (
+            !supportsEffort(
+              variants,
+              current.providerID,
+              current.modelID,
+              effort,
+            )
+          )
+            return json(
+              { error: "model does not support this thinking effort" },
+              400,
+            )
+        } catch {
+          return json({ error: "could not verify thinking effort" }, 502)
+        }
+      }
+      const providerId = current.thread?.providerID ?? null
+      const modelId = current.thread?.modelID ?? null
+      if (!providerId && !effort) db.clearThreadModel(user.id, sessionId)
+      else
+        db.setThreadModel({
+          userId: user.id,
+          sessionId,
+          providerId,
+          modelId,
+          effort,
+        })
+      return json({ ok: true, ...threadModelPayload(db, user, sessionId) })
+    }
     if (!desktop.selectedProvider || !desktop.selectedModel)
       return json({ error: "pick a default model first" }, 400)
     if (effort) {
@@ -3175,6 +3487,31 @@ async function api(
     if (!model) return json({ error: "not found" }, 404)
     return model
   }
+  if (url.pathname === "/api/workspace/file" && req.method === "GET") {
+    const path = agentFilePath(url.searchParams.get("path") ?? "")
+    if (!path) return json({ error: "not found" }, 404)
+    const desktop = await ensure(user, db)
+    const base = await endpoint(user.id, "opencode", 4096)
+    // opencode sandboxes /file/content to its instance directory; the
+    // ?directory= re-root (same trick as projects/media vault) lets a file
+    // anywhere under /home/agent resolve, not just ~/workspace.
+    const upstream = await fetch(
+      opencodeFileUrl(
+        base,
+        "content",
+        path.slice(0, path.lastIndexOf("/")) || "/",
+        path,
+      ),
+      { headers: basic(desktop.opencodePassword) },
+    )
+    if (!upstream.ok) return json({ error: "not found" }, 404)
+    const file = workspaceFileResponse(
+      path,
+      await upstream.json().catch(() => null),
+    )
+    if (!file) return json({ error: "not found" }, 404)
+    return file
+  }
   if (url.pathname === "/api/workspace/snapshots" && req.method === "GET") {
     const sessionId = url.searchParams.get("sessionId") ?? ""
     if (!sessionId) return json({ error: "sessionId required" }, 400)
@@ -3225,7 +3562,7 @@ async function api(
     const base = await endpoint(user.id, "opencode", 4096)
     const auth = basic(desktop.opencodePassword)
     if (url.pathname === "/api/opencode/session" && req.method === "POST")
-      return createOpencodeSession(req, base, auth, db, user.id)
+      return createOpencodeSession(req, base, auth, db, user)
     const sessionRef = url.pathname.match(/^\/api\/opencode\/session\/([^/]+)$/)
     if (sessionRef && req.method === "DELETE") {
       const id = decodeURIComponent(sessionRef[1] ?? "")
@@ -3269,79 +3606,16 @@ async function api(
         parsed && typeof parsed === "object" && !Array.isArray(parsed)
           ? parsed
           : {}
-      const prepared = prepareJoinedPrompt(body)
-      for (const upload of prepared.uploads)
-        await writeAgentUpload(user.id, upload.path, upload.bytes)
-      const outbound = prepared.body
-      const text = promptText(body)
-      const root = await resolveRootSession(base, auth, promptedId)
-      // The persona is resolved here for the system line anyway; the same
-      // binding re-applies the skill ruleset (PATCH, fire-and-forget) so
-      // persona edits, opencode restarts, and binding moves stay scoped
-      // without a config write. One local ms-level call on persona-bound
-      // threads only. Only an explicit binding scopes the thread — an
-      // unbound thread has no persona at all and stays unrestricted.
-      const binding = db.threadPersona(user.id, promptedId)
-      const boundPersona = binding
-        ? resolvePersona(db, user.id, binding.personaId)
-        : null
-      if (boundPersona)
-        void applyPersonaScope(
-          db,
-          user.id,
-          base,
-          basic(desktop.opencodePassword),
-          promptedId,
-          boundPersona,
-        )
-      const screen = await Promise.race([
-        ensureThreadScreen(db, user.id, root).catch(() => null),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
-      ])
-      const line = [
-        personaSystem(boundPersona),
-        screen?.system ??
-          `This thread's screen id (also your session id, for ob-thread --from) is ${root}. The screen is still starting: run the browser or screen command again in a moment and it will answer. Do not guess a VNC port. Do not call vncdo.`,
-        screen &&
-        (await Promise.race([
-          screenHeld(user.id, root),
-          new Promise<boolean>((resolve) =>
-            setTimeout(() => resolve(false), 2000),
-          ),
-        ]))
-          ? holdSystemLine()
-          : "",
-        prepared.uploads.length ? JOINED_REPLY : "",
-        IMAGE_REPLY,
-        VIDEO_REPLY,
-        MODEL3D_REPLY,
-        PREVIEW_REPLY,
-        await resolveReferenceLine(db, user, text),
-      ]
-        .filter((item): item is string => Boolean(item))
-        .join("\n\n")
-      if (text) {
-        const claimed = await claimThreadTitle(
-          base,
-          auth,
-          db,
-          user.id,
-          root,
-          text,
-        )
-        if (claimed) void refineThreadTitle(base, auth, db, user.id, root, text)
-      }
-      await applyThinkingEffort(db, user.id, outbound)
-      return proxy(
-        req,
+      const outbound = await prepareDashboardPrompt(
+        db,
+        user,
+        desktop.opencodePassword,
         base,
-        "/api/opencode",
         auth,
-        JSON.stringify({
-          ...outbound,
-          system: mergeSystem(outbound.system, line),
-        }),
+        promptedId,
+        body,
       )
+      return proxy(req, base, "/api/opencode", auth, JSON.stringify(outbound))
     }
     const messageList = url.pathname.match(
       /^\/api\/opencode\/session\/([^/]+)\/message$/,
@@ -3350,17 +3624,41 @@ async function api(
       // The dashboard polls this on every stream tick; tool parts can carry
       // megabytes of read output and base64 attachments the chat never
       // renders, so slim them before the payload crosses to the browser.
+      // Paged asks (?limit/&before, see messages-page.ts) additionally
+      // ship only the requested window of a long thread; the paging
+      // params are ours, never forwarded to opencode.
+      const pageQuery = parseMessagePageQuery(url.searchParams)
       const upstream = await fetch(
         new URL(
-          `${url.pathname.replace("/api/opencode", "")}${url.search}`,
+          `${url.pathname.replace("/api/opencode", "")}${pageQuery ? "" : url.search}`,
           base,
         ),
         { headers: auth, signal: AbortSignal.timeout(30_000) },
       ).catch(() => null)
       if (upstream?.ok) {
         const parsed: unknown = await upstream.json().catch(() => null)
-        if (Array.isArray(parsed)) return json(trimDashboardMessages(parsed))
+        if (Array.isArray(parsed)) {
+          if (!pageQuery) return json(trimDashboardMessages(parsed))
+          const page = pageMessages(parsed, pageQuery)
+          if (!page)
+            return json(
+              {
+                error: "unknown before cursor",
+                code: "message_cursor_unknown",
+              },
+              400,
+            )
+          // Trim only the slice that crosses to the browser.
+          return json({
+            ...page,
+            messages: trimDashboardMessages(page.messages),
+          })
+        }
       }
+      // A paged ask must not fall through to the generic proxy: it would
+      // forward our params upstream and return a shape the caller did
+      // not ask for. The legacy full-list path keeps its proxy fallback.
+      if (pageQuery) return json({ error: "message list failed" }, 502)
     }
     return proxy(req, base, "/api/opencode", auth)
   }

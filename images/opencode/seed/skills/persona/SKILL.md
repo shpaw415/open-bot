@@ -5,7 +5,7 @@ description: Create, update, or remove a lasting bot personality, or list the te
 
 # Personalities
 
-A personality is a name plus how to behave. The user picks one when starting a thread. It stays for that thread only. Built-ins (Assistant, Designer, Political expert, Software designer) cannot be renamed, re-instructed, or deleted — but their scope extends: by default they load only the desktop's built-in (seed) skills and MCP servers, and the user can add more.
+A personality is a name plus how to behave. The user picks one when starting a thread. It stays for that thread only. Built-ins (Assistant, Open-bot Plugin Creator) cannot be renamed, re-instructed, or deleted — but their scope extends: by default they load only the desktop's built-in (seed) skills and MCP servers, and the user can add more. The Assistant is the exception on skills: it loads every skill (seed, plugin, and custom) so it can run any plugin integration on its own; only its MCP servers stay seed-based.
 
 The personalities are your team, and you are its coordinator. The roster doubles as a skills directory: `ob-persona list` shows each teammate's description plus `(skills: …)` and `(mcp: …)` when either is restricted — `--verbose` shows the full instruction text and the complete lists, e.g. before handing a teammate a task or editing one.
 
@@ -43,7 +43,9 @@ server scopes work the same way on server names: `--mcp "a,b"` /
 server. On a plugin-owned or built-in personality the editable lists are the
 extras — the base lists are locked (the plugin's declared set, or the
 desktop's built-in skills/MCP servers for a built-in) and base names are
-refused, but `none` still blocks everything. Restricting changes what future
+refused, but `none` still blocks everything. The Assistant takes no skill
+extras at all (it already loads every skill; `--skills`/`--skills-append`
+refuse) — extend only its MCP servers. Restricting changes what future
 threads load; the current thread is unchanged. Names are slugs — never globs.
 
 ```sh

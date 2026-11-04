@@ -281,9 +281,9 @@ describe("cron model and personality", () => {
   })
 
   test("rejects an unknown personality and stores assistant as unset", () => {
-    const exists = (id: string) => id === "designer"
-    expect(cronPersonaFields({ personaId: "designer" }, exists)).toEqual({
-      personaId: "designer",
+    const exists = (id: string) => id === "plugin-creator"
+    expect(cronPersonaFields({ personaId: "plugin-creator" }, exists)).toEqual({
+      personaId: "plugin-creator",
     })
     expect(cronPersonaFields({ personaId: "assistant" }, exists)).toEqual({
       personaId: null,
@@ -301,11 +301,11 @@ describe("cron model and personality", () => {
       providerId: "grok",
       modelId: "grok-4.5",
       screenSystem: "screen :1",
-      personaLine: "For this thread only, answer as Designer.",
+      personaLine: "For this thread only, answer as Open-bot Plugin Creator.",
     })
     expect(body.model).toEqual({ providerID: "grok", modelID: "grok-4.5" })
     expect(body.system).toContain("screen :1")
-    expect(body.system).toContain("answer as Designer")
+    expect(body.system).toContain("answer as Open-bot Plugin Creator")
     expect(body.parts[0]?.text.startsWith("[cron: daily]")).toBe(true)
     const plain = cronRunBody({
       name: "daily",

@@ -2,10 +2,20 @@ import Alert from "@shpaw415/mui-lite/Alert"
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
-import { List, ListItemButton, ListItemText } from "@shpaw415/mui-lite/List"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { api } from "./api"
+import {
+  type AppRecent,
+  favoriteTabs,
+  pushRecent,
+  readFavorites,
+  readRecents,
+  recentTabs,
+  toggleFavorite,
+  writeFavorites,
+  writeRecents,
+} from "./apps-grid"
 import { HomeScreen } from "./home-screen"
 import { useMobile } from "./hooks"
 import {
@@ -14,6 +24,8 @@ import {
   ArrowBackIcon,
   CloseIcon,
   SearchIcon,
+  StarBorderIcon,
+  StarIcon,
   tileHue,
 } from "./icons"
 import {
@@ -37,6 +49,8 @@ export type PluginTab = {
   key: string
   pluginId: string
   pluginName: string
+  /** Plugin manifest description, clamped on the launcher tile. */
+  pluginDescription?: string
   tabId: string
   title: string
   // App-tile icon for the mobile home screen: emoji or material icon name.
@@ -57,6 +71,7 @@ export function pluginTabs(plugins: InstalledPluginInfo[]): PluginTab[] {
         key: `${plugin.pluginId}:${tab.id}`,
         pluginId: plugin.pluginId,
         pluginName: plugin.name,
+        pluginDescription: plugin.description,
         tabId: tab.id,
         title: tab.title,
         icon: tab.icon,
@@ -1147,16 +1162,405 @@ function AppsStaleBanner({ status }: { status: PluginsViewStatus }) {
   )
 }
 
-// The main navigation's Apps view. Desktop keeps the side list +
-// pane; mobile renders a phone-style home screen (apps, swipe pages,
-// long-press to move, drop on an entry to create a folder).
+function kindLabel(tab: PluginTab): string {
+  if (tab.kind === "app") return APPS_UI.kindApp
+  if (tab.kind === "iframe") return APPS_UI.kindIframe
+  return APPS_UI.kindPage
+}
+
+function tileGradient(key: string): string {
+  const hue = tileHue(key)
+  return `linear-gradient(145deg, hsl(${hue} 62% 56%), hsl(${(hue + 28) % 360} 58% 44%))`
+}
+
+function AppTileButton({
+  tab,
+  favorite,
+  onOpen,
+  onToggleFavorite,
+}: {
+  tab: PluginTab
+  favorite: boolean
+  onOpen: (tab: PluginTab) => void
+  onToggleFavorite: (tab: PluginTab) => void
+}) {
+  return (
+    <div className="ob-app-tile-wrap">
+      <button type="button" className="ob-app-tile" onClick={() => onOpen(tab)}>
+        <Box
+          sx={{
+            width: 44,
+            height: 44,
+            flexShrink: 0,
+            borderRadius: "12px",
+            background: tileGradient(tab.key),
+            color: "#fff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            boxShadow: "0 2px 6px rgba(0,0,0,.25)",
+          }}
+        >
+          <AppTileIcon icon={tab.icon} name={tab.title} size={22} />
+        </Box>
+        <Typography
+          variant="subtitle2"
+          component="span"
+          sx={{
+            display: "block",
+            maxWidth: "100%",
+            lineHeight: 1.25,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {tab.title}
+        </Typography>
+        <Typography
+          variant="caption"
+          component="span"
+          color="textSecondary"
+          sx={{
+            display: "block",
+            maxWidth: "100%",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {tab.pluginName}
+        </Typography>
+        {tab.pluginDescription ? (
+          <Typography
+            variant="caption"
+            component="span"
+            color="textSecondary"
+            sx={{
+              display: "-webkit-box",
+              overflow: "hidden",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              lineHeight: 1.35,
+            }}
+          >
+            {tab.pluginDescription}
+          </Typography>
+        ) : null}
+        <Typography
+          variant="caption"
+          component="span"
+          color="textSecondary"
+          sx={{ display: "block", mt: "auto" }}
+        >
+          {kindLabel(tab)}
+        </Typography>
+      </button>
+      <button
+        type="button"
+        className="ob-app-fav"
+        data-favorite={favorite ? "true" : "false"}
+        aria-pressed={favorite}
+        aria-label={
+          favorite
+            ? APPS_UI.removeFavorite(tab.title)
+            : APPS_UI.addFavorite(tab.title)
+        }
+        onClick={() => onToggleFavorite(tab)}
+      >
+        {favorite ? (
+          <StarIcon width={18} height={18} />
+        ) : (
+          <StarBorderIcon width={18} height={18} />
+        )}
+      </button>
+    </div>
+  )
+}
+
+function LauncherSection({
+  title,
+  tabs,
+  favorites,
+  onOpen,
+  onToggleFavorite,
+}: {
+  title: string
+  tabs: PluginTab[]
+  favorites: string[]
+  onOpen: (tab: PluginTab) => void
+  onToggleFavorite: (tab: PluginTab) => void
+}) {
+  if (tabs.length === 0) return null
+  return (
+    <Box>
+      <Typography
+        variant="subtitle2"
+        component="h2"
+        sx={{
+          // mui-lite restyles any tag-level h2 at the h2 scale; section
+          // headers must stay secondary to the page's h1.
+          fontSize: "0.875rem",
+          fontWeight: 600,
+          lineHeight: 1.4,
+        }}
+      >
+        {title}
+      </Typography>
+      <div className="ob-app-grid" style={{ marginTop: 8 }}>
+        {tabs.map((tab) => (
+          <AppTileButton
+            key={tab.key}
+            tab={tab}
+            favorite={favorites.includes(tab.key)}
+            onOpen={onOpen}
+            onToggleFavorite={onToggleFavorite}
+          />
+        ))}
+      </div>
+    </Box>
+  )
+}
+
+/**
+ * Desktop front door for /apps: search, favorites, recents, then every app
+ * in one grid. Nothing opens until a tile is picked — the old layout
+ * silently opened the first app, so there was never an overview to scan.
+ */
+function AppsLauncher({
+  tabs,
+  status,
+  favorites,
+  recents,
+  onOpen,
+  onToggleFavorite,
+  onAddPlugin,
+  onManagePlugins,
+}: {
+  tabs: PluginTab[]
+  status: PluginsViewStatus
+  favorites: string[]
+  recents: AppRecent[]
+  onOpen: (tab: PluginTab) => void
+  onToggleFavorite: (tab: PluginTab) => void
+  onAddPlugin: () => void
+  onManagePlugins: () => void
+}) {
+  const [query, setQuery] = useState("")
+  const shown = useMemo(() => filterTabs(tabs, query), [tabs, query])
+  const searching = query.trim().length > 0
+  const favoritesShown = useMemo(
+    () => favoriteTabs(tabs, favorites),
+    [tabs, favorites],
+  )
+  const recentsShown = useMemo(() => recentTabs(tabs, recents), [tabs, recents])
+  return (
+    <Box className="ob-scroll" sx={{ height: "100%", minHeight: 0 }}>
+      <Stack
+        spacing={2.5}
+        sx={{ p: 3, maxWidth: 1160, mx: "auto", width: "100%" }}
+      >
+        <AppsStaleBanner status={status} />
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{ flexWrap: "wrap", rowGap: 1 }}
+        >
+          <Typography variant="h5" component="h1">
+            Applications
+          </Typography>
+          <Typography variant="caption" color="textSecondary">
+            {searching ? `${shown.length} / ${tabs.length}` : tabs.length}
+          </Typography>
+          <Box sx={{ flex: 1 }} />
+          <Button
+            variant="contained"
+            startIcon={<AddIcon width={18} height={18} />}
+            onClick={() => onAddPlugin()}
+          >
+            {APPS_UI.addApp}
+          </Button>
+          <Button variant="outlined" onClick={() => onManagePlugins()}>
+            {APPS_UI.manageExtensions}
+          </Button>
+        </Stack>
+        {/* Native field like the threads filter: mui-lite hides
+            ::placeholder, so a label-less TextField shows nothing. Enter
+            opens the first match. */}
+        <label className="ob-filter-field">
+          <SearchIcon width={16} height={16} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && shown[0]) onOpen(shown[0])
+              if (event.key === "Escape") setQuery("")
+            }}
+            placeholder={APPS_UI.filter}
+            aria-label={APPS_UI.filter}
+            type="search"
+          />
+          {query ? (
+            <button
+              type="button"
+              className="ob-filter-clear"
+              aria-label={APPS_UI.clearFilter}
+              onClick={() => setQuery("")}
+            >
+              <CloseIcon width={13} height={13} />
+            </button>
+          ) : null}
+        </label>
+        {searching ? (
+          shown.length === 0 ? (
+            <Typography variant="body2" color="textSecondary">
+              {APPS_UI.noMatch(query.trim())}
+            </Typography>
+          ) : (
+            <div className="ob-app-grid">
+              {shown.map((tab) => (
+                <AppTileButton
+                  key={tab.key}
+                  tab={tab}
+                  favorite={favorites.includes(tab.key)}
+                  onOpen={onOpen}
+                  onToggleFavorite={onToggleFavorite}
+                />
+              ))}
+            </div>
+          )
+        ) : (
+          <>
+            <LauncherSection
+              title={APPS_UI.favorites}
+              tabs={favoritesShown}
+              favorites={favorites}
+              onOpen={onOpen}
+              onToggleFavorite={onToggleFavorite}
+            />
+            <LauncherSection
+              title={APPS_UI.recents}
+              tabs={recentsShown}
+              favorites={favorites}
+              onOpen={onOpen}
+              onToggleFavorite={onToggleFavorite}
+            />
+            {/* One grid for everything: most plugins ship a single tab,
+                so a section per plugin degenerated into a vertical list
+                of lone tiles. The tile itself names its plugin. */}
+            <LauncherSection
+              title={APPS_UI.allApps}
+              tabs={tabs}
+              favorites={favorites}
+              onOpen={onOpen}
+              onToggleFavorite={onToggleFavorite}
+            />
+          </>
+        )}
+        {status.refreshing ? (
+          <Typography variant="caption" color="textSecondary">
+            Actualisation…
+          </Typography>
+        ) : null}
+      </Stack>
+    </Box>
+  )
+}
+
+/** Header over an open app: back to the launcher + favorite toggle. */
+function OpenAppHeader({
+  tab,
+  favorite,
+  onClose,
+  onToggleFavorite,
+}: {
+  tab: PluginTab
+  favorite: boolean
+  onClose: () => void
+  onToggleFavorite: (tab: PluginTab) => void
+}) {
+  return (
+    <Stack
+      direction="row"
+      spacing={1}
+      alignItems="center"
+      sx={{ px: 1, py: 0.75, flexShrink: 0 }}
+    >
+      <IconButton
+        aria-label={APPS_UI.backToApps}
+        onClick={onClose}
+        size="small"
+      >
+        <ArrowBackIcon width={20} height={20} />
+      </IconButton>
+      <Box
+        sx={{
+          width: 30,
+          height: 30,
+          flexShrink: 0,
+          borderRadius: "9px",
+          background: tileGradient(tab.key),
+          color: "#fff",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <AppTileIcon icon={tab.icon} name={tab.title} size={16} />
+      </Box>
+      <Box sx={{ minWidth: 0 }}>
+        <Typography
+          variant="subtitle2"
+          sx={{
+            lineHeight: 1.2,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {tab.title}
+        </Typography>
+        <Typography
+          variant="caption"
+          color="textSecondary"
+          sx={{ lineHeight: 1.2 }}
+        >
+          {tab.pluginName} · {kindLabel(tab)}
+        </Typography>
+      </Box>
+      <Box sx={{ flex: 1 }} />
+      <IconButton
+        aria-label={
+          favorite
+            ? APPS_UI.removeFavorite(tab.title)
+            : APPS_UI.addFavorite(tab.title)
+        }
+        aria-pressed={favorite}
+        onClick={() => onToggleFavorite(tab)}
+        size="small"
+      >
+        {favorite ? (
+          <StarIcon width={20} height={20} />
+        ) : (
+          <StarBorderIcon width={20} height={20} />
+        )}
+      </IconButton>
+    </Stack>
+  )
+}
+
+// The main navigation's Apps view. Desktop opens on the launcher grid
+// and gives an open app the full pane; mobile renders a phone-style
+// home screen (apps, swipe pages, long-press to move, drop on an entry
+// to create a folder).
 //
 // The selection lives in the URL, not in local state: opening an app
 // navigates to its canonical /<pluginId>:<tabId> route, so reload, a
-// copied link and Back/Forward all restore the same identity, the
-// document title names the open app, and the side list marks it
-// selected. selectedKey "" (the /apps route) shows the list with the
-// first app in the pane on desktop and the home screen on mobile.
+// copied link and Back/Forward all restore the same identity, and the
+// document title names the open app. selectedKey "" (the /apps route)
+// shows the launcher grid on desktop and the home screen on mobile;
+// an open app gets the full pane under OpenAppHeader either way.
 export function PluginAppsView({
   tabs,
   status,
@@ -1177,12 +1581,27 @@ export function PluginAppsView({
   onManagePlugins: () => void
 }) {
   const mobile = useMobile()
-  const [query, setQuery] = useState("")
-  const shown = useMemo(() => filterTabs(tabs, query), [tabs, query])
+  const [favorites, setFavorites] = useState<string[]>(() => readFavorites())
+  const [recents, setRecents] = useState<AppRecent[]>(() => readRecents())
   const active = useMemo(
     () => tabs.find((tab) => tab.key === selectedKey) ?? null,
     [tabs, selectedKey],
   )
+  // Opening an app (tile, deep link, search hit) makes it the newest
+  // recent; the launcher reads the same list. Guarded on the head entry so
+  // re-renders and refreshes never churn storage.
+  const activeKey = active?.key
+  useEffect(() => {
+    if (!activeKey || recents[0]?.key === activeKey) return
+    const next = pushRecent(recents, activeKey, Date.now())
+    setRecents(next)
+    writeRecents(next)
+  }, [activeKey, recents])
+  const onToggleFavorite = (tab: PluginTab) => {
+    const next = toggleFavorite(favorites, tab.key)
+    setFavorites(next)
+    writeFavorites(next)
+  }
 
   // Full-screen load/error states only when there is nothing to show yet.
   // A failed refresh (or a loading one) with tabs already on screen keeps
@@ -1242,35 +1661,12 @@ export function PluginAppsView({
     if (active) {
       return (
         <Stack sx={{ height: "100%", minHeight: 0 }}>
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            sx={{ px: 1, py: 0.75, flexShrink: 0 }}
-          >
-            <IconButton
-              aria-label={APPS_UI.backToApps}
-              onClick={onClose}
-              size="small"
-            >
-              <ArrowBackIcon width={20} height={20} />
-            </IconButton>
-            <Box sx={{ minWidth: 0 }}>
-              <Typography
-                variant="subtitle2"
-                sx={{ lineHeight: 1.2, whiteSpace: "nowrap" }}
-              >
-                {active.title}
-              </Typography>
-              <Typography
-                variant="caption"
-                color="textSecondary"
-                sx={{ lineHeight: 1.2 }}
-              >
-                {active.pluginName}
-              </Typography>
-            </Box>
-          </Stack>
+          <OpenAppHeader
+            tab={active}
+            favorite={favorites.includes(active.key)}
+            onClose={onClose}
+            onToggleFavorite={onToggleFavorite}
+          />
           <AppsStaleBanner status={status} />
           <Box sx={{ flex: 1, minHeight: 0 }}>
             <PluginTabView key={active.key} tab={active} />
@@ -1290,187 +1686,31 @@ export function PluginAppsView({
       />
     )
   }
-  const current = active ?? tabs[0]
+  if (!active) {
+    return (
+      <AppsLauncher
+        tabs={tabs}
+        status={status}
+        favorites={favorites}
+        recents={recents}
+        onOpen={onOpen}
+        onToggleFavorite={onToggleFavorite}
+        onAddPlugin={onAddPlugin}
+        onManagePlugins={onManagePlugins}
+      />
+    )
+  }
   return (
-    <Stack direction="row" sx={{ height: "100%", minHeight: 0 }}>
-      <Box
-        sx={{
-          width: 264,
-          flexShrink: 0,
-          borderRight: "1px solid",
-          borderColor: "divider",
-          display: "flex",
-          flexDirection: "column",
-          minHeight: 0,
-        }}
-      >
-        <AppsStaleBanner status={status} />
-        <Box sx={{ px: 1.25, pt: 1, pb: 0.75, flexShrink: 0 }}>
-          <Stack
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-            sx={{ mb: 0.5, px: 0.25 }}
-          >
-            <Typography
-              variant="caption"
-              color="textSecondary"
-              sx={{
-                fontSize: 11,
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.6px",
-              }}
-            >
-              Applications
-            </Typography>
-            <Typography
-              variant="caption"
-              color="textSecondary"
-              sx={{ fontSize: 11, fontVariantNumeric: "tabular-nums" }}
-            >
-              {query.trim() ? `${shown.length} / ${tabs.length}` : tabs.length}
-            </Typography>
-          </Stack>
-          {/* Native field like the threads filter: mui-lite hides
-              ::placeholder (its floating-label animation keys off
-              :placeholder-shown), so a label-less TextField shows nothing.
-              This filters the apps already listed here; it is not a server
-              search. */}
-          <label className="ob-filter-field">
-            <SearchIcon width={14} height={14} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="Filtrer les applications"
-              aria-label="Filtrer les applications"
-              type="search"
-            />
-            {query ? (
-              <button
-                type="button"
-                className="ob-filter-clear"
-                aria-label="Effacer le filtre d’applications"
-                onClick={() => setQuery("")}
-              >
-                <CloseIcon width={13} height={13} />
-              </button>
-            ) : null}
-          </label>
-          {/* Add/manage stay reachable with apps installed — the empty
-              state must not be the only place these actions exist. */}
-          <Stack direction="row" spacing={0.75} sx={{ mt: 0.75 }}>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<AddIcon width={15} height={15} />}
-              onClick={() => onAddPlugin()}
-              sx={{ flex: 1, minWidth: 0 }}
-            >
-              Ajouter
-            </Button>
-            <Button
-              size="small"
-              variant="text"
-              onClick={() => onManagePlugins()}
-              sx={{ flex: 1, minWidth: 0 }}
-            >
-              Gérer
-            </Button>
-          </Stack>
-        </Box>
-        <List
-          dense
-          disablePadding
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: "auto",
-            px: 0.75,
-            pb: 0.75,
-          }}
-        >
-          {shown.map((tab) => {
-            const hue = tileHue(tab.key)
-            const isSelected = tab.key === current?.key
-            return (
-              <ListItemButton
-                key={tab.key}
-                selected={isSelected}
-                onClick={() => onOpen(tab)}
-                sx={{
-                  borderRadius: 2,
-                  mb: 0.25,
-                  minHeight: 52,
-                  flexGrow: 0,
-                  ...(isSelected
-                    ? {
-                        backgroundColor: `hsl(${hue} 62% 56% / 0.15)`,
-                        "&:hover": {
-                          backgroundColor: `hsl(${hue} 62% 56% / 0.22)`,
-                        },
-                      }
-                    : {}),
-                }}
-              >
-                <Box
-                  sx={{
-                    width: 28,
-                    height: 28,
-                    mr: 1.25,
-                    flexShrink: 0,
-                    borderRadius: "8px",
-                    background: `linear-gradient(145deg, hsl(${hue} 62% 56%), hsl(${
-                      (hue + 28) % 360
-                    } 58% 44%))`,
-                    color: "#fff",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    boxShadow: "0 2px 6px rgba(0,0,0,.25)",
-                  }}
-                >
-                  <AppTileIcon icon={tab.icon} name={tab.title} size={16} />
-                </Box>
-                <ListItemText
-                  primary={tab.title}
-                  secondary={tab.pluginName}
-                  sx={{
-                    minWidth: 0,
-                    "& .MUI_ListItemText_Secondary": {
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    },
-                  }}
-                  SlotProps={{
-                    primary: {
-                      sx: {
-                        display: "block",
-                        fontSize: 13.5,
-                        fontWeight: isSelected ? 650 : 500,
-                        lineHeight: 1.25,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      },
-                    },
-                  }}
-                />
-              </ListItemButton>
-            )
-          })}
-          {shown.length === 0 ? (
-            <Box sx={{ px: 1.5, py: 2 }}>
-              <Typography variant="caption" color="textSecondary">
-                Aucune application pour « {query.trim()} ».
-              </Typography>
-            </Box>
-          ) : null}
-        </List>
-      </Box>
-      <Box sx={{ flex: 1, minWidth: 0 }}>
-        <PluginTabView key={current.key} tab={current} />
+    <Stack sx={{ height: "100%", minHeight: 0 }}>
+      <OpenAppHeader
+        tab={active}
+        favorite={favorites.includes(active.key)}
+        onClose={onClose}
+        onToggleFavorite={onToggleFavorite}
+      />
+      <AppsStaleBanner status={status} />
+      <Box sx={{ flex: 1, minHeight: 0, minWidth: 0 }}>
+        <PluginTabView key={active.key} tab={active} />
       </Box>
     </Stack>
   )

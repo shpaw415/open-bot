@@ -341,6 +341,7 @@ export function Providers() {
   const [auth, setAuth] = useState<ProviderAuth>({})
   const [catalog, setCatalog] = useState<CatalogEntry[]>([])
   const [connected, setConnected] = useState<string[]>([])
+  const [disabled, setDisabled] = useState<string[]>([])
   const [loginId, setLoginId] = useState("")
   const [loginBusy, setLoginBusy] = useState(false)
   const [cliItems, setCliItems] = useState<CliProviderItem[]>([])
@@ -348,7 +349,10 @@ export function Providers() {
   const [teamLockedAuth, setTeamLockedAuth] = useState(false)
   const mobile = useMobile()
 
-  const providerIds = useMemo(() => Object.keys(auth), [auth])
+  const providerIds = useMemo(
+    () => [...Object.keys(auth), ...disabled],
+    [auth, disabled],
+  )
   const nameById = useMemo(() => {
     const map = new Map<string, string>()
     for (const item of catalog) map.set(item.id, item.name)
@@ -368,7 +372,11 @@ export function Providers() {
       await api("/api/desktop/start", { method: "POST" })
       await waitForDesktop()
       const body = await api<{
-        providers?: { catalog?: CatalogEntry[]; connected?: string[] }
+        providers?: {
+          catalog?: CatalogEntry[]
+          connected?: string[]
+          disabled?: string[]
+        }
         cliProviders?: { available?: boolean; items?: CliProviderItem[] }
         auth?: ProviderAuth
         team?: { mode?: string; lockedAuth?: boolean }
@@ -377,6 +385,7 @@ export function Providers() {
       const nextAuth = body.auth ?? {}
       const nextConnected = body.providers?.connected ?? []
       setConnected(nextConnected)
+      setDisabled(body.providers?.disabled ?? [])
       setCatalog(nextCatalog)
       setCliItems(body.cliProviders?.items ?? [])
       setCliAvailable(body.cliProviders?.available !== false)
@@ -384,7 +393,7 @@ export function Providers() {
       setTeamLockedAuth(Boolean(body.team?.lockedAuth))
       const options = mergedOptions(
         nextCatalog,
-        Object.keys(nextAuth),
+        [...Object.keys(nextAuth), ...(body.providers?.disabled ?? [])],
         nextConnected,
       )
       if (options.length > 0 && !options.some((item) => item.id === provider)) {
@@ -431,10 +440,19 @@ export function Providers() {
   async function logoutProvider(id: string) {
     setError("")
     try {
-      await api("/api/providers/logout", {
+      const body = await api<{
+        ok?: boolean
+        output?: string
+        note?: string
+      }>("/api/providers/logout", {
         method: "POST",
         body: JSON.stringify({ provider: id }),
       })
+      if (body.ok === false) {
+        setError(body.output?.trim() || "logout failed")
+      } else if (body.note) {
+        setError(body.note)
+      }
       await load()
     } catch (caught) {
       setError(

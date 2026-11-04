@@ -5,13 +5,14 @@ import CheckBox from "@shpaw415/mui-lite/CheckBox"
 import FormControlLabel from "@shpaw415/mui-lite/FormControlLabel"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useId, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
   DialogTitle,
 } from "./AccessibleDialog"
 import { api } from "./api"
+import { patchSearch, searchParam, usePaneNav } from "./back-nav"
 import { Chip } from "./chip"
 import type { EventStream } from "./hooks"
 import {
@@ -27,6 +28,7 @@ import {
   VideoIcon,
 } from "./icons"
 import { Model3dView } from "./Model3dView"
+import { PARAM_ALBUM, PARAM_ITEM } from "./routes"
 import Stack from "./stack"
 
 type Kind = "image" | "video" | "model3d" | "file"
@@ -85,10 +87,25 @@ export function MediaVault({
   onOpenChat?: () => void
 }) {
   const [albums, setAlbums] = useState<Album[] | null>(null)
-  const [albumId, setAlbumId] = useState("")
+  // Album and viewer are URL screens (?album=, ?item=): albums → album →
+  // viewer is the app stack, so Back walks it exactly like the on-screen
+  // back arrows, and a reload/deep link restores the open item.
+  const paneNav = usePaneNav()
+  const { pushSearch, backOr } = paneNav
+  const paneNavRef = useRef(paneNav)
+  paneNavRef.current = paneNav
+  const locationSearch = paneNav.search
+  const albumParam = searchParam(locationSearch, PARAM_ALBUM)
+  const itemParam = searchParam(locationSearch, PARAM_ITEM)
+  const [albumId, setAlbumId] = useState(() =>
+    searchParam(locationSearch, PARAM_ALBUM),
+  )
   const [items, setItems] = useState<Item[]>([])
+  const itemsAlbumRef = useRef("")
   const [filter, setFilter] = useState<Filter>("all")
-  const [viewerId, setViewerId] = useState("")
+  const [viewerId, setViewerId] = useState(() =>
+    searchParam(locationSearch, PARAM_ITEM),
+  )
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
   const [dropAlbum, setDropAlbum] = useState<Album | null>(null)
@@ -117,16 +134,29 @@ export function MediaVault({
       )
   }, [])
 
-  const loadItems = useCallback((id: string) => {
-    if (!id) return
-    api<{ items: Item[] }>(`/api/media/albums/${encodeURIComponent(id)}/items`)
-      .then((body) => setItems(body.items ?? []))
-      .catch((caught) => {
-        setAlbumId("")
-        setItems([])
-        setError(caught instanceof Error ? caught.message : "load failed")
-      })
-  }, [])
+  const loadItems = useCallback(
+    (id: string) => {
+      if (!id) return
+      api<{ items: Item[] }>(
+        `/api/media/albums/${encodeURIComponent(id)}/items`,
+      )
+        .then((body) => {
+          itemsAlbumRef.current = id
+          setItems(body.items ?? [])
+        })
+        .catch((caught) => {
+          setAlbumId("")
+          setViewerId("")
+          setItems([])
+          pushSearch(
+            { [PARAM_ALBUM]: null, [PARAM_ITEM]: null },
+            { replace: true },
+          )
+          setError(caught instanceof Error ? caught.message : "load failed")
+        })
+    },
+    [pushSearch],
+  )
 
   useEffect(() => {
     loadAlbums()
@@ -156,30 +186,105 @@ export function MediaVault({
   const current = viewerIndex >= 0 ? shown[viewerIndex] : null
   const album = albums?.find((row) => row.id === albumId) ?? null
 
+  // Traversals move ?album=/?item=; the view follows. Local opens below
+  // set state + URL together, so the applied refs make this a no-op for
+  // everything except Back/Forward and shell navigation.
+  const appliedAlbumRef = useRef(albumParam)
+  const appliedItemRef = useRef(itemParam)
+  useEffect(() => {
+    if (appliedAlbumRef.current !== albumParam) {
+      appliedAlbumRef.current = albumParam
+      if (albumParam !== albumId) {
+        setFilter("all")
+        setAlbumId(albumParam)
+      }
+    }
+    if (appliedItemRef.current !== itemParam) {
+      appliedItemRef.current = itemParam
+      if (itemParam !== viewerId) setViewerId(itemParam)
+    }
+  }, [albumParam, itemParam, albumId, viewerId])
+
+  // A ?item= naming a deleted/unknown item (stale entry, just-deleted
+  // neighbor math) resolves to the album grid, never a blank viewer.
+  useEffect(() => {
+    if (!viewerId || !albumId) return
+    if (itemsAlbumRef.current !== albumId) return
+    if (items.some((item) => item.id === viewerId)) return
+    setViewerId("")
+    pushSearch({ [PARAM_ITEM]: null }, { replace: true })
+  }, [viewerId, albumId, items, pushSearch])
+
+  const openViewer = useCallback(
+    (id: string) => {
+      appliedItemRef.current = id
+      setViewerId(id)
+      pushSearch({ [PARAM_ITEM]: id })
+    },
+    [pushSearch],
+  )
+
+  // Paging inside the viewer replaces: Back exits to the grid, it does
+  // not walk every photo the user swiped through.
+  const pageViewer = useCallback(
+    (id: string) => {
+      appliedItemRef.current = id
+      setViewerId(id)
+      pushSearch({ [PARAM_ITEM]: id }, { replace: true })
+    },
+    [pushSearch],
+  )
+
+  const closeViewer = useCallback(() => {
+    appliedItemRef.current = ""
+    setViewerId("")
+    backOr(
+      paneNavRef.current.pathname +
+        patchSearch(paneNavRef.current.search, { [PARAM_ITEM]: null }),
+    )
+  }, [backOr])
+
+  const closeAlbum = useCallback(() => {
+    appliedAlbumRef.current = ""
+    appliedItemRef.current = ""
+    setViewerId("")
+    setAlbumId("")
+    backOr(
+      paneNavRef.current.pathname +
+        patchSearch(paneNavRef.current.search, {
+          [PARAM_ALBUM]: null,
+          [PARAM_ITEM]: null,
+        }),
+    )
+  }, [backOr])
+
   useEffect(() => {
     if (!current) return
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setViewerId("")
+        closeViewer()
         return
       }
       if (event.key === "ArrowRight") {
         const next = shown[viewerIndex + 1]
-        if (next) setViewerId(next.id)
+        if (next) pageViewer(next.id)
       }
       if (event.key === "ArrowLeft") {
         const prev = shown[viewerIndex - 1]
-        if (prev) setViewerId(prev.id)
+        if (prev) pageViewer(prev.id)
       }
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [current, shown, viewerIndex])
+  }, [current, shown, viewerIndex, closeViewer, pageViewer])
 
   function openAlbum(id: string) {
     setFilter("all")
+    appliedItemRef.current = ""
+    appliedAlbumRef.current = id
     setViewerId("")
     setAlbumId(id)
+    pushSearch({ [PARAM_ALBUM]: id, [PARAM_ITEM]: null })
   }
 
   async function removeAlbum() {
@@ -197,9 +302,15 @@ export function MediaVault({
       })
       if (body.warnings?.length) setError(body.warnings.join(" "))
       if (albumId === dropAlbum.id) {
+        appliedAlbumRef.current = ""
+        appliedItemRef.current = ""
         setAlbumId("")
         setItems([])
         setViewerId("")
+        pushSearch(
+          { [PARAM_ALBUM]: null, [PARAM_ITEM]: null },
+          { replace: true },
+        )
       }
       setDropAlbum(null)
       loadAlbums()
@@ -226,7 +337,10 @@ export function MediaVault({
       if (body.warnings?.length) setError(body.warnings.join(" "))
       if (viewerId === dropItem.id) {
         const next = shown[viewerIndex + 1] ?? shown[viewerIndex - 1]
-        setViewerId(next && next.id !== dropItem.id ? next.id : "")
+        const nextId = next && next.id !== dropItem.id ? next.id : ""
+        appliedItemRef.current = nextId
+        setViewerId(nextId)
+        pushSearch({ [PARAM_ITEM]: nextId || null }, { replace: true })
       }
       setDropItem(null)
       loadAlbums()
@@ -388,10 +502,7 @@ export function MediaVault({
               <IconButton
                 size="small"
                 aria-label="Retour aux albums"
-                onClick={() => {
-                  setAlbumId("")
-                  setViewerId("")
-                }}
+                onClick={closeAlbum}
               >
                 <ArrowBackIcon />
               </IconButton>
@@ -424,7 +535,11 @@ export function MediaVault({
                   color={filter === entry.key ? "primary" : undefined}
                   onClick={() => {
                     setFilter(entry.key)
-                    setViewerId("")
+                    if (viewerId) {
+                      appliedItemRef.current = ""
+                      setViewerId("")
+                      pushSearch({ [PARAM_ITEM]: null }, { replace: true })
+                    }
                   }}
                 >
                   {entry.label}
@@ -448,7 +563,7 @@ export function MediaVault({
                     key={item.id}
                     Element="button"
                     type="button"
-                    onClick={() => setViewerId(item.id)}
+                    onClick={() => openViewer(item.id)}
                     sx={{
                       p: 0,
                       border: 1,
@@ -524,7 +639,7 @@ export function MediaVault({
             <IconButton
               size="small"
               aria-label="Fermer la visionneuse"
-              onClick={() => setViewerId("")}
+              onClick={closeViewer}
             >
               <ArrowBackIcon />
             </IconButton>
@@ -572,7 +687,7 @@ export function MediaVault({
               disabled={viewerIndex <= 0}
               onClick={() => {
                 const prev = shown[viewerIndex - 1]
-                if (prev) setViewerId(prev.id)
+                if (prev) pageViewer(prev.id)
               }}
               sx={{ flexShrink: 0, alignSelf: "center" }}
             >
@@ -637,7 +752,7 @@ export function MediaVault({
               disabled={viewerIndex >= shown.length - 1}
               onClick={() => {
                 const next = shown[viewerIndex + 1]
-                if (next) setViewerId(next.id)
+                if (next) pageViewer(next.id)
               }}
               sx={{ flexShrink: 0, alignSelf: "center" }}
             >

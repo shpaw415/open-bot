@@ -1,0 +1,1 @@
+ALTER TABLE `desktops` ADD `agent_step_cap` integer;

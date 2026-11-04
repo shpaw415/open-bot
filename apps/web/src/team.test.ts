@@ -230,6 +230,8 @@ test("overlay patch round-trips through the draft", () => {
       },
     }),
   )
+  // Blank voice keys are secrets: omitted from the patch so the stored
+  // shared key survives (ttsApiKey), typed ones round-trip (sttApiKey).
   expect(patch.voice).toEqual({
     sttProvider: "cloudflare",
     sttAccountId: null,
@@ -237,7 +239,24 @@ test("overlay patch round-trips through the draft", () => {
     sttModel: null,
     ttsProvider: null,
     ttsAccountId: null,
-    ttsApiKey: null,
     ttsModel: "melotts",
   })
+})
+
+test("overlay draft canonicalizes legacy voice provider ids", () => {
+  const draft = overlayDraft({
+    voice: {
+      sttProvider: "deepgram-stt",
+      sttAccountId: null,
+      sttApiKey: null,
+      sttModel: "@cf/deepgram/nova-3",
+      ttsProvider: "workers-ai-tts",
+      ttsAccountId: null,
+      ttsApiKey: null,
+      ttsModel: null,
+    },
+  })
+  expect(draft.voice?.sttProvider).toBe("cloudflare-stt")
+  expect(draft.voice?.ttsProvider).toBe("cloudflare-tts")
+  expect(draft.voice?.sttModel).toBe("@cf/deepgram/nova-3")
 })

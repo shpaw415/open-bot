@@ -14,6 +14,14 @@ export type ChatPart = {
   mime?: string
   url?: string
   filename?: string
+  /** Tool parts only: the opencode tool name (read, bash, grep…). */
+  tool?: string
+  /** Tool parts only: run state as opencode reports it. */
+  state?: {
+    status?: string
+    title?: string
+    time?: { start?: number; end?: number }
+  }
 }
 
 export type ChatMessage = {
@@ -109,6 +117,10 @@ export type VisibleMessage = ChatMessage & {
   preview: boolean
   previewPath: string
   council: string
+  /** Every council named by this message's markers, in order (a thread can
+   * run several councils at once; `council` stays the first for older
+   * readers). */
+  councils: string[]
   sentAt: number | null
 }
 
@@ -206,18 +218,28 @@ export function splitPreview(text: string): {
 
 // Council reply marker: ![council: name](open-bot://council/name) (or a bare
 // link/line). Stripped from the bubble; the slug opens the council viewer.
+// One reply can announce several councils (a thread can run teams in
+// parallel), so every marker's slug is collected, in text order, deduped.
 export function splitCouncil(text: string): {
   text: string
   council: string
+  councils: string[]
 } {
-  COUNCIL_IMAGE.lastIndex = 0
-  COUNCIL_LINK.lastIndex = 0
-  COUNCIL_LINE.lastIndex = 0
-  const image = COUNCIL_IMAGE.exec(text)
-  const link = COUNCIL_LINK.exec(text)
-  const line = COUNCIL_LINE.exec(text)
-  const slug = (image?.[1] ?? link?.[1] ?? line?.[2] ?? "").toLowerCase()
-  if (!slug) return { text, council: "" }
+  const found: { slug: string; at: number }[] = []
+  const collect = (pattern: RegExp, group: number) => {
+    pattern.lastIndex = 0
+    for (const hit of text.matchAll(pattern)) {
+      const slug = (hit[group] ?? "").toLowerCase()
+      if (slug) found.push({ slug, at: hit.index ?? 0 })
+    }
+    pattern.lastIndex = 0
+  }
+  collect(COUNCIL_IMAGE, 1)
+  collect(COUNCIL_LINK, 1)
+  collect(COUNCIL_LINE, 2)
+  found.sort((a, b) => a.at - b.at)
+  const slugs = [...new Set(found.map((hit) => hit.slug))]
+  if (slugs.length === 0) return { text, council: "", councils: [] }
   const stripped = text
     .replace(COUNCIL_IMAGE, "")
     .replace(COUNCIL_LINK, "")
@@ -227,7 +249,7 @@ export function splitCouncil(text: string): {
   COUNCIL_IMAGE.lastIndex = 0
   COUNCIL_LINK.lastIndex = 0
   COUNCIL_LINE.lastIndex = 0
-  return { text: stripped, council: slug }
+  return { text: stripped, council: slugs[0] ?? "", councils: slugs }
 }
 
 export function vncFrameSrc(path: string, interactive: boolean): string {
@@ -315,6 +337,256 @@ export function workspaceModel3dSrc(path: string): string {
   return `/api/workspace/model3d?path=${encodeURIComponent(path)}`
 }
 
+const AGENT_HOME = "/home/agent/"
+const IMAGE_FILE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i
+
+// Mirrors the control plane's /api/workspace/file allowlist
+// (workspace-file.ts): if it is not listed here, the endpoint will 404 it,
+// so the chat leaves the reference as plain text instead of a dead link.
+const FILE_EXT = new Set([
+  "txt",
+  "md",
+  "markdown",
+  "csv",
+  "tsv",
+  "log",
+  "json",
+  "jsonc",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "conf",
+  "xml",
+  "html",
+  "htm",
+  "ts",
+  "mts",
+  "cts",
+  "tsx",
+  "js",
+  "mjs",
+  "cjs",
+  "jsx",
+  "py",
+  "rb",
+  "go",
+  "rs",
+  "java",
+  "c",
+  "h",
+  "cpp",
+  "cc",
+  "cxx",
+  "hpp",
+  "cs",
+  "php",
+  "sh",
+  "bash",
+  "zsh",
+  "css",
+  "scss",
+  "less",
+  "sql",
+  "swift",
+  "kt",
+  "lua",
+  "pl",
+  "vue",
+  "gitignore",
+  "gitattributes",
+  "editorconfig",
+  "pdf",
+  "svg",
+  "bmp",
+  "ico",
+  "avif",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "mp4",
+  "webm",
+  "mov",
+  "glb",
+  "stl",
+  "mp3",
+  "wav",
+  "ogg",
+  "m4a",
+  "flac",
+  "zip",
+  "gz",
+  "tgz",
+  "tar",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "odt",
+  "ods",
+  "odp",
+  "epub",
+])
+
+function fileExtOf(path: string): string {
+  const base = path.slice(path.lastIndexOf("/") + 1)
+  const dot = base.lastIndexOf(".")
+  if (dot <= 0) return base.startsWith(".") ? base.slice(1).toLowerCase() : ""
+  return base.slice(dot + 1).toLowerCase()
+}
+
+function sensitiveFileBase(base: string): boolean {
+  const name = base.toLowerCase()
+  if (name === ".env" || name.startsWith(".env.")) return true
+  if (name === "auth.json" || name.endsWith("-auth.json")) return true
+  if (name === ".npmrc" || name === ".netrc" || name === ".pypirc") return true
+  if (/^id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/.test(name)) return true
+  if (/\.(pem|key|p12|pfx)$/.test(name)) return true
+  return false
+}
+
+function protectedAgentPath(path: string): boolean {
+  const segments = path.slice(AGENT_HOME.length).split("/")
+  if (segments.some((seg) => seg === "" || seg === "." || seg === ".."))
+    return true
+  if (segments.includes(".ssh") || segments.includes(".open-bot")) return true
+  if (segments.includes(".openviking")) return true
+  if (segments[0] === ".config" && segments[1] === "open-bot") return true
+  return sensitiveFileBase(segments[segments.length - 1] ?? "")
+}
+
+/** Canonical /home/agent path for any disk spelling, or null. `explicit`
+ * marks spellings that unambiguously name the desktop disk (absolute,
+ * file://, ~/, ./, ../) as opposed to a bare relative href. */
+function parseAgentDiskPath(
+  raw: string,
+  baseDir = "/home/agent/workspace",
+): { path: string; explicit: boolean } | null {
+  let path = raw.trim()
+  if (!path || path.includes("\0") || path.includes("\\")) return null
+  let explicit = true
+  if (path.startsWith("file://")) {
+    try {
+      const url = new URL(path)
+      if (url.protocol !== "file:") return null
+      if (url.hostname && url.hostname !== "localhost") return null
+      path = decodeURIComponent(url.pathname)
+    } catch {
+      return null
+    }
+  } else {
+    // Any other scheme (https:, mailto:, open-bot:) is not a disk path.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return null
+    const cut = path.search(/[#?]/)
+    if (cut >= 0) path = path.slice(0, cut)
+    try {
+      path = decodeURIComponent(path)
+    } catch {
+      return null
+    }
+  }
+  if (path.startsWith("~/")) path = `${AGENT_HOME}${path.slice(2)}`
+  // Coding-agent line suffixes: app.ts:42 / app.ts:42:5 name the file.
+  path = path.replace(/:\d+(?::\d+)?$/, "")
+  if (path.startsWith(AGENT_HOME)) return { path, explicit }
+  if (path.startsWith("/")) return null
+  // Relative spellings resolve against the agent's working directory.
+  explicit =
+    path.startsWith("./") ||
+    path.startsWith("../") ||
+    path === ".." ||
+    path.startsWith("workspace/") ||
+    path.startsWith("home/agent/")
+  if (/\s/.test(path)) return null
+  const base = path.startsWith("home/agent/")
+    ? []
+    : baseDir.replace(/\/+$/g, "").split("/").filter(Boolean)
+  if (base.length && (base[0] !== "home" || base[1] !== "agent")) return null
+  const segments = [...base]
+  for (const seg of path.split("/")) {
+    if (seg === "" || seg === ".") continue
+    if (seg === "..") {
+      if (segments.length <= 2) return null
+      segments.pop()
+      continue
+    }
+    segments.push(seg)
+  }
+  const resolved = `/${segments.join("/")}`
+  if (!resolved.startsWith(AGENT_HOME)) return null
+  return { path: resolved, explicit }
+}
+
+/**
+ * A viewable desktop file an agent referenced, in any spelling it emits:
+ * /home/agent/…, file://…, ~/…, path:line, #L10 fragments, and relative
+ * paths from its /home/agent/workspace working directory. Bare relative
+ * hrefs need a file extension (and never .html, the conventional relative
+ * web link) so ordinary markdown links are not hijacked onto the disk.
+ */
+export function agentFilePath(raw: string, baseDir?: string): string | null {
+  const parsed = parseAgentDiskPath(raw, baseDir)
+  if (!parsed) return null
+  const { path } = parsed
+  if (protectedAgentPath(path)) return null
+  const ext = fileExtOf(path)
+  if (!parsed.explicit && (!ext || ext === "html" || ext === "htm")) return null
+  if (ext && !FILE_EXT.has(ext)) return null
+  return path
+}
+
+export function workspaceFileSrc(path: string): string {
+  return `/api/workspace/file?path=${encodeURIComponent(path)}`
+}
+
+/** Disk link targets an <img>/<video>/3D renderer can actually show. */
+function mediaFileSrc(path: string): string | null {
+  const image = workspaceImagePath(path)
+  if (image) return workspaceImageSrc(image)
+  const video = workspaceVideoPath(path)
+  if (video) return workspaceVideoSrc(video)
+  const model = workspaceModel3dPath(path)
+  if (model) return workspaceModel3dSrc(model)
+  return null
+}
+
+/** Viewable URL for a markdown link to a desktop file, or null when the
+ * href is not a disk reference. Workspace media keeps its specialized
+ * magic-checked endpoints; everything else goes to the generic file one. */
+export function chatLinkUrl(url: string, baseDir?: string): string | null {
+  const path = agentFilePath(url, baseDir)
+  if (!path) return null
+  return mediaFileSrc(path) ?? workspaceFileSrc(path)
+}
+
+const BARE_DISK_PATH =
+  /(?:file:\/\/(?:localhost)?)?\/home\/agent\/[^\s<>"'`)\]}]+|~\/[^\s<>"'`)\]}]+/g
+
+/** Bare desktop paths mentioned in prose, for linkification. Trailing
+ * sentence punctuation is trimmed and every hit is re-validated, so an
+ * escaping or secret path never becomes a link. */
+export function findAgentFilePaths(
+  text: string,
+): { start: number; end: number; path: string }[] {
+  const out: { start: number; end: number; path: string }[] = []
+  BARE_DISK_PATH.lastIndex = 0
+  for (const hit of text.matchAll(BARE_DISK_PATH)) {
+    const start = hit.index ?? 0
+    let token = hit[0]
+    while (token && /[.,;:!?]$/.test(token)) token = token.slice(0, -1)
+    if (!token) continue
+    const path = agentFilePath(token)
+    if (!path) continue
+    out.push({ start, end: start + token.length, path })
+  }
+  BARE_DISK_PATH.lastIndex = 0
+  return out
+}
+
 /** Pins message media to immutable snapshot URLs, keyed `${messageId}\n${path}`. */
 export type MediaMap = ReadonlyMap<string, string>
 
@@ -328,13 +600,17 @@ export function pinMediaUrls(
   media: MediaMap | undefined,
 ): string {
   if (!media || media.size === 0 || !messageId) return text
-  return text.replace(/\]\(([^)\s]+)\)/g, (whole, target: string) => {
-    const pinned = media.get(mediaKey(messageId, target))
+  return text.replace(/\]\((<[^>\n]+>|[^)\s]+)\)/g, (whole, target: string) => {
+    const bare =
+      target.startsWith("<") && target.endsWith(">")
+        ? target.slice(1, -1)
+        : target
+    const pinned = media.get(mediaKey(messageId, bare))
     return pinned ? `](${pinned})` : whole
   })
 }
 
-export function chatImageUrl(url: string): string {
+export function chatImageUrl(url: string, baseDir?: string): string {
   const trimmedUrl = url.trim()
   if (trimmedUrl.startsWith("/api/workspace/")) return trimmedUrl
   const local = workspaceImagePath(url)
@@ -343,13 +619,26 @@ export function chatImageUrl(url: string): string {
   if (video) return workspaceVideoSrc(video)
   const model = workspaceModel3dPath(url)
   if (model) return workspaceModel3dSrc(model)
+  // Media outside ~/workspace, svg/bmp/… images, and files embedded with
+  // image syntax by mistake still resolve through the generic file
+  // endpoint; the img renderer turns a non-media target into a link.
+  const file = agentFilePath(url, baseDir)
+  if (file) return workspaceFileSrc(file)
   if (/^https:\/\//i.test(trimmedUrl)) return trimmedUrl
   return ""
 }
 
 export function chatLinkOpensExternally(href: string | undefined): boolean {
   if (!href) return false
-  return /^(https?:)?\/\//i.test(href)
+  if (/^(https?:)?\/\//i.test(href)) return true
+  // Served desktop files open beside the thread, never instead of it.
+  return (
+    href.startsWith("/api/workspace/") || href.startsWith("/api/media/items/")
+  )
+}
+
+function markdownTarget(path: string): string {
+  return /[\s()]/.test(path) ? `<${path}>` : path
 }
 
 export function embedWorkspaceImages(text: string): string {
@@ -358,10 +647,20 @@ export function embedWorkspaceImages(text: string): string {
     .map((line) => {
       const trimmed = line.trim()
       const bare = trimmed.replace(/^`|`$/g, "")
-      const path = workspaceImagePath(bare) ?? workspaceModel3dPath(bare)
-      if (!path || (trimmed !== path && trimmed !== `\`${path}\``)) return line
+      // The whole line (optionally backticked) must be the path; agent
+      // spellings like file://… and ~/… canonicalize to `path` first. A
+      // bare relative filename stays text — it may just be prose.
+      if (!parseAgentDiskPath(bare)?.explicit) return line
+      const path = agentFilePath(bare)
+      if (!path) return line
       const name = path.slice(path.lastIndexOf("/") + 1)
-      return `![${name}](${path})`
+      if (
+        IMAGE_FILE_EXT.test(path) ||
+        VIDEO_EXT.test(path) ||
+        MODEL3D_EXT.test(path)
+      )
+        return `![${name}](${markdownTarget(path)})`
+      return `[${name}](${markdownTarget(path)})`
     })
     .join("\n")
 }
@@ -382,8 +681,12 @@ export function visibleImages(
       continue
     }
     const path = workspaceImagePath(part.url)
-    if (!path) continue
-    out.push(media?.get(mediaKey(messageId, path)) ?? workspaceImageSrc(path))
+    if (path) {
+      out.push(media?.get(mediaKey(messageId, path)) ?? workspaceImageSrc(path))
+      continue
+    }
+    const file = agentFilePath(part.url)
+    if (file && IMAGE_FILE_EXT.test(file)) out.push(workspaceFileSrc(file))
   }
   return out
 }
@@ -430,6 +733,7 @@ export function visibleMessages(
       preview: preview.preview,
       previewPath: preview.path,
       council: council.council,
+      councils: council.councils,
       sentAt: messageSentAt(message),
     })
   }
@@ -580,8 +884,12 @@ function receiptBubbleIndex(
   messages: ChatMessage[],
   shown: VisibleMessage[],
   receipt: SendReceipt,
+  // User messages that exist before a lazily loaded window: baselines are
+  // absolute counts, so the walk starts from the skipped count and
+  // prepending older pages never shifts a receipt onto the wrong bubble.
+  userOffset = 0,
 ): number | null {
-  let seen = 0
+  let seen = userOffset
   let target: ChatMessage | null = null
   for (const message of messages) {
     if (message.info?.role !== "user") continue
@@ -602,13 +910,13 @@ export function transcriptBubbles(
   messages: ChatMessage[],
   receipts: SendReceipt[],
   media?: MediaMap,
-  queued: { id: string; text: string; files: string[] }[] = [],
+  userOffset = 0,
 ): TranscriptEntry[] {
   const shown = threadBubbles(messages, media)
   const marks = new Map<number, SendStatus>()
   const pending: SendReceipt[] = []
   for (const receipt of receipts) {
-    const index = receiptBubbleIndex(messages, shown, receipt)
+    const index = receiptBubbleIndex(messages, shown, receipt, userOffset)
     if (index != null) {
       marks.set(index, receipt.status === "failed" ? "sent" : receipt.status)
       continue
@@ -641,19 +949,9 @@ export function transcriptBubbles(
       pendingId: receipt.id,
     })
   }
-  // Waiting-list messages render straight from the queue state — never from
-  // receipts — so a flushed or removed item cannot leave a ghost bubble
-  // behind. They always sit after any in-flight send receipt.
-  for (const item of queued) {
-    const [bubble] = threadBubbles([
-      {
-        info: { role: "user", time: { created: 0 } },
-        parts: pendingParts(item.text, item.files),
-      },
-    ])
-    if (!bubble) continue
-    out.push({ message: bubble, mark: "queued", pendingId: item.id })
-  }
+  // Queued messages are no longer transcript bubbles: the persisted
+  // waiting list renders in its own dock above the composer (T3-style),
+  // so the transcript only ever shows messages that were actually sent.
   return out
 }
 
@@ -696,6 +994,7 @@ export function threadBubbles(
       prev.handoff = prev.handoff || message.handoff
       prev.preview = prev.preview || message.preview
       prev.council = prev.council || message.council
+      prev.councils = [...new Set([...prev.councils, ...message.councils])]
       if (message.previewPath) prev.previewPath = message.previewPath
       if (prev.sentAt == null && message.sentAt != null)
         prev.sentAt = message.sentAt
@@ -709,6 +1008,7 @@ export function threadBubbles(
       handoff: message.handoff,
       preview: message.preview,
       previewPath: message.previewPath,
+      councils: [...message.councils],
     }
     burstAt.set(bubble, bubble.sentAt)
     out.push(bubble)

@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   type Db,
+  DEFAULT_AGENT_STEP_CAP,
   type Desktop,
   type ImageProvider,
   type Model3dProvider,
@@ -1449,6 +1451,221 @@ export async function syncWatchdogConfig(
   return true
 }
 
+// Push the per-user agent step cap into the desktop. Writes
+// ~/.config/open-bot/agent-cap.json (read by the entrypoint on every boot),
+// then live-merges agent.build.steps into the running opencode.json and
+// restarts opencode when the live value differs — the daemon only reads its
+// config at boot, same as MCP-server changes. Returns false when the desktop
+// is not running; the DB value then applies at the next boot via the file
+// this call could not write, re-pushed by the onDesktopUp sync.
+export async function syncAgentCap(
+  userId: string,
+  stepCap: number | null,
+  opts: { db?: Db; desktop?: Desktop | null; hub?: EventHub } = {},
+) {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "/opt/open-bot/apply-agent-cap.sh",
+    ],
+    JSON.stringify({ stepCap }),
+    120_000,
+  )
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim()
+    if (/not found|No such file/i.test(detail)) {
+      throw new Error(
+        "desktop image is missing agent-cap setup. Rebuild images, then sleep and start the desktop.",
+      )
+    }
+    throw new Error(detail || "could not write agent cap")
+  }
+  const effective = stepCap ?? DEFAULT_AGENT_STEP_CAP
+  const current = await sh([
+    "docker",
+    "exec",
+    "-u",
+    "agent",
+    "-e",
+    "HOME=/home/agent",
+    n.opencode,
+    "sh",
+    "-c",
+    `jq -r '.agent.build.steps // 0' $HOME/.config/opencode/opencode.json`,
+  ])
+  if (current.code === 0 && Number(current.stdout.trim()) === effective)
+    return true
+  const merged = await sh([
+    "docker",
+    "exec",
+    "-u",
+    "agent",
+    "-e",
+    "HOME=/home/agent",
+    n.opencode,
+    "sh",
+    "-c",
+    `jq --argjson cap ${effective} '.agent.build.steps = $cap | .agent."build-unlimited" = (.agent.build | del(.steps))' $HOME/.config/opencode/opencode.json > /tmp/oc-cap.json && mv /tmp/oc-cap.json $HOME/.config/opencode/opencode.json`,
+  ])
+  if (merged.code !== 0) {
+    const detail = merged.stderr.trim() || merged.stdout.trim()
+    throw new Error(detail || "could not apply agent cap")
+  }
+  await restartOpencode(userId, {
+    db: opts.db,
+    desktop: opts.desktop,
+    hub: opts.hub,
+  })
+  return true
+}
+
+type OpencodeConfig = Record<string, unknown> & {
+  provider?: Record<string, unknown>
+  disabled_providers?: string[]
+}
+
+function asOpencodeConfig(value: unknown): OpencodeConfig | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  return value as OpencodeConfig
+}
+
+/**
+ * Disconnect a provider that `opencode auth logout` cannot remove because
+ * it is not backed by an auth.json entry: a provider defined in
+ * opencode.json loses its config entry, any other provider (env-var or
+ * plugin-loaded) lands in `disabled_providers`. Returns true when the
+ * config changed.
+ */
+export function applyProviderDisconnect(
+  config: OpencodeConfig,
+  providerId: string,
+): boolean {
+  if (config.provider && providerId in config.provider) {
+    delete config.provider[providerId]
+    return true
+  }
+  const disabled = Array.isArray(config.disabled_providers)
+    ? config.disabled_providers
+    : []
+  if (disabled.includes(providerId)) return false
+  config.disabled_providers = [...disabled, providerId]
+  return true
+}
+
+/** Undo a disconnect: drop the provider from `disabled_providers`. */
+export function applyProviderEnable(
+  config: OpencodeConfig,
+  providerId: string,
+): boolean {
+  const disabled = Array.isArray(config.disabled_providers)
+    ? config.disabled_providers
+    : []
+  if (!disabled.includes(providerId)) return false
+  config.disabled_providers = disabled.filter((id) => id !== providerId)
+  return true
+}
+
+export function disabledProvidersOf(config: OpencodeConfig): string[] {
+  return Array.isArray(config.disabled_providers)
+    ? config.disabled_providers.filter(
+        (id): id is string => typeof id === "string",
+      )
+    : []
+}
+
+async function readOpencodeConfig(
+  userId: string,
+): Promise<OpencodeConfig | null> {
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return null
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "cat",
+      "/home/agent/.config/opencode/opencode.json",
+    ],
+    undefined,
+    15_000,
+  )
+  if (result.code !== 0) return null
+  try {
+    return asOpencodeConfig(JSON.parse(result.stdout))
+  } catch {
+    return null
+  }
+}
+
+async function writeOpencodeConfig(
+  userId: string,
+  config: OpencodeConfig,
+): Promise<boolean> {
+  const n = names(userId)
+  const result = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      "-u",
+      "agent",
+      "-e",
+      "HOME=/home/agent",
+      n.opencode,
+      "sh",
+      "-c",
+      "cat > /tmp/oc-provider.json && mv /tmp/oc-provider.json $HOME/.config/opencode/opencode.json",
+    ],
+    JSON.stringify(config, null, 2),
+    15_000,
+  )
+  return result.code === 0
+}
+
+/**
+ * Config-level half of provider logout (see applyProviderDisconnect).
+ * Returns false when the desktop is down, the config is unreadable, or
+ * the provider was already disconnected.
+ */
+export async function disconnectOpencodeProvider(
+  userId: string,
+  providerId: string,
+): Promise<boolean> {
+  const config = await readOpencodeConfig(userId)
+  if (!config || !applyProviderDisconnect(config, providerId)) return false
+  return writeOpencodeConfig(userId, config)
+}
+
+/** Re-enable a provider disabled by disconnectOpencodeProvider. */
+export async function enableOpencodeProvider(
+  userId: string,
+  providerId: string,
+): Promise<boolean> {
+  const config = await readOpencodeConfig(userId)
+  if (!config || !applyProviderEnable(config, providerId)) return false
+  return writeOpencodeConfig(userId, config)
+}
+
+export async function opencodeDisabledProviders(
+  userId: string,
+): Promise<string[]> {
+  const config = await readOpencodeConfig(userId)
+  return config ? disabledProvidersOf(config) : []
+}
+
 export type ChatKeyEntry = { slug: string; key: string }
 
 export async function syncChatAuth(
@@ -1746,8 +1963,22 @@ export type PluginToolFile = {
   exec: boolean
 }
 
+// First sha256-looking token of a `sha256sum` output line, lowercased.
+export function parseSha256Sum(stdout: string): string | null {
+  const match = /\b[0-9a-fA-F]{64}\b/.exec(stdout)
+  return match ? match[0].toLowerCase() : null
+}
+
+export function sha256Hex(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex")
+}
+
 // Install files into /usr/local/bin (root). The container's /usr/local is a
-// named volume, so the files survive desktop restarts.
+// named volume, so the files survive desktop restarts. Every copy is
+// checksum-verified in the container before it counts as installed: a
+// same-version reinstall whose copy silently did not land left the stale
+// binary in place while the install reported success, and a developer
+// iterating without a version bump believed a fix was live when it was not.
 export async function syncPluginTools(
   userId: string,
   pluginId: string,
@@ -1762,31 +1993,55 @@ export async function syncPluginTools(
     }
     const dir = mkdtempSync(join(tmpdir(), "ob-plugin-"))
     const local = join(dir, file.name)
+    const bin = `/usr/local/bin/ob-plugin-${pluginId}-${file.name}`
+    const want = sha256Hex(file.content)
     try {
       writeFileSync(local, file.content, { mode: 0o755 })
-      const bin = `/usr/local/bin/ob-plugin-${pluginId}-${file.name}`
-      const copied = await sh(
-        ["docker", "cp", local, `${n.opencode}:${bin}`],
-        undefined,
-        60_000,
-      )
-      if (copied.code !== 0) {
-        throw new HttpError(
-          502,
-          `could not install tool ${file.name}`,
-          "plugin_tool",
+      let verified = false
+      for (let attempt = 0; attempt < 2 && !verified; attempt += 1) {
+        const copied = await sh(
+          ["docker", "cp", local, `${n.opencode}:${bin}`],
+          undefined,
+          60_000,
         )
+        if (copied.code !== 0) {
+          throw new HttpError(
+            502,
+            `could not install tool ${file.name}`,
+            "plugin_tool",
+          )
+        }
+        const chmod = await sh(
+          [
+            "docker",
+            "exec",
+            n.opencode,
+            "chmod",
+            file.exec ? "755" : "644",
+            bin,
+          ],
+          undefined,
+          60_000,
+        )
+        if (chmod.code !== 0) {
+          throw new HttpError(
+            502,
+            `could not install tool ${file.name}`,
+            "plugin_tool",
+          )
+        }
+        const summed = await sh(
+          ["docker", "exec", n.opencode, "sha256sum", "--", bin],
+          undefined,
+          60_000,
+        )
+        verified = summed.code === 0 && parseSha256Sum(summed.stdout) === want
       }
-      const chmod = await sh(
-        ["docker", "exec", n.opencode, "chmod", file.exec ? "755" : "644", bin],
-        undefined,
-        60_000,
-      )
-      if (chmod.code !== 0) {
+      if (!verified) {
         throw new HttpError(
           502,
-          `could not install tool ${file.name}`,
-          "plugin_tool",
+          `installed tool ${file.name} did not verify after copy (checksum mismatch) — the previous copy may still be in place; re-run the install`,
+          "plugin_tool_verify",
         )
       }
     } finally {

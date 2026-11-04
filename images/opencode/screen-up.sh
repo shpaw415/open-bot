@@ -98,7 +98,7 @@ start_chromium() {
     start_group chromium /opt/google/chrome/google-chrome \
       --disable-namespace-sandbox \
       --disable-dev-shm-usage \
-      --disable-gpu \
+      --enable-unsafe-swiftshader \
       --ozone-platform=x11 \
       --window-position=0,0 \
       --password-store=basic \
@@ -117,7 +117,7 @@ start_chromium() {
     start_group chromium chromium \
       --no-sandbox \
       --disable-dev-shm-usage \
-      --disable-gpu \
+      --enable-unsafe-swiftshader \
       --ozone-platform=x11 \
       --window-position=0,0 \
       --password-store=basic \

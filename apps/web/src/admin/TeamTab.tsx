@@ -52,6 +52,8 @@ import {
   TEAM_OVERLAY_SECTIONS,
   teamKeysPayload,
 } from "../team"
+import { TeamProviderFields } from "./TeamProviderFields"
+import { TeamVoiceFields } from "./TeamVoiceFields"
 
 function modeLabel(mode: TeamMode) {
   return mode === "team" ? "Team" : "Personal"
@@ -619,6 +621,8 @@ export function TeamTab({
     }
   }
 
+  const voiceProviders = data?.voiceProviders ?? []
+  const providerCatalogs = data?.providerCatalogs ?? {}
   const chatOptions = catalog.filter((entry) => entry.chatProvider)
   const chatProvider = overlayValue("chat", "provider")
   const chatChoices =
@@ -766,11 +770,16 @@ export function TeamTab({
                     <TextField
                       key={field.id}
                       label={
-                        state?.hasKey && isTeamSecretField(field.id)
+                        state?.hasKey &&
+                        (field.secret ?? isTeamSecretField(field.id))
                           ? `${field.label} (blank keeps the saved key)`
                           : field.label
                       }
-                      type={isTeamSecretField(field.id) ? "password" : "text"}
+                      type={
+                        (field.secret ?? isTeamSecretField(field.id))
+                          ? "password"
+                          : "text"
+                      }
                       value={keyValue(entry.id, field.id)}
                       placeholder={field.placeholder}
                       onChange={(event) =>
@@ -855,9 +864,10 @@ export function TeamTab({
           {TEAM_OVERLAY_SECTIONS.map((section) => {
             const markers = data?.secrets?.[section.section]
             const secretStored = (field: string) =>
-              field === "gatewayToken"
+              markers?.fields?.[field] ??
+              (field === "gatewayToken"
                 ? Boolean(markers?.hasGatewayToken)
-                : Boolean(markers?.hasKey)
+                : Boolean(markers?.hasKey))
             return (
               <Box key={section.section}>
                 <Stack
@@ -881,68 +891,89 @@ export function TeamTab({
                 <Typography variant="caption" color="textSecondary">
                   {section.description}
                 </Typography>
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  flexWrap="wrap"
-                  sx={{ mt: 0.5, rowGap: 1 }}
-                >
-                  {section.section === "chat" ? (
-                    <Select
-                      name="team-chat-provider"
-                      label="Provider"
-                      value={chatProvider}
-                      sx={{ width: 240 }}
-                      onSelect={(value: string) =>
-                        setOverlayValue("chat", "provider", value)
-                      }
-                    >
-                      {[
-                        <option key="none" value="">
-                          Not set
-                        </option>,
-                        ...chatChoices.map((entry) => (
-                          <option key={entry.id} value={entry.id}>
-                            {entry.label}
-                          </option>
-                        )),
-                      ]}
-                    </Select>
-                  ) : null}
-                  {section.fields
-                    .filter(
-                      (field) =>
-                        !(
-                          section.section === "chat" &&
-                          field.field === "provider"
-                        ),
-                    )
-                    .map((field) => (
-                      <TextField
-                        key={field.field}
-                        label={field.label}
-                        type={
-                          isTeamSecretField(field.field) ? "password" : "text"
-                        }
-                        value={overlayValue(section.section, field.field)}
-                        placeholder={
-                          isTeamSecretField(field.field)
-                            ? secretStored(field.field)
-                              ? "(stored — leave blank to keep)"
-                              : "(not set)"
-                            : field.placeholder
-                        }
+                {section.section === "voice" && voiceProviders.length > 0 ? (
+                  <TeamVoiceFields
+                    providers={voiceProviders}
+                    values={overlay.voice ?? {}}
+                    secrets={markers?.fields}
+                    onChange={(field, value) =>
+                      setOverlayValue("voice", field, value)
+                    }
+                  />
+                ) : (providerCatalogs[section.section]?.length ?? 0) > 0 ? (
+                  <TeamProviderFields
+                    section={section.section}
+                    providers={providerCatalogs[section.section] ?? []}
+                    values={overlay[section.section] ?? {}}
+                    secrets={markers?.fields}
+                    onChange={(field, value) =>
+                      setOverlayValue(section.section, field, value)
+                    }
+                  />
+                ) : (
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    flexWrap="wrap"
+                    sx={{ mt: 0.5, rowGap: 1 }}
+                  >
+                    {section.section === "chat" ? (
+                      <Select
+                        name="team-chat-provider"
+                        label="Provider"
+                        value={chatProvider}
                         sx={{ width: 240 }}
-                        onChange={(event) =>
-                          setOverlayValue(
-                            section.section,
-                            field.field,
-                            event.currentTarget.value,
-                          )
+                        onSelect={(value: string) =>
+                          setOverlayValue("chat", "provider", value)
                         }
-                      />
-                    ))}
-                </Stack>
+                      >
+                        {[
+                          <option key="none" value="">
+                            Not set
+                          </option>,
+                          ...chatChoices.map((entry) => (
+                            <option key={entry.id} value={entry.id}>
+                              {entry.label}
+                            </option>
+                          )),
+                        ]}
+                      </Select>
+                    ) : null}
+                    {section.fields
+                      .filter(
+                        (field) =>
+                          !(
+                            section.section === "chat" &&
+                            field.field === "provider"
+                          ),
+                      )
+                      .map((field) => (
+                        <TextField
+                          key={field.field}
+                          label={field.label}
+                          type={
+                            isTeamSecretField(field.field) ? "password" : "text"
+                          }
+                          value={overlayValue(section.section, field.field)}
+                          placeholder={
+                            isTeamSecretField(field.field)
+                              ? secretStored(field.field)
+                                ? "(stored — leave blank to keep)"
+                                : "(not set)"
+                              : field.placeholder
+                          }
+                          sx={{ width: 240 }}
+                          onChange={(event) =>
+                            setOverlayValue(
+                              section.section,
+                              field.field,
+                              event.currentTarget.value,
+                            )
+                          }
+                        />
+                      ))}
+                  </Stack>
+                )}
               </Box>
             )
           })}

@@ -134,7 +134,7 @@ test("overlay saves merge per field: omitted keeps, blank and null clear", () =>
   saveTeamConfig(db, {
     providers: {
       image: {
-        provider: "cloudflare",
+        provider: "cloudflare-workers-ai",
         accountId: "acc",
         apiKey: "sk-1",
         model: "m",
@@ -145,19 +145,21 @@ test("overlay saves merge per field: omitted keeps, blank and null clear", () =>
     providers: { image: { accountId: "acc-2" } },
   })
   expect(kept.providers.image).toEqual({
-    provider: "cloudflare",
+    provider: "cloudflare-workers-ai",
     accountId: "acc-2",
     apiKey: "sk-1",
     model: "m",
   })
+  // Clearing the model while a provider is set refills its catalog default
+  // (same rule as the per-user provider forms).
   const cleared = saveTeamConfig(db, {
     providers: { image: { apiKey: null, model: null } },
   })
   expect(cleared.providers.image).toEqual({
-    provider: "cloudflare",
+    provider: "cloudflare-workers-ai",
     accountId: "acc-2",
     apiKey: null,
-    model: null,
+    model: "@cf/black-forest-labs/flux-2-klein-9b",
   })
   const blank = saveTeamConfig(db, {
     providers: { image: { provider: "" } },
@@ -166,10 +168,10 @@ test("overlay saves merge per field: omitted keeps, blank and null clear", () =>
     provider: null,
     accountId: "acc-2",
     apiKey: null,
-    model: null,
+    model: "@cf/black-forest-labs/flux-2-klein-9b",
   })
   const pruned = saveTeamConfig(db, {
-    providers: { image: { accountId: null } },
+    providers: { image: { accountId: null, model: null } },
   })
   expect(pruned.providers.image).toBeUndefined()
   expect(getTeamConfig(db)).toEqual(pruned)
@@ -181,13 +183,13 @@ test("redactTeamConfig nulls secrets and reports per-section markers", () => {
     providers: {
       chat: { provider: "openai", model: "gpt" },
       image: {
-        provider: "cloudflare",
+        provider: "cloudflare-workers-ai",
         accountId: "acc",
         apiKey: "sk-1",
         model: "m1",
       },
       system1: {
-        provider: "cloudflare",
+        provider: "cloudflare-jev",
         endpoint: null,
         apiKey: "sk-2",
         gatewayToken: "gt-1",
@@ -211,7 +213,7 @@ test("redactTeamConfig nulls secrets and reports per-section markers", () => {
   const stored = getTeamConfig(db)
   const { config, secrets } = redactTeamConfig(stored)
   expect(config.providers.image).toEqual({
-    provider: "cloudflare",
+    provider: "cloudflare-workers-ai",
     accountId: "acc",
     apiKey: null,
     model: "m1",
@@ -219,12 +221,112 @@ test("redactTeamConfig nulls secrets and reports per-section markers", () => {
   expect(config.providers.system1?.gatewayToken).toBeNull()
   expect(config.providers.voice?.sttApiKey).toBeNull()
   expect(secrets.chat).toEqual({ hasKey: false })
-  expect(secrets.image).toEqual({ hasKey: true })
-  expect(secrets.system1).toEqual({ hasKey: true, hasGatewayToken: true })
-  expect(secrets.voice).toEqual({ hasKey: true })
+  expect(secrets.image).toEqual({
+    hasKey: true,
+    fields: { apiKey: true },
+  })
+  expect(secrets.system1).toEqual({
+    hasKey: true,
+    hasGatewayToken: true,
+    fields: { apiKey: true, gatewayToken: true },
+  })
+  expect(secrets.voice).toEqual({
+    hasKey: true,
+    fields: { sttApiKey: true, ttsApiKey: false },
+  })
   expect(JSON.stringify(config)).not.toContain("sk-1")
   expect(JSON.stringify(config)).not.toContain("gt-1")
   expect(getTeamConfig(db)).toEqual(stored)
+})
+
+test("saveTeamConfig validates catalog overlay sections", () => {
+  const db = freshDb()
+  // Unknown provider ids are rejected per section, nothing is stored.
+  expect(() =>
+    saveTeamConfig(db, {
+      providers: { image: { provider: "cloudflare", model: "m" } },
+    }),
+  ).toThrow(/unsupported image provider/)
+  expect(() =>
+    saveTeamConfig(db, {
+      providers: { watchdog: { provider: "nope", model: "m" } },
+    }),
+  ).toThrow(/unsupported watchdog provider/)
+  expect(getTeamConfig(db).providers.image).toBeUndefined()
+
+  // Blank models take the provider default; custom media models pass.
+  saveTeamConfig(db, {
+    providers: {
+      video: { provider: "openai", apiKey: "sk-video-long", model: null },
+      model3d: {
+        provider: "replicate",
+        apiKey: "sk-3d-long",
+        model: "someone/new-3d-model",
+      },
+      system1: { provider: "laya", endpoint: "http://laya:8010", model: null },
+      watchdog: {
+        provider: "custom",
+        baseUrl: "https://gw.example/v1",
+        model: "my-model",
+      },
+    },
+  })
+  const providers = getTeamConfig(db).providers
+  expect(providers.video?.model).toBe("sora-2")
+  expect(providers.model3d?.model).toBe("someone/new-3d-model")
+  // Laya has no default model — blank stays blank (server chooses).
+  expect(providers.system1?.model).toBeNull()
+  expect(providers.watchdog?.model).toBe("my-model")
+})
+
+test("saveTeamConfig canonicalizes and validates the voice overlay", () => {
+  const db = freshDb()
+  // Legacy Workers AI ids are stored canonical, blank models take the
+  // provider default, and the retired whisper model remaps to turbo.
+  saveTeamConfig(db, {
+    providers: {
+      voice: {
+        sttProvider: "deepgram-stt",
+        sttAccountId: "a".repeat(32),
+        sttApiKey: "k".repeat(40),
+        sttModel: null,
+        ttsProvider: "workers-ai-tts",
+        ttsAccountId: null,
+        ttsApiKey: null,
+        ttsModel: "@cf/deepgram/aura-1",
+      },
+    },
+  })
+  let voice = getTeamConfig(db).providers.voice
+  expect(voice?.sttProvider).toBe("cloudflare-stt")
+  expect(voice?.sttModel).toBe("@cf/openai/whisper-large-v3-turbo")
+  expect(voice?.ttsProvider).toBe("cloudflare-tts")
+  expect(voice?.ttsModel).toBe("@cf/deepgram/aura-1")
+
+  saveTeamConfig(db, {
+    providers: { voice: { sttModel: "@cf/openai/whisper" } },
+  })
+  voice = getTeamConfig(db).providers.voice
+  expect(voice?.sttModel).toBe("@cf/openai/whisper-large-v3-turbo")
+
+  // A provider on the wrong side, an unknown model, and a model for the
+  // model-less xAI TTS are all rejected without touching the stored config.
+  expect(() =>
+    saveTeamConfig(db, { providers: { voice: { sttProvider: "xai-tts" } } }),
+  ).toThrow(/unsupported speech provider/)
+  expect(() =>
+    saveTeamConfig(db, {
+      providers: { voice: { sttProvider: "openai-stt", sttModel: "nova-3" } },
+    }),
+  ).toThrow(/unsupported model/)
+  expect(() =>
+    saveTeamConfig(db, {
+      providers: {
+        voice: { ttsProvider: "xai-tts", ttsModel: "gpt-4o-mini-tts" },
+      },
+    }),
+  ).toThrow(/does not take a model/)
+  expect(getTeamConfig(db).providers.voice?.sttProvider).toBe("cloudflare-stt")
 })
 
 test("teamWriteLocked only binds non-admins in team mode", () => {

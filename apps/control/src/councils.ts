@@ -1,7 +1,8 @@
 import type { Db, User } from "@open-bot/db"
-import { lastAssistantText } from "./delegations"
+import { lastAssistantText, lastTurnEnd, turnEndStalled } from "./delegations"
 import { desktopDeathInfo, desktopPhase, endpoint } from "./docker"
 import type { EventHub } from "./events"
+import { builtins } from "./personas"
 import { cleanupDeletedThread } from "./threads"
 
 export const COUNCIL_NAME_MAX = 48
@@ -18,6 +19,47 @@ export type CouncilMemberView = {
   role: string
   title: string
   createdAt: number
+  /** Persona name bound at creation ("" = none). */
+  persona: string
+  /** Explicit "provider/model" pick ("" = desktop default). */
+  model: string
+  /** Explicit reasoning-effort level ("" = desktop default). */
+  effort: string
+}
+
+/**
+ * Per-member creation picks (persona name, model, effort) keyed by session
+ * id — the viewer rail and `council status` label each member with the
+ * exact configuration the coordinating agent chose for it.
+ */
+export function councilMemberMeta(
+  db: Db,
+  userId: string,
+  sessionIds: string[],
+): Map<string, { persona: string; model: string; effort: string }> {
+  const personaNames = new Map<string, string>()
+  for (const row of builtins) personaNames.set(row.id, row.name)
+  for (const row of db.personas(userId)) personaNames.set(row.id, row.name)
+  const models = new Map(
+    db.threadModels(userId).map((row) => [row.sessionId, row]),
+  )
+  const meta = new Map<
+    string,
+    { persona: string; model: string; effort: string }
+  >()
+  for (const sessionId of sessionIds) {
+    const bound = db.threadPersona(userId, sessionId)
+    const pick = models.get(sessionId)
+    meta.set(sessionId, {
+      persona: bound ? (personaNames.get(bound.personaId) ?? "") : "",
+      model:
+        pick?.providerId && pick.modelId
+          ? `${pick.providerId}/${pick.modelId}`
+          : "",
+      effort: pick?.effort ?? "",
+    })
+  }
+  return meta
 }
 
 // A task-tool subagent (opencode child session) spawned by one of the
@@ -148,13 +190,33 @@ async function councilStatus(
     title: string
     status: string
     lastReply: string
+    // How the newest turn ended (done|error|cut|empty|unknown) and whether
+    // an idle member looks stalled mid-work rather than finished — the
+    // cut-vs-done signal coordinators need before trusting deliverables.
+    endState: string
+    endDetail: string
+    stalled: boolean
+    persona: string
+    model: string
+    effort: string
   }
+  const meta = councilMemberMeta(
+    db,
+    user.id,
+    rows.map((row) => row.sessionId),
+  )
   const members: MemberStatus[] = rows.map((row) => ({
     sessionId: row.sessionId,
     role: row.role,
     title: "",
     status: "unknown",
     lastReply: "",
+    endState: "unknown",
+    endDetail: "",
+    stalled: false,
+    persona: meta.get(row.sessionId)?.persona ?? "",
+    model: meta.get(row.sessionId)?.model ?? "",
+    effort: meta.get(row.sessionId)?.effort ?? "",
   }))
   // A dead desktop is a definite member state, not an unknown one — an OOM
   // kill used to leave every member reading neutral `unknown`/`idle` while
@@ -218,10 +280,14 @@ async function councilStatus(
           `${base}/session/${encodeURIComponent(member.sessionId)}/message`,
           { headers, signal: AbortSignal.timeout(10_000) },
         ).catch(() => null)
-        if (res?.ok)
-          member.lastReply = lastAssistantText(
-            await res.json().catch(() => null),
-          )
+        if (res?.ok) {
+          const messages = await res.json().catch(() => null)
+          member.lastReply = lastAssistantText(messages)
+          const end = lastTurnEnd(messages)
+          member.endState = end.state
+          member.endDetail = end.detail
+          member.stalled = member.status === "idle" && turnEndStalled(end)
+        }
       }
     }
   } catch {
@@ -295,6 +361,11 @@ async function councilDetail(
     // keep the empty map; titles and subagents are cosmetic
   }
   subagents.sort((a, b) => a.createdAt - b.createdAt)
+  const meta = councilMemberMeta(
+    db,
+    user.id,
+    rows.map((row) => row.sessionId),
+  )
   const detail: CouncilDetail = {
     ...councilView(council),
     members: rows.map((row) => ({
@@ -302,6 +373,9 @@ async function councilDetail(
       role: row.role,
       title: titles.get(row.sessionId) ?? "",
       createdAt: row.createdAt,
+      persona: meta.get(row.sessionId)?.persona ?? "",
+      model: meta.get(row.sessionId)?.model ?? "",
+      effort: meta.get(row.sessionId)?.effort ?? "",
     })),
     subagents,
   }

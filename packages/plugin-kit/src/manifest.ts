@@ -64,6 +64,12 @@ export const CARD_KINDS = [
   "iframe",
 ] as const
 
+// Declarative-card layout controls: stat cards compose into responsive
+// columns and a card may claim several of them; emptyText replaces the
+// bare nothing a data-less card used to render.
+export const CARD_SPAN_MAX = 4
+export const CARD_EMPTY_TEXT_MAX = 200
+
 export type PluginCard = {
   kind: (typeof CARD_KINDS)[number]
   text?: string
@@ -75,6 +81,8 @@ export type PluginCard = {
   items?: string[] | string
   url?: string
   height?: number
+  span?: number
+  emptyText?: string
 }
 
 export type PluginSkill = {
@@ -287,6 +295,12 @@ export function validateConfigValue(
 export type PluginDashboardPages = {
   entry: string
   public?: boolean
+  // Optional /hooks allowlist (requires public: true): only these paths
+  // reach the page server from the public endpoint — an entry is an exact
+  // path ("/api/info", "/") or a trailing-/* prefix ("/share/*" also
+  // covers "/share"). Absent keeps the legacy meaning of public: true
+  // (every route public); dashboard access is never narrowed by this list.
+  publicRoutes?: string[]
   // Optional frontend entry (a files[] source path ending in .html, e.g.
   // "server/index.html"): the control plane bundles it with `bun build
   // --compile --target=browser` into one self-contained HTML at install and
@@ -294,6 +308,54 @@ export type PluginDashboardPages = {
   // skip the build — the checkout server imports the HTML live (Bun HTML
   // imports) under bun --hot.
   ui?: string
+}
+
+export const PUBLIC_ROUTES_MAX = 16
+
+// One publicRoutes entry: root-relative path, exact ("/api/info") or a
+// single trailing-/* prefix ("/share/*"). No traversal, query, fragment,
+// backslash, or mid-path wildcards — the proxy matches on the sanitized,
+// decoded rest path, so these stay plain string comparisons.
+export function isPublicRoutePattern(value: unknown): value is string {
+  if (typeof value !== "string") return false
+  if (value.length === 0 || value.length > 200) return false
+  if (!value.startsWith("/") || value.startsWith("//")) return false
+  if (
+    value.includes("\0") ||
+    value.includes("\\") ||
+    value.includes("..") ||
+    value.includes("?") ||
+    value.includes("#") ||
+    value.includes("%")
+  ) {
+    return false
+  }
+  const star = value.indexOf("*")
+  if (star !== -1 && !(value.endsWith("/*") && star === value.length - 1))
+    return false
+  return true
+}
+
+// Whether `path` (already sanitized: decoded, root-relative, no traversal)
+// may reach the page server through the public /hooks endpoint. No list
+// keeps the legacy public:true meaning (everything public); a list is an
+// allowlist — exact match, or a trailing-/* prefix that also covers its
+// bare root ("/share/*" matches "/share").
+export function publicRouteAllowed(
+  routes: string[] | undefined,
+  path: string,
+): boolean {
+  if (routes === undefined) return true
+  for (const route of routes) {
+    if (!isPublicRoutePattern(route)) continue
+    if (route.endsWith("/*")) {
+      const prefix = route.slice(0, -1)
+      if (path === prefix.slice(0, -1) || path.startsWith(prefix)) return true
+    } else if (path === route) {
+      return true
+    }
+  }
+  return false
 }
 
 export type PluginTab = {
@@ -496,10 +558,14 @@ export function pluginPermissionSummary(manifest: PluginManifest): string[] {
     summary.push(
       "Serves a live dashboard page (API + UI) from the desktop to the dashboard",
     )
-  if (manifest.dashboard?.pages?.public)
+  if (manifest.dashboard?.pages?.public) {
+    const routes = manifest.dashboard.pages.publicRoutes
     summary.push(
-      "Exposes a public internet endpoint (/hooks/…) that anyone can call unless you set a secret",
+      routes
+        ? `Exposes a public internet endpoint (/hooks/…) limited to these routes: ${routes.join(", ") || "(none)"} — anyone can call them unless you set a secret`
+        : "Exposes a public internet endpoint (/hooks/…) with every page-server route public — anyone can call them unless you set a secret",
     )
+  }
   const mcpServers = Object.keys(manifest.opencode?.mcp ?? {})
   if (mcpServers.length > 0)
     summary.push(`Adds MCP servers: ${mcpServers.join(", ")}`)
@@ -549,6 +615,31 @@ function validateCard(card: unknown, path: string, issues: ManifestIssue[]) {
   if (kind === "table") {
     if (!strArray(card.columns, 32)) {
       issues.push({ path, message: "table card needs columns" })
+    }
+  }
+  if (card.span !== undefined) {
+    const span = card.span
+    if (
+      typeof span !== "number" ||
+      !Number.isInteger(span) ||
+      span < 1 ||
+      span > CARD_SPAN_MAX
+    ) {
+      issues.push({
+        path,
+        message: `card span must be an integer between 1 and ${CARD_SPAN_MAX}`,
+      })
+    }
+  }
+  if (card.emptyText !== undefined) {
+    if (
+      typeof card.emptyText !== "string" ||
+      card.emptyText.length > CARD_EMPTY_TEXT_MAX
+    ) {
+      issues.push({
+        path,
+        message: `card emptyText must be a string of at most ${CARD_EMPTY_TEXT_MAX} characters`,
+      })
     }
   }
 }
@@ -1245,6 +1336,44 @@ export function validatePluginManifest(input: unknown): ManifestValidation {
               path: "dashboard.pages.public",
               message: "dashboard.pages.public must be a boolean",
             })
+          }
+          const publicRoutes = pages.publicRoutes
+          if (publicRoutes !== undefined) {
+            if (!Array.isArray(publicRoutes)) {
+              issues.push({
+                path: "dashboard.pages.publicRoutes",
+                message: "dashboard.pages.publicRoutes must be a list of paths",
+              })
+            } else {
+              if (publicRoutes.length > PUBLIC_ROUTES_MAX)
+                issues.push({
+                  path: "dashboard.pages.publicRoutes",
+                  message: `dashboard.pages.publicRoutes is limited to ${PUBLIC_ROUTES_MAX} entries`,
+                })
+              if (pub !== true)
+                issues.push({
+                  path: "dashboard.pages.publicRoutes",
+                  message:
+                    "dashboard.pages.publicRoutes requires dashboard.pages.public: true",
+                })
+              const seenRoutes = new Set<string>()
+              for (const [index, route] of publicRoutes.entries()) {
+                if (!isPublicRoutePattern(route)) {
+                  issues.push({
+                    path: `dashboard.pages.publicRoutes[${index}]`,
+                    message:
+                      'each public route must be an exact path ("/api/info") or a trailing-/* prefix ("/share/*"), root-relative, no .. ? # or %',
+                  })
+                } else if (seenRoutes.has(route)) {
+                  issues.push({
+                    path: `dashboard.pages.publicRoutes[${index}]`,
+                    message: `duplicate public route: ${route}`,
+                  })
+                } else {
+                  seenRoutes.add(route)
+                }
+              }
+            }
           }
           if (pages.ui !== undefined) {
             const ui = str(pages.ui)

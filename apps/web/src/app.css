@@ -25,6 +25,11 @@ html {
   --ob-success: #7fd39a;
   --ob-warning: #e5b56f;
   --ob-danger: #f0857d;
+  /* One shared reading column for the log, the queue dock and the
+     composer (T3-style --chat-content-max-width). */
+  --ob-chat-column: 860px;
+  /* The reader's own message surface: quiet elevation, not the accent. */
+  --ob-message: #232833;
   background: var(--ob-app-bg);
 }
 
@@ -43,6 +48,7 @@ html[data-theme="light"] {
   --ob-success: #2e7d32;
   --ob-warning: #9a5b04;
   --ob-danger: #c62828;
+  --ob-message: #e7ebf2;
 }
 
 html,
@@ -51,6 +57,8 @@ body,
   height: 100dvh;
   margin: 0;
   overscroll-behavior: none;
+  /* Taps give component feedback, not the browser's grey flash. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 .ob-shell {
@@ -467,6 +475,81 @@ body,
   color: var(--ob-text);
 }
 
+/* Desktop Apps launcher: responsive tile grid. The favorite star is a
+   sibling overlay, never nested inside the tile's own button. */
+.ob-app-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 10px;
+}
+
+.ob-app-tile-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.ob-app-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  min-height: 118px;
+  padding: 14px;
+  border: 1px solid var(--ob-border);
+  border-radius: 14px;
+  background: var(--ob-surface);
+  color: var(--ob-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
+}
+
+.ob-app-tile:hover {
+  border-color: var(--ob-accent);
+  background: rgba(var(--text-main, 255, 255, 255), 0.04);
+}
+
+.ob-app-tile:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: 2px;
+}
+
+.ob-app-fav {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ob-muted);
+  cursor: pointer;
+}
+
+.ob-app-fav:hover {
+  background: rgba(var(--text-main, 255, 255, 255), 0.08);
+  color: var(--ob-text);
+}
+
+.ob-app-fav:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: 1px;
+}
+
+.ob-app-fav[data-favorite="true"] {
+  color: var(--ob-accent);
+}
+
 .ob-search-pop {
   position: absolute;
   top: calc(100% + 6px);
@@ -704,6 +787,132 @@ body,
   overflow: hidden;
 }
 
+/* ---- Global split screen ----
+   Two shell pages side by side (split.ts). Unsplit, the single pane
+   fills the row and the layout is the classic one-column shell. */
+.ob-split-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ob-split-row {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.ob-split-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ob-split-pane[hidden] {
+  display: none;
+}
+
+.ob-split-bar {
+  flex-shrink: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 12px;
+  border-bottom: 1px solid var(--ob-border);
+  background: var(--ob-nav-bg);
+  color: var(--ob-text-2);
+}
+
+/* The focused pane receives shell navigation; say so with the accent
+   underline the rest of the chrome uses for the active destination. */
+.ob-split-pane[data-focused="true"] .ob-split-bar {
+  color: var(--ob-text);
+  box-shadow: inset 0 -2px 0 var(--ob-accent);
+}
+
+.ob-split-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.ob-split-divider {
+  width: 6px;
+  margin: 0 -2px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  touch-action: none;
+  position: relative;
+  z-index: 2;
+}
+
+.ob-split-divider::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: rgba(127, 127, 127, 0.5);
+}
+
+.ob-split-divider:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: -1px;
+}
+
+/* Phones show one pane at a time; this row switches (and focuses) it. */
+.ob-split-switcher {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--ob-border);
+  background: var(--ob-nav-bg);
+}
+
+.ob-split-switch {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--ob-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ob-text-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.ob-split-switch[aria-pressed="true"] {
+  color: var(--ob-text);
+  border-color: var(--ob-accent);
+}
+
+.ob-split-switch:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: 1px;
+}
+
 .ob-scroll {
   flex: 1;
   min-height: 0;
@@ -729,6 +938,14 @@ body,
   gap: 10px;
 }
 
+/* Lazy-history sentinel: sits above the oldest loaded bubble, loads the
+   next older page as it nears the viewport (and by click as fallback). */
+.ob-load-older {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 2px;
+}
+
 .ob-chat-docked .ob-chat-log {
   padding: 8px 10px;
 }
@@ -737,9 +954,53 @@ body,
   gap: 8px;
 }
 
-/* Conversation bubbles, modern-chat style: the reader's own words sit in a
-   compact right-aligned pill; assistant answers read as calm prose directly
+/* Timeline messages (T3-style): each message is a wrapper column holding
+   the bubble and a quiet meta row under it (time · copy · read-aloud ·
+   send mark) that surfaces on hover/focus, and stays faintly visible on
+   touch. The reader's own words sit in a compact right-aligned pill on a
+   quiet elevated surface; assistant answers read as calm prose directly
    on the conversation surface (no card, no tail). */
+.ob-msg {
+  display: flex;
+  flex-direction: column;
+}
+
+.ob-msg-user {
+  align-items: flex-end;
+}
+
+.ob-msg-assistant {
+  align-items: stretch;
+}
+
+.ob-msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+  padding: 0 2px;
+  color: var(--ob-muted);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.ob-msg:hover .ob-msg-meta,
+.ob-msg:focus-within .ob-msg-meta {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .ob-msg-meta {
+    opacity: 0.75;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-msg-meta {
+    transition: none;
+  }
+}
+
 .ob-bubble {
   position: relative;
   overflow-wrap: anywhere;
@@ -755,7 +1016,8 @@ body,
   border-radius: 18px;
   border-bottom-right-radius: 6px;
   align-self: flex-end;
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+  background: var(--ob-message);
+  color: var(--ob-text);
 }
 
 /* Answers get the whole reading column so code, tables and media breathe. */
@@ -764,6 +1026,7 @@ body,
   padding: 2px 2px;
   border-radius: 4px;
   align-self: flex-start;
+  color: var(--ob-text);
 }
 
 .ob-bubble:has(.ob-screen),
@@ -872,6 +1135,14 @@ body,
   height: 4px;
 }
 
+/* Council group switcher: same scrollable chip row as the member strip,
+   set apart above it with a hairline so the hierarchy reads at a glance —
+   councils first, then the open council's members. */
+.ob-council-groups {
+  padding: 2px 0 6px;
+  border-bottom: 1px solid var(--ob-border, rgba(127, 127, 127, 0.25));
+}
+
 /* Phones: clear the notch/home indicator (viewport-fit=cover) and give the
    overlay chrome real tap targets. */
 @media (max-width: 899px) {
@@ -885,6 +1156,62 @@ body,
   .ob-preview-overlay .MUI_Button {
     min-height: 36px;
   }
+}
+
+/* Split file previewer (chat file links): one scrollable reading surface
+   for markdown/text, centered media, and a framed PDF, riding the same
+   pane/overlay chrome as the thread preview. */
+.ob-file-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  background: var(--ob-surface);
+  border: 1px solid var(--ob-border);
+  border-radius: 12px;
+  color: var(--ob-text);
+}
+
+.ob-file-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.ob-file-media {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.ob-file-frame {
+  flex: 1;
+  min-height: 0;
+}
+
+.ob-file-md {
+  padding: 4px 16px 16px;
+}
+
+.ob-file-pre {
+  margin: 0;
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ob-file-overlay-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 body.ob-preview-dragging {
@@ -1006,7 +1333,7 @@ body.ob-preview-dragging iframe {
 }
 
 .ob-bubble-user .ob-md pre {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(127, 127, 127, 0.16);
 }
 
 .ob-md code {
@@ -1091,6 +1418,16 @@ body.ob-preview-dragging iframe {
   justify-content: center;
   background: rgba(0, 0, 0, 0.85);
   cursor: zoom-out;
+  overscroll-behavior: contain;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  box-sizing: border-box;
+  animation: ob-view-in 160ms ease-out;
+}
+
+/* Chat images are tappable (touch has no hover): tap opens the lightbox. */
+.ob-media-tap {
+  cursor: zoom-in;
 }
 
 .ob-lightbox img,
@@ -1104,8 +1441,8 @@ body.ob-preview-dragging iframe {
 
 .ob-lightbox-close {
   position: absolute;
-  top: 16px;
-  right: 16px;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  right: calc(16px + env(safe-area-inset-right, 0px));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1120,6 +1457,53 @@ body.ob-preview-dragging iframe {
 
 .ob-lightbox-close:hover {
   background: rgba(0, 0, 0, 0.75);
+}
+
+/* Load state for the full-screen copy: pending reads as a quiet status,
+   failed as an explicit error — never a silent black screen. The layer
+   itself lets backdrop clicks through; only the error actions capture. */
+.ob-lightbox-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  color: #fff;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+
+.ob-lightbox-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  cursor: default;
+}
+
+.ob-lightbox-error-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.ob-lightbox-action {
+  padding: 8px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.ob-lightbox-action:hover {
+  background: rgba(255, 255, 255, 0.22);
 }
 
 @media (hover: none) {
@@ -1141,29 +1525,17 @@ body.ob-preview-dragging iframe {
   padding: 4px 8px;
 }
 
-/* User pill color comes from the theme via the sx bgcolor on the bubble
-   (primary.main); CSS owns geometry only, so light/dark stay in sync. */
-
-.ob-bubble-user .ob-md a {
-  color: inherit;
-}
-
-/* Secondary message metadata: quiet by default, still reachable by
-   keyboard/touch (no hover-only affordances). */
+/* Secondary message metadata lives in the meta row under the bubble:
+   quiet by default, surfaced on hover/focus (see .ob-msg-meta). */
 .ob-bubble-time {
-  display: block;
-  margin-top: 6px;
   font-size: 0.68rem;
   line-height: 1.2;
-  text-align: left;
-  opacity: 0.72;
+  padding: 0 2px;
+  white-space: nowrap;
 }
 
 .ob-send-mark {
-  position: absolute;
-  left: -22px;
-  bottom: 6px;
-  display: flex;
+  display: inline-flex;
   width: 16px;
   height: 16px;
   color: #5f6b7a;
@@ -1177,15 +1549,194 @@ body.ob-preview-dragging iframe {
   color: #c62828;
 }
 
-.ob-queued-actions {
-  display: inline-flex;
-  gap: 2px;
-  margin: -2px 0 4px;
-  opacity: 0.85;
+/* ---- Work summary row (per assistant turn) ---- */
+.ob-work {
+  align-self: flex-start;
+  max-width: 100%;
 }
 
-.ob-queued-actions:hover {
-  opacity: 1;
+.ob-work-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 2px 6px 2px 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ob-muted);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.ob-work-head:hover {
+  color: var(--ob-text-2);
+  background: var(--ob-elevated);
+}
+
+.ob-work-head:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: 1px;
+}
+
+.ob-work-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ob-success);
+  animation: ob-work-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes ob-work-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-work-dot {
+    animation: none;
+  }
+}
+
+.ob-work-steps {
+  margin: 2px 0 4px 21px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.76rem;
+  color: var(--ob-muted);
+}
+
+.ob-work-steps li {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 1px 0;
+}
+
+.ob-work-tool {
+  flex-shrink: 0;
+  min-width: 52px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ob-text-2);
+}
+
+.ob-work-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ob-work-status {
+  flex-shrink: 0;
+  color: var(--ob-warning);
+}
+
+/* ---- Queue dock: the persisted waiting list at the end of the log.
+   Dashed and unfilled, like T3's queued runs — a turn that has not
+   been sent yet must never read as a sent one. ---- */
+.ob-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+.ob-queue-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.ob-queue-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  width: 100%;
+}
+
+.ob-queue-card {
+  max-width: min(560px, 82%);
+  padding: 8px 12px;
+  border: 1px dashed color-mix(in srgb, var(--ob-muted) 55%, transparent);
+  border-radius: 16px;
+  border-bottom-right-radius: 6px;
+  color: var(--ob-text-2);
+  font-size: 0.86rem;
+}
+
+.ob-queue-card-editing {
+  width: min(560px, 82%);
+  border-color: var(--ob-accent);
+  color: var(--ob-text);
+}
+
+.ob-queue-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ob-queue-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.ob-queue-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--ob-border);
+}
+
+.ob-queue-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid var(--ob-border);
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.ob-queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 2px;
+  color: var(--ob-muted);
+}
+
+.ob-queue-more {
+  align-self: flex-end;
+}
+
+.ob-queue-chevron-up {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 899px) {
+  .ob-queue-card,
+  .ob-queue-card-editing {
+    max-width: 88%;
+    width: auto;
+  }
+  .ob-queue-card-editing {
+    width: 88%;
+  }
 }
 
 .ob-mono {
@@ -1259,24 +1810,145 @@ body.ob-preview-dragging iframe {
   }
 }
 
-.ob-join-chip {
-  max-width: 14rem;
+/* Composer attachments: images are preview tiles large enough to verify
+   a pasted screenshot before sending (uncropped, tap opens the lightbox);
+   other files stay compact named pills. Remove is always a real button. */
+.ob-join-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.ob-join-chip .MUI_Chip_Content {
-  max-width: 11rem;
+
+.ob-join-preview {
+  position: relative;
+  width: 128px;
+  margin: 0;
+}
+
+.ob-join-preview-button {
+  display: block;
+  width: 128px;
+  height: 96px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--ob-border);
+  border-radius: 12px;
+  background: var(--ob-message);
+  cursor: zoom-in;
+}
+
+.ob-join-preview-button img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ob-join-preview-button:hover {
+  border-color: color-mix(in srgb, var(--ob-accent) 60%, var(--ob-border));
+}
+
+.ob-join-preview-button:focus-visible,
+.ob-join-preview-remove:focus-visible,
+.ob-join-file-remove:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: 2px;
+}
+
+.ob-join-preview-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  cursor: pointer;
+}
+
+.ob-join-preview-remove:hover {
+  background: rgba(0, 0, 0, 0.82);
+}
+
+.ob-join-preview-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 2px 0;
+}
+
+.ob-join-preview-name {
+  overflow: hidden;
+  color: var(--ob-text-2);
+  font-size: 0.75rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ob-join-preview-meta {
+  color: var(--ob-muted);
+  font-size: 0.68rem;
+  line-height: 1.3;
+}
+
+.ob-join-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 14rem;
+  padding: 4px 4px 4px 12px;
+  border: 1px solid var(--ob-border);
+  border-radius: 999px;
+  background: var(--ob-message);
+  color: var(--ob-text-2);
+  font-size: 0.8rem;
+}
+
+.ob-join-file-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.ob-join-thumb {
+
+.ob-join-file-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 28px;
   height: 28px;
-  margin: 2px 0 2px 2px;
-  border-radius: 6px;
-  object-fit: cover;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ob-text-2);
+  cursor: pointer;
   flex-shrink: 0;
 }
-.ob-join-chip-image .MUI_Chip_Content {
-  display: none;
+
+.ob-join-file-remove:hover {
+  background: color-mix(in srgb, var(--ob-muted) 25%, transparent);
+  color: var(--ob-text);
+}
+
+@media (max-width: 899px) {
+  .ob-join-preview,
+  .ob-join-preview-button {
+    width: 104px;
+  }
+  .ob-join-preview-button {
+    height: 78px;
+  }
 }
 
 @media (min-width: 900px) {
@@ -1494,7 +2166,7 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
    column (~860px) instead of full-bleed text; screen/preview bubbles keep
    the wider caps from their own max-width rules. */
 .ob-chat-log-inner {
-  max-width: 860px;
+  max-width: var(--ob-chat-column);
   width: 100%;
   margin: 0 auto;
   padding: 4px 0 8px;
@@ -1508,11 +2180,16 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
 .ob-composer {
   flex-shrink: 0;
   margin: 0 auto;
-  width: min(860px, 100%);
+  width: min(var(--ob-chat-column), 100%);
   border: 1px solid var(--ob-border);
   border-radius: 22px;
   background: var(--ob-surface);
-  transition: border-color 150ms ease;
+  transition:
+    border-color 150ms ease,
+    border-radius 180ms ease,
+    margin 180ms ease,
+    width 180ms ease,
+    padding 200ms ease;
 }
 
 .ob-composer:focus-within {
@@ -1655,23 +2332,196 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
 
 /* ---- AgentOrb activity row ----
    Small activity zone for the active turn, between the log and the composer.
-   Hidden entirely when no turn is running — never a permanent idle orb. */
+   Hidden entirely when no turn is running — never a permanent idle orb.
+   Full size only at the bottom; in reading mode (scrolled up) the row and
+   its divider retire and the same animation renders at 32px inside the
+   composer pill below. */
 .ob-orb-row {
   min-height: 80px;
+  max-height: 124px;
+  overflow: hidden;
+  animation: ob-orb-row-in 300ms ease;
+  transition:
+    max-height 280ms ease,
+    min-height 280ms ease,
+    opacity 240ms ease;
+}
+
+/* The canvas box itself transitions, so the sphere morphs 112px → 32px
+   (AgentOrb redraws on its ResizeObserver) while the row folds away and
+   the pill's mini orb fades in at the same final size. */
+.ob-orb-row canvas {
+  transition:
+    width 280ms ease,
+    height 280ms ease,
+    opacity 240ms ease;
+}
+
+.ob-orb-row-leave {
+  max-height: 0;
+  min-height: 0;
+  opacity: 0;
+}
+
+@keyframes ob-orb-row-in {
+  from {
+    max-height: 0;
+    opacity: 0;
+  }
+  to {
+    max-height: 124px;
+    opacity: 1;
+  }
 }
 
 @media (max-width: 899px) {
   .ob-orb-row {
     min-height: 64px;
   }
+  .ob-orb-row-leave {
+    min-height: 0;
+  }
+}
+
+/* ---- Reading pill ----
+   One line, one surface: [mini orb · status] [field] [Stop]. The pill
+   keeps the full composer's 860px column width and gains a small bottom
+   inset so it reads as one floating bar instead of a sheet; the radius
+   is a true pill; the field shrinks to whatever line is left. When the
+   reader focuses or starts a draft, the toolbar grows back below the
+   same field line, and the orb stays where it was. */
+.ob-composer-slim {
+  border-radius: 999px;
+  margin-bottom: 8px;
+  width: min(var(--ob-chat-column), calc(100% - 16px));
+}
+
+.ob-chat-docked .ob-composer-slim {
+  width: calc(100% - 16px);
+}
+
+.ob-composer-fieldrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ob-composer-fieldrow .ob-composer-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.ob-composer-inline-status {
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  animation: ob-inline-status-in 260ms ease;
+}
+
+/* The pill contents grow into their slots (orb width, label max-width)
+   so the field glides sideways instead of snapping to its narrower
+   width the instant reading mode starts. */
+.ob-composer-inline-orb {
+  animation: ob-inline-orb-in 280ms ease;
+}
+
+.ob-composer-inline-stop {
+  animation: ob-inline-fade-in 240ms ease;
+}
+
+@keyframes ob-inline-orb-in {
+  from {
+    width: 0;
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ob-inline-status-in {
+  from {
+    max-width: 0;
+    opacity: 0;
+  }
+  to {
+    max-width: 140px;
+    opacity: 1;
+  }
+}
+
+@keyframes ob-inline-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Toolbar fold: the actions stay mounted and collapse via grid rows, so
+   the composer height (and with it the log viewport) animates instead of
+   cliff-edging. visibility flips after the fold; inert (set in JSX)
+   keeps the folded controls out of tab order throughout. The negative
+   top margin absorbs the Stack gap that would otherwise linger inside
+   the pill under the folded rows. */
+.ob-composer-actions-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    grid-template-rows 240ms ease,
+    opacity 200ms ease,
+    margin-top 240ms ease,
+    visibility 0s;
+}
+
+.ob-composer-actions-wrap > .ob-composer-actions {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ob-composer-actions-slim {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  margin-top: -8px;
+  transition:
+    grid-template-rows 240ms ease,
+    opacity 200ms ease,
+    margin-top 240ms ease,
+    visibility 0s linear 240ms;
+}
+
+/* Reduced motion: every reading-mode transition above becomes a cut. */
+@media (prefers-reduced-motion: reduce) {
+  .ob-composer,
+  .ob-orb-row,
+  .ob-orb-row canvas,
+  .ob-composer-actions-wrap,
+  .ob-composer-actions-slim {
+    transition: none;
+  }
+  .ob-orb-row,
+  .ob-composer-inline-orb,
+  .ob-composer-inline-status,
+  .ob-composer-inline-stop {
+    animation: none;
+  }
 }
 
 /* ---- Jump to latest ----
    Sticky pill pinned above the log's bottom edge while the reader scrolled
-   up; zero-height wrapper so it never pushes content around. */
+   up; zero-height wrapper so it never pushes content around. The pill
+   overflows downward from the wrapper's sticky line, so `bottom` must
+   cover the pill's own height (~34px) plus clearance — at 10px it slid
+   under the composer below the log. */
 .ob-jump-wrap {
   position: sticky;
-  bottom: 10px;
+  bottom: 44px;
   height: 0;
   display: flex;
   justify-content: center;
@@ -1709,6 +2559,70 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
 
 .ob-jump-latest:active {
   transform: translateY(1px);
+}
+
+/* ---- Councils floating button ----
+   Same sticky zero-height trick as the jump pill, parked at the log's
+   bottom-right while the open thread has councils and none is open in the
+   viewer; its menu lists every council of the thread. On narrow screens
+   it rides one line above the centered jump pill so the two never meet. */
+.ob-councils-fab-wrap {
+  position: sticky;
+  /* Same downward overflow as the jump pill: 44px keeps the whole pill
+     inside the log, clear of the composer below it. */
+  bottom: 44px;
+  height: 0;
+  display: flex;
+  justify-content: flex-end;
+  z-index: 2;
+}
+
+@media (max-width: 599px) {
+  .ob-councils-fab-wrap {
+    bottom: 86px;
+  }
+}
+
+.ob-councils-fab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ob-border);
+  border-radius: 999px;
+  background: var(--ob-elevated);
+  color: var(--ob-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 14px;
+  margin-right: 4px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    transform 150ms ease;
+}
+
+.ob-councils-fab:hover {
+  border-color: var(--ob-accent);
+}
+
+.ob-councils-fab:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: 2px;
+}
+
+.ob-councils-fab:active {
+  transform: translateY(1px);
+}
+
+.ob-councils-fab-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2e7d32;
+  flex-shrink: 0;
 }
 
 /* ---- Loading placeholders ----
@@ -1764,10 +2678,44 @@ html[data-theme="light"] .MUI_Snackbar_Action_Root .MUI_Button_outlined {
   animation: ob-view-in 160ms ease-out;
 }
 
+/* App-stack direction: forward pushes drift in from the right, Back
+   returns from the left (data-ob-nav is stamped by the shell on every
+   push/pop). Same duration/easing family as ob-view-in; the
+   reduced-motion blanket below still wins. */
+html[data-ob-nav="forward"] .ob-view-enter {
+  animation-name: ob-view-in-forward;
+}
+
+html[data-ob-nav="back"] .ob-view-enter {
+  animation-name: ob-view-in-back;
+}
+
 @keyframes ob-view-in {
   from {
     opacity: 0;
     transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ob-view-in-forward {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ob-view-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
   }
   to {
     opacity: 1;

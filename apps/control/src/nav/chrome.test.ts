@@ -2,7 +2,9 @@ import { expect, test } from "bun:test"
 import type { PageTarget } from "./cdp"
 import {
   capText,
+  closeTab,
   devOrigin,
+  evalRequest,
   flagsFrom,
   matchTab,
   normalizeTarget,
@@ -195,6 +197,26 @@ test("devtools flags parse values, bare flags and positionals", () => {
   })
 })
 
+test("eval request separates --raw from the expression in both positions", () => {
+  expect(evalRequest(["({mode:1})"], {})).toEqual({
+    expression: "({mode:1})",
+    raw: false,
+  })
+  // Trailing --raw parses as a bare flag.
+  const trailing = flagsFrom(["eval", "({mode:1})", "--raw"])
+  expect(evalRequest(trailing.positional.slice(1), trailing.flags)).toEqual({
+    expression: "({mode:1})",
+    raw: true,
+  })
+  // Leading --raw eats the first expression token as its "value" in the
+  // generic parser; evalRequest hands it back.
+  const leading = flagsFrom(["eval", "--raw", "document.title"])
+  expect(evalRequest(leading.positional.slice(1), leading.flags)).toEqual({
+    expression: "document.title",
+    raw: true,
+  })
+})
+
 const tabTargets: PageTarget[] = [
   {
     id: "t1",
@@ -219,4 +241,66 @@ test("switch and closetab match by 1-based index or url/text substring", () => {
   expect(matchTab(tabTargets, "DOCS")?.id).toBe("t2")
   expect(matchTab(tabTargets, "nope")).toBeNull()
   expect(matchTab(tabTargets, "")).toBeNull()
+})
+
+test("closing the last tab reports browserClosed instead of unreachable", async () => {
+  const real = globalThis.fetch
+  let lists = 0
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.endsWith("/json/list")) {
+      lists += 1
+      // First list sees the one tab; after the close the browser is gone.
+      if (lists === 1)
+        return Response.json([
+          {
+            type: "page",
+            id: "t1",
+            url: "https://a.test/",
+            title: "First",
+            webSocketDebuggerUrl: "ws://a",
+          },
+        ])
+      throw new Error("Unable to connect")
+    }
+    if (url.includes("/json/close/")) {
+      // Chromium exits with its last tab, dropping the close response.
+      throw new Error("Unable to connect")
+    }
+    throw new Error(`unexpected ${url}`)
+  }) as unknown as typeof fetch
+  try {
+    const state = await closeTab(9222, undefined, "1")
+    expect(state.browserClosed).toBe(true)
+    expect(state.url).toBe("")
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test("closetab still fails when the tab survives the close", async () => {
+  const real = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.endsWith("/json/list"))
+      return Response.json([
+        {
+          type: "page",
+          id: "t1",
+          url: "https://a.test/",
+          title: "First",
+          webSocketDebuggerUrl: "ws://a",
+        },
+      ])
+    if (url.includes("/json/close/"))
+      return new Response("nope", { status: 500 })
+    throw new Error(`unexpected ${url}`)
+  }) as unknown as typeof fetch
+  try {
+    await expect(closeTab(9222, undefined, "1")).rejects.toThrow(
+      "tab did not close",
+    )
+  } finally {
+    globalThis.fetch = real
+  }
 })

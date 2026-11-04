@@ -44,7 +44,9 @@ import {
   teamKeys,
   threadDirAssignments,
   threadDirs,
+  threadModels,
   threadPersonas,
+  threadQueue,
   threadScreens,
   threadTitles,
   usageEvents,
@@ -267,6 +269,7 @@ export type Desktop = {
   memoryMb: number | null
   diskGb: number | null
   cpuCores: number | null
+  agentStepCap: number | null
 }
 
 // Per-user desktop resource limits (Admin page). RAM caps the opencode
@@ -297,6 +300,19 @@ export function validMemoryMb(value: unknown): value is number {
     Number.isInteger(value) &&
     value >= MEMORY_MIN_MB &&
     value <= MEMORY_MAX_MB
+  )
+}
+
+export const DEFAULT_AGENT_STEP_CAP = 512
+export const AGENT_STEP_CAP_MIN = 1
+export const AGENT_STEP_CAP_MAX = 100_000
+
+export function validAgentStepCap(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= AGENT_STEP_CAP_MIN &&
+    value <= AGENT_STEP_CAP_MAX
   )
 }
 
@@ -430,6 +446,25 @@ export type ThreadTitle = {
   createdAt: number
 }
 
+export type ThreadModel = {
+  userId: string
+  sessionId: string
+  providerId: string | null
+  modelId: string | null
+  effort: string | null
+}
+
+export type ThreadQueueItem = {
+  id: string
+  userId: string
+  sessionId: string
+  seq: number
+  text: string
+  /** JSON of the joined files exactly as the composer would send them. */
+  files: string
+  createdAt: number
+}
+
 export type ThreadDir = {
   id: string
   userId: string
@@ -556,6 +591,10 @@ export type PluginAppliedLog = {
   // means the tools are already live in new threads; anything else says why
   // not and when the merged config loads.
   mcp?: Record<string, string>
+  // Every MCP server name this install has ever merged into opencode.json,
+  // across versions — uninstall sweeps the union so a name dropped from a
+  // later manifest cannot leak as an orphan entry.
+  mcpNames?: string[]
 }
 
 export type InstalledPluginSource = "marketplace" | "local"
@@ -690,6 +729,7 @@ const desktopColumns = {
   memoryMb: desktops.memoryMb,
   diskGb: desktops.diskGb,
   cpuCores: desktops.cpuCores,
+  agentStepCap: desktops.agentStepCap,
 }
 
 function mapUser(row: typeof users.$inferSelect | undefined): User | null {
@@ -917,7 +957,12 @@ export function openDatabase(path: string) {
         .run()
       return row
     },
-    ensureDesktop(desktop: Omit<Desktop, "memoryMb" | "diskGb" | "cpuCores">) {
+    ensureDesktop(
+      desktop: Omit<
+        Desktop,
+        "memoryMb" | "diskGb" | "cpuCores" | "agentStepCap"
+      >,
+    ) {
       orm.insert(desktops).values(desktop).onConflictDoNothing().run()
     },
     desktop(userId: string) {
@@ -947,6 +992,13 @@ export function openDatabase(path: string) {
       if ("cpuCores" in limits) set.cpuCores = limits.cpuCores
       if (Object.keys(set).length === 0) return
       orm.update(desktops).set(set).where(eq(desktops.userId, userId)).run()
+    },
+    updateDesktopAgentStepCap(userId: string, stepCap: number | null) {
+      orm
+        .update(desktops)
+        .set({ agentStepCap: stepCap })
+        .where(eq(desktops.userId, userId))
+        .run()
     },
     getVikingProvider(userId?: string): VikingProvider | null {
       if (userId) {
@@ -1868,6 +1920,149 @@ export function openDatabase(path: string) {
           and(
             eq(threadTitles.userId, userId),
             eq(threadTitles.sessionId, sessionId),
+          ),
+        )
+        .run()
+    },
+    setThreadModel(row: ThreadModel) {
+      orm
+        .insert(threadModels)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [threadModels.userId, threadModels.sessionId],
+          set: {
+            providerId: row.providerId,
+            modelId: row.modelId,
+            effort: row.effort,
+          },
+        })
+        .run()
+    },
+    threadModel(userId: string, sessionId: string) {
+      return (
+        orm
+          .select()
+          .from(threadModels)
+          .where(
+            and(
+              eq(threadModels.userId, userId),
+              eq(threadModels.sessionId, sessionId),
+            ),
+          )
+          .get() ?? null
+      )
+    },
+    threadModels(userId: string) {
+      return orm
+        .select()
+        .from(threadModels)
+        .where(eq(threadModels.userId, userId))
+        .all()
+    },
+    clearThreadModel(userId: string, sessionId: string) {
+      orm
+        .delete(threadModels)
+        .where(
+          and(
+            eq(threadModels.userId, userId),
+            eq(threadModels.sessionId, sessionId),
+          ),
+        )
+        .run()
+    },
+    enqueueThreadMessage(row: Omit<ThreadQueueItem, "seq">) {
+      const tail = orm
+        .select({ seq: threadQueue.seq })
+        .from(threadQueue)
+        .where(
+          and(
+            eq(threadQueue.userId, row.userId),
+            eq(threadQueue.sessionId, row.sessionId),
+          ),
+        )
+        .orderBy(desc(threadQueue.seq))
+        .get()
+      const stored: ThreadQueueItem = { ...row, seq: (tail?.seq ?? 0) + 1 }
+      orm.insert(threadQueue).values(stored).run()
+      return stored
+    },
+    threadQueue(userId: string, sessionId: string) {
+      return orm
+        .select()
+        .from(threadQueue)
+        .where(
+          and(
+            eq(threadQueue.userId, userId),
+            eq(threadQueue.sessionId, sessionId),
+          ),
+        )
+        .orderBy(asc(threadQueue.seq))
+        .all()
+    },
+    threadQueueItem(userId: string, id: string) {
+      return (
+        orm
+          .select()
+          .from(threadQueue)
+          .where(and(eq(threadQueue.userId, userId), eq(threadQueue.id, id)))
+          .get() ?? null
+      )
+    },
+    updateThreadQueueItem(
+      userId: string,
+      id: string,
+      patch: { text: string; files: string },
+    ) {
+      orm
+        .update(threadQueue)
+        .set({ text: patch.text, files: patch.files })
+        .where(and(eq(threadQueue.userId, userId), eq(threadQueue.id, id)))
+        .run()
+      return this.threadQueueItem(userId, id)
+    },
+    deleteThreadQueueItem(userId: string, id: string) {
+      orm
+        .delete(threadQueue)
+        .where(and(eq(threadQueue.userId, userId), eq(threadQueue.id, id)))
+        .run()
+    },
+    promoteThreadQueueItem(userId: string, id: string) {
+      const item = this.threadQueueItem(userId, id)
+      if (!item) return
+      const head = orm
+        .select({ seq: threadQueue.seq })
+        .from(threadQueue)
+        .where(
+          and(
+            eq(threadQueue.userId, userId),
+            eq(threadQueue.sessionId, item.sessionId),
+          ),
+        )
+        .orderBy(asc(threadQueue.seq))
+        .get()
+      if (!head || head.seq === item.seq) return
+      orm
+        .update(threadQueue)
+        .set({ seq: head.seq - 1 })
+        .where(eq(threadQueue.id, id))
+        .run()
+    },
+    /** Sessions holding at least one queued message (wake-time flush). */
+    threadQueueSessions(userId: string) {
+      return orm
+        .selectDistinct({ sessionId: threadQueue.sessionId })
+        .from(threadQueue)
+        .where(eq(threadQueue.userId, userId))
+        .all()
+        .map((row) => row.sessionId)
+    },
+    clearThreadQueue(userId: string, sessionId: string) {
+      orm
+        .delete(threadQueue)
+        .where(
+          and(
+            eq(threadQueue.userId, userId),
+            eq(threadQueue.sessionId, sessionId),
           ),
         )
         .run()
@@ -3181,6 +3376,8 @@ export function openDatabase(path: string) {
         tx.delete(cronJobs).where(eq(cronJobs.userId, userId)).run()
         tx.delete(cronNotices).where(eq(cronNotices.userId, userId)).run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
+        tx.delete(threadModels).where(eq(threadModels.userId, userId)).run()
+        tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
         tx.delete(threadDirAssignments)
@@ -3205,6 +3402,8 @@ export function openDatabase(path: string) {
           .where(eq(builtinPersonaScopes.userId, userId))
           .run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
+        tx.delete(threadModels).where(eq(threadModels.userId, userId)).run()
+        tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadDirAssignments)
           .where(eq(threadDirAssignments.userId, userId))

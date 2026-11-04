@@ -27,6 +27,7 @@ import {
   pluginPageRuntime,
   restartPluginPageServer,
   schedulePluginPageRestart,
+  wakeDesktopForPage,
 } from "./plugin-pages"
 import {
   publicPagesEnabled,
@@ -492,7 +493,7 @@ export function guardMessage(manifest: PluginManifest): string {
   const name = GUARD_CRON_NAME(manifest.id)
   return [
     `[cron: ${name}] You publish and maintain the open-bot plugin "${manifest.id}" (${manifest.name}) at GitHub repo ${manifest.repo}.`,
-    "The script output lists the open issues, pull requests, and marketplace comments that need attention.",
+    "The script output lists only the issues, pull requests, and marketplace comments that are new or changed since the last guard run — work from it instead of re-listing everything.",
     "For each: read it, judge it, and act — answer questions, fix clear bugs in ~/plugins-create/" +
       manifest.id +
       " (clone if missing), review and merge satisfying PRs, close invalid ones with a kind comment.",
@@ -502,44 +503,73 @@ export function guardMessage(manifest: PluginManifest): string {
     "If merged changes warrant a release: bump the version in open-bot.plugin.json, update the changelog, then `ob-plugin publish ~/plugins-create/" +
       manifest.id +
       "` so the marketplace serves the new version.",
+    "An item you leave open will not re-wake you until it changes; to force a full re-triage, delete ~/.open-bot/plugin-guards/" +
+      manifest.id +
+      ".seen and the next run reports everything again.",
     "If there is nothing to do, say exactly that and stop.",
   ].join("\n")
 }
 
 const shq = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`
 
+// The guard is a script/auto cron: this script does all the checking and
+// prints nothing when there is nothing new, so a quiet day costs zero agent
+// turns. It wakes the agent only with items that are new or changed since
+// the last successful run — the seen lines live in
+// ~/.open-bot/plugin-guards/<id>.seen on the desktop (deleting the file
+// forces a full re-triage). Each line carries its updatedAt (and a PR's
+// head sha), so new activity on an old item reads as a changed line and
+// re-wakes; a failed check exits before the state advances.
 export function guardScript(manifest: PluginManifest): string {
   const repo = shq(manifest.repo)
   const id = shq(manifest.id)
-  return `issues=$(gh issue list -R ${repo} --state open --limit 30) || exit 1
-prs=$(gh pr list -R ${repo} --state open --limit 30) || exit 1
+  return `issues=$(gh issue list -R ${repo} --state open --limit 30 --json number,title,updatedAt --jq '.[] | "#\\(.number) \\(.title) (updated \\(.updatedAt))"') || exit 1
+prs=$(gh pr list -R ${repo} --state open --limit 30 --json number,title,updatedAt,headRefOid --jq '.[] | "#\\(.number) \\(.title) (head \\(.headRefOid[0:8]), updated \\(.updatedAt))"') || exit 1
 comments=$(ob-plugin comments ${id}) || exit 1
-out=""
-if [ -n "$issues" ]; then
-  out="$out
-Open issues:
-$issues
+state="$HOME/.open-bot/plugin-guards/${manifest.id}.seen"
+mkdir -p "$HOME/.open-bot/plugin-guards" || exit 1
+touch "$state" || exit 1
+current=$(mktemp) || exit 1
+fresh=$(mktemp) || exit 1
+{
+  [ -n "$issues" ] && printf '%s\\n' "$issues" | awk '{print "issue\\t" $0}'
+  [ -n "$prs" ] && printf '%s\\n' "$prs" | awk '{print "pr\\t" $0}'
+  [ -n "$comments" ] && printf '%s\\n' "$comments" | awk '{print "comment\\t" $0}'
+  true
+} > "$current"
+grep -vxF -f "$state" "$current" > "$fresh"
+cp "$current" "$state" || exit 1
+if [ -s "$fresh" ]; then
+  section() { awk -F '\\t' -v k="$1" '$1 == k {print substr($0, length(k) + 2)}' "$fresh"; }
+  out=""
+  new_issues=$(section issue)
+  if [ -n "$new_issues" ]; then
+    out="$out
+New or updated issues:
+$new_issues
 
 "
-fi
-if [ -n "$prs" ]; then
-  out="$out
-Open pull requests:
-$prs
+  fi
+  new_prs=$(section pr)
+  if [ -n "$new_prs" ]; then
+    out="$out
+New or updated pull requests:
+$new_prs
 
 "
-fi
-if [ -n "$comments" ]; then
-  out="$out
-Marketplace comments:
-$comments
+  fi
+  new_comments=$(section comment)
+  if [ -n "$new_comments" ]; then
+    out="$out
+New marketplace comments:
+$new_comments
 
 "
-fi
-if [ -n "$out" ]; then
+  fi
   echo '[cron-agent]'
   printf '%s\\n' "$out"
 fi
+rm -f "$current" "$fresh"
 `
 }
 
@@ -1311,7 +1341,11 @@ export function handlePlugins(
       return json({ error: "this plugin has no page server" }, 400)
     }
     if (!row.enabled) return json({ error: "plugin is disabled" }, 400)
-    return restartPluginPageServer(user.id, row, hub)
+    // An explicit restart is a force-start: wake a sleeping desktop first
+    // (like a dashboard app-tab visit) instead of failing with "desktop is
+    // asleep" — the agent asking for the restart is the wake signal.
+    return wakeDesktopForPage(db, user.id)
+      .then(() => restartPluginPageServer(user.id, row, hub))
       .then((port) => json({ ok: true, port, source: row.source }))
       .catch((error: unknown) =>
         json(

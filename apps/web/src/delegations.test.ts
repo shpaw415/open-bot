@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { delegatedBusyIds, parseDelegationWatches } from "./delegations"
+import {
+  delegatedBusyIds,
+  parseCouncilSummaries,
+  parseDelegationWatches,
+  threadCouncils,
+} from "./delegations"
 
 describe("parseDelegationWatches", () => {
   test("keeps well-formed rows and drops malformed ones", () => {
@@ -87,5 +92,124 @@ describe("delegatedBusyIds", () => {
 
   test("no watches means no lifted rows", () => {
     expect(delegatedBusyIds([], () => true, new Set()).size).toBe(0)
+  })
+})
+
+describe("threadCouncils", () => {
+  const summaries = parseCouncilSummaries({
+    councils: [
+      { id: "c1", name: "auth-review", members: 2, createdAt: 1 },
+      { id: "c2", name: "perf-review", members: 1, createdAt: 2 },
+      { id: "c3", name: "other-thread-team", members: 3, createdAt: 3 },
+    ],
+  })
+  const watches = [
+    {
+      kind: "council" as const,
+      creator: "chat1",
+      subject: "a1",
+      councilId: "c1",
+    },
+    {
+      kind: "council" as const,
+      creator: "chat1",
+      subject: "a2",
+      councilId: "c1",
+    },
+    {
+      kind: "council" as const,
+      creator: "chat1",
+      subject: "b1",
+      councilId: "c2",
+    },
+    {
+      kind: "council" as const,
+      creator: "chat9",
+      subject: "x1",
+      councilId: "c3",
+    },
+    {
+      kind: "persona" as const,
+      creator: "chat1",
+      subject: "mate1",
+      councilId: null,
+    },
+  ]
+
+  test("one thread lists several councils with per-team running counts", () => {
+    const rows = threadCouncils({
+      councils: summaries,
+      watches,
+      markerNames: [],
+      creatorId: "chat1",
+      isBusy: (id) => id === "a2" || id === "b1",
+    })
+    expect(rows).toEqual([
+      { id: "c1", name: "auth-review", members: 2, running: 1 },
+      { id: "c2", name: "perf-review", members: 1, running: 1 },
+    ])
+  })
+
+  test("markers add councils the watches miss, without duplicating", () => {
+    const rows = threadCouncils({
+      councils: summaries,
+      watches: [],
+      markerNames: ["auth-review", "perf-review", "auth-review"],
+      creatorId: "chat1",
+      isBusy: () => true,
+    })
+    expect(rows.map((row) => row.name)).toEqual(["auth-review", "perf-review"])
+    expect(rows[0]?.members).toBe(2)
+  })
+
+  test("before the list loads, watches and markers still produce rows", () => {
+    const rows = threadCouncils({
+      councils: null,
+      watches,
+      markerNames: ["fresh-team"],
+      creatorId: "chat1",
+      isBusy: (id) => id === "b1",
+    })
+    expect(rows.map((row) => row.name)).toEqual(["c1", "c2", "fresh-team"])
+    expect(rows[1]?.running).toBe(1)
+  })
+
+  test("a closed council drops out once the loaded list lacks it", () => {
+    const rows = threadCouncils({
+      councils: [],
+      watches,
+      markerNames: ["auth-review"],
+      creatorId: "chat1",
+      isBusy: () => true,
+    })
+    expect(rows).toEqual([])
+  })
+
+  test("no open thread means no councils", () => {
+    expect(
+      threadCouncils({
+        councils: summaries,
+        watches,
+        markerNames: ["auth-review"],
+        creatorId: "",
+        isBusy: () => true,
+      }),
+    ).toEqual([])
+  })
+})
+
+describe("parseCouncilSummaries", () => {
+  test("drops malformed rows and defaults counts", () => {
+    expect(
+      parseCouncilSummaries({
+        councils: [
+          { id: "c1", name: "auth-review", members: 2, createdAt: 5 },
+          { id: "c2" },
+          { name: "no-id" },
+          42,
+        ],
+      }),
+    ).toEqual([{ id: "c1", name: "auth-review", members: 2, createdAt: 5 }])
+    expect(parseCouncilSummaries(null)).toEqual([])
   })
 })

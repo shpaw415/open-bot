@@ -1,12 +1,18 @@
 #!/bin/sh
 set -eu
 export HOME=/home/agent
-mkdir -p /home/agent/workspace /home/agent/plugins-create /home/agent/.config/opencode/skills /home/agent/.local/share/opencode /home/agent/.openviking /home/agent/.open-bot /tmp/.X11-unix /home/agent/.config/chromium /home/agent/.config/chromium-threads
+mkdir -p /home/agent/workspace /home/agent/plugins-create /home/agent/.config/opencode/skills /home/agent/.local/bin /home/agent/.local/share/opencode /home/agent/.openviking /home/agent/.open-bot /tmp/.X11-unix /home/agent/.config/chromium /home/agent/.config/chromium-threads
 if [ -d /opt/image-usr-local ]; then
   mkdir -p /usr/local
   cp -a /opt/image-usr-local/. /usr/local/
   chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-media /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview /usr/local/bin/ob-chrome /usr/local/bin/ob-record /usr/local/bin/ob-page /usr/local/bin/ob-process 2>/dev/null || true
 fi
+# Muse: seed the launcher (+ image-built binary) into ~/.local/bin and
+# point /usr/local/bin/muse at it. The launcher requires its own
+# directory to be writable; root-owned /usr/local/bin made every run die
+# with "installed binary is missing". Runs after the /usr/local restore
+# above so the symlink wins over any stale regular file it restored.
+/opt/open-bot/seed-muse.sh || true
 if [ -e /opt/google/chrome/chrome-sandbox ]; then
   chown root:root /opt/google/chrome/chrome-sandbox
   chmod 4755 /opt/google/chrome/chrome-sandbox
@@ -28,6 +34,13 @@ for skill_dir in /opt/open-bot/seed/skills/*/; do
   mkdir -p "/home/agent/.config/opencode/skills/$skill"
   cp -a "$skill_dir." "/home/agent/.config/opencode/skills/$skill/"
 done
+# Seed opencode plugins (tool contract guards): opencode auto-loads every
+# file in ~/.config/opencode/plugins/ at server start, before any session.
+mkdir -p /home/agent/.config/opencode/plugins
+for plugin_file in /opt/open-bot/seed/plugins/*; do
+  [ -f "$plugin_file" ] || continue
+  cp "$plugin_file" "/home/agent/.config/opencode/plugins/$(basename "$plugin_file")"
+done
 # migration: the built-in blender feature moved to the marketplace plugin.
 # Strip its leftovers from persistent volumes; the plugin re-adds its own.
 rm -rf /home/agent/.config/opencode/skills/blender
@@ -40,12 +53,15 @@ if [ ! -f /home/agent/.config/opencode/opencode.json ]; then
   cp /opt/open-bot/seed/opencode.json /home/agent/.config/opencode/opencode.json
 fi
 prompt='You are a conversational bot, not a coding assistant. Do not follow a software-engineering default. Follow the desktop bot instructions. Answer in one short message. Do not open with a plan, a status line, or a coding-task frame. While you work, send no text messages: no plan, no status, no progress notes, no step summaries. Tool calls are silent. Send exactly one message, when the whole job is finished, containing only the final result and any deliverable images. Before that final message on a multi-step job, run the closing checklist: file a product defect or friction with ob-improve, save a user correction or an obvious missing finish with the refine skill, save a found shortcut with the shortcut skill, remember durable facts with openviking_remember, and record promised follow-ups. Do not run tools unless the person asked you to use the desktop, the shell, memory, a schedule, or an image. Never run xclip or xsel. Paste with ob-vnc paste. If a command hangs, kill it and move on. Never end the turn while ob-vnc can still advance the task; finish it yourself. Only stop for the user when the screen needs them.'
-# The build agent keeps a runaway guard (256 steps). build-unlimited is the
-# same agent with no step cap — derived here so the prompt stays single-sourced;
-# callers opt in per session (POST /session agent field, control plane maps
-# steps:"unlimited" onto it).
-jq --arg prompt "$prompt" --slurpfile seed /opt/open-bot/seed/opencode.json \
-  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .agent.build.prompt = $prompt | .agent.build.steps = 256 | .agent."build-unlimited" = (.agent.build | .prompt = $prompt | del(.steps)) | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
+# The build agent keeps a runaway guard (512 steps by default; the user can
+# override it in Config → Chat, persisted to ~/.config/open-bot/agent-cap.json
+# by apply-agent-cap.sh and read here so it survives every boot).
+# build-unlimited is the same agent with no step cap — derived here so the
+# prompt stays single-sourced; callers opt in per session (POST /session agent
+# field, control plane maps steps:"unlimited" onto it).
+step_cap=$(jq -r 'if (.stepCap | type) == "number" and (.stepCap | floor) == .stepCap and .stepCap >= 1 and .stepCap <= 100000 then .stepCap else 512 end' /home/agent/.config/open-bot/agent-cap.json 2>/dev/null || echo 512)
+jq --arg prompt "$prompt" --argjson step_cap "$step_cap" --slurpfile seed /opt/open-bot/seed/opencode.json \
+  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .plugin = (((.plugin // []) + ["/home/agent/.config/opencode/plugins/tool-guards.ts"]) | unique) | .agent.build.prompt = $prompt | .agent.build.steps = $step_cap | .agent."build-unlimited" = (.agent.build | .prompt = $prompt | del(.steps)) | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
   /home/agent/.config/opencode/opencode.json > /tmp/oc-perm.json
 mv /tmp/oc-perm.json /home/agent/.config/opencode/opencode.json
 cp /opt/open-bot/seed/openviking-config.json /home/agent/.config/opencode/openviking-config.json
@@ -66,6 +82,7 @@ chown agent:agent \
   /home/agent/.local/share
 chown -R agent:agent \
   /home/agent/.open-bot \
+  /home/agent/.local/bin \
   /home/agent/.config/opencode \
   /home/agent/.config/chromium \
   /home/agent/.config/chromium-threads \

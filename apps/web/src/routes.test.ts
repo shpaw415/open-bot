@@ -3,6 +3,7 @@ import type { PluginTab } from "./plugin-tabs"
 import {
   CONFIG_GROUPS,
   type ConfigTab,
+  chatThreadPath,
   configPath,
   isConfigTab,
   parseRoute,
@@ -166,6 +167,14 @@ describe("workspacePath", () => {
   test("Conversations live at /chat — Home owns /", () => {
     expect(workspacePath("chat")).toBe("/chat")
     expect(workspacePath("media")).toBe("/media")
+  })
+})
+
+describe("chatThreadPath", () => {
+  test("names the open thread so Back/reload restore it", () => {
+    expect(chatThreadPath("ses_1")).toBe("/chat?thread=ses_1")
+    expect(chatThreadPath("")).toBe("/chat")
+    expect(chatThreadPath("a/b?c")).toBe("/chat?thread=a%2Fb%3Fc")
   })
 })
 

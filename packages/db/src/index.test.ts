@@ -5,8 +5,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   type CronJob,
+  DEFAULT_AGENT_STEP_CAP,
   openDatabase,
   type User,
+  validAgentStepCap,
   validCpuCores,
   validDiskGb,
   validMemoryMb,
@@ -40,6 +42,18 @@ describe("desktop limit validators", () => {
     expect(validMemoryMb("4096")).toBe(false)
   })
 
+  test("agent step caps default to 512 and accept 1..100000", () => {
+    expect(DEFAULT_AGENT_STEP_CAP).toBe(512)
+    expect(validAgentStepCap(1)).toBe(true)
+    expect(validAgentStepCap(512)).toBe(true)
+    expect(validAgentStepCap(100_000)).toBe(true)
+    expect(validAgentStepCap(0)).toBe(false)
+    expect(validAgentStepCap(100_001)).toBe(false)
+    expect(validAgentStepCap(512.5)).toBe(false)
+    expect(validAgentStepCap(null)).toBe(false)
+    expect(validAgentStepCap("512")).toBe(false)
+  })
+
   test("disk caps accept whole GB from 0", () => {
     expect(validDiskGb(0)).toBe(true)
     expect(validDiskGb(50)).toBe(true)
@@ -49,6 +63,37 @@ describe("desktop limit validators", () => {
     expect(validDiskGb(100_001)).toBe(false)
     expect(validDiskGb(null)).toBe(false)
     expect(validDiskGb("50")).toBe(false)
+  })
+})
+
+describe("agent step cap storage", () => {
+  test("defaults to null and round-trips a user value", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite")
+    const db = openDatabase(path)
+    db.createUser({
+      id: "a",
+      email: "a@localhost",
+      passwordHash: "hash",
+      role: "admin",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    })
+    db.ensureDesktop({
+      userId: "a",
+      llmToken: "tok",
+      opencodePassword: "p",
+      vikingKey: "v",
+      selectedProvider: null,
+      selectedModel: null,
+      thinkingEffort: null,
+      lastActiveAt: 1,
+    })
+    expect(db.desktop("a")?.agentStepCap).toBeNull()
+    db.updateDesktopAgentStepCap("a", 1024)
+    expect(db.desktop("a")?.agentStepCap).toBe(1024)
+    db.updateDesktopAgentStepCap("a", null)
+    expect(db.desktop("a")?.agentStepCap).toBeNull()
   })
 })
 
@@ -244,7 +289,7 @@ describe("drizzle migrations", () => {
       lastError: null,
       providerId: "grok",
       modelId: "grok-4.5",
-      personaId: "designer",
+      personaId: "plugin-creator",
       runKind: "prompt",
       script: null,
     })
@@ -612,10 +657,10 @@ describe("cron store", () => {
     const assigned = db.updateCronJob("j1", "a", {
       providerId: "grok",
       modelId: "grok-4.5",
-      personaId: "designer",
+      personaId: "plugin-creator",
     })
     expect(assigned?.providerId).toBe("grok")
-    expect(assigned?.personaId).toBe("designer")
+    expect(assigned?.personaId).toBe("plugin-creator")
     const cleared = db.updateCronJob("j1", "a", {
       providerId: null,
       modelId: null,
@@ -846,8 +891,8 @@ describe("personas", () => {
     })
     db.setThreadPersona("a", "ses", "p1")
     expect(db.threadPersona("a", "ses")?.personaId).toBe("p1")
-    db.setThreadPersona("a", "ses", "designer")
-    expect(db.threadPersona("a", "ses")?.personaId).toBe("designer")
+    db.setThreadPersona("a", "ses", "plugin-creator")
+    expect(db.threadPersona("a", "ses")?.personaId).toBe("plugin-creator")
     db.setThreadPersona("a", "ses", "p1")
     expect(
       db.updatePersona("p1", "a", { name: "Cook", instruction: "shorter" })
@@ -856,6 +901,51 @@ describe("personas", () => {
     expect(db.deletePersona("p1", "a")).toBe(true)
     expect(db.personaById("p1", "a")).toBeNull()
     expect(db.threadPersona("a", "ses")).toBeNull()
+  })
+
+  test("thread model picks roundtrip, update in place, and clear", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    expect(db.threadModel("a", "ses")).toBeNull()
+    db.setThreadModel({
+      userId: "a",
+      sessionId: "ses",
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "high",
+    })
+    expect(db.threadModel("a", "ses")).toEqual({
+      userId: "a",
+      sessionId: "ses",
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "high",
+    })
+    db.setThreadModel({
+      userId: "a",
+      sessionId: "ses",
+      providerId: null,
+      modelId: null,
+      effort: "low",
+    })
+    expect(db.threadModel("a", "ses")?.effort).toBe("low")
+    expect(db.threadModel("a", "ses")?.providerId).toBeNull()
+    db.setThreadModel({
+      userId: "a",
+      sessionId: "ses-2",
+      providerId: "prov",
+      modelId: "plain",
+      effort: null,
+    })
+    expect(db.threadModels("a")).toHaveLength(2)
+    expect(db.threadModels("b")).toHaveLength(0)
+    db.clearThreadModel("a", "ses")
+    expect(db.threadModel("a", "ses")).toBeNull()
+    expect(db.threadModels("a")).toHaveLength(1)
+    db.deleteUser("a")
+    expect(db.threadModels("a")).toHaveLength(0)
   })
 
   test("skill allowlists roundtrip and an update keeps extras", () => {
@@ -927,14 +1017,14 @@ describe("personas", () => {
     )
     db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
     db.createUser(user({ id: "b", email: "b@localhost", role: "user" }))
-    db.setBuiltinPersonaScope("a", "designer", {
+    db.setBuiltinPersonaScope("a", "plugin-creator", {
       skillsExtra: ["research"],
       mcpExtra: ["files"],
     })
     expect(db.builtinPersonaScopes("a")).toEqual([
       {
         userId: "a",
-        personaId: "designer",
+        personaId: "plugin-creator",
         skillsExtra: ["research"],
         skillsNone: false,
         mcpExtra: ["files"],
@@ -944,16 +1034,62 @@ describe("personas", () => {
     // other users and built-ins are untouched
     expect(db.builtinPersonaScopes("b")).toEqual([])
     // present-set / omitted-keep on the upsert
-    db.setBuiltinPersonaScope("a", "designer", { skillsExtra: ["media"] })
+    db.setBuiltinPersonaScope("a", "plugin-creator", { skillsExtra: ["media"] })
     const scope = db.builtinPersonaScopes("a")[0]
     expect(scope?.skillsExtra).toEqual(["media"])
     expect(scope?.mcpExtra).toEqual(["files"])
     // null clears one list
-    db.setBuiltinPersonaScope("a", "designer", { mcpExtra: null })
+    db.setBuiltinPersonaScope("a", "plugin-creator", { mcpExtra: null })
     expect(db.builtinPersonaScopes("a")[0]?.mcpExtra).toBeNull()
     // deleting the user removes the rows
     db.deleteUser("a")
     expect(db.builtinPersonaScopes("a")).toEqual([])
+  })
+
+  test("reopening remaps removed built-ins to the assistant", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite")
+    const db = openDatabase(path)
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.setThreadPersona("a", "ses-old", "designer")
+    db.setThreadPersona("a", "ses-keep", "plugin-creator")
+    db.setBuiltinPersonaScope("a", "political-expert", {
+      skillsExtra: ["research"],
+    })
+    db.createCronJob({
+      id: "j1",
+      userId: "a",
+      name: "job",
+      message: "do it",
+      kind: "every",
+      cronExpr: null,
+      everySeconds: 3600,
+      atMs: null,
+      enabled: true,
+      deleteAfterRun: false,
+      sessionId: null,
+      createdAt: 1000,
+      lastRunAt: null,
+      nextRunAt: 2000,
+      runCount: 0,
+      lastError: null,
+      providerId: null,
+      modelId: null,
+      personaId: "software-designer",
+      runKind: "prompt",
+      script: null,
+    })
+    db.close()
+
+    const reopened = openDatabase(path)
+    // thread bindings point at the assistant (cron jobs store that as null)
+    expect(reopened.threadPersona("a", "ses-old")?.personaId).toBe("assistant")
+    expect(reopened.threadPersona("a", "ses-keep")?.personaId).toBe(
+      "plugin-creator",
+    )
+    expect(reopened.cronJobs("a")[0]?.personaId).toBeNull()
+    // scope rows for removed built-ins are dropped
+    expect(reopened.builtinPersonaScopes("a")).toEqual([])
+    reopened.close()
   })
 })
 
@@ -1218,5 +1354,62 @@ describe("plugin store", () => {
     expect(db.installedPlugins("a")).toHaveLength(0)
     expect(db.pluginSettings("a", "weather-pro")).toHaveLength(0)
     expect(db.getSetting("plugin_install_policy")).toBe("manual")
+  })
+})
+
+describe("thread message queue", () => {
+  test("orders by enqueue, promotes to head, edits, deletes, clears", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    const at = 1_700_000_000_000
+    db.enqueueThreadMessage({
+      id: "q1",
+      userId: "u1",
+      sessionId: "s1",
+      text: "first",
+      files: "[]",
+      createdAt: at,
+    })
+    db.enqueueThreadMessage({
+      id: "q2",
+      userId: "u1",
+      sessionId: "s1",
+      text: "second",
+      files: "[]",
+      createdAt: at,
+    })
+    db.enqueueThreadMessage({
+      id: "q3",
+      userId: "u1",
+      sessionId: "s2",
+      text: "other thread",
+      files: "[]",
+      createdAt: at,
+    })
+    expect(db.threadQueue("u1", "s1").map((row) => row.id)).toEqual([
+      "q1",
+      "q2",
+    ])
+    expect(db.threadQueueSessions("u1").sort()).toEqual(["s1", "s2"])
+    db.promoteThreadQueueItem("u1", "q2")
+    expect(db.threadQueue("u1", "s1").map((row) => row.id)).toEqual([
+      "q2",
+      "q1",
+    ])
+    const edited = db.updateThreadQueueItem("u1", "q1", {
+      text: "first, edited",
+      files: "[]",
+    })
+    expect(edited?.text).toBe("first, edited")
+    expect(db.threadQueueItem("u2", "q1")).toBeNull()
+    db.deleteThreadQueueItem("u1", "q2")
+    expect(db.threadQueue("u1", "s1").map((row) => row.id)).toEqual(["q1"])
+    db.clearThreadQueue("u1", "s1")
+    expect(db.threadQueue("u1", "s1")).toEqual([])
+    expect(db.threadQueue("u1", "s2").map((row) => row.id)).toEqual(["q3"])
+    db.createUser(user({ id: "u1", email: "u1@localhost", role: "user" }))
+    db.deleteUser("u1")
+    expect(db.threadQueue("u1", "s2")).toEqual([])
   })
 })

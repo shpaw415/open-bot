@@ -10,6 +10,7 @@ import {
   stopDesktop,
 } from "./docker"
 import type { EventHub } from "./events"
+import { imageProviderPublic } from "./image-providers"
 import { handleAdminImprovements } from "./improvements"
 import {
   keyVault,
@@ -24,8 +25,10 @@ import {
   VAULT_CAP_KEY,
   vaultCapMb,
 } from "./media-vault"
+import { model3dProviderPublic } from "./model3d-providers"
 import { randomToken } from "./passwords"
 import { DISK_CAP_KEY, desktopDiskMaxGb, MAX_DISK_CAP_GB } from "./stats"
+import { system1ProviderPublic } from "./system1"
 import {
   getTeamConfig,
   getTeamOpencodeAuth,
@@ -43,6 +46,9 @@ import {
   teamKeysPublic,
 } from "./team-apply"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
+import { videoProviderPublic } from "./video-providers"
+import { voiceProvidersPublic } from "./voice-catalog"
+import { watchdogProviderPublic } from "./watchdog-catalog"
 import {
   deleteUserMedia,
   MAX_MEDIA_CAP_MB,
@@ -326,6 +332,16 @@ export async function handleAdmin(
       config,
       secrets,
       catalog: keyVaultPublic(),
+      // The admin provider sections render from the same catalogs as the
+      // per-user Config forms (fields/models per provider).
+      voiceProviders: voiceProvidersPublic(),
+      providerCatalogs: {
+        image: imageProviderPublic(),
+        video: videoProviderPublic(),
+        model3d: model3dProviderPublic(),
+        system1: system1ProviderPublic(),
+        watchdog: watchdogProviderPublic(),
+      },
       keys: teamKeysPublic(db),
       opencodeAuth: teamOpencodeAuthPublic(getTeamOpencodeAuth(db)),
     })

@@ -33,6 +33,7 @@ mock.module("./docker", () => ({
 
 const {
   COUNCIL_NAME_MAX,
+  councilMemberMeta,
   findOrCreateCouncil,
   handleCouncils,
   isCouncilPath,
@@ -91,6 +92,15 @@ function makeDb() {
         if (members[i].councilId === id) members.splice(i, 1)
       }
       return true
+    },
+    personas: () => [],
+    threadPersona: () => null,
+    threadModels: () => [],
+    clearThreadModel: (_userId: string, sessionId: string) => {
+      cleanup.push(`model:${sessionId}`)
+    },
+    clearThreadQueue: (_userId: string, sessionId: string) => {
+      cleanup.push(`queue:${sessionId}`)
     },
     clearThreadPersona: (_userId: string, sessionId: string) => {
       cleanup.push(`persona:${sessionId}`)
@@ -213,6 +223,48 @@ describe("council name and role helpers", () => {
   })
 })
 
+describe("councilMemberMeta", () => {
+  test("resolves persona names and per-member model picks", () => {
+    const db = {
+      personas: () => [{ id: "p1", name: "Software manager" }],
+      threadPersona: (_userId: string, sessionId: string) =>
+        sessionId === "m1"
+          ? { personaId: "p1" }
+          : sessionId === "m2"
+            ? { personaId: "plugin-creator" }
+            : null,
+      threadModels: () => [
+        {
+          userId: "user-1",
+          sessionId: "m1",
+          providerId: "prov",
+          modelId: "reasoner",
+          effort: "high",
+        },
+        {
+          userId: "user-1",
+          sessionId: "m2",
+          providerId: null,
+          modelId: null,
+          effort: "low",
+        },
+      ],
+    } as unknown as Db
+    const meta = councilMemberMeta(db, "user-1", ["m1", "m2", "m3"])
+    expect(meta.get("m1")).toEqual({
+      persona: "Software manager",
+      model: "prov/reasoner",
+      effort: "high",
+    })
+    expect(meta.get("m2")).toEqual({
+      persona: "Open-bot Plugin Creator",
+      model: "",
+      effort: "low",
+    })
+    expect(meta.get("m3")).toEqual({ persona: "", model: "", effort: "" })
+  })
+})
+
 describe("GET /api/councils", () => {
   test("lists councils with member counts", async () => {
     const store = makeDb()
@@ -292,13 +344,32 @@ describe("GET /api/councils", () => {
         role: string
         title: string
         createdAt: number
+        persona: string
+        model: string
+        effort: string
       }[]
       subagents: unknown[]
     }
     expect(body.name).toBe("auth-review")
     expect(body.members).toEqual([
-      { sessionId: "s1", role: "Researcher", title: "Research", createdAt: 1 },
-      { sessionId: "s3", role: "", title: "", createdAt: 2 },
+      {
+        sessionId: "s1",
+        role: "Researcher",
+        title: "Research",
+        createdAt: 1,
+        persona: "",
+        model: "",
+        effort: "",
+      },
+      {
+        sessionId: "s3",
+        role: "",
+        title: "",
+        createdAt: 2,
+        persona: "",
+        model: "",
+        effort: "",
+      },
     ])
     expect(body.subagents).toEqual([])
   })
@@ -395,11 +466,22 @@ describe("GET /api/councils", () => {
         role: string
         title: string
         createdAt: number
+        persona: string
+        model: string
+        effort: string
       }[]
       subagents: unknown[]
     }
     expect(body.members).toEqual([
-      { sessionId: "s1", role: "", title: "", createdAt: 1 },
+      {
+        sessionId: "s1",
+        role: "",
+        title: "",
+        createdAt: 1,
+        persona: "",
+        model: "",
+        effort: "",
+      },
     ])
     expect(body.subagents).toEqual([])
     expect(calls).toHaveLength(0)
@@ -597,6 +679,12 @@ describe("GET /api/councils/:name/status", () => {
           title: "Research",
           status: "busy",
           lastReply: "half done",
+          endState: "unknown",
+          endDetail: "",
+          stalled: false,
+          persona: "",
+          model: "",
+          effort: "",
         },
         {
           sessionId: "s2",
@@ -604,8 +692,72 @@ describe("GET /api/councils/:name/status", () => {
           title: "Reviewer",
           status: "idle",
           lastReply: "finished the review",
+          endState: "unknown",
+          endDetail: "",
+          stalled: false,
+          persona: "",
+          model: "",
+          effort: "",
         },
       ],
+    })
+  })
+
+  test("an idle member whose turn was cut reads as stalled, not done", async () => {
+    installStatusFetch({
+      status: { s1: { type: "idle" }, s2: { type: "idle" } },
+      messages: {
+        s1: [
+          {
+            info: { role: "assistant", finish: "length" },
+            parts: [{ type: "text", text: "analyzing the next sec" }],
+          },
+        ],
+        s2: [
+          {
+            info: { role: "assistant", finish: "stop" },
+            parts: [{ type: "text", text: "delivered report.md" }],
+          },
+        ],
+      },
+    })
+    const store = makeDb()
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push(
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s1",
+        role: "Researcher",
+        createdAt: 1,
+      },
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s2",
+        role: "Reviewer",
+        createdAt: 2,
+      },
+    )
+    const res = await statusRequest("auth-review", store.db)
+    const body = (await res.json()) as {
+      members: {
+        sessionId: string
+        endState: string
+        endDetail: string
+        stalled: boolean
+      }[]
+    }
+    expect(body.members[0]).toMatchObject({
+      sessionId: "s1",
+      endState: "cut",
+      stalled: true,
+    })
+    expect(body.members[0]?.endDetail).toContain("length")
+    expect(body.members[1]).toMatchObject({
+      sessionId: "s2",
+      endState: "done",
+      stalled: false,
     })
   })
 
@@ -632,6 +784,12 @@ describe("GET /api/councils/:name/status", () => {
           title: "",
           status: "unknown",
           lastReply: "",
+          endState: "unknown",
+          endDetail: "",
+          stalled: false,
+          persona: "",
+          model: "",
+          effort: "",
         },
       ],
     })
@@ -661,6 +819,12 @@ describe("GET /api/councils/:name/status", () => {
           title: "",
           status: "desktop_down",
           lastReply: "",
+          endState: "unknown",
+          endDetail: "",
+          stalled: false,
+          persona: "",
+          model: "",
+          effort: "",
         },
       ],
     })

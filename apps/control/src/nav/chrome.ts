@@ -23,7 +23,7 @@ import {
 } from "./devtools"
 
 const USAGE =
-  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval JS"
+  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] JS"
 
 export type PageState = {
   url: string
@@ -31,6 +31,7 @@ export type PageState = {
   heading?: string
   text?: string
   via?: string
+  browserClosed?: boolean
 }
 
 export function normalizeTarget(raw: string): string | null {
@@ -255,7 +256,7 @@ async function switchTab(
   }
 }
 
-async function closeTab(
+export async function closeTab(
   port: number,
   session: string | undefined,
   arg: string,
@@ -269,19 +270,40 @@ async function closeTab(
   const gone = await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`, {
     signal: AbortSignal.timeout(4000),
   }).catch(() => null)
-  if (!gone?.ok) throw new Error("tab did not close")
-  if (target.id === activeId) clearActiveTabId(session)
-  // The screen should follow the survivor, not a closed tab.
-  const rest = await listPageTargets(port).catch(() => [])
-  const next = pickPageTarget(rest)
-  if (!next) return shapeState(null)
-  writeActiveTabId(session, next.id)
-  const socket = await openSocket(next.webSocketDebuggerUrl)
+  // Closing the last tab exits Chromium, which can drop the close response
+  // itself — a failed response is only a failed close when the tab is
+  // still listed afterwards. An unreachable browser means the tab went
+  // with it: the requested end state, not an error to heal/retry over.
+  let rest: PageTarget[] | null = null
   try {
-    await front(socket)
-    return await readState(socket).catch(() => shapeState(null))
-  } finally {
-    socket.close()
+    rest = await listPageTargets(port)
+  } catch {
+    rest = null
+  }
+  const closed =
+    gone?.ok === true ||
+    rest === null ||
+    !rest.some((item) => item.id === target.id)
+  if (!closed) throw new Error("tab did not close")
+  if (target.id === activeId) clearActiveTabId(session)
+  const closedState: PageState = { ...shapeState(null), browserClosed: true }
+  // The screen should follow the survivor, not a closed tab.
+  const survivors = (rest ?? []).filter((item) => item.id !== target.id)
+  const next = pickPageTarget(survivors)
+  if (!next) return closedState
+  writeActiveTabId(session, next.id)
+  // The close already succeeded; a browser dying around the survivor must
+  // not turn it into a failure (which also made withHeal relaunch it).
+  try {
+    const socket = await openSocket(next.webSocketDebuggerUrl)
+    try {
+      await front(socket)
+      return await readState(socket).catch(() => shapeState(null))
+    } finally {
+      socket.close()
+    }
+  } catch {
+    return closedState
   }
 }
 
@@ -696,15 +718,36 @@ async function domCmd(
   }
 }
 
+// Splits an eval invocation into expression + raw mode. The generic flag
+// parser treats a `--raw` before the expression as taking the expression's
+// first token as its value — hand that token back so both
+// `eval --raw 'expr'` and `eval 'expr' --raw` work.
+export function evalRequest(
+  positional: string[],
+  flags: Record<string, string | boolean>,
+): { expression: string; raw: boolean } {
+  if (flags.raw === undefined) {
+    return { expression: positional.join(" "), raw: false }
+  }
+  if (typeof flags.raw === "string") {
+    return { expression: [flags.raw, ...positional].join(" "), raw: true }
+  }
+  return { expression: positional.join(" "), raw: flags.raw === true }
+}
+
 // `eval JS` runs in the page: the management lever the DOM read implies —
 // set attributes/classes, inject or remove nodes, call the page's own APIs.
-// evaluate() surfaces page exceptions with the real message.
+// evaluate() surfaces page exceptions with the real message. Default output
+// is the {url, value} envelope every verb prints; --raw prints the JSON
+// value alone so a poll can read fields at the root (`eval '({mode:1})'
+// --raw` -> {"mode":1}).
 async function evalCmd(
   port: number,
   session: string | undefined,
   positional: string[],
+  flags: Record<string, string | boolean>,
 ): Promise<Record<string, unknown>> {
-  const expression = positional.join(" ")
+  const { expression, raw } = evalRequest(positional, flags)
   if (!expression.trim()) throw new Error("eval needs a JavaScript expression")
   const { socket } = await resolvePage(port, session)
   try {
@@ -714,6 +757,13 @@ async function evalCmd(
       serialized = JSON.stringify(value) ?? String(value)
     } catch {
       serialized = String(value)
+    }
+    if (raw) {
+      if (serialized.length <= EVAL_MAX) return { __raw: serialized }
+      console.error(
+        "note: eval result truncated — narrow the expression (slice arrays, pick fields)",
+      )
+      return { __raw: capText(serialized, EVAL_MAX).text }
     }
     const url = await evaluate(socket, "location.href").catch(() => "")
     if (serialized.length <= EVAL_MAX) return { url, value }
@@ -839,10 +889,15 @@ async function main() {
   else if (verb === "dom")
     state = await withHeal(session, () => domCmd(port, session, args, flags))
   else if (verb === "eval")
-    state = await withHeal(session, () => evalCmd(port, session, args))
+    state = await withHeal(session, () => evalCmd(port, session, args, flags))
   else if (verb === "cache")
     state = await withHeal(session, () => cacheCmd(port, session, args, flags))
   else throw new Error(USAGE)
+  // eval --raw: the JSON value alone on the line, no {url, value} envelope.
+  if (typeof state === "object" && state !== null && "__raw" in state) {
+    console.log(String((state as { __raw: unknown }).__raw))
+    return
+  }
   console.log(JSON.stringify(state))
 }
 

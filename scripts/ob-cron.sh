@@ -33,13 +33,13 @@ Run options:
   --persona ID             personality that runs the job. Omit for Assistant. Does not change the job thread.
 
 Examples:
-  ob-cron add --name standup --message "Summarize git log since yesterday" --cron "0 13 * * 1-5" --model grok/grok-4.5 --persona designer
+  ob-cron add --name standup --message "Summarize git log since yesterday" --cron "0 13 * * 1-5" --model grok/grok-4.5 --persona plugin-creator
   ob-cron add --name disk --script "df -h" --every 3600
   ob-cron add --name digest --script "git -C /home/agent/workspace log -1 --oneline" --message "Summarize this and say if anything needs attention" --cron "0 13 * * 1-5"
   ob-cron add --name guard --script ~/check-plugin.sh --message "Fix what the output lists" --run auto --cron "0 14 * * *"
   ob-cron models
   ob-cron set 3f2b... --run script --script "df -h"
-  ob-cron set 3f2b... --clear-model --persona assistant
+  ob-cron set 3f2b... --clear-model --persona plugin-creator
   ob-cron list
   ob-cron remove 3f2b...
 EOF

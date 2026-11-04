@@ -1,11 +1,46 @@
 import { describe, expect, test } from "bun:test"
 import {
+  cardBlocks,
+  cardSpan,
   type InstalledResponse,
   initialPluginsState,
   parseInstalledBody,
   pluginsAwaitingRoute,
   pluginsReducer,
 } from "./plugin-ui"
+
+describe("card layout", () => {
+  const stat = (label: string, span?: number) => ({
+    kind: "stat",
+    label,
+    span,
+  })
+  test("consecutive stat cards group into one columns block", () => {
+    const blocks = cardBlocks([
+      stat("CPU"),
+      stat("RAM"),
+      { kind: "table", columns: ["A"] },
+      stat("Disk"),
+      { kind: "markdown", text: "hi" },
+    ])
+    expect(blocks.map((block) => block.type)).toEqual([
+      "stats",
+      "single",
+      "stats",
+      "single",
+    ])
+    expect(blocks[0]?.type === "stats" ? blocks[0].cards.length : 0).toBe(2)
+    expect(blocks[2]?.type === "stats" ? blocks[2].cards.length : 0).toBe(1)
+  })
+
+  test("cardSpan clamps to the 1-4 grid range", () => {
+    expect(cardSpan(stat("x"))).toBe(1)
+    expect(cardSpan(stat("x", 3))).toBe(3)
+    expect(cardSpan(stat("x", 9))).toBe(4)
+    expect(cardSpan(stat("x", 0))).toBe(1)
+    expect(cardSpan({ kind: "table", span: 2 })).toBe(2)
+  })
+})
 
 describe("pluginsAwaitingRoute — direct plugin links on a failed first load", () => {
   test("the first load in flight holds a plugin-shaped URL", () => {

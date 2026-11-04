@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl gh git jq libatomic1 procps sudo unzip \
+    bash ca-certificates curl gh git jq libatomic1 procps rsync sudo unzip \
     gcc libc6-dev make \
     xvfb openbox chromium wmctrl xdotool sqlite3 ffmpeg \
     python3 python3-pip python3-venv python3-pil \
@@ -56,9 +56,15 @@ RUN curl -fsSL https://bun.sh/install | bash \
 # allowed to fail the image build.
 RUN (npm install -g @anthropic-ai/claude-code && claude --version) \
     || echo "claude-code install failed; cli-bridge will report it missing"
-RUN (curl -fsSL -o /usr/local/bin/muse https://api.meta.ai/muse-launcher.sh \
-     && chmod 755 /usr/local/bin/muse) \
-    || echo "muse install failed; cli-bridge will report it missing"
+# Muse's launcher downloads its binary next to the launcher script, so
+# it cannot live in root-owned /usr/local/bin: build a seed (launcher +
+# pre-downloaded binary) that seed-muse.sh copies into ~/.local/bin at
+# boot. The public channel download needs no login.
+RUN mkdir -p /opt/muse-seed \
+    && (curl -fsSL -o /opt/muse-seed/muse https://api.meta.ai/muse-launcher.sh \
+     && chmod 755 /opt/muse-seed/muse \
+     && MUSE_LAUNCHER_INSTALL=1 /opt/muse-seed/muse) \
+    || echo "muse seed failed; the launcher downloads on first use instead"
 
 COPY images/opencode/gpio-3d /opt/gpio-3d
 RUN python3 -m venv /opt/gpio-3d/venv \
@@ -104,11 +110,13 @@ COPY images/opencode/apply-system1.sh /opt/open-bot/apply-system1.sh
 COPY images/opencode/apply-chat-auth.sh /opt/open-bot/apply-chat-auth.sh
 COPY images/opencode/apply-opencode-auth.sh /opt/open-bot/apply-opencode-auth.sh
 COPY images/opencode/apply-watchdog.sh /opt/open-bot/apply-watchdog.sh
+COPY images/opencode/apply-agent-cap.sh /opt/open-bot/apply-agent-cap.sh
 COPY images/opencode/watchdog-daemon.ts /opt/open-bot/watchdog-daemon.ts
 COPY apps/control/src/watchdog-rules.ts /opt/open-bot/watchdog-rules.ts
 COPY apps/control/src/nav /opt/open-bot/nav
 COPY apps/control/src/cli-bridge /opt/open-bot/cli-bridge
 COPY images/opencode/cli-status.sh /opt/open-bot/cli-status.sh
+COPY images/opencode/seed-muse.sh /opt/open-bot/seed-muse.sh
 COPY images/opencode/screen-up.sh /opt/open-bot/screen-up.sh
 COPY images/opencode/screen-down.sh /opt/open-bot/screen-down.sh
 COPY images/opencode/screen-list.sh /opt/open-bot/screen-list.sh
@@ -149,7 +157,7 @@ RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/open-bot-agent \
     && chmod 440 /etc/sudoers.d/open-bot-agent \
     && visudo -cf /etc/sudoers.d/open-bot-agent \
-      && chmod 755 /opt/open-bot/cli-status.sh /opt/open-bot/cli-bridge/server.ts /opt/open-bot/cli-bridge/providers.ts /opt/open-bot/cli-bridge/apply-config.ts \
+      && chmod 755 /opt/open-bot/cli-status.sh /opt/open-bot/seed-muse.sh /opt/open-bot/cli-bridge/server.ts /opt/open-bot/cli-bridge/providers.ts /opt/open-bot/cli-bridge/apply-config.ts \
       && chmod 755 /opt/open-bot/opencode-auth.sh /opt/open-bot/entrypoint.sh /opt/open-bot/apply-model.sh /opt/open-bot/apply-image-auth.sh /opt/open-bot/apply-video-auth.sh /opt/open-bot/apply-model3d-auth.sh /opt/open-bot/apply-system1.sh /opt/open-bot/apply-chat-auth.sh /opt/open-bot/apply-opencode-auth.sh /opt/open-bot/apply-watchdog.sh /opt/open-bot/apply-plugin-auth.sh /opt/open-bot/watchdog-daemon.ts /opt/open-bot/watchdog-rules.ts /opt/open-bot/screen-up.sh /opt/open-bot/screen-down.sh /opt/open-bot/screen-list.sh /opt/open-bot/sync-chromium.sh /opt/open-bot/disk-cleanup.sh /opt/open-bot/heal-stale-tools.ts /opt/open-bot/record-apt.sh /opt/open-bot/restore-apt.sh /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-process /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-api-key /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /usr/local/bin/ob-memory /opt/image-usr-local/bin/ob-vnc /opt/image-usr-local/bin/ob-app /opt/image-usr-local/bin/ob-process /opt/image-usr-local/bin/ob-nav /opt/image-usr-local/bin/ob-system1 /opt/image-usr-local/bin/ob-cron /opt/image-usr-local/bin/ob-persona /opt/image-usr-local/bin/ob-project /opt/image-usr-local/bin/ob-report /opt/image-usr-local/bin/ob-thread /opt/image-usr-local/bin/ob-media /opt/image-usr-local/bin/ob-api-key /opt/image-usr-local/bin/ob-plugin /opt/image-usr-local/bin/ob-page /opt/image-usr-local/bin/ob-backup /opt/image-usr-local/bin/ob-reset /opt/image-usr-local/bin/ob-preview /opt/image-usr-local/bin/ob-memory /opt/image-usr-local/bin/ob-tab-sweep \
     && touch /opt/open-bot/instance
 

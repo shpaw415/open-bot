@@ -225,6 +225,79 @@ test("bare start sends an empty body", async () => {
   }
 })
 
+test("start sends per-member persona, model, and effort picks", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, [
+      "start",
+      "--council",
+      "auth-review",
+      "--role",
+      "Reviewer",
+      "--persona",
+      "Software manager",
+      "--model",
+      "prov/reasoner",
+      "--effort",
+      "high",
+      "--title",
+      "Token storage",
+      "--message",
+      "Review it",
+    ])
+    expect(result.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({
+      title: "Token storage",
+      persona: "Software manager",
+      model: "prov/reasoner",
+      effort: "high",
+      council: "auth-review",
+      role: "Reviewer",
+      message: "Review it",
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("--model without provider/model fails before calling curl", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["start", "--model", "reasoner"])
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("--model must be provider/model")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("models lists connected models with their effort levels", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+printf '%s\\n' '{"models":[{"providerID":"prov","modelID":"reasoner","name":"Reasoner","variants":["low","high"]},{"providerID":"prov","modelID":"plain","variants":[]}]}'
+`,
+    )
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, ["models"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toBe(
+      "prov/reasoner  Reasoner  [efforts: low, high]\nprov/plain\n",
+    )
+    expect((await argsOf(home)).join(" ")).toContain("/api/cron/models")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test("list issues a GET and prints one line per hidden thread", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
   try {
@@ -419,6 +492,159 @@ test("stop and post usage errors never call curl", async () => {
   }
 })
 
+function fakeCurlWithModel(home: string) {
+  const bin = join(home, "bin")
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+prev=""
+method=""
+for arg in "$@"; do
+  if [ "$prev" = "-d" ]; then printf '%s' "$arg" > "$CURL_BODY"; fi
+  if [ "$prev" = "-X" ]; then method="$arg"; fi
+  prev="$arg"
+done
+case "$*" in
+  */post*)
+    printf '%s\\n' '{"id":"t1","posted":true,"model":"prov/reasoner","effort":"high"}' ;;
+  *)
+    if [ "$method" = "GET" ]; then
+      printf '%s\\n' '{"id":"t1","model":"prov/fast","effort":null,"thread":{"model":"prov/fast","effort":null}}'
+    else
+      printf '%s\\n' '{"id":"t1","model":"prov/reasoner","effort":"high","thread":{"model":"prov/reasoner","effort":"high"},"effortDropped":"low"}'
+    fi ;;
+esac
+`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+}
+
+test("model without flags reads the thread's current pick", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithModel(home)
+    const result = await run(home, ["model", "t1"])
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: "t1",
+      model: "prov/fast",
+      effort: null,
+      thread: { model: "prov/fast", effort: null },
+    })
+    const args = await argsOf(home)
+    expect(args).toContain("GET")
+    expect(args.join(" ")).toContain("/api/threads/t1/model")
+    expect(await Bun.file(join(home, "curl.body")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("model with flags posts the switch and reports a dropped effort", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithModel(home)
+    const result = await run(home, [
+      "model",
+      "t1",
+      "--model",
+      "prov/reasoner",
+      "--effort",
+      "high",
+    ])
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: "t1",
+      model: "prov/reasoner",
+      effort: "high",
+      thread: { model: "prov/reasoner", effort: "high" },
+      effortDropped: "low",
+    })
+    expect(result.stderr).toContain('pinned effort "low"')
+    expect(await bodyOf(home)).toEqual({
+      model: "prov/reasoner",
+      effort: "high",
+    })
+    expect((await argsOf(home)).join(" ")).toContain("/api/threads/t1/model")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("model --model default clears the pin with a null half", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithModel(home)
+    const result = await run(home, ["model", "t1", "--model", "default"])
+    expect(result.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({ model: null })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("model with a bare model id fails before calling curl", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithModel(home)
+    const result = await run(home, ["model", "t1", "--model", "reasoner"])
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("--model must be provider/model or default")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("post --model/--effort switch rides the message body", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithModel(home)
+    const result = await run(home, [
+      "post",
+      "t1",
+      "--model",
+      "prov/reasoner",
+      "--effort",
+      "high",
+      "Now the hard part",
+    ])
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: "t1",
+      posted: true,
+      model: "prov/reasoner",
+      effort: "high",
+    })
+    expect(await bodyOf(home)).toEqual({
+      message: "Now the hard part",
+      model: "prov/reasoner",
+      effort: "high",
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("post keeps flag-like words inside the text, and -- starts the text", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlWithModel(home)
+    const mid = await run(home, ["post", "t1", "explain --model flags"])
+    expect(mid.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({ message: "explain --model flags" })
+    const headed = await run(home, ["post", "t1", "--", "--model is a flag"])
+    expect(headed.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({ message: "--model is a flag" })
+    const unknown = await run(home, ["post", "t1", "--stealth", "hi"])
+    expect(unknown.code).toBe(2)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 function fakeCurlWithStatus(home: string) {
   const bin = join(home, "bin")
   mkdirSync(bin)
@@ -544,6 +770,123 @@ printf '%s\\n' '{"error":"only worker: or persona-bound threads can be managed"}
     const result = await run(home, ["wait", "t2", "--timeout", "1"])
     expect(result.code).toBe(1)
     expect(result.stderr).toContain("only worker: or persona-bound threads")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("start retries the transient desktop-boot error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+n=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)
+n=$((n+1))
+printf '%s' "$n" > "$FAKE_COUNT"
+if [ "$n" -le 2 ]; then
+  printf '%s\\n' '{"error":"desktop is not running"}'
+else
+  printf '%s\\n' '{"id":"ses_1","title":"worker:Job","display":false}'
+fi
+`,
+    )
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, ["start", "--title", "Job"], {
+      FAKE_COUNT: join(home, "count"),
+    })
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({
+      id: "ses_1",
+      title: "worker:Job",
+      display: false,
+    })
+    expect(await Bun.file(join(home, "count")).text()).toBe("3")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}, 30_000)
+
+test("start still fails after the retry budget is spent", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    writeFileSync(
+      join(bin, "curl"),
+      `#!/bin/sh
+printf '%s\\n' '{"error":"desktop is not running"}'
+`,
+    )
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, ["start", "--title", "Job"])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("desktop is not running")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}, 30_000)
+
+function fakeCurlCouncilStatus(home: string, busyStatus: string) {
+  const bin = join(home, "bin")
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+prev=""
+method=""
+is_status=""
+for arg in "$@"; do
+  if [ "$prev" = "-X" ]; then method="$arg"; fi
+  case "$arg" in */status) is_status=1 ;; esac
+  prev="$arg"
+done
+if [ -n "$is_status" ]; then
+  printf '%s\\n' '{"members":[{"sessionId":"ses_a","role":"Researcher","status":"${busyStatus}","title":"","lastReply":""}]}'
+else
+  printf '%s\\n' '{"deleted":["ses_a"],"skipped":[]}'
+fi
+`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+}
+
+test("council close refuses while a member is still running", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlCouncilStatus(home, "busy")
+    const refused = await run(home, ["council", "close", "auth-review"])
+    expect(refused.code).toBe(1)
+    expect(refused.stderr).toContain("still running")
+    expect(refused.stderr).toContain("[ses_a]")
+    // No DELETE went out.
+    expect(await Bun.file(join(home, "curl.args")).text()).not.toContain(
+      "DELETE",
+    )
+    const forced = await run(home, [
+      "council",
+      "close",
+      "auth-review",
+      "--force",
+    ])
+    expect(forced.code).toBe(0)
+    expect(forced.stdout).toContain("deleted: ses_a")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("council close proceeds when every member is idle", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlCouncilStatus(home, "idle")
+    const result = await run(home, ["council", "close", "auth-review"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("council auth-review closed")
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

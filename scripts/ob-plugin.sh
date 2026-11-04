@@ -342,6 +342,20 @@ const authorized = (req: Request) =>
   expectedToken === "dev-preview" ||
   req.headers.get("x-open-bot-page-token") === expectedToken
 
+// Owner-only routes: only the dashboard proxies inject x-open-bot-owner-token
+// (env OPEN_BOT_PAGE_OWNER_TOKEN); the public /hooks endpoint never carries
+// it and strips client copies, so an exact match proves the dashboard owner
+// — no second in-plugin unlock needed. authorized() alone does NOT prove
+// owner: /hooks visitors get the page token injected too. Same dev rule as
+// above (open when unset/dev-preview; never accept the literal while a real
+// token is set). When dashboard.pages.public is on, keep owner routes out of
+// dashboard.pages.publicRoutes so the proxy refuses them publicly as well.
+const expectedOwner = process.env.OPEN_BOT_PAGE_OWNER_TOKEN ?? ""
+const ownerAuthorized = (req: Request) =>
+  expectedOwner === "" ||
+  expectedOwner === "dev-preview" ||
+  req.headers.get("x-open-bot-owner-token") === expectedOwner
+
 // The "/" route branches on the mode: the HTML import is only valid as a
 // static routes value, so pick the table before the server starts.
 const routes = process.env.OPEN_BOT_PAGE_UI
@@ -392,19 +406,36 @@ if (status) status.textContent = "pong " + data.pong
 EOF
     cat > "$stage/server/styles.css" <<EOF
 /* Follow the dashboard theme (it defaults to the OS setting): light default
-   plus prefers-color-scheme overrides — never ship your own theme toggle. */
+   plus prefers-color-scheme overrides — never ship your own theme toggle.
+   Every color goes through a variable; a raw hex outside :root is a bug. */
+:root {
+  --bg: #eef0f4;
+  --surface: #ffffff;
+  --text: #171a20;
+  --muted: #5b6472;
+  --border: #d8dde6;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --danger: #b42318;
+  --radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1014;
+    --surface: #171b21;
+    --text: #f3f4f6;
+    --muted: #9aa4b2;
+    --border: #2a2f38;
+    --accent: #4a6cf7;
+    --danger: #f97066;
+  }
+}
 body {
   font-family: system-ui, sans-serif;
   margin: 0;
   padding: 24px;
-  background: #eef0f4;
-  color: #171a20;
-}
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #0e1014;
-    color: #f3f4f6;
-  }
+  background: var(--bg);
+  color: var(--text);
 }
 EOF
     cat > "$stage/smoke.test.ts" <<'EOF'
@@ -1146,7 +1177,7 @@ EOF
     [ $# -eq 1 ] || { usage; exit 2; }
     out=$(request GET "/api/plugins/installed/$(urlencode "$1")/page")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{pluginId, enabled, running, port, pid, note}'
+    printf '%s' "$out" | jq '{pluginId, enabled, running, port, pid, desktop, note}'
     if printf '%s' "$out" | jq -e '.running == true' >/dev/null 2>&1; then
       printf '%s' "$out" | jq -r '"loopback: http://127.0.0.1:\(.port)/  (click-test: ob-chrome navigate http://127.0.0.1:\(.port)/ — log: ~/.open-bot/pages/\(.pluginId).log)"' >&2
     else

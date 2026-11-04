@@ -123,17 +123,18 @@ describe("PluginAppsView — render", () => {
     expect(html).toContain('type="search"')
     // Add/manage are reachable with apps installed, not only in the empty
     // state (second audit R10).
-    expect(html).toContain(">Ajouter<")
-    expect(html).toContain(">Gérer<")
+    expect(html).toContain("Ajouter une application")
+    expect(html).toContain("Gérer les extensions")
   })
 })
 
 describe("PluginAppsView — selection lives in the route (V03)", () => {
   // The view is interactive; a static render of the desktop layout must at
-  // least show the selected state coming from selectedKey, and the mobile
-  // pane must carry the back affordance. Click-through (onOpen/onClose) is
-  // exercised by the shell wiring; here the route contract is what matters.
-  test("desktop: the route-selected tab is marked in the side list and shown", () => {
+  // least show the selection coming from selectedKey: an open app fills
+  // the pane under its header, no selection shows the launcher grid.
+  // Click-through (onOpen/onClose) is exercised by the shell wiring; here
+  // the route contract is what matters.
+  test("desktop: the route-selected tab fills the pane under its header", () => {
     const html = renderToStaticMarkup(
       <PluginAppsView
         tabs={[tab("grid"), tab("leads")]}
@@ -148,14 +149,14 @@ describe("PluginAppsView — selection lives in the route (V03)", () => {
     // the selected app's pane renders (and only that one)
     expect(html).toContain(">leads</h1>")
     expect(html).not.toContain(">grid</h1>")
-    // the side list marks exactly the route-selected item (mui-lite class)
-    expect(html).toContain("MUI_ListItemButton_Root_selected")
-    const selectedPart = html.split("MUI_ListItemButton_Root_selected")[1] ?? ""
-    expect(selectedPart).toContain(">leads</span>")
-    expect(selectedPart).not.toContain(">grid</span>")
+    // full-bleed: the launcher is gone, the way back and the favorite
+    // toggle ride OpenAppHeader instead of a side list
+    expect(html).not.toContain("ob-app-grid")
+    expect(html).toContain('aria-label="Retour aux applications"')
+    expect(html).toContain("Ajouter « leads » aux favoris")
   })
 
-  test("desktop: no selection (the /apps route) still shows the first app's pane", () => {
+  test("desktop: no selection (the /apps route) shows the launcher, opens nothing", () => {
     const html = renderToStaticMarkup(
       <PluginAppsView
         tabs={[tab("grid"), tab("leads")]}
@@ -167,6 +168,13 @@ describe("PluginAppsView — selection lives in the route (V03)", () => {
         onManagePlugins={() => {}}
       />,
     )
-    expect(html).toContain("grid")
+    // both apps are offered as tiles in the one all-apps grid…
+    expect(html).toContain("ob-app-grid")
+    expect(html).toContain(">Toutes les applications</h2>")
+    expect(html).toContain("Ajouter « grid » aux favoris")
+    expect(html).toContain("Ajouter « leads » aux favoris")
+    // …and no app pane is silently opened (the old first-app contract)
+    expect(html).not.toContain(">grid</h1>")
+    expect(html).not.toContain(">leads</h1>")
   })
 })

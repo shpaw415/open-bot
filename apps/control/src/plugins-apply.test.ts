@@ -7,6 +7,7 @@ import { openDatabase } from "@open-bot/db"
 import * as dockerModule from "./docker"
 import * as mcpModule from "./mcp"
 import {
+  applyPluginUninstall,
   clearPendingPluginConfigSyncs,
   flushPendingPluginConfigs,
   pendingPluginConfigSyncCount,
@@ -601,5 +602,91 @@ describe("setPluginEnabled", () => {
     expect(patch.addAgents).toEqual(oc.agents)
     expect(patch.addAgentTools).toEqual(oc.agentTools)
     expect(mcpConnectCalls.at(-1)?.opts).toEqual({ force: true })
+  })
+})
+
+describe("applyPluginUninstall", () => {
+  beforeEach(() => {
+    syncCalls.length = 0
+    syncOpencodeMode = "ok"
+    opencodePatches.length = 0
+    noopHeavyDocker = true
+  })
+
+  afterEach(() => {
+    noopHeavyDocker = false
+  })
+
+  function user() {
+    return {
+      id: "a",
+      email: "a@localhost",
+      passwordHash: "hash",
+      role: "user",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    } as User
+  }
+
+  function setupDb(
+    manifest: Record<string, unknown>,
+    applied: Record<string, unknown>,
+  ) {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user())
+    db.createInstalledPlugin({
+      id: "row-gate",
+      userId: "a",
+      pluginId: "gate-plugin",
+      version: "0.1.0",
+      manifest: JSON.stringify(manifest),
+      readme: null,
+      enabled: true,
+      applied: JSON.stringify(applied),
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    return db
+  }
+
+  test("the sweep removes every mcp name the install ever merged", async () => {
+    // "dropped" was merged by an earlier version and is gone from the
+    // current manifest — the uninstall must still purge it from
+    // opencode.json.
+    const db = setupDb(
+      {
+        opencode: {
+          mcp: { kept: { type: "local", command: ["bun", "gate.ts"] } },
+        },
+      },
+      { opencode: true, mcpNames: ["kept", "dropped"] },
+    )
+    const row = db.installedPlugin("a", "gate-plugin") as InstalledPlugin
+    await applyPluginUninstall(db, user(), row)
+    const patch = opencodePatches.at(-1) as { removeMcp: string[] }
+    expect(patch.removeMcp).toEqual(["kept", "dropped"])
+    expect(db.installedPlugin("a", "gate-plugin")).toBeNull()
+  })
+
+  test("the manifest fallback sweep includes disabled entries", async () => {
+    const db = setupDb(
+      {
+        opencode: {
+          mcp: {
+            off: { type: "local", command: ["bun", "gate.ts"], enabled: false },
+          },
+        },
+      },
+      { opencode: true },
+    )
+    // mcpNames was never recorded (old install), so the sweep falls back to
+    // the manifest — which still names the disabled entry.
+    const row = db.installedPlugin("a", "gate-plugin") as InstalledPlugin
+    await applyPluginUninstall(db, user(), row)
+    const patch = opencodePatches.at(-1) as { removeMcp: string[] }
+    expect(patch.removeMcp).toEqual(["off"])
   })
 })

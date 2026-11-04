@@ -421,10 +421,28 @@ export async function captureMarked(
   }
 }
 
+// Page-side identity for one stamped element: tag + role + the most stable
+// label available (aria-label / id / name / placeholder before visible
+// text). The probe records it next to each id so a later action can
+// re-resolve the element when the stamped node is gone.
+export const OBNAV_FP_FN = `const __obFp = (el) => {
+  const stable = el.getAttribute("aria-label") || el.id || el.getAttribute("name") || el.getAttribute("placeholder") || ""
+  const text = stable || (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 40)
+  return el.tagName + "|" + (el.getAttribute("role") || "") + "|" + text
+}`
+
+export const OBNAV_SELECTOR =
+  'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'
+
 // Evaluates to the element for an obnav id, crossing shadow boundaries. The
 // probe marks controls inside open shadow roots (web-component tiles,
 // embedded players), where document.querySelector cannot reach; walk the
-// open roots as a fallback. `idExpr` is a JSON string literal of the id.
+// open roots as a fallback. A live page (xterm cursor blink, framework
+// re-renders, tickers) can also replace the stamped node or wipe the
+// attribute seconds after a read — when the attribute is nowhere, fall back
+// to the fingerprint the probe recorded for this id and re-stamp the
+// replacement node (same tag/role/label, same occurrence among twins).
+// `idExpr` is a JSON string literal of the id.
 export function obnavFindExpr(idExpr: string) {
   return `(() => {
     const id = ${idExpr}
@@ -441,7 +459,41 @@ export function obnavFindExpr(idExpr: string) {
       }
       return null
     }
-    return walk(document)
+    const stamped = walk(document)
+    if (stamped) return stamped
+    ${OBNAV_FP_FN}
+    const bag = window.__obnav
+    const rec = bag && bag.fp ? bag.fp[id] : null
+    if (!rec) return null
+    let budget = 4000
+    let seen = -1
+    let found = null
+    const descend = (root) => {
+      if (found || budget <= 0) return
+      for (const el of root.querySelectorAll(${JSON.stringify(OBNAV_SELECTOR)})) {
+        if (budget-- <= 0) return
+        const rect = el.getBoundingClientRect()
+        if (rect.width < 2 || rect.height < 2) continue
+        if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
+        const style = getComputedStyle(el)
+        if (style.visibility === "hidden" || style.display === "none") continue
+        if (__obFp(el) !== rec.k) continue
+        seen += 1
+        if (seen === rec.n) {
+          found = el
+          return
+        }
+      }
+      for (const el of root.querySelectorAll("*")) {
+        if (budget-- <= 0 || found) return
+        if (el.shadowRoot) descend(el.shadowRoot)
+      }
+    }
+    descend(document)
+    if (!found) return null
+    found.setAttribute("data-obnav", id)
+    if (bag.map) bag.map.set(found, id)
+    return found
   })()`
 }
 
@@ -549,11 +601,25 @@ export const PROBE = `(() => {
   // budget below reserves a bounded share for TOC anchors so content links
   // and section jumps both stay offered.
   const max = 24
-  const bag = window.__obnav || (window.__obnav = { map: new WeakMap(), n: 1 })
+  const bag = window.__obnav || (window.__obnav = { map: new WeakMap(), n: 1, fp: {} })
+  if (!bag.fp) bag.fp = {}
+  ${OBNAV_FP_FN}
+  const fpCounts = {}
   const selector = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'
   const chrome = 'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]'
   const entry = 'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]), [role="textbox"], [role="searchbox"]'
-  const tiers = [[], [], [], [], []]
+  const tiers = [[], [], [], [], [], []]
+  // The topmost open modal owns the screen: its controls lead the window
+  // and the page behind it must not crowd them out. Last visible candidate
+  // in DOM order wins (stacked dialogs render later siblings on top).
+  let topModal = null
+  for (const cand of document.querySelectorAll('dialog[open], [aria-modal="true"], [role="alertdialog"]')) {
+    const rect = cand.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) continue
+    const style = getComputedStyle(cand)
+    if (style.visibility === "hidden" || style.display === "none") continue
+    topModal = cand
+  }
   // document.querySelectorAll stops at shadow boundaries; sites built from
   // web components (custom account tiles, embedded players) keep their real
   // controls inside open shadow roots. Walk the light DOM, then descend into
@@ -574,6 +640,13 @@ export const PROBE = `(() => {
         bag.map.set(el, id)
       }
       el.setAttribute("data-obnav", id)
+      // Record a re-resolution fingerprint for this id: live pages replace
+      // stamped nodes between read and action, and the action-side lookup
+      // falls back to (fingerprint, occurrence) when the attribute is gone.
+      const fpKey = __obFp(el)
+      const fpNth = fpCounts[fpKey] || 0
+      fpCounts[fpKey] = fpNth + 1
+      bag.fp[id] = { k: fpKey, n: fpNth }
       const label = (el.getAttribute("aria-label") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
       const item = {
         target_id: id,
@@ -586,19 +659,21 @@ export const PROBE = `(() => {
       const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
       item.actionable = !center || el === center || el.contains(center)
       if (el.tagName === "SELECT") item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
-      // 0 text-entry targets (composers, chat boxes, form fields), 1 search
-      // controls, 2 body content, 3 same-document anchors (TOC jumps), 4 site
-      // chrome and settings checkboxes. Text entry leads because a window that
-      // floods with content buttons must still offer the field the user is
-      // about to type into (messenger.com conversations keep the composer at
-      // the end of the DOM). Anchors get a bounded reserve so sticky TOCs
-      // cannot crowd article links out of the window, while section jumps
-      // stay offered on content-heavy pages.
-      let tier = 4
-      if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 0
-      else if (el.closest('[role="search"]')) tier = 1
-      else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 3 : 2
-      else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 2
+      // 0 the topmost modal's controls, 1 text-entry targets (composers,
+      // chat boxes, form fields), 2 search controls, 3 body content, 4
+      // same-document anchors (TOC jumps), 5 site chrome and settings
+      // checkboxes. Text entry leads the non-modal tiers because a window
+      // that floods with content buttons must still offer the field the
+      // user is about to type into (messenger.com conversations keep the
+      // composer at the end of the DOM). Anchors get a bounded reserve so
+      // sticky TOCs cannot crowd article links out of the window, while
+      // section jumps stay offered on content-heavy pages.
+      let tier = 5
+      if (topModal && topModal.contains(el)) tier = 0
+      else if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 1
+      else if (el.closest('[role="search"]')) tier = 2
+      else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 4 : 3
+      else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 3
       tiers[tier].push(item)
     }
     if (scanBudget <= 0) return
@@ -610,16 +685,55 @@ export const PROBE = `(() => {
   descend(document)
   const out = []
   const remaining = () => max - out.length
-  const reserve = Math.min(tiers[3].length, 6)
-  out.push(...tiers[0].slice(0, remaining()))
-  out.push(...tiers[1].slice(0, remaining()))
-  out.push(...tiers[2].slice(0, Math.max(remaining() - reserve, 0)))
-  out.push(...tiers[3].slice(0, Math.min(reserve, remaining())))
-  out.push(...tiers[4].slice(0, remaining()))
+  // Covered controls (behind an overlay/modal backdrop) sort last within
+  // their tier: they are listed for context but must not spend the window
+  // budget ahead of controls that can actually be clicked.
+  const actFirst = (list) => [...list.filter((item) => item.actionable), ...list.filter((item) => !item.actionable)]
+  const reserve = Math.min(tiers[4].length, 6)
+  out.push(...actFirst(tiers[0]).slice(0, remaining()))
+  out.push(...actFirst(tiers[1]).slice(0, remaining()))
+  out.push(...actFirst(tiers[2]).slice(0, remaining()))
+  out.push(...actFirst(tiers[3]).slice(0, Math.max(remaining() - reserve, 0)))
+  out.push(...actFirst(tiers[4]).slice(0, Math.min(reserve, remaining())))
+  out.push(...actFirst(tiers[5]).slice(0, remaining()))
+  // Rendered text only: plain body.innerText keeps the words of closed
+  // panels (visibility/opacity-hidden overlays stay in layout), which reads
+  // as visible UI that isn't there. The walker rejects hidden subtrees whole.
+  const skipTags = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1 }
+  const parts = []
+  if (document.body) {
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+      {
+        acceptNode: (node) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const parent = node.parentElement
+            if (!parent || skipTags[parent.tagName]) return NodeFilter.FILTER_REJECT
+            return node.nodeValue && node.nodeValue.trim()
+              ? NodeFilter.FILTER_ACCEPT
+              : NodeFilter.FILTER_REJECT
+          }
+          if (skipTags[node.tagName]) return NodeFilter.FILTER_REJECT
+          if (
+            node.hasAttribute("hidden") ||
+            node.getAttribute("aria-hidden") === "true"
+          )
+            return NodeFilter.FILTER_REJECT
+          const style = getComputedStyle(node)
+          if (style.display === "none" || style.visibility === "hidden")
+            return NodeFilter.FILTER_REJECT
+          return NodeFilter.FILTER_ACCEPT
+        },
+      },
+    )
+    let budget = 20000
+    while (walker.nextNode() && budget-- > 0) parts.push(walker.currentNode.nodeValue)
+  }
   return {
     url: location.href,
     title: document.title,
-    text: (document.body && document.body.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 2500),
+    text: parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 2500),
     can_scroll_down: window.scrollY + window.innerHeight < document.documentElement.scrollHeight - 8,
     can_scroll_up: window.scrollY > 8,
     scroll_y: Math.round(window.scrollY),
@@ -627,6 +741,6 @@ export const PROBE = `(() => {
     viewport_h: window.innerHeight,
     scroll_height: document.documentElement.scrollHeight,
     elements: out,
-    elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length + tiers[4].length > max,
+    elements_truncated: tiers[0].length + tiers[1].length + tiers[2].length + tiers[3].length + tiers[4].length + tiers[5].length > max,
   }
 })()`

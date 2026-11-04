@@ -77,11 +77,13 @@ type ProcessRow = {
   uptimeSeconds: number
   cpuPercent: number | null
   rssBytes: number | null
+  cwd?: string
 }
 
-function run(args: string[], home: string) {
+function run(args: string[], home: string, cwd?: string) {
   const proc = Bun.spawnSync(["sh", scriptPath, ...args], {
     env: { ...process.env, HOME: home },
+    cwd,
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -120,6 +122,7 @@ test.skipIf(!python3)(
       expect(row?.cmd).toBe("sleep 30")
       expect(typeof row?.cpuPercent).toBe("number")
       expect(row?.rssBytes ?? 0).toBeGreaterThan(0)
+      expect(typeof row?.cwd).toBe("string")
 
       const killed = JSON.parse(
         run(["kill", started.id], home).stdout.trim(),
@@ -183,6 +186,74 @@ test.skipIf(!python3)("infrastructure and bad input are refused", () => {
     expect(run(["kill", "1234"], home).code).toBe(1)
     expect(run(["log", "p-ZZZZZZZZ"], home).code).toBe(1)
     expect(run(["nonsense"], home).code).toBe(1)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(!python3)(
+  "a relative path binary fails fast with the cwd named",
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-process-rel-"))
+    const workdir = mkdtempSync(join(tmpdir(), "ob-process-work-"))
+    try {
+      const result = run(
+        ["start", "--name", "rel", "--", "./server.ts"],
+        home,
+        workdir,
+      )
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain("not found: ./server.ts")
+      expect(result.stderr).toContain(workdir)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(workdir, { recursive: true, force: true })
+    }
+  },
+)
+
+test.skipIf(!python3)(
+  "kill on an exited job reports exited with the log path",
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-process-exited-"))
+    const workdir = mkdtempSync(join(tmpdir(), "ob-process-work-"))
+    try {
+      const started = JSON.parse(
+        run(
+          ["start", "--name", "short", "--", "sleep", "30"],
+          home,
+          workdir,
+        ).stdout.trim(),
+      ) as { ok: boolean; id: string; pid: number }
+      // The row still exists but the job is gone.
+      Bun.spawnSync(["kill", "-9", String(started.pid)])
+      Bun.spawnSync(["sleep", "0.2"])
+      const dead = JSON.parse(
+        run(["kill", started.id], home).stdout.trim(),
+      ) as { ok: boolean; killed: boolean; exited: boolean; log: string }
+      expect(dead.killed).toBe(false)
+      expect(dead.exited).toBe(true)
+      expect(dead.log).toContain("/processes/logs/")
+      expect(run(["kill", started.id], home).stderr).toContain("already exited")
+      // The dead-row kill retired the registry row, so this now hits the
+      // pruned-row path: same exited answer.
+      const pruned = JSON.parse(
+        run(["kill", started.id], home).stdout.trim(),
+      ) as { ok: boolean; exited: boolean }
+      expect(pruned.exited).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(workdir, { recursive: true, force: true })
+    }
+  },
+)
+
+test.skipIf(!python3)("kill on an unknown id with no log still fails", () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-process-unknown-"))
+  try {
+    const result = run(["kill", "p-abcd1234"], home)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("no managed process p-abcd1234")
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

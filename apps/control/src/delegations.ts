@@ -262,6 +262,76 @@ export function lastAssistantText(messages: unknown): string {
   return ""
 }
 
+export type TurnEnd = {
+  state: "done" | "error" | "cut" | "empty" | "unknown"
+  detail: string
+}
+
+// How the newest assistant turn actually ended, for the stalled-vs-done
+// signal coordinators asked for: members were going idle mid-analysis
+// (output limit, provider error, aborted loop) and the wake said "finished
+// their work" either way. `done` is an explicit stop finish; `cut` is any
+// other finish reason or an abort; `error` carries the provider/turn error;
+// `empty` is no assistant message at all; `unknown` is a reply with neither
+// finish nor error recorded (older opencode shapes).
+export function lastTurnEnd(messages: unknown): TurnEnd {
+  // An unreadable message list is not evidence of an empty turn.
+  if (!Array.isArray(messages)) return { state: "unknown", detail: "" }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as {
+      info?: {
+        role?: unknown
+        finish?: unknown
+        error?: unknown
+        summary?: unknown
+      }
+    } | null
+    if (!message || typeof message !== "object") continue
+    const info = message.info
+    if (!info || info.role !== "assistant" || info.summary === true) continue
+    const error = info.error
+    if (error && typeof error === "object") {
+      const row = error as {
+        name?: unknown
+        data?: { message?: unknown }
+      }
+      const name = typeof row.name === "string" ? row.name : ""
+      const raw =
+        typeof row.data?.message === "string" && row.data.message
+          ? row.data.message
+          : name
+      if (/abort/i.test(name) || /abort/i.test(raw))
+        return { state: "cut", detail: "turn was aborted" }
+      if (raw)
+        return {
+          state: "error",
+          detail: raw.length > 160 ? `${raw.slice(0, 159)}…` : raw,
+        }
+    }
+    const finish = typeof info.finish === "string" ? info.finish : ""
+    if (finish === "stop") return { state: "done", detail: "" }
+    if (finish === "length")
+      return {
+        state: "cut",
+        detail: "stopped at the output limit (finish: length)",
+      }
+    if (finish === "tool-calls")
+      return {
+        state: "cut",
+        detail:
+          "ended right after tool calls with no final reply (finish: tool-calls — possible step cap or interrupted loop)",
+      }
+    if (finish) return { state: "cut", detail: `ended with finish: ${finish}` }
+    return { state: "unknown", detail: "" }
+  }
+  return { state: "empty", detail: "no assistant reply" }
+}
+
+// States that mean "idle, but probably not done" when a member goes quiet.
+export function turnEndStalled(end: TurnEnd): boolean {
+  return end.state === "error" || end.state === "cut" || end.state === "empty"
+}
+
 type WatchRow = {
   id: string
   kind: DelegationKind
@@ -352,7 +422,7 @@ async function deliver(
 async function subjectSummaries(
   ctx: { base: string; headers: Record<string, string> },
   subjects: string[],
-): Promise<Map<string, { title: string; reply: string }>> {
+): Promise<Map<string, { title: string; reply: string; end: TurnEnd }>> {
   const sessions = await fetchJson<{ id?: unknown; title?: unknown }[]>(
     ctx.base,
     ctx.headers,
@@ -365,7 +435,10 @@ async function subjectSummaries(
         titles.set(item.id, item.title.replace(/^worker:/, ""))
     }
   }
-  const summaries = new Map<string, { title: string; reply: string }>()
+  const summaries = new Map<
+    string,
+    { title: string; reply: string; end: TurnEnd }
+  >()
   for (const id of subjects) {
     const messages = await fetchJson(
       ctx.base,
@@ -375,6 +448,7 @@ async function subjectSummaries(
     summaries.set(id, {
       title: titles.get(id) ?? "",
       reply: lastAssistantText(messages),
+      end: lastTurnEnd(messages),
     })
   }
   return summaries
@@ -428,8 +502,12 @@ function wakeText(
     creator: string
   },
   subjects: string[],
-  summaries: Map<string, { title: string; reply: string }>,
+  summaries: Map<string, { title: string; reply: string; end: TurnEnd }>,
 ): string {
+  const stalledNote = (end: TurnEnd | undefined): string | null =>
+    end && turnEndStalled(end)
+      ? `It may have stopped mid-work (${end.detail || end.state}) — verify its deliverables exist before reporting, and relaunch it with \`ob-thread post\` if they are missing.`
+      : null
   if (group.kind === "persona") {
     const lines: string[] = []
     for (const id of subjects) {
@@ -438,6 +516,8 @@ function wakeText(
         ? `"${summary.title}"`
         : "your delegated teammate"
       lines.push(`Teammate ${label} (${id}) finished its current work.`)
+      const stalled = stalledNote(summary?.end)
+      if (stalled) lines.push(stalled)
       lines.push(
         summary?.reply
           ? `Last reply:\n${summary.reply}`
@@ -462,5 +542,17 @@ function wakeText(
       return summary?.title ? `${id} (${summary.title})` : id
     })
     .join(", ")
-  return `[council: ${name}] All ${count} member${count === 1 ? "" : "s"} finished their work. This is an automatic wake-up, not a user reply. Member session ids: ${idList}. Read what they produced — \`ob-thread council status ${name}\` prints each member's status and last reply, \`ob-thread read <session-id>\` prints a transcript, and files you asked them to write are on disk — then report the outcome to the user in this thread. Close the team with \`ob-thread council close ${name}\` once the work is delivered.`
+  const stalled = subjects
+    .map((id) => {
+      const summary = summaries.get(id)
+      if (!summary || !turnEndStalled(summary.end)) return null
+      const label = summary.title ? `${id} (${summary.title})` : id
+      return `${label}: ${summary.end.detail || summary.end.state}`
+    })
+    .filter((item): item is string => Boolean(item))
+  const stalledLine =
+    stalled.length > 0
+      ? ` Possibly stopped mid-work (their last turn did not end cleanly): ${stalled.join("; ")}. Verify each one's deliverables actually exist before reporting, and relaunch a member whose work is missing with \`ob-thread post <session-id> "continue: ..."\` instead of redoing it yourself.`
+      : ""
+  return `[council: ${name}] All ${count} member${count === 1 ? "" : "s"} finished their work. This is an automatic wake-up, not a user reply. Member session ids: ${idList}.${stalledLine} Read what they produced — \`ob-thread council status ${name}\` prints each member's status and last reply, \`ob-thread read <session-id>\` prints a transcript, and files you asked them to write are on disk — then report the outcome to the user in this thread. Close the team with \`ob-thread council close ${name}\` once the work is delivered.`
 }

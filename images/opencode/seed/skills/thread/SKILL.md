@@ -86,6 +86,13 @@ ob-thread start --persona "Software manager" --from ses_YOURID --title "Add CSV 
   personality or silently skip the delegation.
 - Write `--message` as a complete standalone brief. The teammate does not see
   this conversation.
+- `--model PROVIDER/MODEL` and `--effort LEVEL` pick this one thread's model
+  and reasoning effort (teammates and council members alike — each member
+  can get a different pick). `ob-thread models` lists connected models and
+  their levels; omit both for the desktop default. Follow-ups with
+  `ob-thread post` keep the pick — and the pick can be hot-switched later
+  (see "Changing a thread's model" below); never recreate a thread just to
+  change its model.
 
 List the hidden threads created through this tool:
 
@@ -122,7 +129,10 @@ ob-thread post ses_abc123 "Stop editing; report what you changed so far"
 - `read` prints the last N messages (default 6) of a thread you manage — the
   cheap way to see what a teammate or council member wrote before reporting.
 - `wait` blocks until the thread finishes its current turn (state goes
-  idle) or the timeout hits — the supported way to wait on a teammate or
+  idle) or the timeout hits. A `stalled` state means the prompt was
+  accepted but no turn ever started — `read` what is there, then re-`post`
+  or replace the thread instead of waiting longer. It is the supported
+  way to wait on a teammate or
   council member from inside your own turn. Cap `--timeout` at 110 minutes;
   the command is recognized by the stuck-command watchdog with a long
   budget. Never hold a raw `sleep` loop or any other command in one bash
@@ -136,6 +146,36 @@ ob-thread post ses_abc123 "Stop editing; report what you changed so far"
   context, or a wrap-up instruction.
 - The server refuses all three for plain user chats and cron jobs; visible
   persona threads you started are manageable, other visible threads are not.
+
+## Changing a thread's model
+
+The model is picked per turn, so a live thread's model can be switched at
+any time — the change applies from its next turn, a turn already running
+finishes on its own model, and history/context are preserved:
+
+```sh
+ob-thread model ses_abc123
+ob-thread model ses_abc123 --model openai/gpt-5 --effort high
+ob-thread post ses_abc123 --model grok/grok-4.5 "Continue, and double-check the totals"
+ob-thread model ses_abc123 --model default --effort default
+```
+
+- `ob-thread model ID` with no flags prints the thread's effective
+  model/effort; the `thread` field shows which halves are pinned to this
+  thread versus inherited from the desktop default.
+- `ob-thread model ID --model … [--effort …]` changes only the pick — it
+  takes effect on the next message anyone posts. The flags on `post`
+  (before the text) switch and send in one call; the new pick persists for
+  later turns either way.
+- Each flag is independent: omit one to keep that half, pass `default` to
+  clear that half back to the desktop default.
+- Switch when the work changes shape: a teammate on a cheap fast model
+  that gets stuck or reaches the hard part goes up to a deep reasoner
+  mid-task; once the remaining work is mechanical, switch it back down.
+- Switching to a model that does not offer the pinned effort drops the
+  effort pin (the output reports `effortDropped`). An effort you pass
+  explicitly that the model does not offer is refused with the available
+  levels — then nothing is posted or stored, so fix the flag and rerun.
 
 Tell the user the thread title you started and, for visible threads, that it
 is now on the dashboard.

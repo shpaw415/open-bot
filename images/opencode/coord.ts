@@ -6,15 +6,23 @@ type CaptureState = {
   yFactor: number
   ox: number
   oy: number
+  // devicePixelRatio recorded at capture time (browser zoom x display
+  // scale). Absent on legacy state files — treated as 1.
+  dpr?: number
   ts?: number
   origin?: boolean
 }
 
-const FACTOR_MAX = 10
+// Zoom-out legitimately produces sub-1 ratios (dpr 0.5 at 50% zoom, factor
+// below 1 on a 1x capture), and zoom-in plus a 3x scaled shot pushes the
+// factor well past the old cap of 10 — both used to fall back to identity
+// and silently mis-map clicks.
+const RATIO_MIN = 0.05
+const RATIO_MAX = 40
 
 function ratio(value: unknown): number | null {
   const n = Number(value)
-  if (!Number.isFinite(n) || n < 1 || n > FACTOR_MAX) return null
+  if (!Number.isFinite(n) || n < RATIO_MIN || n > RATIO_MAX) return null
   return n
 }
 
@@ -35,6 +43,7 @@ function loadState(path: string): CaptureState {
       yFactor,
       ox,
       oy,
+      dpr: ratio(raw?.dpr) ?? 1,
       ts: Number(raw?.ts) || undefined,
       origin: raw?.origin !== false,
     }
@@ -43,14 +52,18 @@ function loadState(path: string): CaptureState {
   }
 }
 
+// Image px are capture-px per CSS px (factor); live screen px are CSS px
+// times dpr, shifted by the (already device-px) window offset. At dpr 1
+// this is the plain divide-and-shift it always was.
 export function toLive(
   state: CaptureState,
   imageX: number,
   imageY: number,
 ): { x: number; y: number } {
+  const dpr = state.dpr && state.dpr > 0 ? state.dpr : 1
   return {
-    x: Math.floor(imageX / state.factor) + state.ox,
-    y: Math.floor(imageY / state.yFactor) + state.oy,
+    x: Math.floor((imageX / state.factor) * dpr) + state.ox,
+    y: Math.floor((imageY / state.yFactor) * dpr) + state.oy,
   }
 }
 
@@ -83,11 +96,17 @@ async function main() {
   if (
     state.factor === 1 &&
     state.yFactor === 1 &&
+    (state.dpr ?? 1) === 1 &&
     state.ox === 0 &&
     state.oy === 0
   ) {
     console.error(
       "note: no scaled capture is recorded for this screen; image coordinates were used as live coordinates",
+    )
+  }
+  if (state.dpr && Math.abs(state.dpr - 1) > 0.01) {
+    console.error(
+      `note: that capture was taken at browser zoom ~${Math.round(state.dpr * 100) / 100}x (dpr ${Math.round(state.dpr * 100) / 100}); the conversion above already accounts for it — viewport CSS coordinates are not live screen pixels at this zoom`,
     )
   }
   const { x, y } = toLive(state, imageX, imageY)

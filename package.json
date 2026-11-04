@@ -19,6 +19,7 @@
     "images": "bash scripts/build-images.sh",
     "db:generate": "bun run --cwd packages/db db:generate",
     "setup": "bun scripts/setup.ts",
+    "deploy:dashboard": "bash scripts/deploy-dashboard.sh",
     "update": "bash scripts/update.sh",
     "update:dev": "bash scripts/update.sh --dev",
     "bench:browser": "bash scripts/bench-browser.sh",

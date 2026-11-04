@@ -99,6 +99,9 @@ export const THREADS_UI = {
   noMessagesYet: "Aucun message pour l’instant",
   messagesCatchingUp: "Chargement des nouveaux messages…",
   messagesLoadFailed: "Impossible de charger les messages.",
+  loadOlder: "Charger les messages plus anciens",
+  loadingOlder: "Chargement des messages plus anciens…",
+  olderLoadFailed: "Impossible de charger les messages plus anciens.",
   retry: "Réessayer",
   usingModel: (name: string) => `Avec ${name}. Demandez ce que vous voulez.`,
   pickModelFirst: "Choisissez un modèle, puis demandez ce que vous voulez.",
@@ -187,8 +190,27 @@ export const THREADS_UI = {
   queuedHint: "Envoyé dès que la réponse en cours se termine",
   forceSend: "Envoyer maintenant (interrompt la réponse en cours)",
   removeQueued: "Retirer de la file d’attente",
+  joinedFiles: "Fichiers joints au message",
+  previewJoined: (name: string) => `Aperçu plein écran de ${name}`,
+  removeJoined: (name: string) => `Retirer ${name}`,
   queueFull: (count: number) =>
     `File d’attente pleine (${count} messages) — attendez la fin de la réponse.`,
+  queuedSection: (count: number) =>
+    count === 1 ? "1 message en attente" : `${count} messages en attente`,
+  queuedShowAll: (count: number) => `Afficher les ${count} messages en attente`,
+  queuedShowFewer: "Réduire",
+  sendNow: "Envoyer maintenant",
+  editQueued: "Modifier le message en attente",
+  saveQueuedEdit: "Enregistrer",
+  cancelEdit: "Annuler",
+  copyMessage: "Copier le message",
+  copiedMessage: "Copié",
+  workedFor: (duration: string, steps: number) =>
+    duration
+      ? `A travaillé ${duration} · ${steps} ${steps === 1 ? "étape" : "étapes"}`
+      : `A travaillé · ${steps} ${steps === 1 ? "étape" : "étapes"}`,
+  workingSteps: (steps: number) =>
+    `En cours · ${steps} ${steps === 1 ? "étape" : "étapes"}`,
 } as const
 
 /** Copy-to-clipboard button shown on code blocks in chat and council transcripts. */
@@ -205,6 +227,14 @@ export const APPS_UI = {
   noMatch: (query: string) => `Aucune application pour « ${query} ».`,
   addApp: "Ajouter une application",
   manageExtensions: "Gérer les extensions",
+  favorites: "Favoris",
+  recents: "Récents",
+  allApps: "Toutes les applications",
+  addFavorite: (title: string) => `Ajouter « ${title} » aux favoris`,
+  removeFavorite: (title: string) => `Retirer « ${title} » des favoris`,
+  kindApp: "Application",
+  kindPage: "Tableau de bord",
+  kindIframe: "Lien externe",
 } as const
 
 /** The Config page's model + thinking journey (daily-essential settings). */
@@ -238,4 +268,15 @@ export const CONFIG_CHAT = {
     "Choisissez d’abord un modèle par défaut — ses niveaux de réflexion apparaîtront ici.",
   effortNoVariants: "Ce modèle n’a pas de variantes de réflexion.",
   saveEffort: "Enregistrer",
+  stepCapTitle: "Limite d’étapes par tour",
+  stepCapDescription:
+    "Nombre maximal d’étapes que l’assistant peut enchaîner dans un tour avant de devoir répondre. Laissez vide pour la valeur par défaut (512).",
+  stepCapLabel: "Limite d’étapes",
+  stepCapPlaceholder: "512 (par défaut)",
+  stepCapHint:
+    "L’enregistrement redémarre l’assistant (les tours en cours se terminent d’abord). Les sessions « sans limite » restent sans limite.",
+  stepCapSaved:
+    "Enregistré. La nouvelle limite s’applique aux prochains tours.",
+  stepCapInvalid: "Entrez un nombre entier entre 1 et 100000, ou vide.",
+  saveStepCap: "Enregistrer la limite",
 } as const

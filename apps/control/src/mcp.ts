@@ -340,7 +340,17 @@ export async function connectMcpServerEntries(
 ): Promise<Record<string, string>> {
   const result: Record<string, string> = {}
   for (const name of Object.keys(servers)) {
+    const config = servers[name] as { enabled?: unknown } | undefined
     const known = (await io.statuses())[name]?.status
+    if (config?.enabled === false) {
+      // A manifest-disabled entry is merged into opencode.json (the MCP tab
+      // shows it off) but never comes live — and a server an earlier version
+      // connected stays up until dropped, so disconnect that one too.
+      if (known === "connected")
+        await io.post(`/mcp/${encodeURIComponent(name)}/disconnect`)
+      result[name] = "disabled — merged but off"
+      continue
+    }
     if (known === "connected" && !opts?.force) {
       result[name] = "connected"
       continue

@@ -1,7 +1,18 @@
-export type System1Spec = {
-  id: string
-  label: string
-  defaultModel: string
+import {
+  accountIdField,
+  apiKeyField,
+  type CatalogSpec,
+  catalogById,
+  type ProviderFieldSpec,
+} from "./provider-catalog"
+
+export type System1ProviderId =
+  | "cloudflare-jev"
+  | "cloudflare-clef"
+  | "laya"
+  | "selfhosted-clef"
+
+export type System1Spec = CatalogSpec<System1ProviderId> & {
   endpointPlaceholder: string
   keyRequired: boolean
   gatewayToken: boolean
@@ -18,11 +29,45 @@ export const LAYA_ENDPOINT_PLACEHOLDER = "http://laya.example:8000/v1/systemone"
 export const SELFCLEF_ENDPOINT_PLACEHOLDER =
   "http://clef.example:8011/v1/systemone"
 
-export const system1Providers: System1Spec[] = [
+const endpointField = (placeholder: string): ProviderFieldSpec => ({
+  key: "endpoint",
+  label: "Endpoint",
+  placeholder,
+  required: true,
+})
+
+export const system1Providers: readonly System1Spec[] = [
   {
     id: "cloudflare-jev",
     label: "Cloudflare Jev",
+    vaultSlug: "cloudflare",
+    fields: [
+      accountIdField(),
+      {
+        key: "gatewayId",
+        label: "Gateway ID",
+        placeholder: "home-ai",
+        required: true,
+      },
+      {
+        key: "slug",
+        label: "Provider slug",
+        placeholder: "jev",
+        required: false,
+      },
+      endpointField(CLOUDFLARE_ENDPOINT_PLACEHOLDER),
+      apiKeyField("API key", "Cloudflare API token"),
+      {
+        key: "gatewayToken",
+        label: "Gateway token (optional)",
+        placeholder: "cf-aig-authorization",
+        required: false,
+        secret: true,
+      },
+    ],
+    models: [{ id: "jev-latest", label: "jev-latest" }],
     defaultModel: "jev-latest",
+    allowCustomModel: true,
     endpointPlaceholder: CLOUDFLARE_ENDPOINT_PLACEHOLDER,
     keyRequired: true,
     gatewayToken: true,
@@ -30,7 +75,18 @@ export const system1Providers: System1Spec[] = [
   {
     id: "cloudflare-clef",
     label: "Cloudflare Clef",
+    vaultSlug: "cloudflare",
+    fields: [
+      accountIdField(),
+      endpointField(CLEF_ENDPOINT_PLACEHOLDER),
+      apiKeyField("API key", "Cloudflare API token"),
+    ],
+    models: [
+      { id: "clef", label: "clef" },
+      { id: "clef-flash", label: "clef-flash" },
+    ],
     defaultModel: "clef",
+    allowCustomModel: true,
     endpointPlaceholder: CLEF_ENDPOINT_PLACEHOLDER,
     keyRequired: true,
     gatewayToken: false,
@@ -38,7 +94,15 @@ export const system1Providers: System1Spec[] = [
   {
     id: "laya",
     label: "Self-hosted Laya",
+    vaultSlug: "laya",
+    fields: [
+      endpointField(LAYA_ENDPOINT_PLACEHOLDER),
+      apiKeyField("API key (optional)", "Laya API key (optional)", false),
+    ],
+    // The server chooses when blank; any model name may be typed.
+    models: [],
     defaultModel: "",
+    allowCustomModel: true,
     endpointPlaceholder: LAYA_ENDPOINT_PLACEHOLDER,
     keyRequired: false,
     gatewayToken: false,
@@ -46,7 +110,17 @@ export const system1Providers: System1Spec[] = [
   {
     id: "selfhosted-clef",
     label: "Self-hosted Clef",
+    vaultSlug: "",
+    fields: [
+      endpointField(SELFCLEF_ENDPOINT_PLACEHOLDER),
+      apiKeyField("API key (optional)", "API key (optional)", false),
+    ],
+    models: [
+      { id: "clef-flash", label: "clef-flash" },
+      { id: "clef", label: "clef" },
+    ],
     defaultModel: "clef-flash",
+    allowCustomModel: true,
     endpointPlaceholder: SELFCLEF_ENDPOINT_PLACEHOLDER,
     keyRequired: false,
     gatewayToken: false,
@@ -54,14 +128,18 @@ export const system1Providers: System1Spec[] = [
 ]
 
 export function system1ProviderById(id: string) {
-  return system1Providers.find((item) => item.id === id)
+  return catalogById(system1Providers, id)
 }
 
 export function system1ProviderPublic() {
   return system1Providers.map((item) => ({
     id: item.id,
     label: item.label,
+    vaultSlug: item.vaultSlug || null,
+    fields: item.fields,
+    models: item.models,
     defaultModel: item.defaultModel,
+    allowCustomModel: item.allowCustomModel,
     endpointPlaceholder: item.endpointPlaceholder,
     keyRequired: item.keyRequired,
     gatewayToken: item.gatewayToken,

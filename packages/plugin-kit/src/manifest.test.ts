@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test"
 import {
   isDevVersion,
   isPaidManifest,
+  isPublicRoutePattern,
   manifestIssuesText,
   parsePluginManifest,
   pluginPermissionSummary,
+  publicRouteAllowed,
   renderTemplate,
   resolveCardData,
   validateConfigValue,
@@ -295,6 +297,69 @@ describe("plugin manifest", () => {
     }
   })
 
+  test("publicRoutes narrows the public endpoint to an allowlist", () => {
+    const good = validatePluginManifest({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: {
+          entry: "server.js",
+          public: true,
+          publicRoutes: ["/", "/share/*", "/api/info"],
+        },
+        tabs: [],
+      },
+    })
+    expect(good.ok).toBe(true)
+    if (good.ok) {
+      expect(good.manifest.dashboard?.pages?.publicRoutes).toEqual([
+        "/",
+        "/share/*",
+        "/api/info",
+      ])
+      expect(pluginPermissionSummary(good.manifest).join("\n")).toContain(
+        "limited to these routes: /, /share/*, /api/info",
+      )
+    }
+    // Legacy: no list means every route stays public.
+    expect(publicRouteAllowed(undefined, "/anything")).toBe(true)
+    const routes = ["/", "/share/*", "/api/info"]
+    expect(publicRouteAllowed(routes, "/")).toBe(true)
+    expect(publicRouteAllowed(routes, "/share")).toBe(true)
+    expect(publicRouteAllowed(routes, "/share/abc")).toBe(true)
+    expect(publicRouteAllowed(routes, "/shareholder")).toBe(false)
+    expect(publicRouteAllowed(routes, "/api/info")).toBe(true)
+    expect(publicRouteAllowed(routes, "/api/info/more")).toBe(false)
+    expect(publicRouteAllowed(routes, "/admin")).toBe(false)
+    expect(publicRouteAllowed([], "/")).toBe(false)
+    expect(isPublicRoutePattern("/a/*/b")).toBe(false)
+    expect(isPublicRoutePattern("share")).toBe(false)
+    expect(isPublicRoutePattern("/a?x=1")).toBe(false)
+    expect(isPublicRoutePattern("/a/../b")).toBe(false)
+  })
+
+  test("publicRoutes requires public:true and well-formed entries", () => {
+    for (const pages of [
+      { entry: "server.js", publicRoutes: ["/a"] },
+      { entry: "server.js", public: true, publicRoutes: ["/a/*/b"] },
+      { entry: "server.js", public: true, publicRoutes: ["/a", "/a"] },
+      {
+        entry: "server.js",
+        public: true,
+        publicRoutes: Array.from({ length: 17 }, (_, i) => `/r${i}`),
+      },
+    ]) {
+      const bad = validatePluginManifest({
+        ...valid,
+        files: [{ name: "server.js", source: "server.js" }],
+        dashboard: { pages, tabs: [] },
+      })
+      expect(bad.ok).toBe(false)
+      if (!bad.ok)
+        expect(manifestIssuesText(bad.issues)).toContain("publicRoutes")
+    }
+  })
+
   test("page server ui must be a declared files[] .html source", () => {
     const good = validatePluginManifest({
       ...valid,
@@ -515,6 +580,52 @@ describe("plugin manifest", () => {
     }
   })
 
+  test("card layout fields validate (span, emptyText)", () => {
+    const page = (cards: Record<string, unknown>[]) => ({
+      ...valid,
+      files: [{ name: "server.js", source: "server.js" }],
+      dashboard: {
+        pages: { entry: "server.js" },
+        tabs: [
+          {
+            id: "s",
+            title: "S",
+            kind: "page",
+            dataUrl: "/api/summary",
+            cards,
+          },
+        ],
+      },
+    })
+    const good = validatePluginManifest(
+      page([
+        { kind: "stat", label: "CPU", value: "$.cpu", span: 2 },
+        { kind: "table", columns: ["A"], emptyText: "Nothing yet" },
+      ]),
+    )
+    expect(good.ok).toBe(true)
+    if (good.ok) {
+      expect(good.manifest.dashboard?.tabs?.[0]?.cards?.[0]?.span).toBe(2)
+      expect(good.manifest.dashboard?.tabs?.[0]?.cards?.[1]?.emptyText).toBe(
+        "Nothing yet",
+      )
+    }
+    for (const span of [0, 5, 1.5, "2"]) {
+      const bad = validatePluginManifest(
+        page([{ kind: "stat", label: "CPU", span }]),
+      )
+      expect(bad.ok).toBe(false)
+      if (!bad.ok)
+        expect(manifestIssuesText(bad.issues)).toContain(
+          "card span must be an integer",
+        )
+    }
+    const longEmpty = validatePluginManifest(
+      page([{ kind: "list", items: [], emptyText: "x".repeat(201) }]),
+    )
+    expect(longEmpty.ok).toBe(false)
+  })
+
   test("rejects a bad regex validator", () => {
     const result = validatePluginManifest({
       ...valid,
@@ -679,7 +790,7 @@ describe("plugin manifest", () => {
     if (result.ok) {
       const summary = pluginPermissionSummary(result.manifest)
       expect(summary).toContain(
-        "Exposes a public internet endpoint (/hooks/…) that anyone can call unless you set a secret",
+        "Exposes a public internet endpoint (/hooks/…) with every page-server route public — anyone can call them unless you set a secret",
       )
       expect(summary).toContain("Adds MCP servers: context7")
       expect(summary).toContain(

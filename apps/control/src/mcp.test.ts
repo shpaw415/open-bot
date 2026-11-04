@@ -438,4 +438,25 @@ describe("connectMcpServerEntries", () => {
       body: { name: "gate", config: servers.gate },
     })
   })
+
+  test("a disabled entry is never connected", async () => {
+    const { io, calls } = fakeIo({})
+    const statuses = await connectMcpServerEntries(
+      { gate: { type: "local", command: ["node", "gate.ts"], enabled: false } },
+      io,
+      { force: true },
+    )
+    expect(statuses).toEqual({ gate: "disabled — merged but off" })
+    expect(calls).toEqual([])
+  })
+
+  test("a disabled entry that a previous version connected is dropped live", async () => {
+    const { io, calls } = fakeIo({ gate: "connected" })
+    const statuses = await connectMcpServerEntries(
+      { gate: { type: "local", command: ["node", "gate.ts"], enabled: false } },
+      io,
+    )
+    expect(statuses).toEqual({ gate: "disabled — merged but off" })
+    expect(calls.map((call) => call.path)).toEqual(["/mcp/gate/disconnect"])
+  })
 })

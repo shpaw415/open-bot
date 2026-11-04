@@ -11,7 +11,7 @@ The dashboard (`apps/web`) is a React SPA served by the control plane. It talks 
 
 - **Composer** — markdown, file attachments, `@projects/<slug>` and `@reports/<plugin>` mentions that resolve like file references, persona picker, model selector, stop button.
 - **Transcript** — streaming replies, collapsible tool-call rows, plugin cards, embedded [previews](/docs/thread-preview), image/video/3D results.
-- **Personas** — choose a personality per new thread; persona is locked at thread create and injected as a system line on every prompt. Built-ins: Assistant, Designer, Political expert, Software designer. Manage your own on the Config page ([Other CLIs](/docs/ob-misc) covers `ob-persona`).
+- **Personas** — choose a personality per new thread; persona is locked at thread create and injected as a system line on every prompt. Built-ins: Assistant, Open-bot Plugin Creator. Manage your own on the Config page ([Other CLIs](/docs/ob-misc) covers `ob-persona`).
 
 ## Workspace views (Views drawer)
 
@@ -34,6 +34,8 @@ The dashboard (`apps/web`) is a React SPA served by the control plane. It talks 
 - **System1 provider** — decision-model endpoint (Laya / Clef / Jev) for desktop navigation.
 - **Media** — image/video/3D model selection.
 - **Voice** — STT/TTS provider, key, model, voice, language ([Voice](/docs/voice)).
+
+Every provider form (Keys, System1, Media, Voice, Watchdog — and the admin Team tab's shared provider settings) renders from the server-side provider catalog: pick a provider and only the credential fields and models it takes are shown (a Cloudflare Account ID only where Cloudflare needs one, a model select with a Custom escape hatch where new model ids must stay typeable). Saves are validated against the same catalog server-side, including the team overlay.
 - **OpenViking** — embedding + VLM config ([OpenViking setup](/docs/openviking)).
 - **Personas** — CRUD for your personas.
 - **Cron** — scheduled jobs moved here from the workspace Views drawer: add/edit/pause/run jobs and read their results ([Agent threads](/docs/agent-threads)).

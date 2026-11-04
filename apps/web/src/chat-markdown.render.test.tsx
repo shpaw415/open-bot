@@ -76,3 +76,64 @@ describe("chat markdown media nesting", () => {
     }
   })
 })
+
+describe("chat markdown disk file links", () => {
+  const fileUrl = (path: string) =>
+    `/api/workspace/file?path=${encodeURIComponent(path)}`
+
+  test("without a previewer, disk links target the file endpoint in a new tab", async () => {
+    const { container, root } = renderText(
+      "[rapport](/home/agent/workspace/report.pdf) et [notes](file:///home/agent/notes.md)",
+    )
+    try {
+      await flush()
+      const [pdf, notes] = container.querySelectorAll("a")
+      expect(pdf?.getAttribute("href")).toBe(
+        fileUrl("/home/agent/workspace/report.pdf"),
+      )
+      expect(pdf?.getAttribute("target")).toBe("_blank")
+      expect(notes?.getAttribute("href")).toBe(fileUrl("/home/agent/notes.md"))
+      expect(container.textContent).toContain("rapport")
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+
+  test("bare and backticked disk paths in prose become links", async () => {
+    const { container, root } = renderText(
+      "Enregistré dans /home/agent/workspace/report.pdf et aussi `/home/agent/notes.md`.",
+    )
+    try {
+      await flush()
+      const hrefs = [...container.querySelectorAll("a")].map((link) =>
+        link.getAttribute("href"),
+      )
+      expect(hrefs).toEqual([
+        fileUrl("/home/agent/workspace/report.pdf"),
+        fileUrl("/home/agent/notes.md"),
+      ])
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+
+  test("paths inside code fences and web links stay untouched", async () => {
+    const { container, root } = renderText(
+      "```\n/home/agent/workspace/report.pdf\n```\n\n[site](https://example.com/report.pdf)",
+    )
+    try {
+      await flush()
+      const links = container.querySelectorAll("a")
+      expect(links).toHaveLength(1)
+      expect(links[0]?.getAttribute("href")).toBe(
+        "https://example.com/report.pdf",
+      )
+      expect(container.querySelector("code a")).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+})

@@ -51,18 +51,21 @@ describe("chat links — external targets", () => {
     }
   })
 
-  test("relative links stay in-tab", async () => {
+  test("dashboard routes stay in-tab, served files open in a new tab", async () => {
     const { container, root } = renderMarkdown(
-      "[api](/api/workspace/snapshot/s1/x.png)",
+      "[chat](/chat) and [file](/api/workspace/snapshot/s1/x.png)",
     )
     try {
       await flush()
-      const link = container.querySelector("a")
-      expect(link?.getAttribute("href")).toBe(
+      const [route, file] = container.querySelectorAll("a")
+      expect(route?.getAttribute("href")).toBe("/chat")
+      expect(route?.getAttribute("target")).toBeNull()
+      expect(route?.getAttribute("rel")).toBeNull()
+      expect(file?.getAttribute("href")).toBe(
         "/api/workspace/snapshot/s1/x.png",
       )
-      expect(link?.getAttribute("target")).toBeNull()
-      expect(link?.getAttribute("rel")).toBeNull()
+      expect(file?.getAttribute("target")).toBe("_blank")
+      expect(file?.getAttribute("rel")).toBe("noopener noreferrer")
     } finally {
       act(() => root.unmount())
       container.remove()

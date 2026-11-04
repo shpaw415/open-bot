@@ -41,9 +41,12 @@ const {
   hiddenThreadTitle,
   isOpencodeReadRequest,
   isThreadRequest,
+  mergeThreadModelUpdate,
+  parseThreadModelUpdate,
   sanitizeThreadTitle,
   threadTitleError,
 } = await import("./threads")
+const { clearModelVariants } = await import("./effort")
 
 const agent = { id: "user-1", disabled: false } as unknown as User
 const db = {
@@ -178,8 +181,59 @@ describe("isThreadRequest", () => {
     expect(isThreadRequest("/api/threads", "POST")).toBe(true)
     expect(isThreadRequest("/api/threads", "DELETE")).toBe(true)
     expect(isThreadRequest("/api/threads", "PATCH")).toBe(false)
+    expect(isThreadRequest("/api/threads/s1/model", "GET")).toBe(true)
+    expect(isThreadRequest("/api/threads/s1/model", "POST")).toBe(true)
+    expect(isThreadRequest("/api/threads/s1/model", "PUT")).toBe(false)
     expect(isThreadRequest("/api/threads/s1", "DELETE")).toBe(false)
     expect(isThreadRequest("/api/cron", "GET")).toBe(false)
+  })
+})
+
+describe("parseThreadModelUpdate + mergeThreadModelUpdate", () => {
+  test("absent halves keep, null clears, values set", () => {
+    expect(parseThreadModelUpdate({})).toEqual({ update: {} })
+    expect(parseThreadModelUpdate({ model: null, effort: null })).toEqual({
+      update: { model: null, effort: null },
+    })
+    expect(parseThreadModelUpdate({ model: " prov/fast " })).toEqual({
+      update: { model: { providerID: "prov", modelID: "fast" } },
+    })
+    expect(parseThreadModelUpdate({ thinkingEffort: "low" })).toEqual({
+      update: { effort: "low" },
+    })
+    expect(parseThreadModelUpdate({ model: "" })).toEqual({
+      update: { model: null },
+    })
+  })
+
+  test("malformed values are errors", () => {
+    expect(parseThreadModelUpdate({ model: "nope" })).toHaveProperty("error")
+    expect(parseThreadModelUpdate({ model: 42 })).toHaveProperty("error")
+    expect(parseThreadModelUpdate({ effort: "two words" })).toHaveProperty(
+      "error",
+    )
+  })
+
+  test("merge applies only the halves the update names", () => {
+    const stored = { providerId: "prov", modelId: "reasoner", effort: "high" }
+    expect(mergeThreadModelUpdate(stored, {})).toEqual({
+      providerID: "prov",
+      modelID: "reasoner",
+      effort: "high",
+    })
+    expect(
+      mergeThreadModelUpdate(stored, {
+        model: { providerID: "prov", modelID: "fast" },
+      }),
+    ).toEqual({ providerID: "prov", modelID: "fast", effort: "high" })
+    expect(
+      mergeThreadModelUpdate(stored, { model: null, effort: null }),
+    ).toEqual({ providerID: null, modelID: null, effort: null })
+    expect(mergeThreadModelUpdate(null, { effort: "low" })).toEqual({
+      providerID: null,
+      modelID: null,
+      effort: "low",
+    })
   })
 })
 
@@ -249,6 +303,18 @@ describe("POST /api/threads", () => {
     expect(body.warning).toMatch(
       /another worker with this title is already running \(s1\)/,
     )
+  })
+
+  test("warns a hidden start while other workers run on the shared filesystem", async () => {
+    installFetch()
+    phaseStatuses = { s1: "busy" }
+    const res = await post({ title: "other job" })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { warning?: string }
+    expect(body.warning).toMatch(
+      /1 other worker thread.*running on this shared filesystem/,
+    )
+    expect(body.warning).toContain("job")
   })
 
   test("a same-titled idle worker does not warn", async () => {
@@ -486,9 +552,46 @@ describe("POST /api/threads", () => {
       null,
     )
     expect(calls.length).toBe(before)
+
+    // The Assistant's all-skills base must also clear a stale seed-only
+    // ruleset persisted on an existing session: with no MCP rules to send
+    // (the mocked config read fails), the re-apply PATCHes permission null
+    // instead of leaving the old rules in place.
+    await applyPersonaScope(
+      db,
+      "user-1",
+      "http://opencode:4096",
+      headers,
+      "ses_9",
+      {
+        id: "assistant",
+        name: "Assistant",
+        instruction: "",
+        builtin: true,
+        skills: null,
+        skillsExtra: null,
+        skillsNone: false,
+        skillsEffective: null,
+        mcp: null,
+        mcpExtra: null,
+        mcpNone: false,
+        mcpEffective: null,
+      },
+    )
+    const clear = calls
+      .slice(before)
+      .find(
+        (call) =>
+          call.url.endsWith("/session/ses_9") &&
+          (call.init as RequestInit | undefined)?.method === "PATCH",
+      )
+    expect(clear).toBeDefined()
+    expect(JSON.parse(String(clear?.init?.body))).toEqual({
+      permission: null,
+    })
   })
 
-  test("an explicitly bound assistant persona is seed-scoped and reported", async () => {
+  test("an explicitly bound assistant persona loads all skills, seed-scoped MCP", async () => {
     installFetch()
     const bound: string[][] = []
     const res = await post(
@@ -500,8 +603,8 @@ describe("POST /api/threads", () => {
       persona?: { id: string; skills?: unknown; mcp?: unknown }
     }
     expect(body.persona?.id).toBe("assistant")
-    // the seed probe degrades on the mocked desktop — the default holds
-    expect(body.persona?.skills).toEqual({ seedDefault: true, extra: 0 })
+    // every skill loads (no seed probe needed); MCP keeps the seed default
+    expect(body.persona?.skills).toEqual({ all: true })
     expect(body.persona?.mcp).toEqual({ seedDefault: true, extra: 0 })
     expect(bound).toEqual([["user-1", "ses_1", "assistant"]])
     // no permission key: the scope probes fail on this mock, and the
@@ -514,7 +617,7 @@ describe("POST /api/threads", () => {
     expect(JSON.parse(String(create?.init?.body)).permission).toBeUndefined()
     const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
     expect(String(JSON.parse(String(prompt?.init?.body)).system)).toContain(
-      "built-in skills",
+      "All skills load in this thread",
     )
   })
 
@@ -770,9 +873,229 @@ describe("POST /api/threads councils", () => {
   })
 })
 
+describe("POST /api/threads model and effort picks", () => {
+  function pickDb() {
+    const councils: { id: string; userId: string; name: string }[] = []
+    const members: Record<string, unknown>[] = []
+    const picks: Record<string, unknown>[] = []
+    const bound: string[][] = []
+    const mock = {
+      desktop: (id: string) =>
+        id === "user-1"
+          ? {
+              opencodePassword: "pw",
+              selectedProvider: "prov",
+              selectedModel: "reasoner",
+              thinkingEffort: null,
+            }
+          : null,
+      personas: () => [
+        {
+          id: "p1",
+          name: "Software manager",
+          instruction: "run the team",
+          skills: null,
+          skillsExtra: null,
+          mcp: null,
+          mcpExtra: null,
+        },
+      ],
+      installedPlugins: () => [],
+      builtinPersonaScopes: () => [],
+      setThreadPersona: (
+        userId: string,
+        sessionId: string,
+        personaId: string,
+      ) => {
+        bound.push([userId, sessionId, personaId])
+      },
+      setThreadModel: (row: Record<string, unknown>) => {
+        picks.push(row)
+      },
+      councilByName: (userId: string, name: string) =>
+        councils.find(
+          (row) =>
+            row.userId === userId &&
+            row.name.toLowerCase() === name.toLowerCase(),
+        ) ?? null,
+      createCouncil: (row: { id: string; userId: string; name: string }) => {
+        councils.push(row)
+      },
+      setCouncilMember: (row: Record<string, unknown>) => {
+        members.push(row)
+      },
+      createDelegationWatch: () => {},
+    } as unknown as Db
+    return { mock, councils, members, picks, bound }
+  }
+
+  test("a council member carries its own persona, model, and effort", async () => {
+    installFetch()
+    const { mock, picks, bound } = pickDb()
+    const res = await post(
+      {
+        title: "Token storage",
+        council: "auth-review",
+        role: "Reviewer",
+        persona: "Software manager",
+        model: "prov/reasoner",
+        effort: "high",
+        message: "Review token storage",
+      },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      model?: string
+      effort?: string
+      persona?: { name: string }
+    }
+    expect(body.model).toBe("prov/reasoner")
+    expect(body.effort).toBe("high")
+    expect(body.persona?.name).toBe("Software manager")
+    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
+    expect(JSON.parse(String(prompt?.init?.body))).toEqual({
+      parts: [{ type: "text", text: "Review token storage" }],
+      system: expect.stringMatching(/answer as Software manager/),
+      model: { providerID: "prov", modelID: "reasoner" },
+      variant: "high",
+    })
+    expect(picks).toEqual([
+      {
+        userId: "user-1",
+        sessionId: "ses_1",
+        providerId: "prov",
+        modelId: "reasoner",
+        effort: "high",
+      },
+    ])
+    expect(bound).toEqual([["user-1", "ses_1", "p1"]])
+  })
+
+  test("members of two councils from one caller keep separate picks", async () => {
+    installFetch()
+    const { mock, councils, picks } = pickDb()
+    expect(
+      (
+        await post(
+          {
+            title: "OAuth paths",
+            council: "auth-review",
+            model: "prov/reasoner",
+            effort: "low",
+            message: "map paths",
+          },
+          mock,
+        )
+      ).status,
+    ).toBe(201)
+    expect(
+      (
+        await post(
+          {
+            title: "Hot paths",
+            council: "perf-review",
+            model: "prov/reasoner",
+            effort: "high",
+            message: "profile",
+          },
+          mock,
+        )
+      ).status,
+    ).toBe(201)
+    expect(councils.map((row) => row.name)).toEqual([
+      "auth-review",
+      "perf-review",
+    ])
+    expect(picks.map((row) => row.effort)).toEqual(["low", "high"])
+  })
+
+  test("an unknown model is refused before any session exists", async () => {
+    installFetch()
+    const { mock } = pickDb()
+    const res = await post(
+      { title: "Job", council: "auth-review", model: "prov/nope" },
+      mock,
+    )
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toMatch(/unknown model "prov\/nope"/)
+    expect(
+      calls.some(
+        (call) => call.url.endsWith("/session") && call.init?.method === "POST",
+      ),
+    ).toBeFalse()
+  })
+
+  test("an effort the model does not offer is refused with its levels", async () => {
+    installFetch()
+    const { mock } = pickDb()
+    const res = await post(
+      { title: "Job", model: "prov/reasoner", effort: "xhigh" },
+      mock,
+    )
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toMatch(/levels: high, low/)
+  })
+
+  test("malformed model and effort values are 400s", async () => {
+    installFetch()
+    const { mock } = pickDb()
+    expect((await post({ title: "Job", model: "nope" }, mock)).status).toBe(400)
+    expect((await post({ title: "Job", model: 42 }, mock)).status).toBe(400)
+    expect((await post({ title: "Job", effort: 42 }, mock)).status).toBe(400)
+    expect(
+      (await post({ title: "Job", effort: "two words" }, mock)).status,
+    ).toBe(400)
+    expect(
+      calls.some(
+        (call) => call.url.endsWith("/session") && call.init?.method === "POST",
+      ),
+    ).toBeFalse()
+  })
+
+  test("an effort-only pick stamps the variant and stores a null model", async () => {
+    installFetch()
+    const { mock, picks } = pickDb()
+    const res = await post(
+      { title: "Quick scan", effort: "low", message: "scan" },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { model?: string; effort?: string }
+    expect(body.model).toBeUndefined()
+    expect(body.effort).toBe("low")
+    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
+    const sent = JSON.parse(String(prompt?.init?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(sent.model).toBeUndefined()
+    expect(sent.variant).toBe("low")
+    expect(picks).toEqual([
+      {
+        userId: "user-1",
+        sessionId: "ses_1",
+        providerId: null,
+        modelId: null,
+        effort: "low",
+      },
+    ])
+  })
+})
+
 describe("POST /api/threads delegation watches", () => {
-  function watchDb(withPersona = false) {
+  function watchDb(
+    withPersona = false,
+    parentPick: {
+      providerId: string | null
+      modelId: string | null
+      effort: string | null
+    } | null = null,
+  ) {
     const watches: Record<string, unknown>[] = []
+    const picks: Record<string, unknown>[] = []
     const councils: { id: string; userId: string; name: string }[] = []
     const members: Record<string, unknown>[] = []
     const mock = {
@@ -810,8 +1133,13 @@ describe("POST /api/threads delegation watches", () => {
       createDelegationWatch: (row: Record<string, unknown>) => {
         watches.push(row)
       },
+      threadModel: (_userId: string, sessionId: string) =>
+        sessionId === "chat1" ? parentPick : null,
+      setThreadModel: (row: Record<string, unknown>) => {
+        picks.push(row)
+      },
     } as unknown as Db
-    return { mock, watches, councils }
+    return { mock, watches, councils, picks }
   }
 
   function installDelegationFetch(options?: {
@@ -837,6 +1165,80 @@ describe("POST /api/threads delegation watches", () => {
       return Response.json({ id: "ses_1" })
     }) as unknown as typeof fetch
   }
+
+  test("a council member without --model inherits the creator thread's pick", async () => {
+    installDelegationFetch({
+      rows: { chat1: { id: "chat1", title: "My chat" } },
+    })
+    const { mock, picks } = watchDb(false, {
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "high",
+    })
+    const res = await post(
+      {
+        title: "Research",
+        council: "review",
+        from: "chat1",
+        message: "Go research",
+      },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      model?: string
+      effort?: string
+      modelInherited?: boolean
+    }
+    expect(body.model).toBe("prov/reasoner")
+    expect(body.effort).toBe("high")
+    expect(body.modelInherited).toBe(true)
+    expect(picks).toEqual([
+      {
+        userId: "user-1",
+        sessionId: "ses_1",
+        providerId: "prov",
+        modelId: "reasoner",
+        effort: "high",
+      },
+    ])
+    const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
+    const sent = JSON.parse(String(prompt?.init?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(sent.model).toEqual({ providerID: "prov", modelID: "reasoner" })
+  })
+
+  test("an explicit --model wins over the creator thread's pick", async () => {
+    installDelegationFetch({
+      rows: { chat1: { id: "chat1", title: "My chat" } },
+    })
+    const { mock, picks } = watchDb(false, {
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "high",
+    })
+    const res = await post(
+      {
+        title: "Research",
+        council: "review",
+        from: "chat1",
+        model: "prov/reasoner",
+        effort: "low",
+        message: "Go research",
+      },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      effort?: string
+      modelInherited?: boolean
+    }
+    expect(body.effort).toBe("low")
+    expect(body.modelInherited).toBeUndefined()
+    expect(picks[0]).toMatchObject({ effort: "low" })
+  })
 
   test("a valid --from arms a council wake and records the watch row", async () => {
     installDelegationFetch({
@@ -879,7 +1281,9 @@ describe("POST /api/threads delegation watches", () => {
       warning?: string
     }
     expect(body.wake).toEqual({ armed: true, creator: "chat1" })
-    expect(body.warning).toBeUndefined()
+    // The busy worker:other session is live on the shared filesystem, so
+    // the hidden start warns about it — that is the warning slot now.
+    expect(body.warning).toMatch(/shared filesystem/)
     expect(watches[0]).toMatchObject({
       kind: "council",
       creatorSessionId: "chat1",
@@ -1056,6 +1460,12 @@ describe("DELETE /api/threads", () => {
       clearThreadPersona: (_userId: string, sessionId: string) => {
         cleanupLog.push(`persona:${sessionId}`)
       },
+      clearThreadModel: (_userId: string, sessionId: string) => {
+        cleanupLog.push(`model:${sessionId}`)
+      },
+      clearThreadQueue: (_userId: string, sessionId: string) => {
+        cleanupLog.push(`queue:${sessionId}`)
+      },
       clearThreadTitle: (_userId: string, sessionId: string) => {
         cleanupLog.push(`title:${sessionId}`)
       },
@@ -1106,6 +1516,8 @@ describe("DELETE /api/threads", () => {
     expect(body.skipped).toEqual([])
     expect(cleanupLog).toEqual([
       "persona:s1",
+      "model:s1",
+      "queue:s1",
       "title:s1",
       "dir:s1",
       "council:s1",
@@ -1138,6 +1550,8 @@ describe("DELETE /api/threads", () => {
     ])
     expect(cleanupLog).toEqual([
       "persona:s1",
+      "model:s1",
+      "queue:s1",
       "title:s1",
       "dir:s1",
       "council:s1",
@@ -1181,12 +1595,20 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
   let abortFails = false
   let statuses: Record<string, { type: string }>
 
-  function managedDb(personaBound: string[] = []) {
+  function managedDb(
+    personaBound: string[] = [],
+    modelRow: {
+      providerId: string | null
+      modelId: string | null
+      effort: string | null
+    } | null = null,
+  ) {
     return {
       desktop: (id: string) =>
         id === "user-1" ? { opencodePassword: "pw" } : null,
       threadPersona: (_userId: string, sessionId: string) =>
         personaBound.includes(sessionId) ? { personaId: "p1" } : null,
+      threadModel: () => modelRow,
     } as unknown as Db
   }
 
@@ -1198,6 +1620,19 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
       const url = String(input)
       const init = options
       calls.push({ url, init })
+      if (url.endsWith("/provider"))
+        return Response.json({
+          connected: ["prov"],
+          all: [
+            {
+              id: "prov",
+              models: {
+                reasoner: { name: "Reasoner", variants: { high: {}, low: {} } },
+                fast: { name: "Fast", variants: {} },
+              },
+            },
+          ],
+        })
       if (url.endsWith("/session/status")) return Response.json(statuses)
       const message = url.match(/\/session\/([^/]+)\/message$/)
       if (message && (!init?.method || init.method === "GET")) {
@@ -1286,6 +1721,59 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
       id: "w1",
       running: true,
       state: "starting",
+    })
+  })
+
+  test("status derives idle from messages when the status entry is gone", async () => {
+    // opencode drops the status entry once a turn ends (and on restart),
+    // so a finished thread must not read as starting forever.
+    installManageFetch({
+      w1: [
+        { info: { role: "user", time: { created: 1 } }, parts: [] },
+        {
+          info: {
+            role: "assistant",
+            finish: "stop",
+            time: { created: 2, completed: 3 },
+          },
+          parts: [{ type: "text", text: "done" }],
+        },
+      ],
+    })
+    statuses = {}
+    const res = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    expect(await res.json()).toEqual({
+      id: "w1",
+      running: false,
+      state: "idle",
+    })
+  })
+
+  test("status reports stalled when a prompt never registered a turn", async () => {
+    installManageFetch({
+      w1: [
+        {
+          info: { role: "user", time: { created: Date.now() - 10 * 60_000 } },
+          parts: [{ type: "text", text: "go" }],
+        },
+      ],
+    })
+    statuses = {}
+    const res = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    expect(await res.json()).toEqual({
+      id: "w1",
+      running: false,
+      state: "stalled",
     })
   })
 
@@ -1403,9 +1891,293 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
       call.url.endsWith("/session/p1/prompt_async"),
     )
     expect(prompt).toBeDefined()
+    // Posts carry the screen/session system line like the first prompt —
+    // a member briefed only through post must learn its own screen id.
     expect(JSON.parse(String(prompt?.init?.body))).toEqual({
       parts: [{ type: "text", text: "Stop editing; report what you changed" }],
+      system: expect.stringContaining(
+        "This thread's screen id (also your session id, for ob-thread --from) is p1.",
+      ),
     })
+  })
+
+  test("post keeps the model and effort the thread was created with", async () => {
+    installManageFetch()
+    const res = await manage(
+      "/api/threads/w1/post",
+      { message: "Wrap up and report" },
+      managedDb([], {
+        providerId: "prov",
+        modelId: "reasoner",
+        effort: "high",
+      }),
+    )
+    expect(res.status).toBe(200)
+    const prompt = calls.find((call) =>
+      call.url.endsWith("/session/w1/prompt_async"),
+    )
+    expect(JSON.parse(String(prompt?.init?.body))).toEqual({
+      parts: [{ type: "text", text: "Wrap up and report" }],
+      system: expect.stringContaining(
+        "This thread's screen id (also your session id, for ob-thread --from) is w1.",
+      ),
+      model: { providerID: "prov", modelID: "reasoner" },
+      variant: "high",
+    })
+  })
+
+  // Hot model updates: a mutable thread_models row over a desktop whose
+  // default is prov/reasoner with no saved effort.
+  function modelDb(
+    row: {
+      providerId: string | null
+      modelId: string | null
+      effort: string | null
+    } | null,
+  ) {
+    const state = {
+      row,
+      saved: [] as {
+        userId: string
+        sessionId: string
+        providerId: string | null
+        modelId: string | null
+        effort: string | null
+      }[],
+      cleared: 0,
+    }
+    const useDb = {
+      desktop: (id: string) =>
+        id === "user-1"
+          ? {
+              opencodePassword: "pw",
+              selectedProvider: "prov",
+              selectedModel: "reasoner",
+              thinkingEffort: null,
+            }
+          : null,
+      threadPersona: () => null,
+      threadModel: () => state.row,
+      setThreadModel: (next: {
+        userId: string
+        sessionId: string
+        providerId: string | null
+        modelId: string | null
+        effort: string | null
+      }) => {
+        state.saved.push(next)
+        state.row = {
+          providerId: next.providerId,
+          modelId: next.modelId,
+          effort: next.effort,
+        }
+      },
+      clearThreadModel: () => {
+        state.cleared++
+        state.row = null
+      },
+    } as unknown as Db
+    return { useDb, state }
+  }
+
+  test("model reads the effective pick and the pinned halves", async () => {
+    installManageFetch()
+    const pinned = modelDb({
+      providerId: "prov",
+      modelId: "fast",
+      effort: null,
+    })
+    const res = await manage(
+      "/api/threads/w1/model",
+      undefined,
+      pinned.useDb,
+      "GET",
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      id: "w1",
+      model: "prov/fast",
+      effort: null,
+      thread: { model: "prov/fast", effort: null },
+    })
+    const plain = modelDb(null)
+    const fallback = await manage(
+      "/api/threads/w1/model",
+      undefined,
+      plain.useDb,
+      "GET",
+    )
+    expect(await fallback.json()).toEqual({
+      id: "w1",
+      model: "prov/reasoner",
+      effort: null,
+      thread: { model: null, effort: null },
+    })
+  })
+
+  test("model hot-switches the pick and drops an unsupported carried effort", async () => {
+    clearModelVariants("user-1")
+    installManageFetch()
+    const { useDb, state } = modelDb({
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "high",
+    })
+    const res = await manage(
+      "/api/threads/w1/model",
+      { model: "prov/fast" },
+      useDb,
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      id: "w1",
+      model: "prov/fast",
+      effort: null,
+      thread: { model: "prov/fast", effort: null },
+      effortDropped: "high",
+    })
+    expect(state.saved).toEqual([
+      {
+        userId: "user-1",
+        sessionId: "w1",
+        providerId: "prov",
+        modelId: "fast",
+        effort: null,
+      },
+    ])
+  })
+
+  test("model updates one half at a time and clears back to the default", async () => {
+    clearModelVariants("user-1")
+    installManageFetch()
+    const { useDb, state } = modelDb({
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "high",
+    })
+    const effortOnly = await manage(
+      "/api/threads/w1/model",
+      { effort: "low" },
+      useDb,
+    )
+    expect(effortOnly.status).toBe(200)
+    expect(state.row).toEqual({
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "low",
+    })
+    const cleared = await manage(
+      "/api/threads/w1/model",
+      { model: null, effort: null },
+      useDb,
+    )
+    expect(cleared.status).toBe(200)
+    expect(state.cleared).toBe(1)
+    expect(state.row).toBeNull()
+    expect(await cleared.json()).toEqual({
+      id: "w1",
+      model: "prov/reasoner",
+      effort: null,
+      thread: { model: null, effort: null },
+    })
+  })
+
+  test("model refuses bad picks and unmanaged threads without storing", async () => {
+    clearModelVariants("user-1")
+    installManageFetch()
+    const { useDb, state } = modelDb(null)
+    const badEffort = await manage(
+      "/api/threads/w1/model",
+      { model: "prov/fast", effort: "high" },
+      useDb,
+    )
+    expect(badEffort.status).toBe(400)
+    expect(((await badEffort.json()) as { error: string }).error).toMatch(
+      /not available on prov\/fast/,
+    )
+    const unknown = await manage(
+      "/api/threads/w1/model",
+      { model: "prov/nope" },
+      useDb,
+    )
+    expect(unknown.status).toBe(400)
+    expect(((await unknown.json()) as { error: string }).error).toMatch(
+      /unknown model "prov\/nope"/,
+    )
+    expect((await manage("/api/threads/w1/model", {}, useDb)).status).toBe(400)
+    expect(
+      (await manage("/api/threads/u1/model", { model: "prov/fast" }, useDb))
+        .status,
+    ).toBe(403)
+    expect(state.saved).toHaveLength(0)
+    expect(state.cleared).toBe(0)
+  })
+
+  test("post can switch the model for its own turn and persists the pick", async () => {
+    clearModelVariants("user-1")
+    installManageFetch()
+    const { useDb, state } = modelDb({
+      providerId: "prov",
+      modelId: "fast",
+      effort: null,
+    })
+    const res = await manage(
+      "/api/threads/w1/post",
+      { message: "Now the hard part", model: "prov/reasoner", effort: "high" },
+      useDb,
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      id: "w1",
+      posted: true,
+      model: "prov/reasoner",
+      effort: "high",
+    })
+    const prompt = calls.find((call) =>
+      call.url.endsWith("/session/w1/prompt_async"),
+    )
+    const sent = JSON.parse(String(prompt?.init?.body)) as {
+      model?: unknown
+      variant?: unknown
+    }
+    expect(sent.model).toEqual({ providerID: "prov", modelID: "reasoner" })
+    expect(sent.variant).toBe("high")
+    expect(state.row).toEqual({
+      providerId: "prov",
+      modelId: "reasoner",
+      effort: "high",
+    })
+  })
+
+  test("post with a bad switch sends nothing; clearing unpins the model", async () => {
+    clearModelVariants("user-1")
+    installManageFetch()
+    const { useDb, state } = modelDb({
+      providerId: "prov",
+      modelId: "fast",
+      effort: null,
+    })
+    const bad = await manage(
+      "/api/threads/w1/post",
+      { message: "hi", model: "prov/nope" },
+      useDb,
+    )
+    expect(bad.status).toBe(400)
+    expect(calls.some((call) => call.url.includes("prompt_async"))).toBeFalse()
+    expect(state.saved).toHaveLength(0)
+
+    const cleared = await manage(
+      "/api/threads/w1/post",
+      { message: "back to the default", model: null },
+      useDb,
+    )
+    expect(cleared.status).toBe(200)
+    expect(await cleared.json()).toEqual({ id: "w1", posted: true })
+    expect(state.cleared).toBe(1)
+    const prompt = calls.find((call) =>
+      call.url.endsWith("/session/w1/prompt_async"),
+    )
+    expect(JSON.parse(String(prompt?.init?.body))).not.toHaveProperty("model")
   })
 
   test("post validates the message and refuses unmanaged threads", async () => {
@@ -1466,6 +2238,45 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
       call.url.endsWith("/session/w1/message"),
     )
     expect(upstream).toBeDefined()
+  })
+
+  test("read pages with limit/before and never forwards them upstream", async () => {
+    installManageFetch({
+      w1: Array.from({ length: 6 }, (_, i) => ({
+        info: { id: `m${i}`, role: i % 2 === 0 ? "user" : "assistant" },
+        parts: [{ type: "text", text: `t${i}` }],
+      })),
+    })
+    const tail = await read("/api/opencode/session/w1/message?limit=2")
+    expect(tail.status).toBe(200)
+    const tailBody = (await tail.json()) as {
+      messages: { info: { id: string } }[]
+      total: number
+      hasMore: boolean
+      nextBefore: string | null
+      startUserCount: number
+    }
+    expect(tailBody.messages.map((row) => row.info.id)).toEqual(["m4", "m5"])
+    expect(tailBody.total).toBe(6)
+    expect(tailBody.hasMore).toBe(true)
+    expect(tailBody.nextBefore).toBe("m4")
+    expect(tailBody.startUserCount).toBe(2)
+    const older = await read(
+      "/api/opencode/session/w1/message?limit=2&before=m4",
+    )
+    const olderBody = (await older.json()) as {
+      messages: { info: { id: string } }[]
+      nextBefore: string | null
+    }
+    expect(olderBody.messages.map((row) => row.info.id)).toEqual(["m2", "m3"])
+    expect(olderBody.nextBefore).toBe("m2")
+    const stale = await read("/api/opencode/session/w1/message?before=gone")
+    expect(stale.status).toBe(400)
+    expect(
+      calls
+        .filter((call) => call.url.includes("/message"))
+        .every((call) => !call.url.includes("limit=")),
+    ).toBe(true)
   })
 
   test("read refuses plain chats, cron jobs, and unknown ids", async () => {

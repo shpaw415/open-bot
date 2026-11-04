@@ -83,6 +83,18 @@ if [ "${1:-}" = "start" ]; then
     esac
   done
   [ "$#" -ge 1 ] || usage
+  # A relative path binary resolves against this cwd, which the detached
+  # process inherits. Fail fast with the cwd named instead of an instant
+  # background death that only shows up as "module not found" in the log.
+  case "$1" in
+    /*) ;;
+    */*)
+      if [ ! -e "$1" ]; then
+        echo "not found: $1 (started from cwd $(pwd -P)) — pass an absolute path" >&2
+        exit 1
+      fi
+      ;;
+  esac
   case "$1" in
     */*) base=${1##*/} ;;
     *) base=$1 ;;
@@ -118,7 +130,7 @@ if [ "${1:-}" = "start" ]; then
   pid=$!
   sleep 0.5
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "the process exited immediately. Last log lines:" >&2
+    echo "the process exited immediately (cwd $(pwd -P)). Last log lines:" >&2
     tail -n 5 "$log" >&2 || true
     rm -f "$log"
     exit 1
@@ -134,7 +146,7 @@ if [ "${1:-}" = "start" ]; then
 
   REG="$REG" OB_ID="$id" OB_NAME="$name" OB_SESSION="$session" \
     OB_PID="$pid" OB_PGRP="$pgrp" OB_STARTTICKS="$start_ticks" OB_CMD="$*" \
-    OB_LOG="$log" python3 - <<'PY'
+    OB_LOG="$log" OB_CWD="$(pwd -P)" python3 - <<'PY'
 import json, os, time
 row = {
     "id": os.environ["OB_ID"],
@@ -145,6 +157,7 @@ row = {
     "startTime": int(os.environ["OB_STARTTICKS"]),
     "cmd": os.environ["OB_CMD"][:256],
     "startedAt": int(time.time() * 1000),
+    "cwd": os.environ["OB_CWD"],
     "log": os.environ["OB_LOG"],
 }
 reg = os.environ["REG"]
@@ -265,6 +278,7 @@ for row, first, second in still:
             ),
             "cpuPercent": cpu_pct,
             "rssBytes": second["rss"],
+            "cwd": row.get("cwd", ""),
         }
     )
 
@@ -339,8 +353,31 @@ try:
     with open(row_path) as fh:
         row = json.load(fh)
 except Exception:
-    print(f"no managed process {os.environ['OB_ID']}", file=sys.stderr)
-    raise SystemExit(1)
+    # No registry row: either a bad id or a job that already exited (list
+    # prunes dead rows but keeps their logs). Tell the two apart so the
+    # caller can still read why the job died.
+    log_path = os.path.join(reg, "logs", f"{os.environ['OB_ID']}.log")
+    if os.path.exists(log_path):
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "id": os.environ["OB_ID"],
+                    "killed": False,
+                    "exited": True,
+                    "log": log_path,
+                }
+            )
+        )
+        print(
+            f"job {os.environ['OB_ID']} already exited — "
+            f"read its output with: ob-process log {os.environ['OB_ID']}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"no managed process {os.environ['OB_ID']}", file=sys.stderr)
+        raise SystemExit(1)
+    raise SystemExit(0)
 
 pid = int(row["pid"])
 pgid = int(row.get("pgid", pid))
@@ -358,7 +395,14 @@ def still_ours():
 
 
 killed = False
-if still_ours():
+live = still_ours()
+# Both outcomes retire the registry row: live means killed, dead means the
+# job already exited (list would prune it on its next run anyway).
+try:
+    os.unlink(row_path)
+except OSError:
+    pass
+if live:
     try:
         os.killpg(pgid, signal.SIGTERM)
     except OSError:
@@ -382,11 +426,32 @@ if still_ours():
                 break
             time.sleep(0.1)
         killed = killed or not still_ours()
+else:
+    # The row survived but the job is gone: same answer as the pruned-row
+    # path — the log tells the story.
+    log_path = row.get("log") or os.path.join(
+        reg, "logs", f"{os.environ['OB_ID']}.log"
+    )
+    where = row.get("cwd")
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "id": os.environ["OB_ID"],
+                "killed": False,
+                "exited": True,
+                "log": log_path,
+            }
+        )
+    )
+    print(
+        f"job {os.environ['OB_ID']} already exited"
+        + (f" (was started in {where})" if where else "")
+        + f" — read its output with: ob-process log {os.environ['OB_ID']}",
+        file=sys.stderr,
+    )
+    raise SystemExit(0)
 
-try:
-    os.unlink(row_path)
-except OSError:
-    pass
 print(json.dumps({"ok": True, "id": os.environ["OB_ID"], "killed": killed}))
 PY
   exit 0

@@ -162,6 +162,27 @@
       "when": 1792769921632,
       "tag": "0022_futuristic_living_lightning",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1793073250042,
+      "tag": "0023_quick_groot",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1793206267204,
+      "tag": "0024_illegal_doomsday",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1793646619426,
+      "tag": "0025_wise_the_liberteens",
+      "breakpoints": true
     }
   ]
 }

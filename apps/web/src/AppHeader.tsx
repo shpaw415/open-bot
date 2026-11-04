@@ -17,6 +17,7 @@ import {
   useSyncExternalStore,
 } from "react"
 import { api, type Me } from "./api"
+import { useBackLayer } from "./back-nav"
 import { useOverlayA11y } from "./dialog-a11y"
 import {
   AdminPanelSettingsIcon,
@@ -34,6 +35,7 @@ import {
   NotificationsNoneIcon,
   NotificationsOffIcon,
   SearchIcon,
+  SplitScreenIcon,
   VolumeOffIcon,
   VolumeUpIcon,
 } from "./icons"
@@ -551,6 +553,11 @@ function ProfileButton({
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const closeProfile = useCallback(() => {
+    setOpen(false)
+    buttonRef.current?.focus()
+  }, [])
+  useBackLayer(open, closeProfile, { name: "menu" })
   const initials = useMemo(() => initialsOf(me.email), [me.email])
   return (
     <>
@@ -1090,6 +1097,9 @@ export type AppHeaderProps = {
   onNewThread: () => void
   go: (path: string) => void
   onLogout: () => void
+  /** Global split screen: show two pages side by side. */
+  splitOpen?: boolean
+  onToggleSplit?: () => void
 }
 
 export function AppHeader({
@@ -1105,6 +1115,8 @@ export function AppHeader({
   onNewThread,
   go,
   onLogout,
+  splitOpen,
+  onToggleSplit,
 }: AppHeaderProps) {
   const { state: data, load } = useSearchData(me.id)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -1180,6 +1192,27 @@ export function AppHeader({
           >
             {pageContext}
           </Typography>
+        ) : null}
+        {onToggleSplit ? (
+          <Tip
+            title={
+              splitOpen
+                ? "Quitter l'écran partagé"
+                : "Écran partagé — deux pages côte à côte"
+            }
+            placement="bottom"
+          >
+            <IconButton
+              size="medium"
+              aria-label={
+                splitOpen ? "Quitter l'écran partagé" : "Écran partagé"
+              }
+              aria-pressed={Boolean(splitOpen)}
+              onClick={onToggleSplit}
+            >
+              <SplitScreenIcon width={20} height={20} />
+            </IconButton>
+          </Tip>
         ) : null}
       </Box>
       {/* Required order, left to right: Profile · Theme · Notifications · Search. */}

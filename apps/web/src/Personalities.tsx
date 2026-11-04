@@ -24,6 +24,11 @@ import { FaceIcon, LockIcon, PersonIcon } from "./icons"
 import Stack from "./stack"
 import { Tip } from "./Tip"
 
+// The Assistant is the one built-in whose skill base is every skill (seed,
+// plugin, and custom) rather than the desktop seed set — its MCP base stays
+// the seed set. Server-enforced in personas.ts; mirrored here by id.
+const ASSISTANT_ID = "assistant"
+
 export type PersonaInfo = {
   id: string
   name: string
@@ -49,7 +54,8 @@ type Draft = {
   id: string
   name: string
   instruction: string
-  // Built-ins scope to the desktop's seed set; extras extend it.
+  // Built-ins scope to a locked live base; extras extend it. The Assistant's
+  // skill base is every skill, so it has no skill extras.
   builtin: boolean
   // User personas: the editable base lists (null = all).
   skills: string[] | null
@@ -69,8 +75,10 @@ type Draft = {
 
 function draftFrom(persona: PersonaInfo): Draft {
   const plugin = persona.plugin ?? null
-  // A built-in's locked base is the live seed set (filled from the catalog
-  // when it arrives), so the draft opens in locked mode with an empty base.
+  // A built-in's locked base is live (filled from the catalog when it
+  // arrives), so the draft opens in locked mode with an empty base. The
+  // Assistant's skill base fills with the whole catalog, everyone else's
+  // with the seed set.
   const builtin = persona.builtin
   return {
     id: persona.id,
@@ -82,11 +90,12 @@ function draftFrom(persona: PersonaInfo): Draft {
     skillsNone: Boolean(persona.skillsNone),
     mcpNone: Boolean(persona.mcpNone),
     pluginName: plugin?.name ?? null,
-    // A built-in's base is always locked (empty until the catalog fills the
-    // seed set); a plugin's null base stays unrestricted as before.
+    // A built-in's base is always locked (empty until the catalog fills
+    // it); a plugin's null base stays unrestricted as before.
     baseLocked: builtin ? [] : plugin ? (persona.skills ?? null) : null,
     mcpBaseLocked: builtin ? [] : plugin ? (persona.mcp ?? null) : null,
-    extras: persona.skillsExtra ?? [],
+    // The Assistant has no skill extras — every skill is already in its base.
+    extras: persona.id === ASSISTANT_ID ? [] : (persona.skillsExtra ?? []),
     mcpExtras: persona.mcpExtra ?? [],
     skillsTouched: false,
     mcpTouched: false,
@@ -742,15 +751,16 @@ export function Personalities() {
             label: dir.label,
           })),
         )
-        // A built-in's locked base is the live seed set: desktop seed skills
-        // plus every configured MCP server no plugin owns. Filling it here
-        // never dirties the snapshot (the base is not part of it).
+        // A built-in's locked base is live: desktop seed skills (the whole
+        // catalog for the Assistant, whose skill base is every skill) plus
+        // every configured MCP server no plugin owns. Filling it here never
+        // dirties the snapshot (the base is not part of it).
         setDraft((prev) =>
           prev && prev.builtin
             ? {
                 ...prev,
                 baseLocked: (body.skills ?? [])
-                  .filter((skill) => skill.seed)
+                  .filter((skill) => prev.id === ASSISTANT_ID || skill.seed)
                   .map((skill) => skill.name),
                 mcpBaseLocked: (body.mcp ?? [])
                   .filter((server) => !server.plugin)
@@ -808,6 +818,8 @@ export function Personalities() {
 
   function toggleSkill(name: string) {
     if (!draft) return
+    // The Assistant's skills are locked to all — only Block all can change them.
+    if (draft.id === ASSISTANT_ID) return
     if (draft.baseLocked !== null) {
       setDraft({
         ...draft,
@@ -880,6 +892,7 @@ export function Personalities() {
   // there too — this stays the single write path into the draft.
   function toggleSkillsGroup(names: string[], select: boolean) {
     if (!draft || names.length === 0) return
+    if (draft.id === ASSISTANT_ID) return
     if (draft.baseLocked !== null) {
       const extras = select
         ? [...draft.extras, ...names.filter((n) => !draft.extras.includes(n))]
@@ -945,6 +958,7 @@ export function Personalities() {
   function addManual() {
     const name = manualName.trim()
     if (!draft || !name) return
+    if (draft.id === ASSISTANT_ID) return
     if (!SKILL_NAME.test(name)) {
       setError(
         "Skill names use lowercase letters, digits, hyphens, or underscores.",
@@ -1073,7 +1087,9 @@ export function Personalities() {
       const scopeNote = isBuiltinDraft(draft)
         ? draft.skillsNone || draft.mcpNone
           ? "Blocked entries stay off; unblock to bring them back."
-          : "Built-in skills and MCP servers stay on; your additions load too."
+          : draft.id === ASSISTANT_ID
+            ? "All skills and built-in MCP servers stay on; your MCP additions load too."
+            : "Built-in skills and MCP servers stay on; your additions load too."
         : [
             restricted
               ? restricted.length > 0
@@ -1197,16 +1213,36 @@ export function Personalities() {
                     ) : null}
                     {persona.builtin ? (
                       <>
-                        <Tip title="Only the desktop's built-in skills load by default">
-                          <Chip
-                            size="small"
-                            variant="outlined"
-                            sx={{ borderRadius: "8px", flexShrink: 0 }}
+                        {persona.id === ASSISTANT_ID ? (
+                          <Tip
+                            title={
+                              persona.skillsNone
+                                ? "Every skill is blocked for this personality"
+                                : "Every skill loads — seed, plugin, and custom"
+                            }
                           >
-                            Built-in skills
-                            {builtinExtras ? ` +${builtinExtras}` : " only"}
-                          </Chip>
-                        </Tip>
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              sx={{ borderRadius: "8px", flexShrink: 0 }}
+                            >
+                              {persona.skillsNone
+                                ? "Skills blocked"
+                                : "All skills"}
+                            </Chip>
+                          </Tip>
+                        ) : (
+                          <Tip title="Only the desktop's built-in skills load by default">
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              sx={{ borderRadius: "8px", flexShrink: 0 }}
+                            >
+                              Built-in skills
+                              {builtinExtras ? ` +${builtinExtras}` : " only"}
+                            </Chip>
+                          </Tip>
+                        )}
                         <Tip title="Only the desktop's built-in MCP servers load by default">
                           <Chip
                             size="small"
@@ -1265,7 +1301,9 @@ export function Personalities() {
                 }
                 description={
                   persona.builtin
-                    ? `${persona.instruction || "Default voice. No extra instructions."} Only the desktop's built-in skills and MCP servers load by default — add more below.`
+                    ? persona.id === ASSISTANT_ID
+                      ? `${persona.instruction || "Default voice. No extra instructions."} All skills load by default; only the desktop's built-in MCP servers load — add more MCP below.`
+                      : `${persona.instruction || "Default voice. No extra instructions."} Only the desktop's built-in skills and MCP servers load by default — add more below.`
                     : persona.instruction ||
                       (restricted
                         ? scopedDescription("skills", restricted)
@@ -1341,9 +1379,9 @@ export function Personalities() {
                 {error ? <Alert severity="error">{error}</Alert> : null}
                 {draft.builtin ? (
                   <Typography variant="caption" color="textSecondary">
-                    Built-in skills and MCP servers always load. Pick extras to
-                    add plugin or custom entries on top — the base cannot be
-                    changed.
+                    {draft.id === ASSISTANT_ID
+                      ? "All skills always load. Built-in MCP servers always load too — pick extra MCP servers on top. The bases cannot be changed."
+                      : "Built-in skills and MCP servers always load. Pick extras to add plugin or custom entries on top — the base cannot be changed."}
                   </Typography>
                 ) : (
                   <>
@@ -1374,14 +1412,18 @@ export function Personalities() {
                   sectionTitle="Allowed skills"
                   caption={
                     draft.builtin
-                      ? "Desktop built-in skills always load. Add plugin or custom skills on top."
+                      ? draft.id === ASSISTANT_ID
+                        ? "Every skill loads — seed, plugin, and custom. There is nothing to add; Block all skills turns skills off."
+                        : "Desktop built-in skills always load. Add plugin or custom skills on top."
                       : "Empty means all skills. A restricted persona loads only the ones listed."
                   }
                   filterLabel="Search skills"
                   allChip="All skills"
                   emptyBase={
                     draft.builtin
-                      ? "Loading the desktop's built-in skills…"
+                      ? draft.id === ASSISTANT_ID
+                        ? "All skills (loading the list…)"
+                        : "Loading the desktop's built-in skills…"
                       : "All skills (no restriction declared)"
                   }
                   noMatch="No skills match the filter."

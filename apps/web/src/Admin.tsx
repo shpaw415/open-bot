@@ -10,6 +10,7 @@ import { TeamTab } from "./admin/TeamTab"
 import type { AdminUser, DayWindow, Invite, UsageBody } from "./admin/types"
 import { UsageTab } from "./admin/UsageTab"
 import { api } from "./api"
+import { searchParam, usePaneNav } from "./back-nav"
 import { Chip } from "./chip"
 import { useMobile } from "./hooks"
 import { Improvements } from "./Improvements"
@@ -20,6 +21,7 @@ import {
   PersonIcon,
   WorkIcon,
 } from "./icons"
+import { PARAM_ADMIN_TAB } from "./routes"
 import Stack from "./stack"
 import { formatTokenCount } from "./team"
 
@@ -32,10 +34,31 @@ const ADMIN_TABS: { value: AdminTab; label: string; icon: ReactNode }[] = [
   { value: "team", label: "Team", icon: <WorkIcon /> },
 ]
 
+function adminTabOf(value: string): AdminTab | null {
+  return ADMIN_TABS.some((entry) => entry.value === value)
+    ? (value as AdminTab)
+    : null
+}
+
 export function Admin({ meId }: { meId: string }) {
   const mobile = useMobile()
-  const [tab, setTab] = useState<AdminTab>("people")
-  const [teamMounted, setTeamMounted] = useState(false)
+  // The active admin section rides ?tab= like every other app screen:
+  // Back/Forward and reload restore it; "people" stays the bare default.
+  const paneNav = usePaneNav()
+  const { pushSearch } = paneNav
+  const locationSearch = paneNav.search
+  const tabParam = adminTabOf(searchParam(locationSearch, PARAM_ADMIN_TAB))
+  const [tab, setTab] = useState<AdminTab>(
+    () => adminTabOf(searchParam(locationSearch, PARAM_ADMIN_TAB)) ?? "people",
+  )
+  useEffect(() => {
+    const next = tabParam ?? "people"
+    if (next !== tab) {
+      setTab(next)
+      if (next === "team") setTeamMounted(true)
+    }
+  }, [tabParam, tab])
+  const [teamMounted, setTeamMounted] = useState(() => tab === "team")
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [invite, setInvite] = useState("")
@@ -78,6 +101,9 @@ export function Admin({ meId }: { meId: string }) {
   function selectTab(next: AdminTab) {
     setTab(next)
     if (next === "team") setTeamMounted(true)
+    pushSearch({
+      [PARAM_ADMIN_TAB]: next === "people" ? null : next,
+    })
   }
 
   async function createInvite() {

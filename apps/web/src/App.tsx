@@ -9,6 +9,19 @@ import { Admin } from "./Admin"
 import { AgentNotices } from "./AgentNotices"
 import { AppHeader } from "./AppHeader"
 import { api, type Me } from "./api"
+import {
+  backNav,
+  installShellHost,
+  layersOf,
+  type PaneNav,
+  PaneNavContext,
+  patchSearch,
+  backOr as primaryBackOr,
+  pushSearch as primaryPushSearch,
+  searchParam,
+  splitUrl,
+  useLocationSearch,
+} from "./back-nav"
 import { Config } from "./Config"
 import { CronView } from "./CronView"
 import { Dashboard } from "./Dashboard"
@@ -22,12 +35,14 @@ import {
   AppsIcon,
   ChatIcon,
   FolderIcon,
+  FullscreenIcon,
   HelpIcon,
   HomeIcon,
   PhotoLibraryIcon,
   RefreshIcon,
   ScheduleIcon,
   SettingsIcon,
+  SwapHorizIcon,
 } from "./icons"
 import { Login, SetCredentials } from "./Login"
 import { createPopGuard } from "./nav-guard"
@@ -45,14 +60,25 @@ import {
   CONFIG_GROUPS,
   CONFIG_TAB_LABELS,
   type ConfigTab,
+  chatThreadPath,
   configPath,
   HELP_PATH,
   HOME_PATH,
   parseRoute,
   pluginPath,
-  type WorkspaceTab,
+  type Route,
+  WORKSPACE_TABS,
   workspacePath,
 } from "./routes"
+import {
+  buildSecondaryPaneNav,
+  buildSplitUrl,
+  clampSplitRatio,
+  parseSplit,
+  SPLIT_LAST_KEY,
+  SPLIT_RATIO_KEY,
+  stripSplit,
+} from "./split"
 import Stack from "./stack"
 import { Tip } from "./Tip"
 import { NAV } from "./texts"
@@ -129,6 +155,33 @@ function navActiveKey(route: ReturnType<typeof parseRoute>["route"]): string {
   if (route.view === "plugin" || route.view === "plugin-pending") return "apps"
   if (route.view === "not-found") return ""
   return route.view
+}
+
+/** Human name of a route (header context, document title, pane bar). */
+function routeContext(route: Route): string {
+  if (route.view === "home") return NAV.home
+  if (route.view === "help") return NAV.help
+  if (route.view === "workspace")
+    return {
+      chat: NAV.chat,
+      desktop: "Bureau",
+      projects: NAV.projects,
+      media: NAV.media,
+    }[route.tab]
+  if (route.view === "apps" || route.view === "plugin-pending") return NAV.apps
+  if (route.view === "plugin") return route.tab.title
+  if (route.view === "automations") return NAV.automations
+  if (route.view === "admin") return NAV.admin
+  if (route.view === "config")
+    return route.tab
+      ? `${NAV.settings} · ${CONFIG_TAB_LABELS[route.tab]}`
+      : NAV.settings
+  return ""
+}
+
+/** Remount key per distinct view, so a pane swap rebuilds only that pane. */
+function routeViewKey(route: Route): string {
+  return route.view === "plugin" ? `plugin:${route.tab.key}` : route.view
 }
 
 /** Collapsed-rail preference. Persisted; resize never overwrites the choice. */
@@ -280,27 +333,88 @@ export function App() {
   confirmDirtyRef.current = confirmDirty
   const pathRef = useRef(path)
   pathRef.current = path
+  // Full rendered URL (pathname+search): pops compare against it to tell
+  // layer dismissals and in-page (search) moves from page navigations.
+  const urlRef = useRef(
+    typeof location !== "undefined" ? location.pathname + location.search : "/",
+  )
+  // Dirty-guard suppression for pure layer pops (same full URL — only
+  // history.state layers changed): the page and its forms stay mounted,
+  // and a dialog-editor's own discard confirm runs through its onClose.
+  // Search moves keep the guard: leaving the IDE (?id= removed) unmounts
+  // a dirty editor even though the pathname stays /projects.
+  const suppressDirtyRef = useRef(false)
+  // Inner-scroller positions per history entry (the document itself never
+  // scrolls in this shell, so the browser restores nothing on its own).
+  const scrollByPosRef = useRef(new Map<number, number>())
+  const saveScroll = useCallback(() => {
+    const scroller = document.querySelector<HTMLElement>("#ob-main .ob-scroll")
+    if (scroller) scrollByPosRef.current.set(posRef.current, scroller.scrollTop)
+  }, [])
+  const saveScrollRef = useRef(saveScroll)
+  saveScrollRef.current = saveScroll
 
-  const go = useCallback((next: string) => {
-    if (next !== location.pathname && !confirmDirtyRef.current()) return
+  // Exact navigation: push `next` (pathname+search) as a fresh page entry.
+  // Back layers belong to the page being left, so they close silently
+  // first and the new entry starts layer-free.
+  const goExact = useCallback((next: string) => {
+    const current = location.pathname + location.search
+    if (next === current) return
+    const { pathname } = splitUrl(next)
+    if (pathname !== location.pathname && !confirmDirtyRef.current()) return
+    saveScrollRef.current()
+    backNav.closeAllSilently()
     const pos = posRef.current + 1
     const id = popGuardRef.current?.tagPush(pos) ?? 0
     posRef.current = pos
-    history.pushState({ ob: id, obPos: pos }, "", next)
-    setPath(next)
+    history.pushState({ ob: id, obPos: pos, obLayers: [] }, "", next)
+    backNav.syncEntry()
+    urlRef.current = next
+    document.documentElement.dataset.obNav = "forward"
+    setPath(pathname)
     announceRef.current()
   }, [])
 
+  // Shell-chrome navigation (nav items, CTAs): workspace destinations keep
+  // the open thread (`?thread=`) when coming from another workspace tab,
+  // so Chat → Desktop → Projects never drops the conversation context.
+  // In-page state changes use goExact via pushSearch/backOr instead.
+  const go = useCallback(
+    (next: string) => {
+      const target = splitUrl(next)
+      const here = splitUrl(location.pathname + location.search)
+      const workspacePaths = new Set(WORKSPACE_TABS.map(workspacePath))
+      let url = next
+      if (
+        workspacePaths.has(target.pathname) &&
+        workspacePaths.has(here.pathname) &&
+        !searchParam(target.search, "thread")
+      ) {
+        const thread = searchParam(here.search, "thread")
+        if (thread)
+          url = target.pathname + patchSearch(target.search, { thread })
+      }
+      goExact(url)
+    },
+    [goExact],
+  )
+
   const replace = useCallback((next: string) => {
+    const { pathname } = splitUrl(next)
     const id = popGuardRef.current?.tagReplace(posRef.current) ?? 0
     history.replaceState(
       { ...history.state, ob: id, obPos: posRef.current },
       "",
       next,
     )
-    setPath(next)
+    urlRef.current = next
+    setPath(pathname)
     announceRef.current()
   }, [])
+  const goExactRef = useRef(goExact)
+  goExactRef.current = goExact
+  const replaceRef = useRef(replace)
+  replaceRef.current = replace
 
   useEffect(() => {
     api<Me>("/api/me")
@@ -324,6 +438,12 @@ export function App() {
   // re-enters the current entry in the opposite direction of the pop
   // (forward() after Back, back() after Forward) so the exact guarded entry
   // is restored and no stack is truncated — see nav-guard.ts.
+  //
+  // Back layers (back-nav.ts) ride the same stack: a pop onto the same
+  // full URL only dismisses/reopens layers (Back = Escape for dialogs,
+  // drawers, lightboxes…) and never prompts the dirty guard; in-page
+  // search moves (thread, album, project…) sync from the URL through the
+  // same accept path as page navigations, dirty guard included.
   useEffect(() => {
     const guard = createPopGuard(
       {
@@ -336,16 +456,49 @@ export function App() {
           const pos = posRef.current + 1
           const id = popGuardRef.current?.tagPush(pos) ?? 0
           posRef.current = pos
-          history.pushState({ ob: id, obPos: pos }, "", next)
+          history.pushState(
+            { ob: id, obPos: pos, obLayers: backNav.openTokens() },
+            "",
+            next,
+          )
+          backNav.syncEntry()
         },
       },
       {
-        isBlocked: () => dirtyForms.hasDirty(),
+        isBlocked: () => !suppressDirtyRef.current && dirtyForms.hasDirty(),
         confirmLeave: () => confirmDirtyRef.current(),
         getGuardedPath: () => pathRef.current,
       },
     )
     popGuardRef.current = guard
+    // The back-layer host: layer pushes/replaces get the same ob/obPos
+    // tags as page pushes so guard position math stays exact; page moves
+    // requested from inside views (pushSearch/backOr) come back through
+    // goExact/replace so route state, scroll and focus stay shell-owned.
+    const uninstallHost = installShellHost({
+      getState: () => history.state,
+      getUrl: () => location.pathname + location.search,
+      push: (patch, url) => {
+        const pos = posRef.current + 1
+        const id = popGuardRef.current?.tagPush(pos) ?? 0
+        posRef.current = pos
+        history.pushState({ ob: id, obPos: pos, ...patch }, "", url)
+        urlRef.current = url
+      },
+      replace: (patch, url) => {
+        const id = popGuardRef.current?.tagReplace(posRef.current) ?? 0
+        history.replaceState(
+          { ...history.state, ob: id, obPos: posRef.current, ...patch },
+          "",
+          url,
+        )
+        urlRef.current = url
+      },
+      back: () => history.back(),
+      go: (url) => goExactRef.current(url),
+      replaceUrl: (url) => replaceRef.current(url),
+      canGoBackInApp: () => posRef.current > 0,
+    })
     const entryTags = (event: PopStateEvent) => {
       const state = event.state as { ob?: unknown; obPos?: unknown } | null
       return {
@@ -358,23 +511,64 @@ export function App() {
     }
     const onPop = (event: PopStateEvent) => {
       const tags = entryTags(event)
+      const prevPos = posRef.current
+      // Record the leaving entry's scroll before position tracking moves.
+      const leaving = document.querySelector<HTMLElement>("#ob-main .ob-scroll")
+      if (leaving) scrollByPosRef.current.set(prevPos, leaving.scrollTop)
       if (tags.pos != null) posRef.current = tags.pos
-      if (guard.onPop(tags.id, tags.pos)) return
+      suppressDirtyRef.current =
+        urlRef.current === location.pathname + location.search
+      const consumed = guard.onPop(tags.id, tags.pos)
+      suppressDirtyRef.current = false
+      if (consumed) return
+      backNav.syncFromPop()
+      const pathnameChanged =
+        splitUrl(urlRef.current).pathname !== location.pathname
+      urlRef.current = location.pathname + location.search
+      document.documentElement.dataset.obNav =
+        tags.pos != null && tags.pos > prevPos ? "forward" : "back"
       setPath(location.pathname)
       announceRef.current()
+      // Restore the landed entry's inner scroll after the view paints —
+      // page moves only; layer/search pops keep the live scroller put.
+      const restore = pathnameChanged
+        ? scrollByPosRef.current.get(posRef.current)
+        : undefined
+      if (restore != null) {
+        requestAnimationFrame(() => {
+          const scroller = document.querySelector<HTMLElement>(
+            "#ob-main .ob-scroll",
+          )
+          if (scroller) scroller.scrollTop = restore
+        })
+      }
     }
     window.addEventListener("popstate", onPop)
+    // The shell owns scroll positions (inner scrollers); the browser must
+    // not also try to restore document scroll on traversal.
+    try {
+      history.scrollRestoration = "manual"
+    } catch {
+      // older engines: document never scrolls here anyway
+    }
     // Tag the entry this tab booted on (position 0) so later pops know
     // where they stand. The search string rides along — boot happens before
     // deep-linked views (?job=…) read the query, and stripping it here used
     // to erase the deep link before its consumer ever mounted.
     history.replaceState(
-      { ...history.state, ob: guard.tagReplace(0), obPos: 0 },
+      {
+        ...history.state,
+        ob: guard.tagReplace(0),
+        obPos: 0,
+        obLayers: layersOf(history.state),
+      },
       "",
       location.pathname + location.search,
     )
+    backNav.syncEntry()
     return () => {
       window.removeEventListener("popstate", onPop)
+      uninstallHost()
       popGuardRef.current = null
       guard.reset()
     }
@@ -423,7 +617,9 @@ export function App() {
         path={path}
         mobile={mobile}
         go={go}
+        goExact={goExact}
         replace={replace}
+        confirmDirty={confirmDirty}
         onToggleTheme={toggle}
         themeMode={mode}
       />
@@ -437,7 +633,9 @@ function Shell({
   path,
   mobile,
   go,
+  goExact,
   replace,
+  confirmDirty,
   onToggleTheme,
   themeMode: mode,
 }: {
@@ -446,7 +644,9 @@ function Shell({
   path: string
   mobile: boolean
   go: (next: string) => void
+  goExact: (next: string) => void
   replace: (next: string) => void
+  confirmDirty: () => boolean
   onToggleTheme: () => void
   themeMode: "dark" | "light"
 }) {
@@ -486,42 +686,252 @@ function Shell({
   useEffect(() => {
     const target = parsed.redirect
     if (!target || location.pathname === target) return
-    replace(target)
+    // Canonicalizing the pathname must not drop in-page state (?thread=…).
+    replace(target.includes("?") ? target : target + location.search)
   }, [parsed, replace])
 
-  const openReply = useCallback(
-    (sessionId: string) => {
-      // Read state agrees with the view: opening the thread clears its
-      // notice, wherever the open came from.
-      markNoticesForSession(sessionId)
-      openNotifiedThread(sessionId)
-      go(CHAT_PATH)
+  // ---- Global split screen (split.ts) ------------------------------------
+  // The second pane's URL rides in ?split= on the primary's address, so a
+  // history entry names a pair and Back/Forward/reload restore both
+  // panes. Navigation from shell chrome (sidebar, header search, notices)
+  // targets the focused pane; each pane's own URL-state (?thread=,
+  // ?album=…) stays inside its URL space through PaneNav.
+  const locationSearch = useLocationSearch()
+  const secondaryUrl = parseSplit(locationSearch)
+  const splitOpen = secondaryUrl !== null
+  const [focusPane, setFocusPane] = useState<1 | 2>(1)
+  const [splitRatio, setSplitRatio] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SPLIT_RATIO_KEY)
+      return clampSplitRatio(raw === null ? Number.NaN : Number(raw))
+    } catch {
+      return clampSplitRatio(Number.NaN)
+    }
+  })
+  const splitRowRef = useRef<HTMLDivElement | null>(null)
+  const splitRatioRef = useRef(splitRatio)
+  splitRatioRef.current = splitRatio
+
+  useEffect(() => {
+    if (!splitOpen) setFocusPane(1)
+  }, [splitOpen])
+
+  // Reopening the split restores the last pairing on this device.
+  useEffect(() => {
+    if (!secondaryUrl) return
+    try {
+      localStorage.setItem(SPLIT_LAST_KEY, secondaryUrl)
+    } catch {
+      // session-only pairing is fine
+    }
+  }, [secondaryUrl])
+
+  const secondaryParsed = useMemo(
+    () =>
+      secondaryUrl
+        ? parseRoute(splitUrl(secondaryUrl).pathname, tabs, {
+            awaitingPlugins: pluginsAwaitingRoute(
+              pluginsState.status,
+              tabs.length,
+            ),
+          })
+        : null,
+    [secondaryUrl, tabs, pluginsState.status],
+  )
+  const focusedParsed =
+    splitOpen && focusPane === 2 && secondaryParsed ? secondaryParsed : parsed
+
+  const currentFullUrl = () => location.pathname + location.search
+
+  // Primary-pane navigation keeps the second pane attached.
+  const primaryGo = useCallback(
+    (next: string) => {
+      const secondary = parseSplit(location.search)
+      go(secondary ? buildSplitUrl(next, secondary) : next)
     },
     [go],
   )
+
+  // Second-pane navigation: the shell `go` rules (the open thread rides
+  // across workspace tabs) applied in the pane's own URL space, with the
+  // dirty-form guard goExact cannot apply itself (the real pathname
+  // does not change when only the second pane moves).
+  const secondaryGo = useCallback(
+    (next: string) => {
+      const currentSecondary = parseSplit(location.search)
+      if (!currentSecondary) {
+        go(next)
+        return
+      }
+      const target = splitUrl(next)
+      const here = splitUrl(currentSecondary)
+      const workspacePaths = new Set(WORKSPACE_TABS.map(workspacePath))
+      let url = next
+      if (
+        workspacePaths.has(target.pathname) &&
+        workspacePaths.has(here.pathname) &&
+        !searchParam(target.search, "thread")
+      ) {
+        const thread = searchParam(here.search, "thread")
+        if (thread)
+          url = target.pathname + patchSearch(target.search, { thread })
+      }
+      if (splitUrl(url).pathname !== here.pathname && !confirmDirty()) return
+      goExact(buildSplitUrl(location.pathname + location.search, url))
+    },
+    [go, goExact, confirmDirty],
+  )
+
+  const navGo = splitOpen && focusPane === 2 ? secondaryGo : primaryGo
+
+  // Sidebar/header navigation: re-tapping the focused pane's current
+  // destination is a no-op (app tab behavior), never a duplicate entry.
+  const navTo = (next: string) => {
+    const herePath =
+      splitOpen && focusPane === 2 && secondaryUrl
+        ? splitUrl(secondaryUrl).pathname
+        : location.pathname
+    if (splitUrl(next).pathname !== herePath) navGo(next)
+  }
+
+  const primaryPaneNav: PaneNav = {
+    pathname: path,
+    // Includes ?split= itself; consumers read only their own params and
+    // patchSearch preserves the rest, so the pair stays attached.
+    search: locationSearch,
+    pushSearch: primaryPushSearch,
+    backOr: primaryBackOr,
+    active: !splitOpen || focusPane === 1,
+  }
+  const secondaryPaneNav: PaneNav | null = secondaryUrl
+    ? buildSecondaryPaneNav(secondaryUrl, focusPane === 2, {
+        getUrl: currentFullUrl,
+        go: goExact,
+        replace,
+      })
+    : null
+
+  function openSplit() {
+    let last = HOME_PATH
+    try {
+      last = localStorage.getItem(SPLIT_LAST_KEY) || HOME_PATH
+    } catch {
+      // default pairing is fine
+    }
+    setFocusPane(2)
+    goExact(buildSplitUrl(currentFullUrl(), last))
+  }
+
+  /** Close the split, keeping `pane` as the single full-screen page. */
+  function maximizePane(pane: 1 | 2) {
+    const secondary = parseSplit(location.search)
+    if (!secondary) return
+    if (pane === 1) {
+      // The real pathname stays, so goExact would skip its dirty guard
+      // while the second pane (maybe a dirty editor) unmounts.
+      if (!confirmDirty()) return
+      goExact(stripSplit(currentFullUrl()))
+    } else {
+      goExact(secondary)
+    }
+  }
+
+  function swapPanes() {
+    const secondary = parseSplit(location.search)
+    if (!secondary) return
+    goExact(buildSplitUrl(secondary, stripSplit(currentFullUrl())))
+    setFocusPane(focusPane === 1 ? 2 : 1)
+  }
+
+  function toggleSplit() {
+    if (splitOpen) maximizePane(focusPane)
+    else openSplit()
+  }
+
+  function onSplitDrag(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const row = splitRowRef.current
+    if (!row) return
+    document.body.classList.add("ob-preview-dragging")
+    const move = (next: PointerEvent) => {
+      const rect = row.getBoundingClientRect()
+      if (rect.width <= 0) return
+      const ratio = clampSplitRatio((next.clientX - rect.left) / rect.width)
+      splitRatioRef.current = ratio
+      setSplitRatio(ratio)
+    }
+    const up = () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", up)
+      document.body.classList.remove("ob-preview-dragging")
+      try {
+        localStorage.setItem(SPLIT_RATIO_KEY, String(splitRatioRef.current))
+      } catch {
+        // session-only ratio is fine
+      }
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", up)
+  }
+
+  function nudgeSplit(delta: number) {
+    const ratio = clampSplitRatio(splitRatioRef.current + delta)
+    splitRatioRef.current = ratio
+    setSplitRatio(ratio)
+    try {
+      localStorage.setItem(SPLIT_RATIO_KEY, String(ratio))
+    } catch {
+      // session-only ratio is fine
+    }
+  }
+
+  const makeOpenReply =
+    (pane: 1 | 2, paneGo: (next: string) => void) => (sessionId: string) => {
+      // Read state agrees with the view: opening the thread clears its
+      // notice, wherever the open came from. The thread rides the URL so
+      // Back returns to wherever the user was before the notice.
+      markNoticesForSession(sessionId)
+      if (splitOpen) setFocusPane(pane)
+      openNotifiedThread(sessionId)
+      paneGo(chatThreadPath(sessionId))
+    }
 
   // "Nouvelle conversation" intent, owned by the shell (not by storage read
   // at a fragile Workspace mount): it survives Workspace remounts and
   // StrictMode's setup/cleanup cycles, and stays active until the user
   // explicitly opens a thread or the first send creates one. A voluntary
-  // notification open clears it; a slow history load never can.
+  // notification open clears it; a slow history load never can. One ref
+  // per pane so a split's two composers never share the intent.
   const blankChatRef = useRef(false)
-  const openNewThread = useCallback(
+  const blankChatRef2 = useRef(false)
+  const makeOpenNewThread =
+    (
+      pane: 1 | 2,
+      paneGo: (next: string) => void,
+      blankRef: { current: boolean },
+    ) =>
     (seed?: string) => {
-      blankChatRef.current = true
+      blankRef.current = true
       if (seed) setComposerSeed(seed)
-      go(CHAT_PATH)
-    },
-    [go],
+      if (splitOpen) setFocusPane(pane)
+      paneGo(CHAT_PATH)
+    }
+
+  const openReply = makeOpenReply(focusPane, navGo)
+  const openNewThread = makeOpenNewThread(
+    focusPane,
+    navGo,
+    focusPane === 2 && splitOpen ? blankChatRef2 : blankChatRef,
   )
 
   const logout = useCallback(() => {
     blankChatRef.current = false
+    blankChatRef2.current = false
     clearComposerSeed()
     void api("/api/auth/logout", { method: "POST" }).then(() => setMe(null))
   }, [setMe])
 
-  const activeKey = navActiveKey(parsed.route)
+  const activeKey = navActiveKey(focusedParsed.route)
 
   // The nav drawer is a temporary overlay sharing the app-wide overlay
   // contract: Escape closes, focus enters the paper and returns to the exact
@@ -540,39 +950,21 @@ function Shell({
     refresh: pluginsState.refresh,
   }
 
-  const viewKey =
-    parsed.route.view === "plugin"
-      ? `plugin:${parsed.route.tab.key}`
-      : parsed.route.view
-  const workspaceTab: WorkspaceTab =
-    parsed.route.view === "workspace" ? parsed.route.tab : "chat"
-
-  const pageContext = (() => {
-    if (parsed.route.view === "home") return NAV.home
-    if (parsed.route.view === "help") return NAV.help
-    if (parsed.route.view === "workspace")
-      return {
-        chat: NAV.chat,
-        desktop: "Bureau",
-        projects: NAV.projects,
-        media: NAV.media,
-      }[parsed.route.tab]
-    if (parsed.route.view === "apps" || parsed.route.view === "plugin-pending")
-      return NAV.apps
-    if (parsed.route.view === "plugin") return parsed.route.tab.title
-    if (parsed.route.view === "automations") return NAV.automations
-    if (parsed.route.view === "admin") return NAV.admin
-    if (parsed.route.view === "config")
-      return parsed.route.tab
-        ? `${NAV.settings} · ${CONFIG_TAB_LABELS[parsed.route.tab]}`
-        : NAV.settings
-    return ""
-  })()
+  // The header names the focused pane; the tab title names the pair.
+  const pageContext = routeContext(focusedParsed.route)
+  const primaryContext = routeContext(parsed.route)
+  const secondaryContext = secondaryParsed
+    ? routeContext(secondaryParsed.route)
+    : ""
 
   // The tab title names the screen — reload and history read like the app.
   useEffect(() => {
-    document.title = pageContext ? `${pageContext} · open-bot` : "open-bot"
-  }, [pageContext])
+    const title =
+      splitOpen && secondaryContext
+        ? `${primaryContext} | ${secondaryContext}`
+        : pageContext
+    document.title = title ? `${title} · open-bot` : "open-bot"
+  }, [pageContext, primaryContext, secondaryContext, splitOpen])
 
   // Explicit navigation (go, replace, Back/Forward) moves focus to the
   // content so keyboard and screen-reader users land inside the new view
@@ -603,7 +995,12 @@ function Shell({
               entry.view === "apps" && tabs.length > 0 ? tabs.length : undefined
             }
             onGo={(next) => {
-              go(next)
+              // Re-tapping the destination already on screen is a no-op
+              // (app tab behavior): it must not stack a duplicate history
+              // entry or reset in-page state like the open thread. A
+              // section entry (Settings) still navigates from a subsection.
+              // In a split, "on screen" means the focused pane.
+              navTo(next)
               setNavOpen(false)
             }}
           />
@@ -619,7 +1016,7 @@ function Shell({
             rail={railMode}
             active={activeKey === entry.view}
             onGo={(next) => {
-              go(next)
+              navTo(next)
               setNavOpen(false)
             }}
           />
@@ -629,7 +1026,7 @@ function Shell({
         // Collapsed rail: Settings categories cannot fit, so they stay one
         // explicit tap away — the nav drawer renders the full sidebar
         // (categories included) while Settings is open.
-        parsed.route.view === "config" ? (
+        focusedParsed.route.view === "config" ? (
           <Box className="ob-side-context" sx={{ flex: 1 }}>
             <Tip title="Settings sections" placement="right">
               <IconButton
@@ -645,11 +1042,13 @@ function Shell({
         ) : (
           <Box className="ob-side-context" sx={{ flex: 1 }} aria-hidden />
         )
-      ) : parsed.route.view === "config" ? (
+      ) : focusedParsed.route.view === "config" ? (
         <ConfigCategories
-          active={parsed.route.view === "config" ? parsed.route.tab : ""}
+          active={
+            focusedParsed.route.view === "config" ? focusedParsed.route.tab : ""
+          }
           onGo={(next) => {
-            go(next)
+            navGo(next)
             setNavOpen(false)
           }}
         />
@@ -659,8 +1058,17 @@ function Shell({
     </>
   )
 
-  const content = (() => {
-    if (parsed.route.view === "admin") {
+  // One renderer for every route, bound to a pane's own navigation: the
+  // primary pane renders the real address, the second pane renders the
+  // decoded ?split= URL, and every link inside stays in its pane.
+  const renderRoute = (
+    route: Route,
+    paneGo: (next: string) => void,
+    paneOpenReply: (sessionId: string) => void,
+    paneOpenNewThread: (seed?: string) => void,
+    paneBlankRef: { current: boolean },
+  ) => {
+    if (route.view === "admin") {
       return me.role === "admin" ? (
         <Admin meId={me.id} />
       ) : (
@@ -669,19 +1077,19 @@ function Shell({
         </Box>
       )
     }
-    if (parsed.route.view === "home")
+    if (route.view === "home")
       return (
         <Dashboard
           me={me}
           tabs={tabs}
-          go={go}
-          onOpenThread={openReply}
-          onNewThread={openNewThread}
+          go={paneGo}
+          onOpenThread={paneOpenReply}
+          onNewThread={paneOpenNewThread}
         />
       )
-    if (parsed.route.view === "help")
-      return <Help go={go} onNewThread={openNewThread} />
-    if (parsed.route.view === "not-found") {
+    if (route.view === "help")
+      return <Help go={paneGo} onNewThread={paneOpenNewThread} />
+    if (route.view === "not-found") {
       return (
         <Box className="ob-scroll ob-view-enter" sx={{ flex: 1, minHeight: 0 }}>
           <Stack
@@ -692,15 +1100,15 @@ function Shell({
               Cette page n’est pas disponible
             </Typography>
             <Typography variant="body2" color="textSecondary">
-              L’adresse <Box Element="code">{parsed.route.path}</Box> ne
-              correspond à aucune page. Le lien est peut-être ancien, ou
-              l’application a été désinstallée.
+              L’adresse <Box Element="code">{route.path}</Box> ne correspond à
+              aucune page. Le lien est peut-être ancien, ou l’application a été
+              désinstallée.
             </Typography>
             <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
-              <Button variant="contained" onClick={() => go(HOME_PATH)}>
+              <Button variant="contained" onClick={() => paneGo(HOME_PATH)}>
                 {NAV.home}
               </Button>
-              <Button variant="outlined" onClick={() => go("/apps")}>
+              <Button variant="outlined" onClick={() => paneGo("/apps")}>
                 {NAV.apps}
               </Button>
               <Button variant="text" onClick={() => history.back()}>
@@ -711,25 +1119,23 @@ function Shell({
         </Box>
       )
     }
-    // One view for both routes: /apps (no selection) and /<pluginId>:<tabId>
-    // (an open app). The selection lives in the URL, so the side list, the
-    // document title, reload and Back/Forward all agree — picking an app in
-    // the list, a Home shortcut and a search hit land on the same page.
-    if (parsed.route.view === "apps" || parsed.route.view === "plugin")
+    // One view for both routes: /apps (the launcher) and /<pluginId>:<tabId>
+    // (an open app). The selection lives in the URL, so the launcher, the
+    // document title, reload and Back/Forward all agree — picking a tile, a
+    // Home shortcut and a search hit land on the same page.
+    if (route.view === "apps" || route.view === "plugin")
       return (
         <PluginAppsView
           tabs={tabs}
           status={pluginsViewStatus}
-          selectedKey={
-            parsed.route.view === "plugin" ? parsed.route.tab.key : ""
-          }
-          onOpen={(tab) => go(pluginPath(tab))}
-          onClose={() => go("/apps")}
-          onAddPlugin={() => go("/config/plugins")}
-          onManagePlugins={() => go("/config/plugins")}
+          selectedKey={route.view === "plugin" ? route.tab.key : ""}
+          onOpen={(tab) => paneGo(pluginPath(tab))}
+          onClose={() => paneGo("/apps")}
+          onAddPlugin={() => paneGo("/config/plugins")}
+          onManagePlugins={() => paneGo("/config/plugins")}
         />
       )
-    if (parsed.route.view === "plugin-pending") {
+    if (route.view === "plugin-pending") {
       // The URL may name a plugin page. While the install list is in flight
       // the view is a skeleton; if the first load failed, the URL is held
       // with a real error and a retry — never a silent redirect to chat.
@@ -777,7 +1183,7 @@ function Shell({
         </Box>
       )
     }
-    if (parsed.route.view === "automations")
+    if (route.view === "automations")
       return (
         <Box className="ob-scroll ob-view-enter">
           <Stack
@@ -793,16 +1199,16 @@ function Shell({
                 une, mettez-la en pause, ou consultez son résultat.
               </Typography>
             </Stack>
-            <CronView me={me} />
+            <CronView me={me} onOpenThread={paneOpenReply} />
           </Stack>
         </Box>
       )
-    if (parsed.route.view === "config")
+    if (route.view === "config")
       return (
         <Config
           me={me}
-          tab={parsed.route.tab}
-          onTab={(next) => go(configPath(next))}
+          tab={route.tab}
+          onTab={(next) => paneGo(configPath(next))}
           onChanged={() => {
             void api<Me>("/api/me")
               .then(setMe)
@@ -813,13 +1219,57 @@ function Shell({
     return (
       <Workspace
         me={me}
-        tab={workspaceTab}
-        onTab={(next) => go(workspacePath(next))}
+        tab={route.view === "workspace" ? route.tab : "chat"}
+        onTab={(next) => paneGo(workspacePath(next))}
         onMeRefreshed={setMe}
-        blankChatRef={blankChatRef}
+        blankChatRef={paneBlankRef}
       />
     )
-  })()
+  }
+
+  const primaryContent = renderRoute(
+    parsed.route,
+    primaryGo,
+    makeOpenReply(1, primaryGo),
+    makeOpenNewThread(1, primaryGo, blankChatRef),
+    blankChatRef,
+  )
+  const secondaryContent =
+    secondaryParsed && splitOpen
+      ? renderRoute(
+          secondaryParsed.route,
+          secondaryGo,
+          makeOpenReply(2, secondaryGo),
+          makeOpenNewThread(2, secondaryGo, blankChatRef2),
+          blankChatRef2,
+        )
+      : null
+
+  const paneBar = (pane: 1 | 2, title: string) => (
+    <Box className="ob-split-bar">
+      <Typography variant="caption" className="ob-split-title">
+        {title || "open-bot"}
+      </Typography>
+      <Tip title="Échanger les panneaux" placement="bottom">
+        <IconButton
+          size="small"
+          aria-label="Échanger les panneaux"
+          onClick={swapPanes}
+        >
+          <SwapHorizIcon width={16} height={16} />
+        </IconButton>
+      </Tip>
+      <Tip title="Afficher ce panneau en plein écran" placement="bottom">
+        <IconButton
+          size="small"
+          aria-label={`Afficher ${title || "ce panneau"} en plein écran`}
+          onClick={() => maximizePane(pane)}
+        >
+          <FullscreenIcon width={16} height={16} />
+        </IconButton>
+      </Tip>
+    </Box>
+  )
 
   return (
     <Box className="ob-shell">
@@ -840,8 +1290,10 @@ function Shell({
         appTabs={tabs}
         onOpenThread={openReply}
         onNewThread={() => openNewThread()}
-        go={go}
+        go={navGo}
         onLogout={logout}
+        splitOpen={splitOpen}
+        onToggleSplit={toggleSplit}
       />
       <Box className="ob-shell-body">
         {mobile ? null : (
@@ -856,10 +1308,128 @@ function Shell({
         <a href="#ob-main" className="ob-skip-link">
           Aller au contenu
         </a>
-        {/* biome-ignore lint/correctness/useUniqueElementIds: the skip link href must name the same static anchor */}
-        <main className="ob-content" key={viewKey} id="ob-main" tabIndex={-1}>
-          {content}
-        </main>
+        <div className="ob-split-col">
+          {splitOpen && mobile ? (
+            // biome-ignore lint/a11y/useSemanticElements: a labelled switcher group, not form controls — fieldset would misdescribe it
+            <div
+              className="ob-split-switcher"
+              role="group"
+              aria-label="Écran partagé"
+            >
+              {(
+                [
+                  [1, primaryContext],
+                  [2, secondaryContext],
+                ] as const
+              ).map(([pane, title]) => (
+                <button
+                  key={pane}
+                  type="button"
+                  className="ob-split-switch"
+                  aria-pressed={focusPane === pane}
+                  onClick={() => setFocusPane(pane)}
+                >
+                  {title || "open-bot"}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="ob-split-row" ref={splitRowRef}>
+            <section
+              className="ob-split-pane"
+              data-focused={splitOpen && focusPane === 1 ? "true" : undefined}
+              aria-label={
+                splitOpen ? `Panneau 1 : ${primaryContext}` : undefined
+              }
+              hidden={splitOpen && mobile && focusPane !== 1}
+              style={
+                splitOpen && !mobile
+                  ? { flexBasis: `${splitRatio * 100}%` }
+                  : undefined
+              }
+              onPointerDownCapture={() => {
+                if (splitOpen && focusPane !== 1) setFocusPane(1)
+              }}
+              onFocusCapture={() => {
+                if (splitOpen && focusPane !== 1) setFocusPane(1)
+              }}
+            >
+              {splitOpen ? paneBar(1, primaryContext) : null}
+              {/* biome-ignore lint/correctness/useUniqueElementIds: the skip link href must name the same static anchor */}
+              <main
+                className="ob-content"
+                key={routeViewKey(parsed.route)}
+                id="ob-main"
+                tabIndex={-1}
+              >
+                <PaneNavContext.Provider value={primaryPaneNav}>
+                  {primaryContent}
+                </PaneNavContext.Provider>
+              </main>
+            </section>
+            {splitOpen && !mobile ? (
+              // biome-ignore lint/a11y/useSemanticElements: interactive window splitter (focusable separator carrying valuenow), not a thematic break
+              <div
+                className="ob-split-divider"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Redimensionner les panneaux"
+                aria-valuemin={25}
+                aria-valuemax={75}
+                aria-valuenow={Math.round(splitRatio * 100)}
+                tabIndex={0}
+                onPointerDown={onSplitDrag}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft") {
+                    event.preventDefault()
+                    nudgeSplit(-0.02)
+                  } else if (event.key === "ArrowRight") {
+                    event.preventDefault()
+                    nudgeSplit(0.02)
+                  }
+                }}
+              />
+            ) : null}
+            {splitOpen && secondaryPaneNav ? (
+              <section
+                className="ob-split-pane"
+                data-focused={focusPane === 2 ? "true" : undefined}
+                aria-label={`Panneau 2 : ${secondaryContext}`}
+                hidden={mobile && focusPane !== 2}
+                style={
+                  !mobile
+                    ? { flexBasis: `${(1 - splitRatio) * 100}%` }
+                    : undefined
+                }
+                onPointerDownCapture={() => {
+                  if (focusPane !== 2) setFocusPane(2)
+                }}
+                onFocusCapture={() => {
+                  if (focusPane !== 2) setFocusPane(2)
+                }}
+              >
+                {paneBar(2, secondaryContext)}
+                {/* The primary pane owns the <main> landmark; this pane is
+                    a labelled region so the document keeps one main. */}
+                {/* biome-ignore lint/correctness/useUniqueElementIds: one static anchor per pane, named by shell scroll/focus code */}
+                <div
+                  className="ob-content"
+                  key={
+                    secondaryParsed
+                      ? routeViewKey(secondaryParsed.route)
+                      : "split"
+                  }
+                  id="ob-main-2"
+                  tabIndex={-1}
+                >
+                  <PaneNavContext.Provider value={secondaryPaneNav}>
+                    {secondaryContent}
+                  </PaneNavContext.Provider>
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </div>
       </Box>
 
       <Drawer

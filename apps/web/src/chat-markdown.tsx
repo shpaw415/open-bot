@@ -2,9 +2,14 @@ import { memo, useMemo } from "react"
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { ChatLink } from "./chat-link"
-import { chatImageUrl } from "./chat-view"
+import { chatImageUrl, chatLinkUrl } from "./chat-view"
 import { MarkdownCodeBlock } from "./code-copy"
-import { MediaDownloadButton, MediaFullscreenButton } from "./MediaDownload"
+import { remarkAgentFiles } from "./file-refs"
+import {
+  MediaDownloadButton,
+  MediaFullscreenButton,
+  MediaImage,
+} from "./MediaDownload"
 import { Model3dView } from "./Model3dView"
 import { unwrapMediaParagraphs } from "./markdown-media"
 import {
@@ -13,14 +18,35 @@ import {
   useProjectRefs,
 } from "./project-refs"
 
-function chatUrl(url: string, key: string): string {
-  if (key === "src") return chatImageUrl(url)
-  return defaultUrlTransform(url)
+/** Shared with the council/cron transcript renderers: every agent-written
+ * markdown surface routes disk references to the file endpoints.
+ * `basePath` is the folder relative links resolve against — the open
+ * file's folder inside the file previewer, the workspace in chat. */
+export function makeChatUrlTransform(basePath?: string) {
+  return (url: string, key: string): string => {
+    if (key === "src") return chatImageUrl(url, basePath)
+    if (key === "href")
+      return chatLinkUrl(url, basePath) ?? defaultUrlTransform(url)
+    return defaultUrlTransform(url)
+  }
 }
+
+export const chatUrlTransform = makeChatUrlTransform()
 
 // Stable module-level identities so memoized markdown skips re-parsing when
 // only surrounding state (e.g. the composer draft) changes.
-const markdownPlugins = [remarkGfm, unwrapMediaParagraphs]
+const markdownPlugins = [remarkGfm, unwrapMediaParagraphs, remarkAgentFiles]
+
+const MEDIA_FILE_SRC = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|glb)$/i
+
+/** A file endpoint URL whose target no <img> can show (the agent used
+ * image syntax for a PDF…): the embed renders as a plain openable link. */
+export function nonMediaFileName(src: string): string | null {
+  if (!src.startsWith("/api/workspace/file?")) return null
+  const path = new URLSearchParams(src.slice(src.indexOf("?") + 1)).get("path")
+  if (!path || MEDIA_FILE_SRC.test(path)) return null
+  return path.slice(path.lastIndexOf("/") + 1) || path
+}
 
 const markdownComponents: Components = {
   pre: MarkdownCodeBlock,
@@ -35,6 +61,8 @@ const markdownComponents: Components = {
   },
   img: ({ src, alt }) => {
     if (!src) return null
+    const fileName = nonMediaFileName(src)
+    if (fileName) return <ChatLink href={src}>{alt || fileName}</ChatLink>
     if (/\.(mp4|webm)$/i.test(src)) {
       return (
         // Inline-safe wrapper: react-markdown renders img inside <p> when the
@@ -52,20 +80,17 @@ const markdownComponents: Components = {
     if (src.startsWith("/api/workspace/model3d") || /\.glb$/i.test(src)) {
       return <Model3dView src={src} alt={alt ?? ""} />
     }
-    return (
-      <span className="ob-media-wrap">
-        <img src={src} alt={alt ?? ""} />
-        <MediaDownloadButton src={src} />
-        <MediaFullscreenButton src={src} alt={alt ?? ""} />
-      </span>
-    )
+    return <MediaImage src={src} alt={alt ?? ""} />
   },
 }
 
 export const ChatMarkdown = memo(function ChatMarkdown({
   text,
+  basePath,
 }: {
   text: string
+  /** Folder relative links/images resolve against (file previewer). */
+  basePath?: string
 }) {
   const refs = useProjectRefs()
   const plugins = useMemo(
@@ -75,10 +100,14 @@ export const ChatMarkdown = memo(function ChatMarkdown({
         : markdownPlugins,
     [refs],
   )
+  const urlTransform = useMemo(
+    () => (basePath ? makeChatUrlTransform(basePath) : chatUrlTransform),
+    [basePath],
+  )
   return (
     <Markdown
       remarkPlugins={plugins}
-      urlTransform={chatUrl}
+      urlTransform={urlTransform}
       components={markdownComponents}
     >
       {text}

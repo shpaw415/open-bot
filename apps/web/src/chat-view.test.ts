@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test"
 import {
+  agentFilePath,
   applyMessageDelta,
   type ChatMessage,
   chatImageUrl,
   chatLinkOpensExternally,
+  chatLinkUrl,
   embedWorkspaceImages,
+  findAgentFilePaths,
   mediaKey,
   modelActivity,
   pinMediaUrls,
@@ -17,6 +20,7 @@ import {
   transcriptBubbles,
   turnError,
   visibleMessages,
+  workspaceFileSrc,
   workspaceModel3dPath,
   workspaceModel3dSrc,
 } from "./chat-view"
@@ -82,8 +86,9 @@ test("chatLinkOpensExternally picks absolute web links only", () => {
   expect(chatLinkOpensExternally("//cdn.example.com/lib.js")).toBe(true)
   expect(chatLinkOpensExternally("HTTPS://EXAMPLE.COM")).toBe(true)
   expect(chatLinkOpensExternally("mailto:hi@example.com")).toBe(false)
+  // served files open in a new tab so the thread is never replaced
   expect(chatLinkOpensExternally("/api/workspace/snapshot/s1/koi.png")).toBe(
-    false,
+    true,
   )
   expect(chatLinkOpensExternally("#project-ref/x")).toBe(false)
   expect(chatLinkOpensExternally("relative/page.html")).toBe(false)
@@ -197,7 +202,7 @@ test("transcriptBubbles keeps pinned URLs through bubble merging", () => {
   ).toBe(true)
 })
 
-test("transcriptBubbles renders waiting-list items as queued bubbles", () => {
+test("transcriptBubbles never renders queued bubbles (the queue lives in its dock)", () => {
   const messages = [
     { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "hi" }] },
     {
@@ -205,17 +210,43 @@ test("transcriptBubbles renders waiting-list items as queued bubbles", () => {
       parts: [{ type: "text", text: "hello" }],
     },
   ]
-  const bubbles = transcriptBubbles(messages, [], undefined, [
-    { id: "q1", text: "première en attente", files: [] },
-    { id: "q2", text: "avec fichier", files: ["notes.txt"] },
-  ])
-  const queued = bubbles.filter((entry) => entry.mark === "queued")
-  expect(queued.map((entry) => entry.pendingId)).toEqual(["q1", "q2"])
-  expect(queued[0]?.message.text).toBe("première en attente")
-  expect(queued[1]?.message.text).toContain("Joined file: notes.txt")
-  // Bubbles come straight from the queue state, so a flushed or removed
-  // item can never linger as a ghost "En attente" bubble.
-  expect(bubbles.at(-1)?.pendingId).toBe("q2")
+  const bubbles = transcriptBubbles(messages, [])
+  expect(bubbles).toHaveLength(2)
+  expect(bubbles.some((entry) => entry.mark === "queued")).toBe(false)
+})
+
+test("transcriptBubbles matches receipts against a windowed transcript", () => {
+  // The window starts after two user messages the lazy loader skipped;
+  // the receipt baseline is absolute, so only the offset keeps the mark
+  // on the bubble the user actually sent.
+  const window = [
+    {
+      info: { id: "u3", role: "user" },
+      parts: [{ type: "text", text: "third" }],
+    },
+    {
+      info: { id: "a3", role: "assistant", time: { created: 1, completed: 2 } },
+      parts: [{ type: "text", text: "reply" }],
+    },
+    {
+      info: { id: "u4", role: "user" },
+      parts: [{ type: "text", text: "fourth" }],
+    },
+  ]
+  const receipt = {
+    id: "r1",
+    text: "fourth",
+    status: "sent" as const,
+    sentAt: 10,
+    baseline: 3,
+  }
+  const withOffset = transcriptBubbles(window, [receipt], undefined, 2)
+  expect(withOffset.map((entry) => entry.mark)).toEqual([null, null, "sent"])
+  // The same window without its offset cannot place the receipt and
+  // would render a ghost pending bubble after the real one.
+  const noOffset = transcriptBubbles(window, [receipt])
+  expect(noOffset).toHaveLength(4)
+  expect(noOffset[3]?.pendingId).toBe("r1")
 })
 
 test("embeds a bare glb path line like a workspace image", () => {
@@ -398,31 +429,40 @@ test("a council marker names the team and strips the url", () => {
     splitCouncil(
       "Started the team.\n\n![council: auth-review](open-bot://council/auth-review)",
     ),
-  ).toEqual({ text: "Started the team.", council: "auth-review" })
+  ).toEqual({
+    text: "Started the team.",
+    council: "auth-review",
+    councils: ["auth-review"],
+  })
   expect(
     splitCouncil("[council: auth-review](open-bot://council/auth-review)"),
   ).toEqual({
     text: "",
     council: "auth-review",
+    councils: ["auth-review"],
   })
   expect(splitCouncil("Team on it.\n\nopen-bot://council/auth-review")).toEqual(
     {
       text: "Team on it.",
       council: "auth-review",
+      councils: ["auth-review"],
     },
   )
   // inline mentions without an image/link wrapper stay untouched
   expect(splitCouncil("inline open-bot://council/auth-review text")).toEqual({
     text: "inline open-bot://council/auth-review text",
     council: "",
+    councils: [],
   })
   expect(splitCouncil("see open-bot://council/")).toEqual({
     text: "see open-bot://council/",
     council: "",
+    councils: [],
   })
   expect(splitCouncil("plain text")).toEqual({
     text: "plain text",
     council: "",
+    councils: [],
   })
   const bubbles = visibleMessages([
     {
@@ -450,6 +490,28 @@ test("a council marker names the team and strips the url", () => {
   expect(
     speakableText("Team on it.\n\n![council: r2](open-bot://council/r2)"),
   ).toBe("Team on it.")
+})
+
+test("one reply can announce several councils at once", () => {
+  const split = splitCouncil(
+    "Two teams are on it.\n\n![council: auth-review](open-bot://council/auth-review)\n![council: perf-review](open-bot://council/perf-review)\n![council: auth-review](open-bot://council/auth-review)",
+  )
+  expect(split.text).toBe("Two teams are on it.")
+  expect(split.council).toBe("auth-review")
+  // both teams survive, in reply order, the repeat deduped
+  expect(split.councils).toEqual(["auth-review", "perf-review"])
+  const bubbles = visibleMessages([
+    {
+      info: { role: "assistant" },
+      parts: [
+        {
+          type: "text",
+          text: "Two teams.\n\n![council: auth-review](open-bot://council/auth-review)\n![council: perf-review](open-bot://council/perf-review)",
+        },
+      ],
+    },
+  ])
+  expect(bubbles[0]?.councils).toEqual(["auth-review", "perf-review"])
 })
 
 test("applyMessageDelta upserts message info and parts", () => {
@@ -527,4 +589,115 @@ test("applyMessageDelta no-ops on identical info and untouched messages", () => 
       properties: { sessionID: "s1" },
     }),
   ).toBeNull()
+})
+
+test("agentFilePath resolves every disk spelling an agent emits", () => {
+  expect(agentFilePath("/home/agent/workspace/report.pdf")).toBe(
+    "/home/agent/workspace/report.pdf",
+  )
+  expect(agentFilePath("file:///home/agent/workspace/report.pdf")).toBe(
+    "/home/agent/workspace/report.pdf",
+  )
+  expect(agentFilePath("file://localhost/home/agent/notes.md")).toBe(
+    "/home/agent/notes.md",
+  )
+  expect(agentFilePath("~/projects/site/src/app.ts")).toBe(
+    "/home/agent/projects/site/src/app.ts",
+  )
+  expect(agentFilePath("/home/agent/projects/site/src/app.ts:42")).toBe(
+    "/home/agent/projects/site/src/app.ts",
+  )
+  expect(agentFilePath("/home/agent/workspace/notes.md#L10")).toBe(
+    "/home/agent/workspace/notes.md",
+  )
+  expect(agentFilePath("sub/notes.txt")).toBe(
+    "/home/agent/workspace/sub/notes.txt",
+  )
+  expect(agentFilePath("./notes.txt")).toBe("/home/agent/workspace/notes.txt")
+  expect(agentFilePath("../projects/site/x.csv")).toBe(
+    "/home/agent/projects/site/x.csv",
+  )
+  expect(agentFilePath("/home/agent/workspace/r%C3%A9sum%C3%A9.pdf")).toBe(
+    "/home/agent/workspace/résumé.pdf",
+  )
+})
+
+test("agentFilePath refuses escapes, secrets, and non-file targets", () => {
+  expect(agentFilePath("/etc/passwd")).toBeNull()
+  expect(agentFilePath("/home/agent/../etc/passwd")).toBeNull()
+  expect(agentFilePath("../../etc/passwd")).toBeNull()
+  expect(agentFilePath("/home/agent/.ssh/id_rsa.pub")).toBeNull()
+  expect(agentFilePath("/home/agent/.config/open-bot/token.txt")).toBeNull()
+  expect(agentFilePath("/home/agent/workspace/.env")).toBeNull()
+  expect(agentFilePath("/home/agent/workspace/key.pem")).toBeNull()
+  expect(agentFilePath("https://example.com/report.pdf")).toBeNull()
+  expect(agentFilePath("/api/workspace/snapshot/s1/koi.png")).toBeNull()
+  expect(agentFilePath("#section")).toBeNull()
+  expect(agentFilePath("")).toBeNull()
+  expect(agentFilePath("/home/agent/workspace/tool.exe")).toBeNull()
+})
+
+test("chatLinkUrl routes disk links to a viewable file URL", () => {
+  expect(chatLinkUrl("/home/agent/workspace/report.pdf")).toBe(
+    workspaceFileSrc("/home/agent/workspace/report.pdf"),
+  )
+  expect(chatLinkUrl("file:///home/agent/notes.md")).toBe(
+    workspaceFileSrc("/home/agent/notes.md"),
+  )
+  // workspace media keeps its specialized (magic-checked) endpoints
+  expect(chatLinkUrl("/home/agent/workspace/koi.png")).toBe(
+    "/api/workspace/image?path=%2Fhome%2Fagent%2Fworkspace%2Fkoi.png",
+  )
+  expect(chatLinkUrl("/home/agent/projects/site/shot.png")).toBe(
+    workspaceFileSrc("/home/agent/projects/site/shot.png"),
+  )
+  expect(chatLinkUrl("https://example.com/docs")).toBeNull()
+  expect(chatLinkUrl("/api/workspace/snapshot/s1/koi.png")).toBeNull()
+  expect(chatLinkUrl("relative/page.html")).toBeNull()
+})
+
+test("disk file links open like external links, dashboard routes do not", () => {
+  expect(
+    chatLinkOpensExternally(
+      "/api/workspace/file?path=%2Fhome%2Fagent%2Freport.pdf",
+    ),
+  ).toBe(true)
+  expect(chatLinkOpensExternally("/api/workspace/snapshot/s1/koi.png")).toBe(
+    true,
+  )
+  expect(chatLinkOpensExternally("/chat")).toBe(false)
+})
+
+test("embeds and images cover svg, outside-workspace, and bare files", () => {
+  expect(chatImageUrl("/home/agent/workspace/pic.svg")).toBe(
+    workspaceFileSrc("/home/agent/workspace/pic.svg"),
+  )
+  expect(chatImageUrl("/home/agent/projects/site/shot.png")).toBe(
+    workspaceFileSrc("/home/agent/projects/site/shot.png"),
+  )
+  expect(embedWorkspaceImages("/home/agent/workspace/clip.mp4")).toBe(
+    "![clip.mp4](/home/agent/workspace/clip.mp4)",
+  )
+  expect(embedWorkspaceImages("/home/agent/workspace/report.pdf")).toBe(
+    "[report.pdf](/home/agent/workspace/report.pdf)",
+  )
+  expect(embedWorkspaceImages("`/home/agent/notes.md`")).toBe(
+    "[notes.md](/home/agent/notes.md)",
+  )
+})
+
+test("findAgentFilePaths locates bare paths in prose", () => {
+  const text =
+    "Saved /home/agent/workspace/report.pdf, see ~/notes.md and file:///home/agent/x.csv."
+  const hits = findAgentFilePaths(text)
+  expect(hits.map((hit) => hit.path)).toEqual([
+    "/home/agent/workspace/report.pdf",
+    "/home/agent/notes.md",
+    "/home/agent/x.csv",
+  ])
+  expect(text.slice(hits[0]?.start, hits[0]?.end)).toBe(
+    "/home/agent/workspace/report.pdf",
+  )
+  expect(findAgentFilePaths("no paths here")).toEqual([])
+  expect(findAgentFilePaths("escape /home/agent/../etc/passwd")).toEqual([])
 })

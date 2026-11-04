@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import {
+  composerSlim,
   effortForModel,
   effortLabel,
   effortOptions,
   MODEL_DEFAULT_EFFORT,
+  nextReadingMode,
+  orbSizePx,
   orbState,
 } from "./chat-controls"
 
@@ -74,5 +77,52 @@ describe("orbState — visual activity phases", () => {
 
   test("live turn activity reads as working", () => {
     expect(orbState("working", false)).toBe("working")
+  })
+})
+
+describe("nextReadingMode — scroll-up reading hysteresis", () => {
+  test("enters only well above the bottom, exits back at the bottom", () => {
+    expect(nextReadingMode(400, false)).toBe(true)
+    expect(nextReadingMode(0, true)).toBe(false)
+    expect(nextReadingMode(47, true)).toBe(false)
+  })
+
+  test("the band between thresholds keeps the current mode (no flicker)", () => {
+    // The shrink itself frees ~150px of viewport, which cuts the measured
+    // gap by the same amount — inside the band the mode must not flip.
+    expect(nextReadingMode(120, false)).toBe(false)
+    expect(nextReadingMode(120, true)).toBe(true)
+    expect(nextReadingMode(240, false)).toBe(false)
+  })
+})
+
+describe("orbSizePx — the animation stays, smaller while reading", () => {
+  test("full size at the bottom, mini while reading", () => {
+    expect(orbSizePx(false, false)).toBe(112)
+    expect(orbSizePx(true, false)).toBe(80)
+    expect(orbSizePx(false, true)).toBe(32)
+    expect(orbSizePx(true, true)).toBe(32)
+  })
+})
+
+describe("composerSlim — never hides an in-progress composition", () => {
+  const idle = {
+    reading: true,
+    focused: false,
+    hasDraft: false,
+    hasAttachments: false,
+    voiceBusy: false,
+  }
+
+  test("slims only while reading an untouched composer", () => {
+    expect(composerSlim(idle)).toBe(true)
+    expect(composerSlim({ ...idle, reading: false })).toBe(false)
+  })
+
+  test("focus, draft text, attachments, or voice keep it full", () => {
+    expect(composerSlim({ ...idle, focused: true })).toBe(false)
+    expect(composerSlim({ ...idle, hasDraft: true })).toBe(false)
+    expect(composerSlim({ ...idle, hasAttachments: true })).toBe(false)
+    expect(composerSlim({ ...idle, voiceBusy: true })).toBe(false)
   })
 })

@@ -23,7 +23,7 @@ Add a job (exactly one of `--every`, `--cron`, `--at`, and at least one of `--me
 
 ```sh
 ob-cron add --name "daily-report" --message "Write today's report from the workspace notes" --cron "0 13 * * *"
-ob-cron add --name "hourly-check" --message "Check the log and summarize changes" --every 3600 --model grok/grok-4.5 --persona designer
+ob-cron add --name "hourly-check" --message "Check the log and summarize changes" --every 3600 --model grok/grok-4.5 --persona plugin-creator
 ob-cron add --name "disk" --script "df -h" --every 3600
 ob-cron add --name "digest" --script "git -C /home/agent/workspace log -1 --oneline" --message "Summarize this and say if anything needs attention" --cron "0 13 * * *"
 ob-cron add --name "guard" --script "bash /home/agent/workspace/check-plugin.sh" --message "Handle what the output lists" --run auto --cron "0 14 * * *"
@@ -46,7 +46,7 @@ Optional run choice:
 Change a job later. `--script` does not change the mode by itself; pass `--run`.
 
 ```sh
-ob-cron set JOB_ID --model grok/grok-4.5 --persona designer
+ob-cron set JOB_ID --model grok/grok-4.5 --persona plugin-creator
 ob-cron set JOB_ID --run script --script "df -h"
 ob-cron set JOB_ID --run both --script "df -h" --message "Say if the disk is nearly full"
 ob-cron set JOB_ID --run auto --script "bash /home/agent/workspace/check.sh" --message "Handle what the output lists"

@@ -547,7 +547,17 @@ export async function applyPluginInstall(
       toolFiles.map((file) => file.name),
     )
     if (toolFiles.length > 0) {
-      await syncPluginTools(user.id, manifest.id, toolFiles)
+      const synced = await syncPluginTools(user.id, manifest.id, toolFiles)
+      // A marketplace install can legitimately run while the desktop sleeps
+      // (the boot resync copies the tools then). A local --path install just
+      // read these files FROM the running desktop, so a skipped sync here
+      // means the copy never landed — fail loudly instead of recording
+      // tools as applied over a stale binary.
+      if (synced === false && source === "local") {
+        throw new Error(
+          "the desktop stopped before the plugin files could be copied — start it and re-run the install",
+        )
+      }
       for (const file of toolFiles) applied.tools.push(file.name)
     }
 
@@ -620,6 +630,11 @@ export async function applyPluginInstall(
       // shape fails the install with a clear error instead of merging a dead
       // entry into opencode.json.
       const mcpServers = withDefaultMcpPath(validateMcpMap(opencode.mcp))
+      // Recorded before the merge so even a failed fresh install's revert
+      // sweeps every name this version could have written into opencode.json.
+      applied.mcpNames = [
+        ...new Set([...(applied.mcpNames ?? []), ...Object.keys(mcpServers)]),
+      ]
       await syncOpencodePlugin(user.id, {
         addPlugins: opencode.plugin ?? [],
         removePlugins: [],
@@ -660,7 +675,11 @@ export async function applyPluginInstall(
         (opencode?.plugin?.length ?? 0) > 0 ||
         Object.keys(opencode?.agents ?? {}).length > 0 ||
         Object.keys(opencode?.agentTools ?? {}).length > 0 ||
-        Object.values(mcpStatus).some((status) => status !== "connected")
+        // A disabled entry is intentionally off — like "connected", it needs
+        // no daemon restart.
+        Object.values(mcpStatus).some(
+          (status) => status !== "connected" && !status.startsWith("disabled"),
+        )
       if (restartNeeded) await restartOpencode(user.id, { db }).catch(() => {})
     }
   } catch (error) {
@@ -777,7 +796,15 @@ async function revertApplied(
     const manifest = db.installedPlugin(user.id, pluginId)?.manifest as
       | PluginManifest
       | undefined
-    const mcpNames = Object.keys((manifest?.opencode?.mcp ?? {}) as object)
+    // Union the current manifest with every name this install ever merged:
+    // a server dropped from a later manifest version would otherwise leak
+    // in opencode.json forever.
+    const mcpNames = [
+      ...new Set([
+        ...(applied.mcpNames ?? []),
+        ...Object.keys((manifest?.opencode?.mcp ?? {}) as object),
+      ]),
+    ]
     await syncOpencodePlugin(user.id, {
       addPlugins: [],
       removePlugins: manifest?.opencode?.plugin ?? [],
@@ -945,6 +972,19 @@ export async function setPluginEnabled(
         // Same defaults as the install path: agent PATH for local servers,
         // forced reconnect so enable always runs the installed code.
         const mcpServers = withDefaultMcpPath(validateMcpMap(oc.mcp))
+        // Older installs predate applied.mcpNames; re-record on enable so
+        // their uninstall sweep covers the names too. row.applied is kept in
+        // sync because the mcp-status write below spreads it.
+        row.applied = {
+          ...row.applied,
+          mcpNames: [
+            ...new Set([
+              ...(row.applied.mcpNames ?? []),
+              ...Object.keys(mcpServers),
+            ]),
+          ],
+        }
+        db.setInstalledPluginApplied(user.id, pluginId, row.applied)
         await syncOpencodePlugin(user.id, {
           addPlugins: oc.plugin ?? [],
           removePlugins: [],
@@ -982,11 +1022,14 @@ export async function setPluginEnabled(
       })
     }
     // Skip the restart only for a pure enable whose MCP entries all went live
-    // through the runtime connect above; everything else still needs one.
+    // through the runtime connect above (or are manifest-disabled, which is
+    // off by design and loads at the next boot); everything else needs one.
     const mcpFullyLive =
       enable &&
       Object.keys(mcpStatus).length > 0 &&
-      Object.values(mcpStatus).every((status) => status === "connected")
+      Object.values(mcpStatus).every(
+        (status) => status === "connected" || status.startsWith("disabled"),
+      )
     const otherSurfaces =
       (oc.plugin?.length ?? 0) > 0 ||
       Object.keys(oc.agents ?? {}).length > 0 ||

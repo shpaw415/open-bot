@@ -17,13 +17,21 @@ PUT  /api/voice
 DELETE /api/voice
 ```
 
-The Config page's **Voice** tab (`VoiceProvider.tsx`) renders the form. Providers can fall back to a configured vault entry: Workers AI reuses the `cloudflare` slug, xAI → `xai`, OpenAI → `openai`.
+The Config page's **Voice** tab (`VoiceProvider.tsx`) renders the form from the server catalog (`voiceProvidersPublic()`): pick a provider per side and only the fields, models and voices that provider takes are shown — Cloudflare asks for an Account ID + API token, everyone else just an API key, xAI TTS takes no model, and voices hang off the selected model (MeloTTS has none, Aura 1 has speakers, xAI accepts custom cloned voice IDs). Storage stays the flat `desktops` columns; `parseSttConfig`/`parseTtsConfig` turn a row into a discriminated per-provider config (or `null` when a required field or model is missing), which is the only shape `runStt`/`runTts` accept. Providers can fall back to a configured vault entry: Workers AI reuses the `cloudflare` slug, xAI → `xai`, OpenAI → `openai`.
 
-| Provider | STT | TTS |
-| --- | --- | --- |
-| xAI | `POST /v1/tts` for speech; Groq-compatible whisper for STT | ✓ |
-| OpenAI | `/audio/speech` | ✓ |
-| Cloudflare Workers AI | `@cf/openai/whisper-large-v3-turbo` or `@cf/deepgram/nova-3` | `@cf/myshell-ai/melotts` |
+| Provider id | Kind | Models | Fields |
+| --- | --- | --- | --- |
+| `openai-stt` | STT | `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` | API key |
+| `groq-stt` | STT | `whisper-large-v3`, `whisper-large-v3-turbo` | API key |
+| `xai-stt` | STT | `grok-voice-transcribe-2.0` (`POST /v1/stt`, file part last) | API key |
+| `cloudflare-stt` | STT | `@cf/openai/whisper-large-v3-turbo`, `@cf/deepgram/nova-3` | Account ID + API token |
+| `openai-tts` | TTS | `gpt-4o-mini-tts`, `tts-1`, `tts-1-hd` + voice list | API key |
+| `xai-tts` | TTS | none (`POST /v1/tts`) + voices / custom voice ID | API key |
+| `cloudflare-tts` | TTS | `@cf/myshell-ai/melotts`, `@cf/deepgram/aura-1` (speakers) | Account ID + API token |
+
+Rows saved under the pre-consolidation ids (`workers-ai-stt`, `deepgram-stt`, `workers-ai-tts`) canonicalize to the `cloudflare-*` providers on read and are rewritten canonical on the next save; no migration.
+
+Team mode: the admin Team tab's shared voice settings render from the same catalog (`voiceProviders` on `GET /api/admin/team`, `TeamVoiceFields.tsx`) — per-side provider/model selects plus only that provider's credential fields — and `saveTeamConfig` canonicalizes and validates the merged overlay the same way (wrong-side provider or unknown model is a 400). Keys and account IDs stay optional in the overlay because the shared key set can supply them through the vault fallback; voice and language remain per-user.
 
 The default Workers AI STT model is `@cf/openai/whisper-large-v3-turbo` (upgraded from `@cf/openai/whisper` on 2026-10-15; saved rows on the old model run on turbo automatically). The configured language is sent as a hint (`language` + `vad_filter` for whisper, `language` + `smart_format` for Nova-3), which matters a lot for short hold-to-talk clips — pick a language instead of "auto" when you always speak the same one.
 

@@ -3,6 +3,7 @@ import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
 import IconButton from "@shpaw415/mui-lite/IconButton"
 import Select from "@shpaw415/mui-lite/Select"
+import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api, type Me } from "./api"
@@ -419,6 +420,96 @@ function ThinkingEffortSection({
   )
 }
 
+function StepCapSection({ me, onChanged }: { me: Me; onChanged: () => void }) {
+  const defaultCap = me.agentStepCapDefault ?? 512
+  const savedValue = me.agentStepCap != null ? String(me.agentStepCap) : ""
+  const [value, setValue] = useState(savedValue)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState("")
+  const dirty = value.trim() !== savedValue
+  useDirtyFlag(dirty)
+
+  useEffect(() => {
+    setValue(me.agentStepCap != null ? String(me.agentStepCap) : "")
+  }, [me.agentStepCap])
+
+  async function save() {
+    setError("")
+    setSaved(false)
+    const trimmed = value.trim()
+    let stepCap: number | null = null
+    if (trimmed !== "") {
+      const parsed = Number(trimmed)
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100000) {
+        setError(CONFIG_CHAT.stepCapInvalid)
+        return
+      }
+      stepCap = parsed
+    }
+    setSaving(true)
+    try {
+      await api("/api/agent-cap", {
+        method: "PUT",
+        body: JSON.stringify({ stepCap }),
+      })
+      setSaved(true)
+      onChanged()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "save failed")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const effective =
+    value.trim() === "" ? defaultCap : Number(value) || defaultCap
+
+  return (
+    <ConfigSection
+      icon={<PsychologyIcon />}
+      title={CONFIG_CHAT.stepCapTitle}
+      description={CONFIG_CHAT.stepCapDescription}
+      status={{ label: String(effective), color: "primary" }}
+    >
+      <Stack spacing={1.5}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {saved ? (
+          <Alert severity="success">{CONFIG_CHAT.stepCapSaved}</Alert>
+        ) : null}
+        <TextField
+          label={CONFIG_CHAT.stepCapLabel}
+          type="number"
+          value={value}
+          placeholder={CONFIG_CHAT.stepCapPlaceholder}
+          onChange={(event) => {
+            setValue(event.currentTarget.value)
+            setSaved(false)
+          }}
+          sx={{ maxWidth: 220 }}
+        />
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="contained"
+            disabled={saving || !dirty}
+            onClick={() => void save()}
+          >
+            {saving ? CONFIG_CHAT.saving : CONFIG_CHAT.saveStepCap}
+          </Button>
+          {dirty && !saving ? (
+            <Chip size="small" variant="outlined" color="warning">
+              {CONFIG_CHAT.unsaved}
+            </Chip>
+          ) : null}
+        </Stack>
+        <Typography variant="caption" color="textSecondary">
+          {CONFIG_CHAT.stepCapHint}
+        </Typography>
+      </Stack>
+    </ConfigSection>
+  )
+}
+
 const LANGUAGE_OPTIONS = [
   { value: "en", label: "English" },
   { value: "fr", label: "Français" },
@@ -535,6 +626,7 @@ function renderSection(
             locked={lockedModel}
           />
           <ThinkingEffortSection me={me} onChanged={onChanged} />
+          <StepCapSection me={me} onChanged={onChanged} />
         </>
       )
     case "memory":

@@ -47,6 +47,22 @@ describe("message cache", () => {
     expect(getCachedMessages("s10")).toBeTruthy()
   })
 
+  test("round-trips the paging meta of a windowed entry", () => {
+    const one = entry("one")
+    const page = {
+      hasMore: true,
+      nextBefore: "m40",
+      startUserCount: 7,
+      total: 140,
+    }
+    putCachedMessages("s1", one.payload, one.messages, page)
+    expect(getCachedMessages("s1")?.page).toEqual(page)
+    // A later live-delta write without meta clears it rather than
+    // resurrecting a cursor for a window it no longer describes.
+    putCachedMessages("s1", one.payload, one.messages)
+    expect(getCachedMessages("s1")?.page).toBeUndefined()
+  })
+
   test("overwrites an existing id and moves it to newest", () => {
     for (let i = 0; i < 10; i++)
       putCachedMessages(

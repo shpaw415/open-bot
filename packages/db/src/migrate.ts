@@ -135,6 +135,34 @@ function ensureThreadTitleTable(sqlite: Database) {
   `)
 }
 
+function ensureThreadModelTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS thread_models (
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      provider_id TEXT,
+      model_id TEXT,
+      effort TEXT,
+      PRIMARY KEY (user_id, session_id)
+    );
+  `)
+}
+
+function ensureThreadQueueTable(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS thread_queue (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      files TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS thread_queue_session ON thread_queue (user_id, session_id, seq);
+  `)
+}
+
 function ensurePersonaTables(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS personas (
@@ -191,6 +219,41 @@ function ensureBuiltinPersonaScopeTable(sqlite: Database) {
         "ALTER TABLE personas ADD COLUMN mcp_none INTEGER NOT NULL DEFAULT 0",
       )
     }
+  }
+}
+
+// Built-in personas removed from the roster (only Assistant and the
+// plugin creator remain): stored bindings to a removed id would fail to
+// resolve — a cron run would throw "personality not found" — so thread
+// bindings are rewritten to the assistant, cron jobs (which store the
+// assistant as NULL) are cleared, and orphaned scope rows are dropped.
+// Idempotent; runs on every open like the other ensure* fixups.
+const REMOVED_BUILTIN_PERSONAS = [
+  "designer",
+  "political-expert",
+  "software-designer",
+]
+
+function cleanupRemovedBuiltinPersonas(sqlite: Database) {
+  const names = tableNames(sqlite)
+  const ids = REMOVED_BUILTIN_PERSONAS.map((id) => `'${id}'`).join(", ")
+  if (names.has("thread_personas")) {
+    sqlite.exec(
+      `UPDATE thread_personas SET persona_id = 'assistant' WHERE persona_id IN (${ids})`,
+    )
+  }
+  if (
+    names.has("cron_jobs") &&
+    columnNames(sqlite, "cron_jobs").has("persona_id")
+  ) {
+    sqlite.exec(
+      `UPDATE cron_jobs SET persona_id = NULL WHERE persona_id IN (${ids})`,
+    )
+  }
+  if (names.has("builtin_persona_scopes")) {
+    sqlite.exec(
+      `DELETE FROM builtin_persona_scopes WHERE persona_id IN (${ids})`,
+    )
   }
 }
 
@@ -360,8 +423,11 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   ensureBuiltinPersonaScopeTable(sqlite)
   ensureThreadScreenTable(sqlite)
   ensureThreadTitleTable(sqlite)
+  ensureThreadModelTable(sqlite)
+  ensureThreadQueueTable(sqlite)
   ensureCronNoticeTable(sqlite)
   ensureCronJobColumns(sqlite)
+  cleanupRemovedBuiltinPersonas(sqlite)
   ensureImprovementTable(sqlite)
   ensureProjectsTable(sqlite)
   ensureUserKeysTable(sqlite)

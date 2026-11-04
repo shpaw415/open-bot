@@ -29,10 +29,21 @@ if command -v claude >/dev/null 2>&1; then
 fi
 
 # --- Muse -------------------------------------------------------------
+# The launcher keeps its binary next to itself and needs that directory
+# writable. Installed means either the binary is already on disk, or
+# `muse` resolves to the home launcher (seed-muse.sh layout) so the
+# first run can download it. A bare launcher file in /usr/local/bin
+# (the pre-seed layout) can do neither and reports not installed.
 muse_installed=0
 muse_logged=0
 if command -v muse >/dev/null 2>&1; then
-  muse_installed=1
+  mdir="$HOME/.local/bin"
+  if [ -f "$mdir/.muse-version" ]; then
+    mver=$(cat "$mdir/.muse-version" 2>/dev/null || true)
+    [ -n "$mver" ] && [ -x "$mdir/muse-bin-$mver" ] && muse_installed=1
+  fi
+  mresolved=$(readlink -f "$(command -v muse)" 2>/dev/null || true)
+  [ "$mresolved" = "$mdir/muse" ] && muse_installed=1
   muse_auth="${MUSE_AUTH_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/muse/auth.json}"
   [ -s "$muse_auth" ] && muse_logged=1
 fi

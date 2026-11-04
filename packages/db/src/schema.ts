@@ -102,6 +102,8 @@ export const desktops = sqliteTable("desktops", {
   memoryMb: integer("memory_mb"),
   diskGb: integer("disk_gb"),
   cpuCores: real("cpu_cores"),
+  // Per-user agent step cap (user-set). NULL = DEFAULT_AGENT_STEP_CAP (512).
+  agentStepCap: integer("agent_step_cap"),
 })
 
 export const userKeys = sqliteTable(
@@ -223,6 +225,48 @@ export const threadTitles = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
+)
+
+// Per-thread model + reasoning-effort choice made at thread creation
+// (`ob-thread start --model/--effort`, e.g. one pick per council member).
+// Null columns mean "desktop default" for that half; the row exists only
+// when at least one half was chosen. Follow-up prompts into the thread
+// (`ob-thread post`) re-apply the same choice, and the council viewer
+// reads it to label each member.
+export const threadModels = sqliteTable(
+  "thread_models",
+  {
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    providerId: text("provider_id"),
+    modelId: text("model_id"),
+    effort: text("effort"),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
+)
+
+// Dashboard messages queued behind a running turn, persisted so the
+// waiting list survives a reload or a closed browser (it used to live in
+// dashboard state only). The control plane flushes the head of a
+// session's queue when that session goes idle; `seq` orders the queue
+// (enqueue appends past the max, promote jumps below the min) so
+// created_at never has to break ties. `files` is the JSON of the joined
+// files ({id, name, mime, url} with data: URLs) exactly as the composer
+// would have sent them.
+export const threadQueue = sqliteTable(
+  "thread_queue",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    seq: integer("seq").notNull(),
+    text: text("text").notNull(),
+    files: text("files").notNull().default("[]"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("thread_queue_session").on(table.userId, table.sessionId, table.seq),
+  ],
 )
 
 export const threadDirs = sqliteTable(

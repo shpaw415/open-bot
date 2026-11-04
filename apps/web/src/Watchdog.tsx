@@ -4,7 +4,6 @@ import Button from "@shpaw415/mui-lite/Button"
 import Collapse from "@shpaw415/mui-lite/Collapse"
 import Select from "@shpaw415/mui-lite/Select"
 import Switch from "@shpaw415/mui-lite/Switch"
-import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
 import { useCallback, useEffect, useState } from "react"
 import { api, isTeamLockedError } from "./api"
@@ -12,9 +11,16 @@ import { ConfigSection } from "./ConfigSection"
 import { Chip } from "./chip"
 import { useEventStream } from "./hooks"
 import { SecurityIcon } from "./icons"
+import { CatalogFields, CatalogModelSelect } from "./ProviderFields"
+import {
+  isCustomModel,
+  type ProviderFieldKey,
+  type PublicCatalogSpec,
+  specForId,
+} from "./provider-catalog"
 import Stack from "./stack"
 import { useTeamMode } from "./team"
-import { useVaultOverride, VaultOverrideButton } from "./vault-lock"
+import { useVaultOverride } from "./vault-lock"
 
 type Severity = "info" | "low" | "medium" | "high"
 
@@ -35,16 +41,8 @@ type Finding = {
   lastSeenAt: number
 }
 
-type ProviderSpec = {
-  id: string
-  label: string
-  defaultModel: string
-  accountRequired: boolean
-  needsBaseUrl: boolean
-}
-
 type WatchdogState = {
-  providers: ProviderSpec[]
+  providers: PublicCatalogSpec[]
   config: {
     enabled: boolean
     stopOnHigh: boolean
@@ -107,6 +105,7 @@ function WatchdogConfigSection({
   const [accountId, setAccountId] = useState(config.accountId)
   const [apiKey, setApiKey] = useState("")
   const [model, setModel] = useState(config.model)
+  const [modelCustom, setModelCustom] = useState(false)
   const [baseUrl, setBaseUrl] = useState(config.baseUrl)
   const [enabled, setEnabled] = useState(config.enabled)
   const [stopOnHigh, setStopOnHigh] = useState(config.stopOnHigh)
@@ -122,12 +121,21 @@ function WatchdogConfigSection({
     setProvider(config.provider)
     setAccountId(config.accountId)
     setModel(config.model)
+    setModelCustom(
+      isCustomModel(specForId(state.providers, config.provider), config.model),
+    )
     setBaseUrl(config.baseUrl)
     setEnabled(config.enabled)
     setStopOnHigh(config.stopOnHigh)
-  }, [config])
+  }, [config, state.providers])
 
-  const spec = state.providers.find((item) => item.id === provider)
+  const spec = specForId(state.providers, provider)
+
+  function setField(key: ProviderFieldKey, value: string) {
+    if (key === "accountId") setAccountId(value)
+    else if (key === "apiKey") setApiKey(value)
+    else if (key === "baseUrl") setBaseUrl(value)
+  }
 
   async function save(next: { enabled?: boolean; stopOnHigh?: boolean } = {}) {
     setError("")
@@ -238,8 +246,9 @@ function WatchdogConfigSection({
           disabled={busy || shared}
           onSelect={(value: string) => {
             setProvider(value)
-            const nextSpec = state.providers.find((item) => item.id === value)
+            const nextSpec = specForId(state.providers, value)
             setModel(nextSpec?.defaultModel ?? "")
+            setModelCustom(false)
           }}
         >
           {[
@@ -255,59 +264,27 @@ function WatchdogConfigSection({
         </Select>
         {spec ? (
           <>
-            {spec.accountRequired ? (
-              <Stack direction="row" spacing={1} alignItems="center">
-                <TextField
-                  label={
-                    vault.locked ? "Account ID (from vault)" : "Account ID"
-                  }
-                  value={vault.locked ? accountId : accountId}
-                  placeholder="Cloudflare account ID"
-                  disabled={busy || vault.locked || shared}
-                  sx={{ flex: 1 }}
-                  onChange={(event) => setAccountId(event.currentTarget.value)}
-                />
-                {vault.locked ? (
-                  <VaultOverrideButton onClick={vault.override} />
-                ) : null}
-              </Stack>
-            ) : null}
-            <Stack direction="row" spacing={1} alignItems="center">
-              <TextField
-                label={
-                  vault.locked
-                    ? "Using the vault key"
-                    : config.hasKey
-                      ? "API key (blank keeps the saved key)"
-                      : "API key"
-                }
-                type={vault.locked ? undefined : "password"}
-                value={vault.locked ? "" : apiKey}
-                placeholder={vault.locked ? "••••••••" : undefined}
-                disabled={busy || vault.locked || shared}
-                sx={{ flex: 1 }}
-                onChange={(event) => setApiKey(event.currentTarget.value)}
-              />
-              {vault.locked ? (
-                <VaultOverrideButton onClick={vault.override} />
-              ) : null}
-            </Stack>
-            <TextField
-              label="Model"
-              value={model}
-              placeholder={spec.defaultModel}
+            <CatalogFields
+              spec={spec}
+              values={{ accountId, apiKey, baseUrl }}
+              onChange={setField}
               disabled={busy || shared}
-              onChange={(event) => setModel(event.currentTarget.value)}
+              locked={vault.locked}
+              onOverride={vault.override}
+              hasSavedSecret={config.hasKey && provider === config.provider}
             />
-            {spec.needsBaseUrl ? (
-              <TextField
-                label="Base URL"
-                value={baseUrl}
-                placeholder="https://gateway.example/v1"
-                disabled={busy || shared}
-                onChange={(event) => setBaseUrl(event.currentTarget.value)}
-              />
-            ) : null}
+            <CatalogModelSelect
+              name="watchdog-model"
+              spec={spec}
+              model={model}
+              custom={modelCustom}
+              disabled={busy || shared}
+              freePlaceholder="Model id served by the endpoint"
+              onPick={(next, custom) => {
+                setModel(next)
+                setModelCustom(custom)
+              }}
+            />
             <Typography variant="caption" color="textSecondary">
               Only flagged snippets are sent to this provider, redacted first.
               Cloudflare Workers AI and xAI keys can come from the vault (Keys

@@ -98,9 +98,22 @@ test("map honors fractional upscaled factors", async () => {
   expect(result.stdout).toContain("live 1910 1073")
 })
 
+test("toLive maps through the recorded dpr under browser zoom", () => {
+  // 1x capture at 3x zoom: PNG px = css*3 (factor 3), window offset already
+  // in device px. Image point (300, 150) is css (100, 50) -> live adds
+  // css*dpr to the offset.
+  expect(
+    toLive({ factor: 3, yFactor: 3, ox: 12, oy: 375, dpr: 3 }, 300, 150),
+  ).toEqual({ x: 312, y: 525 })
+  // Zoom-out: dpr 0.5 with a sub-1 factor still maps instead of identity.
+  expect(
+    toLive({ factor: 0.5, yFactor: 0.5, ox: 2, oy: 60, dpr: 0.5 }, 100, 100),
+  ).toEqual({ x: 102, y: 160 })
+})
+
 test("map rejects an out-of-range factor and falls back to identity", async () => {
   const home = mkdtempSync(join(tmpdir(), "coord-"))
-  seed(home, { factor: 40, ox: 0, oy: 0, origin: true })
+  seed(home, { factor: 400, ox: 0, oy: 0, origin: true })
   const result = await run(home, "map", "772", "311")
   expect(result.code).toBe(0)
   expect(result.stdout).toContain("live 772 311")

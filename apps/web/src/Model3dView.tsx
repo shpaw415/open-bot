@@ -181,7 +181,8 @@ export function Model3dView({ src, alt }: { src: string; alt?: string }) {
           justifyContent="center"
           sx={{ position: "absolute", inset: 0, pointerEvents: "none" }}
         >
-          <CircularProgress size={26} />
+          {/* mui-lite numeric size is rem — "26px", never 26 */}
+          <CircularProgress size="26px" />
         </Stack>
       ) : null}
       {state === "error" ? (

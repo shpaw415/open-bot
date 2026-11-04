@@ -1,4 +1,20 @@
 import type { Db, Role, TeamKey } from "@open-bot/db"
+import { imageProviders } from "./image-providers"
+import { model3dProviders } from "./model3d-providers"
+import {
+  type CatalogSpec,
+  catalogById,
+  modelAllowed,
+  normalizeCatalogModel,
+} from "./provider-catalog"
+import { system1Providers } from "./system1"
+import { videoProviders } from "./video-providers"
+import {
+  normalizeVoiceModel,
+  voiceModelSpec,
+  voiceProviderForKind,
+} from "./voice-catalog"
+import { watchdogProviders } from "./watchdog-catalog"
 
 export type TeamMode = "personal" | "team"
 
@@ -181,7 +197,13 @@ export function getTeamConfig(db: Db): TeamConfig {
 
 export type TeamSecretMarkers = Record<
   string,
-  { hasKey: boolean; hasGatewayToken?: boolean }
+  {
+    hasKey: boolean
+    hasGatewayToken?: boolean
+    // Per secret field, for sections with more than one (voice has a key
+    // per side) — `hasKey` alone cannot say which side is stored.
+    fields?: Record<string, boolean>
+  }
 >
 
 const SECRET_KEY_FIELDS = new Set(["apiKey", "sttApiKey", "ttsApiKey"])
@@ -211,13 +233,90 @@ export function redactTeamConfig(config: TeamConfig): {
     }
     providers[section] = out
     const declared = PROVIDER_SECTIONS[section] ?? []
-    secrets[section] = declared.includes("gatewayToken")
+    const marker: TeamSecretMarkers[string] = declared.includes("gatewayToken")
       ? { hasKey, hasGatewayToken }
       : { hasKey }
+    const secretFields = declared.filter(
+      (field) => field === "gatewayToken" || SECRET_KEY_FIELDS.has(field),
+    )
+    if (secretFields.length > 0) {
+      const stored = fields as Record<string, string | null | undefined>
+      marker.fields = Object.fromEntries(
+        secretFields.map((field) => [field, Boolean(stored[field])]),
+      )
+    }
+    secrets[section] = marker
   }
   return {
     config: { ...config, providers: providers as TeamProviderOverlay },
     secrets,
+  }
+}
+
+// Single-provider overlay sections obey their catalogs the same way: the
+// provider must be a known id, a set model must be allowed for it (blank
+// takes its default; custom models pass where the catalog allows them).
+// Keys stay optional — the shared key set can supply them instead.
+const OVERLAY_CATALOGS: Record<string, readonly CatalogSpec[]> = {
+  image: imageProviders,
+  video: videoProviders,
+  model3d: model3dProviders,
+  system1: system1Providers,
+  watchdog: watchdogProviders,
+}
+
+function normalizeCatalogOverlay(
+  providers: Record<string, Record<string, string | null>>,
+): void {
+  for (const [section, catalog] of Object.entries(OVERLAY_CATALOGS)) {
+    const values = providers[section]
+    if (!values) continue
+    const raw = values.provider
+    if (raw === null || raw === undefined || raw === "") continue
+    const spec = catalogById(catalog, raw)
+    if (!spec) throw new Error(`unsupported ${section} provider: ${raw}`)
+    values.provider = spec.id
+    const model = values.model
+    if (model === null || model === undefined || model === "") {
+      values.model = spec.defaultModel || null
+      continue
+    }
+    if (!modelAllowed(spec, model)) {
+      throw new Error(`unsupported model for ${spec.label}: ${model}`)
+    }
+    values.model = normalizeCatalogModel(spec, model)
+  }
+}
+
+// The shared voice overlay obeys the same provider catalog as the per-user
+// Voice tab: provider ids canonicalize (legacy Workers AI ids included), a
+// provider must belong to its side, and a set model must be one that
+// provider offers (blank takes its default). Keys/accounts stay optional —
+// the shared key set can supply them through the vault fallback instead.
+function normalizeVoiceOverlay(
+  providers: Record<string, Record<string, string | null>>,
+): void {
+  const voice = providers.voice
+  if (!voice) return
+  for (const side of ["stt", "tts"] as const) {
+    const raw = voice[`${side}Provider`]
+    if (raw === null || raw === undefined || raw === "") continue
+    const spec = voiceProviderForKind(raw, side)
+    if (!spec) throw new Error("unsupported speech provider")
+    voice[`${side}Provider`] = spec.id
+    const model = voice[`${side}Model`]
+    if (model === null || model === undefined || model === "") {
+      voice[`${side}Model`] = spec.defaultModel || null
+      continue
+    }
+    if (spec.models.length === 0) {
+      throw new Error(`${spec.label} does not take a model`)
+    }
+    const normalized = normalizeVoiceModel(spec, model)
+    if (!voiceModelSpec(spec, normalized)) {
+      throw new Error(`unsupported model for ${spec.label}: ${model}`)
+    }
+    voice[`${side}Model`] = normalized
   }
 }
 
@@ -279,6 +378,8 @@ export function saveTeamConfig(db: Db, patch: Partial<TeamConfig>): TeamConfig {
         merged[section] = base
       }
     }
+    normalizeCatalogOverlay(merged)
+    normalizeVoiceOverlay(merged)
     next.providers = merged as TeamProviderOverlay
   }
   db.setSetting("team_config", JSON.stringify(next))

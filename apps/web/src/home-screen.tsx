@@ -16,6 +16,7 @@ import {
   useState,
 } from "react"
 import { api } from "./api"
+import { useBackLayer } from "./back-nav"
 import { AppTileIcon, ArrowBackIcon, tileHue } from "./icons"
 import type { PluginTab } from "./plugin-tabs"
 
@@ -208,6 +209,12 @@ export function HomeScreen({
   const [overSlot, setOverSlot] = useState<number | null>(null)
   const [dragging, setDragging] = useState<number | null>(null)
   const [openFolder, setOpenFolder] = useState<string | null>(null)
+  // Launcher layers like a phone: Back leaves edit (jiggle) mode first,
+  // then closes the open folder.
+  useBackLayer(openFolder !== null, () => setOpenFolder(null), {
+    name: "folder",
+  })
+  useBackLayer(edit, () => setEdit(false), { name: "launcher-edit" })
   const capacityRef = useRef(8)
 
   const mobile = size.w > 0 && size.w < 560

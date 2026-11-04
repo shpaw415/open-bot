@@ -3,15 +3,17 @@ import { useCallback, useRef } from "react"
 import { useOverlayA11y } from "./dialog-a11y"
 
 export type AccessibleDialogProps = DialogProps & {
-  /** Ignore Escape while true (busy saves, destructive wait states). */
+  /** Ignore Escape (and Back) while true (busy saves, destructive waits). */
   suspendEscape?: boolean
+  /** Opt out of Back-to-close when the dialog's open state rides the URL. */
+  disableBackClose?: boolean
 }
 
 /**
  * Drop-in Dialog wrapper carrying the app-wide overlay contract: Escape
- * closes (top overlay only), focus enters the dialog on open and returns to
- * the trigger on close, Tab stays confined. Render behavior is otherwise the
- * library's.
+ * and the system Back button close it (top overlay only), focus enters the
+ * dialog on open and returns to the trigger on close, Tab stays confined.
+ * Render behavior is otherwise the library's.
  *
  * mui-lite renders role="dialog" on its inner Paper, so the accessible name
  * must land there: `aria-label` / `aria-labelledby` props are routed onto
@@ -22,6 +24,7 @@ export function AccessibleDialog({
   open,
   onClose,
   suspendEscape,
+  disableBackClose,
   "aria-label": ariaLabel,
   "aria-labelledby": ariaLabelledBy,
   slotProps,
@@ -36,6 +39,7 @@ export function AccessibleDialog({
     handleClose,
     paperRef,
     Boolean(suspendEscape) || !onClose,
+    { backName: "dialog", backEnabled: !disableBackClose && Boolean(onClose) },
   )
   return (
     <Dialog

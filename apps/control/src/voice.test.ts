@@ -4,7 +4,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { openDatabase } from "@open-bot/db"
 import {
+  applyVoicePatch,
+  canonicalVoiceProviderId,
   languageCode,
+  parseSttConfig,
+  parseTtsConfig,
   resolveVoiceConfig,
   runStt,
   runTts,
@@ -43,26 +47,102 @@ function freshDb() {
   return db
 }
 
+const EMPTY_VOICE = {
+  sttProvider: "",
+  sttAccountId: "",
+  sttApiKey: "",
+  sttModel: "",
+  ttsProvider: "",
+  ttsAccountId: "",
+  ttsApiKey: "",
+  ttsModel: "",
+  ttsVoice: "",
+  language: "",
+}
+
 describe("voice providers", () => {
-  test("catalog has stt and tts entries with public shapes", () => {
-    expect(voiceProviders.filter((item) => item.kind === "stt").length).toBe(4)
-    expect(voiceProviders.filter((item) => item.kind === "tts").length).toBe(3)
-    const pub = voiceProvidersPublic()
-    expect(pub[0]).not.toHaveProperty("secret.required")
-    expect(pub.find((item) => item.id === "xai-tts")?.modelOptional).toBe(true)
-    expect(voiceProviderById("openai-stt")?.defaultModel).toBe("whisper-1")
-    expect(voiceProviderById("workers-ai-stt")?.defaultModel).toBe(
+  test("catalog is provider-aware: ids, fields, models and voices per provider", () => {
+    expect(
+      voiceProviders.filter((item) => item.kind === "stt").map((i) => i.id),
+    ).toEqual(["openai-stt", "groq-stt", "xai-stt", "cloudflare-stt"])
+    expect(
+      voiceProviders.filter((item) => item.kind === "tts").map((i) => i.id),
+    ).toEqual(["openai-tts", "xai-tts", "cloudflare-tts"])
+
+    const fieldKeys = (id: string) =>
+      voiceProviderById(id)?.fields.map((field) => field.key)
+    // Only Cloudflare needs an account id; everyone needs just a key.
+    expect(fieldKeys("cloudflare-stt")).toEqual(["accountId", "apiKey"])
+    expect(fieldKeys("cloudflare-tts")).toEqual(["accountId", "apiKey"])
+    expect(fieldKeys("xai-stt")).toEqual(["apiKey"])
+    expect(fieldKeys("openai-stt")).toEqual(["apiKey"])
+    expect(
+      voiceProviderById("cloudflare-stt")?.fields.find(
+        (f) => f.key === "accountId",
+      )?.required,
+    ).toBe(true)
+
+    const modelIds = (id: string) =>
+      voiceProviderById(id)?.models.map((model) => model.id)
+    expect(modelIds("xai-stt")).toEqual(["grok-voice-transcribe-2.0"])
+    expect(modelIds("cloudflare-stt")).toEqual([
       "@cf/openai/whisper-large-v3-turbo",
+      "@cf/deepgram/nova-3",
+    ])
+    expect(modelIds("cloudflare-tts")).toEqual([
+      "@cf/myshell-ai/melotts",
+      "@cf/deepgram/aura-1",
+    ])
+    // xAI TTS takes no model at all.
+    expect(modelIds("xai-tts")).toEqual([])
+    expect(voiceProviderById("xai-tts")?.defaultModel).toBe("")
+
+    // Voices hang off the model: melotts has none, aura-1 has speakers.
+    const cfTts = voiceProviderById("cloudflare-tts")
+    const melotts = cfTts?.models.find(
+      (model) => model.id === "@cf/myshell-ai/melotts",
     )
-    expect(voiceProviderById("deepgram-stt")?.defaultModel).toBe(
+    const aura = cfTts?.models.find(
+      (model) => model.id === "@cf/deepgram/aura-1",
+    )
+    expect(melotts?.voices).toBeUndefined()
+    expect(aura?.voices?.options.map((voice) => voice.id)).toContain("angus")
+    expect(aura?.defaultVoice).toBe("angus")
+    // xAI voices are presets plus custom cloned voice ids.
+    const xaiVoices = voiceProviderById("xai-tts")?.voices
+    expect(xaiVoices?.options.map((voice) => voice.id)).toContain("eve")
+    expect(xaiVoices?.allowCustom).toBe(true)
+    expect(voiceProviderById("openai-stt")?.defaultModel).toBe("whisper-1")
+
+    const pub = voiceProvidersPublic()
+    const pubCf = pub.find((item) => item.id === "cloudflare-stt")
+    expect(pubCf?.fields.map((field) => field.key)).toEqual([
+      "accountId",
+      "apiKey",
+    ])
+    expect(pubCf?.models.map((model) => model.id)).toContain(
       "@cf/deepgram/nova-3",
     )
+    expect(pub.find((item) => item.id === "xai-tts")?.models).toEqual([])
+    // The public shape carries no server-side handler details.
+    expect(pub[0]).not.toHaveProperty("secret")
+  })
+
+  test("legacy provider ids canonicalize to the cloudflare providers", () => {
+    expect(canonicalVoiceProviderId("workers-ai-stt")).toBe("cloudflare-stt")
+    expect(canonicalVoiceProviderId("deepgram-stt")).toBe("cloudflare-stt")
+    expect(canonicalVoiceProviderId("workers-ai-tts")).toBe("cloudflare-tts")
+    expect(canonicalVoiceProviderId("xai-tts")).toBe("xai-tts")
+    expect(canonicalVoiceProviderId("")).toBe("")
+    expect(voiceProviderById("workers-ai-stt")?.id).toBe("cloudflare-stt")
+    expect(voiceProviderById("nope")).toBeUndefined()
   })
 
   test("vault slugs reuse existing keys", () => {
+    expect(voiceVaultSlug("cloudflare-stt")).toBe("cloudflare")
+    expect(voiceVaultSlug("cloudflare-tts")).toBe("cloudflare")
     expect(voiceVaultSlug("workers-ai-stt")).toBe("cloudflare")
-    expect(voiceVaultSlug("deepgram-stt")).toBe("cloudflare")
-    expect(voiceVaultSlug("workers-ai-tts")).toBe("cloudflare")
+    expect(voiceVaultSlug("xai-stt")).toBe("xai")
     expect(voiceVaultSlug("xai-tts")).toBe("xai")
     expect(voiceVaultSlug("openai-stt")).toBe("openai")
     expect(voiceVaultSlug("groq-stt")).toBe("")
@@ -74,6 +154,133 @@ describe("voice providers", () => {
     expect(languageCode("auto")).toBe("")
     expect(languageCode("")).toBe("")
     expect(languageCode("zap")).toBe("")
+  })
+
+  test("parseSttConfig/parseTtsConfig build discriminated configs or null", () => {
+    expect(
+      parseSttConfig({
+        ...EMPTY_VOICE,
+        sttProvider: "cloudflare-stt",
+        sttApiKey: "k",
+        sttModel: "@cf/deepgram/nova-3",
+      }),
+    ).toBeNull() // account id required
+    expect(
+      parseSttConfig({
+        ...EMPTY_VOICE,
+        sttProvider: "cloudflare-stt",
+        sttAccountId: "acc",
+        sttApiKey: "k",
+        sttModel: "@cf/deepgram/nova-3",
+      }),
+    ).toEqual({
+      provider: "cloudflare-stt",
+      apiKey: "k",
+      accountId: "acc",
+      model: "@cf/deepgram/nova-3",
+    })
+    // Legacy saved rows: provider alias + the old whisper model remap.
+    expect(
+      parseSttConfig({
+        ...EMPTY_VOICE,
+        sttProvider: "workers-ai-stt",
+        sttAccountId: "acc",
+        sttApiKey: "k",
+        sttModel: "@cf/openai/whisper",
+      }),
+    ).toEqual({
+      provider: "cloudflare-stt",
+      apiKey: "k",
+      accountId: "acc",
+      model: "@cf/openai/whisper-large-v3-turbo",
+    })
+    // A model the provider does not offer never parses.
+    expect(
+      parseSttConfig({
+        ...EMPTY_VOICE,
+        sttProvider: "openai-stt",
+        sttApiKey: "k",
+        sttModel: "@cf/deepgram/nova-3",
+      }),
+    ).toBeNull()
+    // Blank model falls back to the provider default; a TTS id never parses as STT.
+    expect(
+      parseSttConfig({
+        ...EMPTY_VOICE,
+        sttProvider: "xai-stt",
+        sttApiKey: "k",
+      }),
+    ).toEqual({
+      provider: "xai-stt",
+      apiKey: "k",
+      model: "grok-voice-transcribe-2.0",
+    })
+    expect(
+      parseSttConfig({
+        ...EMPTY_VOICE,
+        sttProvider: "xai-tts",
+        sttApiKey: "k",
+      }),
+    ).toBeNull()
+    // xAI TTS needs no model; an unset voice takes the model default.
+    expect(
+      parseTtsConfig({
+        ...EMPTY_VOICE,
+        ttsProvider: "xai-tts",
+        ttsApiKey: "k",
+      }),
+    ).toEqual({ provider: "xai-tts", apiKey: "k", voice: "eve" })
+    expect(
+      parseTtsConfig({
+        ...EMPTY_VOICE,
+        ttsProvider: "cloudflare-tts",
+        ttsAccountId: "acc",
+        ttsApiKey: "k",
+        ttsModel: "@cf/deepgram/aura-1",
+        ttsVoice: "luna",
+      }),
+    ).toEqual({
+      provider: "cloudflare-tts",
+      apiKey: "k",
+      accountId: "acc",
+      model: "@cf/deepgram/aura-1",
+      voice: "luna",
+    })
+    // A voice the model does not offer falls back to its default speaker.
+    expect(
+      parseTtsConfig({
+        ...EMPTY_VOICE,
+        ttsProvider: "cloudflare-tts",
+        ttsAccountId: "acc",
+        ttsApiKey: "k",
+        ttsModel: "@cf/deepgram/aura-1",
+        ttsVoice: "alloy",
+      })?.voice,
+    ).toBe("angus")
+    expect(parseTtsConfig(EMPTY_VOICE)).toBeNull()
+  })
+
+  test("applyVoicePatch rejects kind mismatches and unknown models", () => {
+    expect(
+      applyVoicePatch(EMPTY_VOICE, { stt: { provider: "xai-tts" } }).error,
+    ).toMatch(/unsupported/)
+    expect(
+      applyVoicePatch(EMPTY_VOICE, {
+        stt: { provider: "openai-stt", model: "nova-3" },
+      }).error,
+    ).toMatch(/model/)
+    expect(
+      applyVoicePatch(EMPTY_VOICE, {
+        tts: { provider: "xai-tts", model: "gpt-4o-mini-tts" },
+      }).error,
+    ).toMatch(/model/)
+    // Legacy ids are accepted and stored canonical.
+    const legacy = applyVoicePatch(EMPTY_VOICE, {
+      stt: { provider: "deepgram-stt", model: "@cf/deepgram/nova-3" },
+    })
+    expect(legacy.error).toBeNull()
+    expect(legacy.next.sttProvider).toBe("cloudflare-stt")
+    expect(legacy.next.sttModel).toBe("@cf/deepgram/nova-3")
   })
 
   test("voiceReady requires key, model, and account per spec", () => {
@@ -91,7 +298,7 @@ describe("voice providers", () => {
     }
     expect(voiceReady(base, "stt")).toBe(true)
     expect(voiceReady(base, "tts")).toBe(true)
-    expect(voiceReady({ ...base, sttModel: "" }, "stt")).toBe(false)
+    expect(voiceReady({ ...base, sttModel: "bogus" }, "stt")).toBe(false)
     expect(voiceReady({ ...base, ttsApiKey: "" }, "tts")).toBe(false)
     const workers = {
       ...base,
@@ -125,6 +332,7 @@ describe("voice providers", () => {
       language: "fr-CA",
     })
     const resolved = resolveVoiceConfig(db, "a")
+    expect(resolved.value.sttProvider).toBe("cloudflare-stt")
     expect(resolved.value.sttApiKey).toBe("cf-token")
     expect(resolved.value.sttAccountId).toBe("cf-account")
     expect(resolved.sttSource).toBe("vault")
@@ -135,10 +343,12 @@ describe("voice providers", () => {
   test("runStt posts a byte array plus language and vad to workers ai", async () => {
     let seen: { url: string; init: RequestInit } | null = null
     const text = await runStt({
-      providerId: "workers-ai-stt",
-      apiKey: "tok",
-      accountId: "acc",
-      model: "@cf/openai/whisper-large-v3-turbo",
+      config: {
+        provider: "cloudflare-stt",
+        apiKey: "tok",
+        accountId: "acc",
+        model: "@cf/openai/whisper-large-v3-turbo",
+      },
       language: "fr-CA",
       audio: new Uint8Array([1, 2, 3]),
       mime: "audio/webm",
@@ -164,42 +374,15 @@ describe("voice providers", () => {
     expect(body.vad_filter).toBe(true)
   })
 
-  test("runStt remaps the legacy whisper model to turbo", async () => {
-    let seen: { url: string; init: RequestInit } | null = null
-    await runStt({
-      providerId: "workers-ai-stt",
-      apiKey: "tok",
-      accountId: "acc",
-      model: "@cf/openai/whisper",
-      language: "fr",
-      audio: new Uint8Array([1]),
-      mime: "audio/webm",
-      fetchImpl: async (url, init) => {
-        seen = { url: String(url), init: init ?? {} }
-        return new Response(JSON.stringify({ result: { text: "salut" } }), {
-          status: 200,
-        })
-      },
-    })
-    const call = seen as unknown as { url: string; init: RequestInit } | null
-    const url = decodeURIComponent(call?.url ?? "")
-    expect(url).toContain("/ai/run/@cf/openai/whisper-large-v3-turbo")
-    expect(url).not.toMatch(/\/ai\/run\/@cf\/openai\/whisper$/)
-    const body = JSON.parse(String(call?.init.body)) as {
-      language?: string
-      vad_filter?: boolean
-    }
-    expect(body.language).toBe("fr")
-    expect(body.vad_filter).toBe(true)
-  })
-
   test("runStt omits the language hint on auto but keeps vad", async () => {
     let seen: { url: string; init: RequestInit } | null = null
     await runStt({
-      providerId: "workers-ai-stt",
-      apiKey: "tok",
-      accountId: "acc",
-      model: "@cf/openai/whisper-large-v3-turbo",
+      config: {
+        provider: "cloudflare-stt",
+        apiKey: "tok",
+        accountId: "acc",
+        model: "@cf/openai/whisper-large-v3-turbo",
+      },
       language: "auto",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -222,10 +405,12 @@ describe("voice providers", () => {
   test("runStt parses the deepgram nova-3 transcript shape", async () => {
     let seen: { url: string; init: RequestInit } | null = null
     const text = await runStt({
-      providerId: "deepgram-stt",
-      apiKey: "tok",
-      accountId: "acc",
-      model: "@cf/deepgram/nova-3",
+      config: {
+        provider: "cloudflare-stt",
+        apiKey: "tok",
+        accountId: "acc",
+        model: "@cf/deepgram/nova-3",
+      },
       language: "fr-CA",
       audio: new Uint8Array([4, 5]),
       mime: "audio/webm",
@@ -265,10 +450,11 @@ describe("voice providers", () => {
   test("runStt posts multipart to groq with a normalized language", async () => {
     let seen: { url: string; init: RequestInit } | null = null
     const text = await runStt({
-      providerId: "groq-stt",
-      apiKey: "tok",
-      accountId: "",
-      model: "whisper-large-v3",
+      config: {
+        provider: "groq-stt",
+        apiKey: "tok",
+        model: "whisper-large-v3",
+      },
       language: "auto",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -289,14 +475,38 @@ describe("voice providers", () => {
     expect(form.get("language")).toBeNull()
   })
 
+  test("runStt posts multipart to xai with the file last", async () => {
+    let seen: { url: string; init: RequestInit } | null = null
+    const text = await runStt({
+      config: {
+        provider: "xai-stt",
+        apiKey: "tok",
+        model: "grok-voice-transcribe-2.0",
+      },
+      language: "fr-CA",
+      audio: new Uint8Array([7]),
+      mime: "audio/webm",
+      fetchImpl: async (url, init) => {
+        seen = { url: String(url), init: init ?? {} }
+        return new Response(JSON.stringify({ text: " salut " }), {
+          status: 200,
+        })
+      },
+    })
+    expect(text).toBe("salut")
+    const call = seen as unknown as { url: string; init: RequestInit } | null
+    expect(call?.url).toBe("https://api.x.ai/v1/stt")
+    const form = call?.init.body as FormData
+    expect(form.get("model")).toBe("grok-voice-transcribe-2.0")
+    expect(form.get("language")).toBe("fr")
+    // The xAI API requires `file` after every other form parameter.
+    expect([...form.keys()]).toEqual(["model", "language", "file"])
+  })
+
   test("runTts sends the xai shape and returns raw audio", async () => {
     let seen: { url: string; init: RequestInit } | null = null
     const audio = await runTts({
-      providerId: "xai-tts",
-      apiKey: "tok",
-      accountId: "",
-      model: "",
-      voice: "",
+      config: { provider: "xai-tts", apiKey: "tok", voice: "eve" },
       language: "fr-CA",
       text: "salut",
       fetchImpl: async (url, init) => {
@@ -318,13 +528,15 @@ describe("voice providers", () => {
     })
   })
 
-  test("runTts decodes workers ai base64 audio", async () => {
+  test("runTts decodes workers ai melotts base64 audio", async () => {
     const audio = await runTts({
-      providerId: "workers-ai-tts",
-      apiKey: "tok",
-      accountId: "acc",
-      model: "@cf/myshell-ai/melotts",
-      voice: "",
+      config: {
+        provider: "cloudflare-tts",
+        apiKey: "tok",
+        accountId: "acc",
+        model: "@cf/myshell-ai/melotts",
+        voice: "",
+      },
       language: "en",
       text: "hi",
       fetchImpl: async () =>
@@ -337,6 +549,39 @@ describe("voice providers", () => {
     })
     expect(Buffer.from(audio.bytes).toString()).toBe("mp3bytes")
     expect(audio.mime).toBe("audio/mp3")
+  })
+
+  test("runTts sends the aura-1 speaker shape and returns raw audio", async () => {
+    let seen: { url: string; init: RequestInit } | null = null
+    const audio = await runTts({
+      config: {
+        provider: "cloudflare-tts",
+        apiKey: "tok",
+        accountId: "acc",
+        model: "@cf/deepgram/aura-1",
+        voice: "luna",
+      },
+      language: "en",
+      text: "hello aura",
+      fetchImpl: async (url, init) => {
+        seen = { url: String(url), init: init ?? {} }
+        return new Response(new Uint8Array([1, 2]).buffer as ArrayBuffer, {
+          status: 200,
+          headers: { "content-type": "audio/mpeg" },
+        })
+      },
+    })
+    expect(Array.from(audio.bytes)).toEqual([1, 2])
+    expect(audio.mime).toBe("audio/mpeg")
+    const call = seen as unknown as { url: string; init: RequestInit } | null
+    expect(decodeURIComponent(call?.url ?? "")).toContain(
+      "api.cloudflare.com/client/v4/accounts/acc/ai/run/@cf/deepgram/aura-1",
+    )
+    expect(JSON.parse(String(call?.init.body))).toEqual({
+      text: "hello aura",
+      speaker: "luna",
+      encoding: "mp3",
+    })
   })
 
   test("voiceConfigError catches emails-as-account-ids and short keys", () => {
@@ -370,10 +615,12 @@ describe("voice providers", () => {
 
   test("runStt surfaces the provider error body", async () => {
     const err = await runStt({
-      providerId: "workers-ai-stt",
-      apiKey: "k".repeat(40),
-      accountId: "b".repeat(32),
-      model: "@cf/openai/whisper",
+      config: {
+        provider: "cloudflare-stt",
+        apiKey: "k".repeat(40),
+        accountId: "b".repeat(32),
+        model: "@cf/openai/whisper-large-v3-turbo",
+      },
       language: "",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -389,10 +636,11 @@ describe("voice providers", () => {
     expect(err?.message).toContain("bad account")
 
     const rejected = await runStt({
-      providerId: "openai-stt",
-      apiKey: "k".repeat(40),
-      accountId: "",
-      model: "whisper-1",
+      config: {
+        provider: "openai-stt",
+        apiKey: "k".repeat(40),
+        model: "whisper-1",
+      },
       language: "",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -406,10 +654,12 @@ describe("voice providers", () => {
 
   test("runStt reports a 200 rejected-request envelope from workers ai", async () => {
     const err = await runStt({
-      providerId: "workers-ai-stt",
-      apiKey: "k".repeat(40),
-      accountId: "b".repeat(32),
-      model: "",
+      config: {
+        provider: "cloudflare-stt",
+        apiKey: "k".repeat(40),
+        accountId: "b".repeat(32),
+        model: "@cf/openai/whisper-large-v3-turbo",
+      },
       language: "",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -434,10 +684,12 @@ describe("voice providers", () => {
       cause: new Error("getaddrinfo ENOTFOUND api.cloudflare.com"),
     })
     const unreachable = await runStt({
-      providerId: "workers-ai-stt",
-      apiKey: "k".repeat(40),
-      accountId: "b".repeat(32),
-      model: "",
+      config: {
+        provider: "cloudflare-stt",
+        apiKey: "k".repeat(40),
+        accountId: "b".repeat(32),
+        model: "@cf/openai/whisper-large-v3-turbo",
+      },
       language: "",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -455,10 +707,11 @@ describe("voice providers", () => {
     const timeout = new Error("The operation timed out.")
     timeout.name = "TimeoutError"
     const timedOut = await runStt({
-      providerId: "openai-stt",
-      apiKey: "k".repeat(40),
-      accountId: "",
-      model: "whisper-1",
+      config: {
+        provider: "openai-stt",
+        apiKey: "k".repeat(40),
+        model: "whisper-1",
+      },
       language: "",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -474,10 +727,11 @@ describe("voice providers", () => {
 
   test("runStt names the provider on a malformed or empty 200 body", async () => {
     const malformed = await runStt({
-      providerId: "openai-stt",
-      apiKey: "k".repeat(40),
-      accountId: "",
-      model: "whisper-1",
+      config: {
+        provider: "openai-stt",
+        apiKey: "k".repeat(40),
+        model: "whisper-1",
+      },
       language: "",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -492,10 +746,11 @@ describe("voice providers", () => {
     )
 
     const empty = await runStt({
-      providerId: "groq-stt",
-      apiKey: "k".repeat(40),
-      accountId: "",
-      model: "whisper-large-v3",
+      config: {
+        provider: "groq-stt",
+        apiKey: "k".repeat(40),
+        model: "whisper-large-v3",
+      },
       language: "",
       audio: new Uint8Array([1]),
       mime: "audio/webm",
@@ -509,11 +764,13 @@ describe("voice providers", () => {
 
   test("runTts reports a 200 rejected-request envelope from workers ai", async () => {
     const err = await runTts({
-      providerId: "workers-ai-tts",
-      apiKey: "k".repeat(40),
-      accountId: "b".repeat(32),
-      model: "@cf/myshell-ai/melotts",
-      voice: "",
+      config: {
+        provider: "cloudflare-tts",
+        apiKey: "k".repeat(40),
+        accountId: "b".repeat(32),
+        model: "@cf/myshell-ai/melotts",
+        voice: "",
+      },
       language: "",
       text: "hello",
       fetchImpl: async () =>
@@ -533,11 +790,12 @@ describe("voice providers", () => {
     expect(ttsMaxChars("x".repeat(5000)).length).toBe(4000)
     await expect(
       runTts({
-        providerId: "openai-tts",
-        apiKey: "tok",
-        accountId: "",
-        model: "gpt-4o-mini-tts",
-        voice: "alloy",
+        config: {
+          provider: "openai-tts",
+          apiKey: "tok",
+          model: "gpt-4o-mini-tts",
+          voice: "alloy",
+        },
         language: "",
         text: "   ",
         fetchImpl: async () => new Response("", { status: 200 }),

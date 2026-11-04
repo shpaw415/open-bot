@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { pluginToolPrefix, stalePluginTools } from "./docker"
+import {
+  parseSha256Sum,
+  pluginToolPrefix,
+  sha256Hex,
+  stalePluginTools,
+} from "./docker"
 
 describe("plugin tool pruning", () => {
   test("prefix follows the desktop tool convention", () => {
@@ -34,5 +39,23 @@ describe("plugin tool pruning", () => {
 
   test("an empty listing prunes nothing", () => {
     expect(stalePluginTools("stock-pro", "", ["a"])).toEqual([])
+  })
+})
+
+describe("plugin tool copy verification", () => {
+  test("sha256Hex hashes the exact installed content", () => {
+    expect(sha256Hex("hello\n")).toBe(
+      "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+    )
+  })
+
+  test("parseSha256Sum reads the digest sha256sum prints", () => {
+    const digest = sha256Hex("#!/bin/sh\necho hi\n")
+    expect(parseSha256Sum(`${digest}  /usr/local/bin/ob-plugin-x-ctl\n`)).toBe(
+      digest,
+    )
+    expect(parseSha256Sum(`${digest.toUpperCase()} *ctl\n`)).toBe(digest)
+    expect(parseSha256Sum("sha256sum: /nope: No such file\n")).toBeNull()
+    expect(parseSha256Sum("")).toBeNull()
   })
 })

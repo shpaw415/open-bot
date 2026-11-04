@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react"
+import { useBackLayer } from "./back-nav"
 
 const FOCUSABLE =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -73,6 +74,10 @@ function overlayFocusables(root: HTMLElement): HTMLElement[] {
  * Per open overlay:
  * - Escape closes, but only when this overlay is the top of the stack, and
  *   never while `suspendEscape` holds (busy/destructive wait states).
+ * - The system/browser Back button closes it too (back-nav layer on the
+ *   history stack, same top-first order, same suspend rule) — overlays
+ *   feel like app screens, not website popups. Opt out per overlay with
+ *   `backEnabled: false` only when the open state already rides the URL.
  * - Focus moves to the first reachable focusable inside `rootRef` (the
  *   Dialog Paper / Drawer paper), falling back to the container itself.
  * - Focus returns to the exact element that had focus on open — the real
@@ -85,7 +90,14 @@ export function useOverlayA11y(
   onClose: () => void,
   rootRef?: React.RefObject<HTMLElement | null>,
   suspendEscape?: boolean,
+  opts?: { backName?: string; backEnabled?: boolean; reopen?: () => void },
 ) {
+  useBackLayer(open, onClose, {
+    name: opts?.backName ?? "overlay",
+    suspend: suspendEscape,
+    reopen: opts?.reopen,
+    enabled: opts?.backEnabled !== false,
+  })
   const idRef = useRef<symbol | null>(null)
   // The trigger is captured at RENDER time, when `open` first flips true —
   // before React commits the overlay. A dialog field carrying autoFocus

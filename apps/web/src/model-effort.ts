@@ -2,7 +2,11 @@
  * Coordinated model + thinking-effort saves for the chat composer.
  *
  * The two settings are independent server resources (PUT /api/model,
- * PUT /api/thinking) but one UI owns both, so the writes are serialized
+ * PUT /api/thinking) but one UI owns both, so the writes are serialized.
+ * Every save carries the thread it belongs to (`sessionId`, "" = the
+ * desktop-wide default): the PUTs store it per thread, the reconcile
+ * fetch reads that thread's effective pick, and adopt/revert hand the
+ * id back so the caller never paints another thread's picker.
  * through a single queue: every save runs its PUT + /api/me reconciliation
  * to completion before the next starts. That gives a deterministic final
  * server state (last enqueued write per resource wins), which ignoring
@@ -26,21 +30,30 @@ export type MeModelInfo = {
 export type MeLike = { model?: MeModelInfo }
 
 export type SettingsSaverDeps = {
-  putModel: (modelKey: string) => Promise<void>
-  putThinking: (effort: string) => Promise<void>
-  fetchMe: () => Promise<MeLike>
+  putModel: (modelKey: string, sessionId: string) => Promise<void>
+  putThinking: (effort: string, sessionId: string) => Promise<void>
+  fetchMe: (sessionId: string) => Promise<MeLike>
   /** Server truth (already persisted) to adopt into the picker state. */
-  adoptServer: (me: MeLike) => void
-  revertModel: (previous: string) => void
-  revertEffort: (previous: string) => void
+  adoptServer: (me: MeLike, sessionId: string) => void
+  revertModel: (previous: string, sessionId: string) => void
+  revertEffort: (previous: string, sessionId: string) => void
   setEffortSaving: (saving: boolean) => void
   onError: (message: string) => void
   isTeamLocked: (caught: unknown) => boolean
 }
 
 export type SettingsSaver = {
-  selectModel(input: { value: string; previous: string }): void
-  selectEffort(input: { value: string; previous: string }): void
+  selectModel(input: {
+    value: string
+    previous: string
+    /** Thread the pick belongs to; "" keeps the legacy global save. */
+    sessionId?: string
+  }): void
+  selectEffort(input: {
+    value: string
+    previous: string
+    sessionId?: string
+  }): void
   /** True while any save chain is queued or running. */
   busy(): boolean
   /** True while at least one effort save is queued or running. */
@@ -78,7 +91,7 @@ export function createSettingsSaver(deps: SettingsSaverDeps): SettingsSaver {
   }
 
   return {
-    selectModel({ value, previous }) {
+    selectModel({ value, previous, sessionId = "" }) {
       const split = value.indexOf("/")
       const providerID = split > 0 ? value.slice(0, split) : ""
       const modelID = split > 0 ? value.slice(split + 1) : ""
@@ -86,10 +99,10 @@ export function createSettingsSaver(deps: SettingsSaverDeps): SettingsSaver {
       const seq = ++modelSeq
       enqueue(async () => {
         try {
-          await deps.putModel(`${providerID}/${modelID}`)
+          await deps.putModel(`${providerID}/${modelID}`, sessionId)
         } catch (caught) {
           if (seq !== modelSeq) return
-          deps.revertModel(previous)
+          deps.revertModel(previous, sessionId)
           deps.onError(
             deps.isTeamLocked(caught)
               ? "the model is managed by your team admin"
@@ -100,28 +113,28 @@ export function createSettingsSaver(deps: SettingsSaverDeps): SettingsSaver {
         // The server re-validated the saved effort against the new model
         // and dropped it when unsupported; adopt the server answer so the
         // picker never claims a level the engine will not use.
-        const me = await deps.fetchMe().catch(() => null)
+        const me = await deps.fetchMe(sessionId).catch(() => null)
         if (seq !== modelSeq) return
-        if (me) deps.adoptServer(me)
+        if (me) deps.adoptServer(me, sessionId)
       })
     },
 
-    selectEffort({ value, previous }) {
+    selectEffort({ value, previous, sessionId = "" }) {
       const seq = ++effortSeq
       effortChains += 1
       deps.setEffortSaving(true)
       enqueue(async () => {
         try {
           if (seq === effortSeq) {
-            await deps.putThinking(value)
-            const me = await deps.fetchMe().catch(() => null)
-            if (seq === effortSeq && me) deps.adoptServer(me)
+            await deps.putThinking(value, sessionId)
+            const me = await deps.fetchMe(sessionId).catch(() => null)
+            if (seq === effortSeq && me) deps.adoptServer(me, sessionId)
           }
           // Superseded while queued: the newer effort chain owns the
           // outcome — writing here would only race its newer value.
         } catch (caught) {
           if (seq === effortSeq) {
-            deps.revertEffort(previous)
+            deps.revertEffort(previous, sessionId)
             deps.onError(
               deps.isTeamLocked(caught)
                 ? "thinking effort is managed by your team admin"

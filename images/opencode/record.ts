@@ -418,10 +418,38 @@ async function runRecording(session: string) {
   } catch {}
 }
 
+// What `stop` can honestly claim about the file. A readable ffprobe
+// duration proves the container finalized whatever the kill path; without
+// a probe, only a graceful SIGINT exit (no TERM/KILL escalation) counts.
+// Anything else says why, instead of a bare finalized:false on a playable
+// file that sends the agent off to verify by hand.
+export function stopFinalization(input: {
+  forcedKill: boolean
+  probeSeconds: number | null
+  stillAlive: boolean
+}): { finalized: boolean; probeValid: boolean; warning?: string } {
+  const probeValid = input.probeSeconds !== null
+  if (input.stillAlive)
+    return {
+      finalized: false,
+      probeValid,
+      warning:
+        "recorder is still running after SIGKILL — the file is not finalized; check the process before using it",
+    }
+  if (probeValid || !input.forcedKill) return { finalized: true, probeValid }
+  return {
+    finalized: false,
+    probeValid: false,
+    warning:
+      "encoder needed a forced kill (SIGTERM/SIGKILL) and ffprobe could not read a duration — the file may lack its trailer; verify with ffprobe before using it",
+  }
+}
+
 async function stopRecording(session: string) {
   const state = readState(session)
   if (!state) return { recording: false, stopped: false }
   const wasAlive = isAlive(state)
+  let forcedKill = false
   if (wasAlive) {
     // SIGINT lets ffmpeg finalize the container (moov/trailer); TERM/KILL
     // are only the fallback for a wedged encoder, in that order.
@@ -435,6 +463,7 @@ async function stopRecording(session: string) {
     const deadline = Date.now() + 10_000
     while (isAlive(state) && Date.now() < deadline) await Bun.sleep(100)
     if (isAlive(state)) {
+      forcedKill = true
       try {
         process.kill(-state.pgid, "SIGTERM")
       } catch {}
@@ -444,21 +473,27 @@ async function stopRecording(session: string) {
       try {
         process.kill(-state.pgid, "SIGKILL")
       } catch {}
+      await Bun.sleep(200)
     }
   }
-  clearState(session)
+  const stillAlive = isAlive(state)
+  if (!stillAlive) clearState(session)
   const info = fileInfo(state.file)
   const elapsed = Math.max(
     0,
     Math.round(((info.modifiedAt || Date.now()) - state.startedAt) / 100) / 10,
   )
+  const probed = await probeSeconds(state.file)
+  const fin = stopFinalization({ forcedKill, probeSeconds: probed, stillAlive })
   return {
-    recording: false,
-    stopped: wasAlive,
-    finalized: !wasAlive,
+    recording: stillAlive,
+    stopped: wasAlive && !stillAlive,
+    finalized: fin.finalized,
+    probeValid: fin.probeValid,
+    ...(fin.warning ? { warning: fin.warning } : {}),
     file: state.file,
     bytes: info.bytes,
-    seconds: (await probeSeconds(state.file)) ?? elapsed,
+    seconds: probed ?? elapsed,
   }
 }
 

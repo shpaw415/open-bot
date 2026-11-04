@@ -124,6 +124,7 @@ export function pageServerCmdline(opts: {
 export function pageServerCommand(opts: {
   pidFile: string
   token: string
+  ownerToken: string
   port: number
   bin: string
   checkoutEntry?: string | null
@@ -135,6 +136,7 @@ export function pageServerCommand(opts: {
   return [
     `echo $$ > '${opts.pidFile}.pid'`,
     `printf '%s' '${opts.token}' > '${opts.pidFile}.token'`,
+    `printf '%s' '${opts.ownerToken}' > '${opts.pidFile}.owner-token'`,
     `printf '%s' '${opts.port}' > '${opts.pidFile}.port'`,
     `printf '%s' '${cmdline}' > '${opts.pidFile}.cmd'`,
     // exec replaces the shell, so the log redirection rides the exec'd
@@ -208,7 +210,16 @@ export function basePluginPagePort(pluginId: string) {
   return PAGE_PORT_MIN + ((hash >>> 0) % span)
 }
 
-type PageState = { port: number; token: string; startedAt: number }
+type PageState = {
+  port: number
+  token: string
+  // Owner proof: injected ONLY by the dashboard surfaces (/api/pages,
+  // _frame, internal control fetches) as x-open-bot-owner-token. The public
+  // /hooks proxy never carries it, so a page server can require it on
+  // owner-only routes; `token` alone merely proves "came through a proxy".
+  ownerToken: string
+  startedAt: number
+}
 
 const states = new Map<string, PageState>()
 const lastStart = new Map<string, number>()
@@ -404,10 +415,18 @@ async function ensurePluginPageServerInner(
   const prior = await opencodeExecUser(n.opencode, [
     "sh",
     "-c",
-    `cat '${pidFile}.token' 2>/dev/null || true`,
+    `cat '${pidFile}.token' 2>/dev/null; echo; cat '${pidFile}.owner-token' 2>/dev/null; true`,
   ])
-  const priorToken = prior.stdout.trim()
+  const [priorToken = "", priorOwner = ""] = prior.stdout
+    .split("\n")
+    .map((line) => line.trim())
   const token = /^[0-9a-f]{64}$/.test(priorToken) ? priorToken : randomToken()
+  // The owner token must differ from the page token or it proves nothing.
+  let ownerToken =
+    /^[0-9a-f]{64}$/.test(priorOwner) && priorOwner !== token
+      ? priorOwner
+      : randomToken()
+  while (ownerToken === token) ownerToken = randomToken()
   const bin = pluginPageBin(pluginId, entry)
   // Local installs run the checkout copy with --hot (live edits) when it is
   // still on disk; anything else runs the installed bin.
@@ -473,12 +492,21 @@ async function ensurePluginPageServerInner(
       "-e",
       `OPEN_BOT_PAGE_TOKEN=${token}`,
       "-e",
+      `OPEN_BOT_PAGE_OWNER_TOKEN=${ownerToken}`,
+      "-e",
       `OPEN_BOT_PLUGIN_ID=${pluginId}`,
       ...pageUiEnv(pluginId, manifest, checkoutEntry),
       n.opencode,
       "sh",
       "-c",
-      pageServerCommand({ pidFile, token, port, bin, checkoutEntry }),
+      pageServerCommand({
+        pidFile,
+        token,
+        ownerToken,
+        port,
+        bin,
+        checkoutEntry,
+      }),
     ],
     undefined,
     30_000,
@@ -503,7 +531,7 @@ async function ensurePluginPageServerInner(
         `pid=$(cat '${pidFile}.pid' 2>/dev/null) && kill -0 "$pid" 2>/dev/null`,
       ]).catch(() => ({ code: 1, stdout: "", stderr: "" }))
       if (alive.code !== 0) continue
-      states.set(key, { port, token, startedAt: Date.now() })
+      states.set(key, { port, token, ownerToken, startedAt: Date.now() })
       touchPluginPageActivity(userId, pluginId)
       if (hub) {
         pageHub = hub
@@ -551,7 +579,7 @@ function opencodeExecUser(container: string, args: string[]) {
 export function killPageServerScript(pidFile: string, keepToken: boolean) {
   const files = keepToken
     ? `'${pidFile}.pid' '${pidFile}.port' '${pidFile}.cmd'`
-    : `'${pidFile}.pid' '${pidFile}.token' '${pidFile}.port' '${pidFile}.cmd'`
+    : `'${pidFile}.pid' '${pidFile}.token' '${pidFile}.owner-token' '${pidFile}.port' '${pidFile}.cmd'`
   return [
     `pid=$(cat '${pidFile}.pid' 2>/dev/null || true)`,
     `cmd=$(cat '${pidFile}.cmd' 2>/dev/null || true)`,
@@ -644,8 +672,10 @@ export async function pluginPageRuntime(
   running: boolean
   port: number | null
   pid: number | null
+  desktop: string
   note?: string
 }> {
+  const desktop = await desktopPhase(userId)
   const n = names(userId)
   const pidFile = pluginPagePath(pluginId)
   const read = (suffix: string) =>
@@ -668,10 +698,20 @@ export async function pluginPageRuntime(
       running,
       port,
       pid,
+      desktop,
       note: 'listening on the desktop loopback only — remove any "hostname" option in Bun.serve so it binds all interfaces (the control plane reaches the server over the container network)',
     }
   }
-  return { running, port, pid }
+  if (!running && desktop !== "running") {
+    return {
+      running,
+      port,
+      pid,
+      desktop,
+      note: `desktop is ${desktop}, so no page server can be running — ob-plugin restart ${pluginId} wakes the desktop and starts it`,
+    }
+  }
+  return { running, port, pid, desktop }
 }
 
 // Restart = stop + start. Used when settings change so the server observes
@@ -810,6 +850,7 @@ export function strippedHeaders(
   headers: Headers,
   token: string,
   language?: string,
+  ownerToken?: string,
 ) {
   const out = new Headers(headers)
   out.delete("host")
@@ -817,6 +858,10 @@ export function strippedHeaders(
   out.delete("cookie")
   out.delete("authorization")
   out.set("x-open-bot-page-token", token)
+  // Owner proof rides ONLY dashboard surfaces: set when the caller passes
+  // it, deleted otherwise so a client can never smuggle its own copy in.
+  if (ownerToken) out.set("x-open-bot-owner-token", ownerToken)
+  else out.delete("x-open-bot-owner-token")
   if (language) out.set("x-open-bot-language", language)
   out.set("cache-control", "no-cache")
   out.set("referrer-policy", "no-referrer")
@@ -855,12 +900,14 @@ async function rewritePageBody(
 }
 
 // Wakes a sleeping desktop so a dashboard app-tab visit can boot the instance
-// (the webhook path does the same before forwarding). No-op when already
-// running — the phase probe is one docker inspect that only runs on the
-// lazy-start path. Concurrent callers dedupe inside wakeDesktop. Structured
-// HttpErrors (images missing, capacity, viking models) propagate to the
-// caller like a webhook hit.
-async function wakeDesktopForPage(db: Db, userId: string) {
+// (the webhook path does the same before forwarding). Also used by the
+// explicit agent page-restart route: an agent asking to (re)start a page
+// server means "boot it", not "fail because the desktop was asleep when I
+// asked". No-op when already running — the phase probe is one docker inspect
+// that only runs on the lazy-start path. Concurrent callers dedupe inside
+// wakeDesktop. Structured HttpErrors (images missing, capacity, viking
+// models) propagate to the caller like a webhook hit.
+export async function wakeDesktopForPage(db: Db, userId: string) {
   if ((await desktopPhase(userId)) === "running") return
   await wakeDesktop(db, userId)
 }
@@ -911,7 +958,12 @@ export async function proxyPluginPage(
   const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
   const upstream = await fetch(dest, {
     method: req.method,
-    headers: strippedHeaders(req.headers, state.token, instanceLanguage(db)),
+    headers: strippedHeaders(
+      req.headers,
+      state.token,
+      instanceLanguage(db),
+      state.ownerToken,
+    ),
     body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     // let SSE/streaming responses flow through untouched
     redirect: "manual",
@@ -943,7 +995,14 @@ export async function pluginPageJson<T>(
   touchPluginPageActivity(userId, row.pluginId)
   const base = await endpoint(userId, "opencode", state.port)
   const res = await fetch(new URL(path, base), {
-    headers: strippedHeaders(new Headers(), state.token),
+    // Control-plane-internal fetch for the owner's own surfaces (@mentions):
+    // owner-trusted like the dashboard proxies above.
+    headers: strippedHeaders(
+      new Headers(),
+      state.token,
+      undefined,
+      state.ownerToken,
+    ),
     signal: AbortSignal.timeout(timeoutMs),
     redirect: "manual",
   })
@@ -1135,7 +1194,12 @@ export async function proxyPluginPageFrame(
   const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
   const upstream = await fetch(dest, {
     method: req.method,
-    headers: strippedHeaders(req.headers, state.token, instanceLanguage(db)),
+    headers: strippedHeaders(
+      req.headers,
+      state.token,
+      instanceLanguage(db),
+      state.ownerToken,
+    ),
     body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     redirect: "manual",
     duplex: "half",

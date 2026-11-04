@@ -1,3 +1,6 @@
+import type { PublicCatalogSpec } from "./provider-catalog"
+import type { VoiceSpec } from "./voice-catalog"
+
 export type Me = {
   id: string
   email: string
@@ -5,6 +8,8 @@ export type Me = {
   mustChangePassword?: boolean
   /** Host-wide UI language (Config > Langue); plugins receive the same value. */
   language: string
+  agentStepCap?: number | null
+  agentStepCapDefault?: number
   desktop?: "starting" | "running" | "sleeping"
   model?: {
     providerID: string | null
@@ -163,6 +168,7 @@ export type TeamCatalogField = {
   label: string
   placeholder: string
   required: boolean
+  secret?: boolean
 }
 
 export type TeamCatalogEntry = {
@@ -178,7 +184,11 @@ export type TeamKeyState = { slug: string; hasKey: boolean }
 
 export type TeamSecretMarkers = Record<
   string,
-  { hasKey: boolean; hasGatewayToken?: boolean }
+  {
+    hasKey: boolean
+    hasGatewayToken?: boolean
+    fields?: Record<string, boolean>
+  }
 >
 
 export type TeamQuotaUser = {
@@ -196,6 +206,8 @@ export type TeamAdminBody = {
   config: TeamAdminConfig
   secrets: TeamSecretMarkers
   catalog: TeamCatalogEntry[]
+  voiceProviders: VoiceSpec[]
+  providerCatalogs: Record<string, PublicCatalogSpec[]>
   keys: TeamKeyState[]
   opencodeAuth?: TeamOpencodeAuthState
 }

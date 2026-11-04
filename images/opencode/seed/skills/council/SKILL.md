@@ -15,8 +15,8 @@ Start a council (run one command per member, same name every time; pass
 the control plane knows to wake this thread):
 
 ```sh
-ob-thread start --council auth-review --from ses_YOURID --role Researcher --title "OAuth paths" --message "Map every OAuth path in ~/project/api and write findings to workspace/auth-paths.md"
-ob-thread start --council auth-review --from ses_YOURID --role Reviewer --title "Token storage" --message "Review how tokens are stored in ~/project/api and write findings to workspace/token-storage.md"
+ob-thread start --council auth-review --from ses_YOURID --role Researcher --model grok/grok-4.5 --title "OAuth paths" --message "Map every OAuth path in ~/project/api and write findings to workspace/auth-paths.md"
+ob-thread start --council auth-review --from ses_YOURID --role Reviewer --persona "Software manager" --model openai/gpt-5 --effort high --title "Token storage" --message "Review how tokens are stored in ~/project/api and write findings to workspace/token-storage.md"
 ```
 
 Then end your final reply with the marker (the slug must match):
@@ -37,6 +37,21 @@ Rules:
   "Reviewer"). Keep it to a word or two.
 - Give each member a self-contained `--message`: they cannot see this chat.
   Include the paths they need and where to write results.
+- Members share ONE filesystem. Parallel members writing the same tree have
+  silently overwritten each other's files and left shared crates
+  uncompilable mid-campaign, repeatedly. Partition the work in the briefs:
+  one working tree (or one exclusive set of files/crates) per member, and
+  integrate through one coordinator pass afterwards. An integrating copy is
+  done with `rsync -a --delete` or git — never parse `diff -rq` output into
+  `cp` loops (`Only in` lines name a bare file, not a path; modules vanish
+  silently). The start output warns you which other workers are already
+  running on the shared filesystem — treat that as live claims, not noise.
+  Writes are guarded: a write to a file that changed since your session
+  read it is refused (`changed on disk since you read it`) — re-read, merge
+  the teammate's content, then write; never force around it. A member whose
+  status reads `STALLED` in `ob-thread council status` stopped mid-work:
+  verify its deliverables exist and relaunch it with `ob-thread post`
+  instead of redoing its job yourself.
 - Two to five members is a good council; more rarely helps.
 - Mind the desktop's RAM: every member is a full session, and a Chromium tab
   or native build per member adds up fast. Budget roughly 1.5-2 GiB per
@@ -48,6 +63,25 @@ Rules:
   (`desktop is not running`, OOM), revive it and rerun the council.
 - Personas work on members too (`--persona "Software manager"`) when a job
   needs a specific voice.
+- Pick each member's model and reasoning effort: `--model PROVIDER/MODEL`
+  and `--effort LEVEL` ride the same start command, per member — a cheap
+  fast model for the researcher, a deep reasoner at `--effort high` for the
+  reviewer, each freely combined with its own `--persona`. `ob-thread
+  models` lists the connected models and the effort levels each one
+  offers; an unknown model or level is refused before anything is created,
+  so fix the flag and rerun. Omit both to inherit the desktop default. The
+  viewer rail shows every member's persona/model/effort, and follow-ups
+  (`ob-thread post`) keep the member's pick. A member's model can also be
+  hot-switched mid-council — `ob-thread post <member-id> --model … "…"` or
+  `ob-thread model <member-id> --model …` — taking effect on its next turn
+  without losing its context, e.g. escalate a stalled member to a deep
+  reasoner instead of restarting the team.
+- One thread can run several councils at the same time: start each team
+  under its own name with the same `--from`, and end the reply with one
+  marker per council. Each council wakes this thread separately when its
+  own members are all done (one `[council: name]` per team), and the user
+  gets a floating Councils button in this thread listing every team until
+  one is opened — no need to make them scroll back to a marker.
 - `--steps unlimited` lifts the 256-step cap on that member. Council work is
   exactly the long-job shape the cap was cut for — deep research, big
   builds, multi-phase reviews — and a member that hits the cap ends

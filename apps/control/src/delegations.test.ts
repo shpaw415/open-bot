@@ -35,6 +35,7 @@ const {
   handleDelegations,
   isDelegationsPath,
   lastAssistantText,
+  lastTurnEnd,
   recordDelegation,
   resolveDelegationCreator,
   wakeableSessionRow,
@@ -239,6 +240,51 @@ describe("dispatchDelegationWakes", () => {
     await handleDelegationIdle(store.db, "user-1", "m1")
     await handleDelegationIdle(store.db, "user-1", "m1")
     expect(prompts).toHaveLength(1)
+  })
+
+  test("two councils of one creator wake independently", async () => {
+    const store = fakeDb()
+    seedCouncil(store, [
+      { id: "w1", creator: "chat1", subject: "a1", councilId: "c1" },
+      { id: "w2", creator: "chat1", subject: "a2", councilId: "c1" },
+      { id: "w3", creator: "chat1", subject: "b1", councilId: "c2" },
+    ])
+    store.councils.push(
+      { id: "c1", userId: "user-1", name: "auth-review" },
+      { id: "c2", userId: "user-1", name: "perf-review" },
+    )
+    // perf-review's only member finishes while auth-review still runs
+    statusMap = {
+      a1: { type: "idle" },
+      a2: { type: "busy" },
+      b1: { type: "idle" },
+    }
+    await handleDelegationIdle(store.db, "user-1", "b1")
+    expect(prompts).toHaveLength(1)
+    const first = (
+      (prompts[0]?.body.parts as { text: string }[])[0] ?? { text: "" }
+    ).text
+    expect(first).toContain("[council: perf-review]")
+    expect(first).not.toContain("auth-review")
+    expect(
+      store.watches
+        .filter((row) => row.councilId === "c1")
+        .every((row) => row.wokenAt === null),
+    ).toBe(true)
+
+    // auth-review finishing later wakes the same creator a second time
+    statusMap = {
+      a1: { type: "idle" },
+      a2: { type: "idle" },
+      b1: { type: "idle" },
+    }
+    await handleDelegationIdle(store.db, "user-1", "a2")
+    expect(prompts).toHaveLength(2)
+    const second = (
+      (prompts[1]?.body.parts as { text: string }[])[0] ?? { text: "" }
+    ).text
+    expect(second).toContain("[council: auth-review]")
+    expect(second).toContain("All 2 members finished")
   })
 
   test("a busy creator defers the wake until its own idle", async () => {
@@ -551,5 +597,32 @@ describe("wake helpers", () => {
     expect(lastAssistantText([])).toBe("")
     expect(lastAssistantText(null)).toBe("")
     expect(lastAssistantText([{ info: { role: "user" } }])).toBe("")
+  })
+
+  test("lastTurnEnd separates a finished turn from a cut or errored one", () => {
+    const msg = (info: Record<string, unknown>, text = "done") => [
+      {
+        info: { role: "assistant", ...info },
+        parts: [{ type: "text", text }],
+      },
+    ]
+    expect(lastTurnEnd(msg({ finish: "stop" }))).toEqual({
+      state: "done",
+      detail: "",
+    })
+    expect(lastTurnEnd(msg({ finish: "length" })).state).toBe("cut")
+    expect(lastTurnEnd(msg({ finish: "length" })).detail).toContain("length")
+    expect(lastTurnEnd(msg({ finish: "tool-calls" })).state).toBe("cut")
+    expect(
+      lastTurnEnd(
+        msg({ error: { name: "ProviderError", data: { message: "quota" } } }),
+      ),
+    ).toEqual({ state: "error", detail: "quota" })
+    expect(
+      lastTurnEnd(msg({ error: { name: "MessageAbortedError" } })).state,
+    ).toBe("cut")
+    expect(lastTurnEnd([]).state).toBe("empty")
+    expect(lastTurnEnd(null).state).toBe("unknown")
+    expect(lastTurnEnd(msg({})).state).toBe("unknown")
   })
 })

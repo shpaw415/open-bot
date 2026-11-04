@@ -175,6 +175,7 @@ describe("plugin pages", () => {
     const base = {
       pidFile: "/home/agent/.open-bot/pages/stock-pro",
       token: "t0k3n",
+      ownerToken: "0wn3r",
       port: 4742,
       bin: "/usr/local/bin/ob-plugin-stock-pro-server.ts",
     }
@@ -183,6 +184,9 @@ describe("plugin pages", () => {
       "echo $$ > '/home/agent/.open-bot/pages/stock-pro.pid'",
     )
     expect(frozen).toContain(".token'")
+    expect(frozen).toContain(
+      "printf '%s' '0wn3r' > '/home/agent/.open-bot/pages/stock-pro.owner-token'",
+    )
     expect(frozen).toContain(".port'")
     // The stop path pkills this exact argv, so a spawn whose successor died
     // on EADDRINUSE can still be found and killed.
@@ -848,6 +852,24 @@ describe("strippedHeaders", () => {
     expect(headers.get("x-open-bot-language")).toBeNull()
     expect(headers.get("authorization")).toBeNull()
     expect(headers.get("x-open-bot-page-token")).toBe("tok")
+  })
+})
+
+describe("strippedHeaders owner token", () => {
+  test("owner token rides only when passed; a client copy never survives", () => {
+    const dash = strippedHeaders(
+      new Headers({ "x-open-bot-owner-token": "forged" }),
+      "tok",
+      "en",
+      "owner-tok",
+    )
+    expect(dash.get("x-open-bot-owner-token")).toBe("owner-tok")
+    const bare = strippedHeaders(
+      new Headers({ "x-open-bot-owner-token": "forged" }),
+      "tok",
+    )
+    expect(bare.get("x-open-bot-owner-token")).toBeNull()
+    expect(bare.get("x-open-bot-page-token")).toBe("tok")
   })
 })
 

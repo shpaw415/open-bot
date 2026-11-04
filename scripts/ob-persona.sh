@@ -26,6 +26,9 @@ locked to the desktop's seed set or the plugin's declared set).
 their base list). --skills none blocks every skill on any personality —
 including locked-base ones. A personality with an empty list loads all
 skills. Built-in personalities cannot be renamed, re-instructed, or deleted.
+The Assistant is the exception on skills: its base is every skill (seed,
+plugin, and custom), so there is nothing to add — --skills/--skills-append
+refuse; only its MCP base is the seed set, extended with --mcp-append.
 
 MCP scopes work the same way on MCP server names: --mcp replaces the editable
 server list, --mcp-append adds one (repeatable, comma list ok), --mcp-clear
@@ -87,6 +90,7 @@ case "$cmd" in
         (if .builtin then
           "\n    skills: " +
             (if .skillsNone then "none (every skill blocked)"
+             elif .id == "assistant" then "all (every seed, plugin, and custom skill)"
              else "built-in seed set" +
                (if ((.skillsExtra // []) | length) > 0 then " + " + (.skillsExtra | join(", ")) else "" end)
             end) +
@@ -110,7 +114,9 @@ case "$cmd" in
     else
       printf '%s' "$out" | jq -r '.personas[] |
         (if .builtin then
-          "- \(.name) [\(.id)] built-in (built-in scope" +
+          "- \(.name) [\(.id)] built-in (" +
+            (if .skillsNone then "skills blocked"
+             elif .id == "assistant" then "all skills" else "built-in scope" end) +
             (if ((.skillsExtra // []) | length) > 0 or ((.mcpExtra // []) | length) > 0 then
               " + extras"
             else "" end) + ")"

@@ -3,11 +3,13 @@ import type { Db, InstalledPlugin } from "@open-bot/db"
 import type { PluginManifest } from "@open-bot/plugin-kit"
 import {
   clearWebhookState,
+  handlePluginWebhook,
   parseWebhookPath,
   publicPagesEnabled,
   resolveUserWebhookTarget,
   resolveWebhookTarget,
   secretCameFromQuery,
+  webhookHeaders,
   webhookRetryAfter,
   webhookSecret,
   withSecretDeprecation,
@@ -324,6 +326,52 @@ describe("plugin webhooks", () => {
     expect(
       resolveWebhookTarget(dbOf([a, b, secured]), "stock-pro", "nope"),
     ).toEqual({ kind: "not_found" })
+  })
+
+  test("webhook headers strip any owner token and inject the page token", () => {
+    const out = webhookHeaders(
+      new Headers({
+        "x-open-bot-owner-token": "forged",
+        cookie: "session=x",
+      }),
+      "page-tok",
+    )
+    expect(out.get("x-open-bot-owner-token")).toBeNull()
+    expect(out.get("cookie")).toBeNull()
+    expect(out.get("x-open-bot-page-token")).toBe("page-tok")
+  })
+
+  test("publicRoutes gate 404s private paths before any wake", async () => {
+    const row = install({
+      userId: USER_ID,
+      pluginId: "stock-pro",
+      manifest: {
+        dashboard: {
+          pages: {
+            entry: "server.js",
+            public: true,
+            publicRoutes: ["/share/*"],
+          },
+        },
+      } as unknown as Record<string, unknown>,
+    })
+    const db = {
+      installedPlugin: (userId: string, pluginId: string) =>
+        userId === USER_ID && pluginId === "stock-pro" ? row : null,
+      userById: (id: string) =>
+        id === USER_ID ? { id, disabled: false } : null,
+      desktop: () => ({ userId: USER_ID }),
+    } as unknown as Db
+    const server = { upgrade: () => false } as never
+    // A private path resolves the install but stops at the allowlist: plain
+    // 404, and nothing downstream (wake/boot/fetch) is ever reached.
+    const res = await handlePluginWebhook(
+      request(`/hooks/${USER_ID}/stock-pro/admin/settings`),
+      new URL(`http://control.test/hooks/${USER_ID}/stock-pro/admin/settings`),
+      db,
+      server,
+    )
+    expect(res?.status).toBe(404)
   })
 
   test("throttle allows a burst then asks to slow down", () => {

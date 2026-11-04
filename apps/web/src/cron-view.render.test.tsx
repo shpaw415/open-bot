@@ -52,7 +52,7 @@ const oneShotJob = {
 
 const requests: { path: string; method: string; body: string }[] = []
 
-function installFetch() {
+function installFetch(overrides: { job?: unknown; notices?: unknown[] } = {}) {
   const real = (globalThis as any).fetch
   ;(globalThis as any).fetch = (
     input: RequestInfo | URL,
@@ -68,9 +68,9 @@ function installFetch() {
       })
     }
     const body = path.startsWith("/api/cron/notices")
-      ? []
+      ? (overrides.notices ?? [])
       : path === "/api/cron"
-        ? [oneShotJob]
+        ? [overrides.job ?? oneShotJob]
         : path === "/api/models"
           ? { models: [] }
           : path === "/api/personas"
@@ -177,6 +177,86 @@ describe("CronView — one-shot edit (R04, rendered)", () => {
     }
   })
 
+  test("the result opens in the thread the job created", async () => {
+    const RealSocket = (globalThis as any).WebSocket
+    ;(globalThis as any).WebSocket = class {
+      close() {}
+    }
+    const job = {
+      ...oneShotJob,
+      sessionId: "ses_delivery",
+      lastRunAt: Date.now() - HOUR,
+      runCount: 1,
+    }
+    const restoreFetch = installFetch({
+      job,
+      notices: [
+        {
+          id: "n1",
+          jobId: "j1",
+          jobName: "Rappel facture",
+          summary: "La facture est prête.",
+          createdAt: Date.now() - HOUR,
+          viewedAt: null,
+        },
+      ],
+    })
+    const opened: string[] = []
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    act(() => {
+      root.render(
+        <StrictMode>
+          <CronView
+            me={me}
+            onOpenThread={(sessionId) => opened.push(sessionId)}
+          />
+        </StrictMode>,
+      )
+    })
+    try {
+      await flush(60)
+      // The job card names the delivery thread it publishes into.
+      const cardThread = buttons(container).find(
+        (button) => button.textContent === "Ouvrir le fil",
+      )
+      expect(cardThread).toBeTruthy()
+      await act(async () => {
+        must(cardThread).click()
+        await sleep(20)
+      })
+      expect(opened).toEqual(["ses_delivery"])
+      // The result dialog offers the same thread, and leaves for it.
+      const resultButton = buttons(container).find(
+        (button) => button.textContent === "Résultat",
+      )
+      expect(resultButton).toBeTruthy()
+      await act(async () => {
+        must(resultButton).click()
+        await sleep(20)
+      })
+      const dialog = container.querySelector('[role="dialog"]')
+      expect(dialog).toBeTruthy()
+      expect(must(dialog).textContent).toContain("La facture est prête.")
+      const dialogThread = buttons(must(dialog) as HTMLElement).find(
+        (button) => button.textContent === "Ouvrir le fil",
+      )
+      expect(dialogThread).toBeTruthy()
+      await act(async () => {
+        must(dialogThread).click()
+        await sleep(20)
+      })
+      expect(opened).toEqual(["ses_delivery", "ses_delivery"])
+      expect(container.querySelector('[role="dialog"]')).toBeFalsy()
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+      restoreFetch()
+      ;(globalThis as any).WebSocket = RealSocket
+    }
+  })
+
   test("the dashboard alert deep link (?job=ID) opens that job's editor", async () => {
     const RealSocket = (globalThis as any).WebSocket
     ;(globalThis as any).WebSocket = class {
@@ -203,7 +283,20 @@ describe("CronView — one-shot edit (R04, rendered)", () => {
       ) as HTMLInputElement | null
       expect(dateInput).toBeTruthy()
       expect(must(dateInput).value).toBe(atMsToLocalInput(AT_MS))
-      // the URL is cleaned so Back/reload don't reopen the dialog
+      // App-stack contract: the editor IS the ?job= screen while open —
+      // Back closes it (instead of skipping past it), a reload restores
+      // it, and Cancel leaves the entry, clearing the param.
+      expect(location.search).toBe("?job=j1")
+      const cancel = buttons(container).find(
+        (button) => button.textContent?.trim() === "Annuler",
+      )
+      await act(async () => {
+        must(cancel).dispatchEvent(
+          new window.MouseEvent("click", { bubbles: true }),
+        )
+      })
+      await flush(20)
+      expect(container.querySelector('[role="dialog"]')).toBeFalsy()
       expect(location.search).toBe("")
       // an unknown id stays closed (the list is the answer)
     } finally {

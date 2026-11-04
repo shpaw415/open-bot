@@ -53,6 +53,38 @@ export type PluginCardSpec = {
   items?: string[] | string
   url?: string
   height?: number
+  span?: number
+  emptyText?: string
+}
+
+// How many grid columns one card claims, clamped to the manifest's 1-4
+// range so an out-of-range runtime value can never blow up the grid.
+export function cardSpan(card: PluginCardSpec): number {
+  const span = typeof card.span === "number" ? Math.floor(card.span) : 1
+  if (!Number.isFinite(span) || span < 1) return 1
+  return Math.min(span, 4)
+}
+
+export type CardBlock =
+  | { type: "stats"; cards: PluginCardSpec[] }
+  | { type: "single"; card: PluginCardSpec }
+
+// Consecutive stat cards compose into one responsive-columns block; every
+// other card stays a full-width block in sequence. Existing manifests (no
+// span anywhere) get columns for free instead of a full-width stat stack.
+export function cardBlocks(spec: PluginCardSpec[]): CardBlock[] {
+  const blocks: CardBlock[] = []
+  for (const card of spec) {
+    const last = blocks[blocks.length - 1]
+    if (card.kind === "stat" && last?.type === "stats") {
+      last.cards.push(card)
+    } else if (card.kind === "stat") {
+      blocks.push({ type: "stats", cards: [card] })
+    } else {
+      blocks.push({ type: "single", card })
+    }
+  }
+  return blocks
 }
 
 export type InstalledPluginInfo = {
@@ -465,14 +497,19 @@ export function PluginCardView({
     )
   }
   if (kind === "stat") {
+    const value = resolveSpecField(card.value, data)
     return (
-      <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Paper variant="outlined" sx={{ p: 1.5, height: "100%" }}>
         <Typography variant="caption" color="textSecondary">
           {resolveSpecField(card.label, data)}
         </Typography>
-        <Typography variant="h6">
-          {resolveSpecField(card.value, data)}
-        </Typography>
+        {value ? (
+          <Typography variant="h6">{value}</Typography>
+        ) : (
+          <Typography variant="h6" color="textSecondary">
+            {resolveSpecField(card.emptyText, data) || "—"}
+          </Typography>
+        )}
         {card.hint ? (
           <Typography variant="caption" color="textSecondary">
             {resolveSpecField(card.hint, data)}
@@ -483,6 +520,13 @@ export function PluginCardView({
   }
   if (kind === "table") {
     const rows = resolveRows(card.rows, data)
+    if (rows.length === 0) {
+      return (
+        <Typography variant="body2" color="textSecondary">
+          {resolveSpecField(card.emptyText, data) || "No data yet"}
+        </Typography>
+      )
+    }
     return (
       <Box sx={{ overflowX: "auto" }}>
         <table>
@@ -526,6 +570,13 @@ export function PluginCardView({
       Array.isArray(card.items) ? card.items.map(String) : card.items,
       data,
     ).flat()
+    if (items.length === 0) {
+      return (
+        <Typography variant="body2" color="textSecondary">
+          {resolveSpecField(card.emptyText, data) || "No data yet"}
+        </Typography>
+      )
+    }
     return (
       <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
         {items
@@ -577,11 +628,46 @@ export function PluginCards({
 }) {
   return (
     <Stack spacing={1}>
-      {spec
-        .map((card, index) => ({ id: `card-${index}`, card }))
-        .map((entry) => (
-          <PluginCardView key={entry.id} card={entry.card} data={data} />
-        ))}
+      {cardBlocks(spec)
+        .map((block, index) => ({ id: `block-${index}`, block }))
+        .map((entry) =>
+          entry.block.type === "stats" ? (
+            <Box
+              key={entry.id}
+              sx={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: 1,
+              }}
+            >
+              {entry.block.cards
+                .map((card, cardIndex) => ({
+                  id: `${entry.id}-card-${cardIndex}`,
+                  card,
+                }))
+                .map((cell) => (
+                  <Box
+                    key={cell.id}
+                    sx={{
+                      minWidth: 0,
+                      gridColumn:
+                        cardSpan(cell.card) > 1
+                          ? `span ${cardSpan(cell.card)}`
+                          : undefined,
+                    }}
+                  >
+                    <PluginCardView card={cell.card} data={data} />
+                  </Box>
+                ))}
+            </Box>
+          ) : (
+            <PluginCardView
+              key={entry.id}
+              card={entry.block.card}
+              data={data}
+            />
+          ),
+        )}
     </Stack>
   )
 }

@@ -24,6 +24,9 @@ const child = spawn("bun", args, {
     // port, unchanged.
     OPEN_BOT_PAGE_PORT: process.env.PORT ?? "",
     OPEN_BOT_PAGE_TOKEN: "dev-preview",
+    // Preview is the owner's own dev surface: owner routes stay reachable
+    // with the same dev-preview convention as the page token.
+    OPEN_BOT_PAGE_OWNER_TOKEN: "dev-preview",
     OPEN_BOT_PLUGIN_ID: basename(cwd),
   },
 })
