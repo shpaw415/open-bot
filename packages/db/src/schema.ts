@@ -453,6 +453,10 @@ export const improvements = sqliteTable(
       .notNull()
       .default("open"),
     note: text("note"),
+    plugin: text("plugin"),
+    routedTo: text("routed_to", { enum: ["github", "marketplace"] }),
+    issueUrl: text("issue_url"),
+    externalId: text("external_id"),
     createdAt: integer("created_at").notNull(),
     lastSeenAt: integer("last_seen_at").notNull(),
     resolvedAt: integer("resolved_at"),

@@ -263,6 +263,21 @@ export function timingSafeEqualString(left: string, right: string) {
   return diff === 0
 }
 
+// Bearer check against the admin token, timing-safe like the other
+// token comparisons. False when no admin token is configured.
+export async function adminAuthorized(
+  request: Request,
+  adminToken: string | undefined,
+): Promise<boolean> {
+  const token = bearerToken(request).trim()
+  if (!adminToken || !token) return false
+  const [left, right] = await Promise.all([
+    sha256Hex(token),
+    sha256Hex(adminToken),
+  ])
+  return timingSafeEqualString(left, right)
+}
+
 export async function marketplaceWriteAuth(
   db: D1Database,
   request: Request,

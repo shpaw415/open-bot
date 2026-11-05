@@ -9,7 +9,7 @@ https://market.open-bot.app.
 
 - frame-master + React on Cloudflare Pages
 - D1 (`DB` binding) for `plugins`, `plugin_versions`, `plugin_comments`,
-  `market_users`, `auth_sessions`, `api_keys`
+  `market_users`, `auth_sessions`, `api_keys`, `issues`
 - KV (`DYNAMIC_PAGE_KV`) for the dynamic-SSR middleware
 - Workers AI (`AI` binding) — GLM 5.3-flash security review, consumed from a
   queue by the `open-bot-marketplace-review` Worker
@@ -59,11 +59,17 @@ approval. Admins can still override the status from the review queue.
 ## Secrets (wrangler pages secrets put ...)
 
 - `MARKETPLACE_TOKEN` — shared with open-bot control planes; authorizes
-  `POST /api/publish`, comment writes, and download counts
-- `ADMIN_TOKEN` — unlocks `/api/admin/plugins` (GET queue, POST review)
+  `POST /api/publish`, comment writes, issue writes, and download counts
+- `ADMIN_TOKEN` — unlocks `/api/admin/plugins` (GET queue, POST review) and
+  the issue manage API (`GET /api/issues`, `GET/PATCH /api/issues/:id`,
+  `POST /api/issues/:id/push`)
 - `GITHUB_TOKEN` — optional; raises raw.githubusercontent rate limits when
-  fetching READMEs, and opens security issues on plugin repos when a publish
-  is rejected by the review (needs `public_repo` / issues scope)
+  fetching READMEs, opens security issues on plugin repos when a publish
+  is rejected by the review, and pushes product-report issues filed through
+  `POST /api/issues` (needs `public_repo` / issues scope)
+- `OPEN_BOT_REPO` (var, wrangler.jsonc) — repo that receives open-bot
+  product-report issues filed through `POST /api/issues`, default
+  `shpaw415/open-bot`
 
 ## Review worker (Cloudflare Git deploy)
 
@@ -126,3 +132,12 @@ wrangler secret put GITHUB_TOKEN -c ../workers/review-worker/wrangler.jsonc
 - `GET /api/keys` · `POST /api/keys` · `DELETE /api/keys/:id` — API keys
   (session cookie required; plaintext shown once at create)
 - `GET/POST /api/admin/plugins` — admin-token queue and review
+- `POST /api/issues` — instance-token write; product reports relayed from
+  open-bot instances (`{pluginId?, kind, surface?, title, detail,
+  fingerprint?, reportId?}`). Dedupes by fingerprint across instances and
+  pushes each new issue to the plugin listing's repo — or the open-bot repo
+  when no `pluginId` — with `GITHUB_TOKEN`; un-pushed issues stay stored
+  with `pushError`
+- `GET /api/issues?status=&pluginId=&limit=` · `GET/PATCH /api/issues/:id` ·
+  `POST /api/issues/:id/push` — admin-token issue management (list,
+  status/note, retry the GitHub push)

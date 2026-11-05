@@ -1,16 +1,11 @@
 "no action"
 
+import { adminAuthorized } from "../../../lib/auth"
 import { getPluginRow, pluginFromRow, searchPlugins } from "../../../lib/db"
 import { revalidatePluginPage } from "../../../lib/page-cache"
 
-function authorized(request: Request, token: string | undefined) {
-  if (!token) return false
-  const header = request.headers.get("authorization") ?? ""
-  return header.replace(/^Bearer\s+/i, "") === token
-}
-
 export async function onRequestGet(context: EventContext<Env, never, never>) {
-  if (!authorized(context.request, context.env.ADMIN_TOKEN)) {
+  if (!(await adminAuthorized(context.request, context.env.ADMIN_TOKEN))) {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
   const plugins = await searchPlugins(context.env.DB, { includeAll: true })
@@ -18,7 +13,7 @@ export async function onRequestGet(context: EventContext<Env, never, never>) {
 }
 
 export async function onRequestPost(context: EventContext<Env, never, never>) {
-  if (!authorized(context.request, context.env.ADMIN_TOKEN)) {
+  if (!(await adminAuthorized(context.request, context.env.ADMIN_TOKEN))) {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
   let body: { id?: unknown; status?: unknown; ownerUserId?: unknown }

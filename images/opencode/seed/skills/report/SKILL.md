@@ -1,6 +1,6 @@
 ---
 name: report
-description: File bug, friction, or enhancement findings about a plugin you are building, stress-testing, or using from a local checkout, with ob-report. The reports live on this desktop so any thread here can pick them up and the dashboard can track the fix. Use ob-improve for open-bot product defects instead, and ob-plugin issue for public GitHub issues.
+description: File bug, friction, or enhancement findings about a plugin you are building, stress-testing, or using from a local checkout, with ob-report. The reports live on this desktop so any thread here can pick them up and the dashboard can track the fix. Use ob-improve for open-bot product defects (or ob-improve --plugin for a defect in an installed plugin — it routes to that plugin's GitHub repo), and ob-plugin issue for a direct public GitHub issue.
 ---
 
 # Plugin reports
@@ -22,7 +22,8 @@ File when all of these are true:
 Do not use `ob-report` for defects in open-bot itself (`ob-improve` covers
 those) or for issues users of the published plugin should see (`ob-plugin
 issue` files those on GitHub — file both when a defect is public-worthy and
-needs a fix here).
+needs a fix here). A defect in an installed plugin hit during ordinary work
+(not local-checkout development) goes to `ob-improve --plugin SLUG` instead.
 
 ## Commands
 

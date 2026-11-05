@@ -336,6 +336,8 @@ export type ImprovementSurface =
   | "config"
   | "other"
 
+export type ImprovementRoute = "github" | "marketplace"
+
 export type Improvement = {
   id: string
   userId: string
@@ -351,6 +353,13 @@ export type Improvement = {
   createdAt: number
   lastSeenAt: number
   resolvedAt: number | null
+  // Plugin slug the report references (null = open-bot itself) and where the
+  // report was routed externally: a GitHub issue (externalId = issue number)
+  // or a marketplace listing comment (externalId = comment id).
+  plugin: string | null
+  routedTo: ImprovementRoute | null
+  issueUrl: string | null
+  externalId: string | null
 }
 
 export type ImprovementRow = Improvement & { email: string | null }
@@ -3562,6 +3571,10 @@ export function openDatabase(path: string) {
           createdAt: improvements.createdAt,
           lastSeenAt: improvements.lastSeenAt,
           resolvedAt: improvements.resolvedAt,
+          plugin: improvements.plugin,
+          routedTo: improvements.routedTo,
+          issueUrl: improvements.issueUrl,
+          externalId: improvements.externalId,
           email: users.email,
         })
         .from(improvements)
@@ -3569,6 +3582,17 @@ export function openDatabase(path: string) {
         .where(status ? eq(improvements.status, status) : sql`1 = 1`)
         .orderBy(desc(improvements.lastSeenAt))
         .all()
+    },
+    setImprovementIssue(
+      id: string,
+      issue: {
+        routedTo: ImprovementRoute
+        issueUrl: string
+        externalId: string | null
+      },
+    ) {
+      orm.update(improvements).set(issue).where(eq(improvements.id, id)).run()
+      return this.improvementById(id)
     },
     setImprovementStatus(
       id: string,

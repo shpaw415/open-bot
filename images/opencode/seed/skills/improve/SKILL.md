@@ -1,6 +1,6 @@
 ---
 name: improve
-description: File a product bug, repeated friction, or missing capability in open-bot when you observe it during real work. Use ob-improve. Do not use for user mistakes, secrets, one-offs, a faster path a shortcut can cover, or a finish the refine skill should save.
+description: File a product bug, repeated friction, or missing capability in open-bot — or in a plugin it references — when you observe it during real work. Use ob-improve (add --plugin SLUG for a plugin defect). Do not use for user mistakes, secrets, one-offs, a faster path a shortcut can cover, or a finish the refine skill should save.
 ---
 
 # Product reports
@@ -21,17 +21,21 @@ What each `--kind` means:
 File when all of these are true:
 
 - You observed a product defect, repeated friction, or a missing capability while doing real work.
-- It is about this bot product (chat, desktop, nav, cron, persona, config), not the user's task content.
+- It is about this bot product (chat, desktop, nav, cron, persona, config) or about a plugin you were using, not the user's task content.
 - A shortcut cannot cover it, and the refine skill cannot save it.
 - It is not a secret, not a user mistake, and not a one-off.
 
-Do not ask first. File, then one sentence in the final reply that it was filed. Before the final reply of a multi-step task, check the improvement proposals you described in chat: they must be filed here, not just described.
+Where it lands: the report always files into the local product-report queue. A new report is also relayed to the marketplace, which dedupes it against reports from every other instance and pushes it to GitHub — the open-bot repo by default, or the referenced plugin's repo with `--plugin SLUG`. When the marketplace cannot take it (unconfigured, unreachable, plugin not listed), this instance files the GitHub issue directly instead; when every external path is down, the report stays local and the output prints a `warning` saying so. A duplicate title opens nothing new — it bumps the existing report and reprints its issue.
+
+Do not ask first. File, then one sentence in the final reply that it was filed — include the issue URL from the output when there is one. Before the final reply of a multi-step task, check the improvement proposals you described in chat: they must be filed here, not just described.
 
 ```sh
 ob-improve add --kind bug --surface nav --title "ob-nav exits blocked with no url" --detail "What happened. What you expected. How to repeat it." --session SCREEN_ID
+ob-improve add --kind bug --surface other --title "Weather widget never refreshes" --detail "What happened. What you expected. How to repeat it." --plugin weather-pro
 ```
 
 - `--kind` is `bug`, `friction`, or `feature` (all first-class).
 - `--surface` is `chat`, `desktop`, `nav`, `cron`, `persona`, `config`, or `other`.
+- `--plugin SLUG` is optional. Add it when the defect is in that plugin (its code, tools, or behavior) rather than in open-bot itself; the issue then goes to the plugin's repo. Findings about a plugin you are building or stress-testing from a local checkout still belong in `ob-report`.
 - `--session` is optional. Use this thread's screen id from the system line when you have one.
 - Do not put tokens, passwords, or API keys in the title or detail.

@@ -11,7 +11,9 @@
     "OPENAUTH_CLIENT_ID": "__open_bot_18f8d590",
     // Paid plugins: platform cut in basis points (1500 = 15%). Snapshotted
     // onto each purchase at checkout; safe to change any time.
-    "PLATFORM_FEE_BPS": "1500"
+    "PLATFORM_FEE_BPS": "1500",
+    // Repo that receives open-bot product-report issues (POST /api/issues).
+    "OPEN_BOT_REPO": "shpaw415/open-bot"
   },
   "d1_databases": [
     {

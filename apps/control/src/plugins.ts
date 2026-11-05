@@ -692,7 +692,7 @@ function issueAllowed(userId: string) {
   return recentLimiter(issueLog, userId, 10)
 }
 
-async function createIssue(
+export async function createIssue(
   repo: string,
   title: string,
   body: string,
@@ -731,6 +731,77 @@ async function createIssue(
     )
   }
   return { url: parsed.html_url, number: parsed.number ?? 0 }
+}
+
+// The GitHub repo a plugin's issues belong on: the installed manifest's repo
+// first, then the marketplace listing's. "" when neither names one; the
+// marketplace lookup throws when the marketplace is unreachable/unconfigured.
+export async function resolvePluginRepo(
+  db: Db,
+  userId: string,
+  pluginId: string,
+): Promise<string> {
+  const installed = db.installedPlugin(userId, pluginId)
+  if (installed) {
+    const manifest = installed.manifest as PluginManifest
+    if (typeof manifest.repo === "string" && manifest.repo) return manifest.repo
+  }
+  const detail = await fetchDetail(db, pluginId)
+  return detail.plugin.repo ?? ""
+}
+
+// Relay a product report to the marketplace issue endpoint: the
+// marketplace dedupes it across instances and pushes it to the relevant
+// GitHub repo with its own token. Throws like `marketplace` does (including
+// marketplace_unconfigured and a 404 for an unlisted plugin).
+export async function postMarketplaceIssue(
+  db: Db,
+  payload: {
+    pluginId: string | null
+    kind: string
+    surface: string | null
+    title: string
+    detail: string
+    fingerprint: string
+    reportId: string
+  },
+): Promise<{
+  id: string
+  repo: string
+  githubUrl: string | null
+  githubNumber: number | null
+  url: string
+  duplicate: boolean
+}> {
+  const response = await marketplace(db, "/api/issues", {
+    method: "POST",
+    json: { ...payload, authorKind: "agent", author: "open-bot agent" },
+  })
+  const parsed = (await response.json().catch(() => ({}))) as {
+    issue?: {
+      id?: string
+      repo?: string
+      githubUrl?: string | null
+      githubNumber?: number | null
+    }
+    duplicate?: boolean
+  }
+  const issue = parsed.issue
+  if (!issue?.id) {
+    throw new HttpError(
+      502,
+      "marketplace issue response is missing the issue",
+      "marketplace_error",
+    )
+  }
+  return {
+    id: issue.id,
+    repo: issue.repo ?? "",
+    githubUrl: issue.githubUrl ?? null,
+    githubNumber: issue.githubNumber ?? null,
+    url: `${marketplaceUrl}/api/issues/${encodeURIComponent(issue.id)}`,
+    duplicate: parsed.duplicate ?? false,
+  }
 }
 
 function parsePublishBody(body: Record<string, unknown>) {
@@ -1765,16 +1836,7 @@ export function handlePlugins(
         if (!issueAllowed(user.id)) {
           return json({ error: "too many issues filed, try again later" }, 429)
         }
-        const installed = db.installedPlugin(user.id, pluginId)
-        let repo = ""
-        if (installed) {
-          const manifest = installed.manifest as PluginManifest
-          repo = typeof manifest.repo === "string" ? manifest.repo : ""
-        }
-        if (!repo) {
-          const detail = await fetchDetail(db, pluginId)
-          repo = detail.plugin.repo
-        }
+        const repo = await resolvePluginRepo(db, user.id, pluginId)
         if (!repo) return json({ error: "plugin has no GitHub repo" }, 400)
         const issue = await createIssue(
           repo,

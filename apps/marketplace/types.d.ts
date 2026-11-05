@@ -14,6 +14,9 @@ interface Env {
   MARKETPLACE_TOKEN?: string
   ADMIN_TOKEN?: string
   GITHUB_TOKEN?: string
+  // Repo that receives open-bot product-report issues filed through
+  // POST /api/issues (default shpaw415/open-bot).
+  OPEN_BOT_REPO?: string
   // Paid plugins: Stripe secret key (sk_…/rk_…) and the checkout-session
   // webhook signing secret (whsec_…). PLATFORM_FEE_BPS is the platform cut in
   // basis points (default 1500 = 15%).

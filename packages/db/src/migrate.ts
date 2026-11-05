@@ -79,11 +79,28 @@ function ensureImprovementTable(sqlite: Database) {
       note TEXT,
       created_at INTEGER NOT NULL,
       last_seen_at INTEGER NOT NULL,
-      resolved_at INTEGER
+      resolved_at INTEGER,
+      plugin TEXT,
+      routed_to TEXT,
+      issue_url TEXT,
+      external_id TEXT
     );
     CREATE INDEX IF NOT EXISTS improvements_fingerprint_status ON improvements (fingerprint, status);
     CREATE INDEX IF NOT EXISTS improvements_user_time ON improvements (user_id, created_at);
   `)
+  const columns = columnNames(sqlite, "improvements")
+  if (!columns.has("plugin")) {
+    sqlite.exec("ALTER TABLE improvements ADD COLUMN plugin TEXT")
+  }
+  if (!columns.has("routed_to")) {
+    sqlite.exec("ALTER TABLE improvements ADD COLUMN routed_to TEXT")
+  }
+  if (!columns.has("issue_url")) {
+    sqlite.exec("ALTER TABLE improvements ADD COLUMN issue_url TEXT")
+  }
+  if (!columns.has("external_id")) {
+    sqlite.exec("ALTER TABLE improvements ADD COLUMN external_id TEXT")
+  }
 }
 
 function ensureCronNoticeTable(sqlite: Database) {

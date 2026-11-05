@@ -34,6 +34,10 @@ type Report = {
   status: ReportStatus
   note: string | null
   lastSeenAt: number
+  plugin: string | null
+  routedTo: "github" | "marketplace" | null
+  issueUrl: string | null
+  externalId: string | null
 }
 
 function formatAgo(ts: number) {
@@ -200,6 +204,22 @@ export function Improvements() {
           <Typography variant="caption" color="textSecondary">
             {selected?.kind} · {selected?.surface} · {selected?.hits} hits
             {selected?.sessionId ? ` · ${selected.sessionId}` : ""}
+            {selected?.plugin ? ` · plugin ${selected.plugin}` : ""}
+            {selected?.issueUrl ? (
+              <>
+                {" · "}
+                <a
+                  href={selected.issueUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {selected.routedTo === "github"
+                    ? `GitHub issue${selected.externalId ? ` #${selected.externalId}` : ""}`
+                    : "Marketplace issue"}
+                </a>
+              </>
+            ) : null}
           </Typography>
           <TextField
             label="Note"

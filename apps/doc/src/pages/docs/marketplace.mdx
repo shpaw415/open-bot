@@ -35,10 +35,11 @@ A newer `enqueuedAt` wins; every publish re-reviews; loopback publishes review i
 
 | Binding | Role |
 | --- | --- |
-| D1 | Plugins, versions, reviews, accounts, API keys, comments (migrations in `apps/marketplace/migrations`). |
+| D1 | Plugins, versions, reviews, accounts, API keys, comments, product-report issues (migrations in `apps/marketplace/migrations`). |
 | R2 `RELEASES` (bucket `open-bot-marketplace-releases`) | Approved release tarballs; streamed by `GET /api/plugins/<id>/artifact` after sha256 verify. |
 | Queue `open-bot-marketplace-security` (+ DLQ) | Publish → review handoff (producer binding on Pages; consumer in the Worker). |
 | `GITHUB_TOKEN` (Worker) | README fetch + security-issue filing. |
+| `GITHUB_TOKEN` (Pages) | Pushes product-report issues filed through `POST /api/issues` to the open-bot repo (`OPEN_BOT_REPO` var, default `shpaw415/open-bot`) or the referenced plugin's repo; `ADMIN_TOKEN` gates the issue manage API. |
 
 ## Instance-side config
 

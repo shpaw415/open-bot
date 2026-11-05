@@ -15,10 +15,16 @@ Every desktop can file:
 ob-improve add --kind bug|friction|feature \
   --surface chat|desktop|nav|cron|persona|config|other \
   --title "Composer loses draft on tab switch" \
-  --detail "Steps to reproduce..." [--session ID]
+  --detail "Steps to reproduce..." [--session ID] [--plugin SLUG]
 ```
 
 Rows land in the control-plane sqlite. Review keeps working the same way.
+
+## Issue routing
+
+A new report also becomes a GitHub issue, routed marketplace-first. The control plane relays it to the marketplace's `POST /api/issues` endpoint, which dedupes repeat reports across every instance and pushes each new issue with the marketplace's own GitHub token — to the open-bot repo (marketplace `OPEN_BOT_REPO`, default `shpaw415/open-bot`), or to the referenced plugin's listing repo with `--plugin SLUG`. An issue filed at the marketplace counts as routed even when its GitHub push has not landed yet; the marketplace owns the retry. The marketplace manages its queue through admin endpoints (`GET /api/issues`, `GET/PATCH /api/issues/:id`, `POST /api/issues/:id/push`).
+
+When the marketplace is unconfigured, unreachable, or does not list the plugin, routing falls back to a direct GitHub issue with the instance's own token (`OPEN_BOT_GITHUB_TOKEN`, target `OPEN_BOT_GITHUB_REPO` or the installed plugin manifest's `repo`). Routing never blocks filing: when every external path is down, the row stays local-only and `ob-improve` prints a `warning` naming the failures. The routed URL is stored on the row (`routed_to=github|marketplace`) and printed by `ob-improve`, `scripts/reports.ts`, and the Admin Improvements tab. Local duplicates (same kind + surface + plugin + title) bump the open row's hit count and open nothing new; a duplicate whose first filing never routed retries routing. External routing is capped at 10 attempts per user per hour.
 
 ## Reviewing
 

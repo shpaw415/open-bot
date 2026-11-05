@@ -38,6 +38,9 @@ type ReportRow = {
   status: string
   sessionId: string | null
   note: string | null
+  plugin: string | null
+  routedTo: string | null
+  issueUrl: string | null
 }
 
 function usage() {
@@ -63,8 +66,12 @@ function age(ts: number) {
 }
 
 function printRow(row: ReportRow) {
+  const routed = row.issueUrl
+    ? ` ${row.routedTo ?? "external"}=${row.issueUrl}`
+    : ""
+  const plugin = row.plugin ? ` plugin=${row.plugin}` : ""
   console.log(
-    `- [${row.status} ${row.kind}/${row.surface}] ${row.title} (hits ${row.hits}, ${row.email ?? "unknown"}, ${age(row.lastSeenAt)}) id=${row.id}`,
+    `- [${row.status} ${row.kind}/${row.surface}] ${row.title} (hits ${row.hits}, ${row.email ?? "unknown"}, ${age(row.lastSeenAt)}) id=${row.id}${plugin}${routed}`,
   )
 }
 

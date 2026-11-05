@@ -9,9 +9,12 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-improve add --kind bug|friction|feature --surface chat|desktop|nav|cron|persona|config|other --title TEXT --detail TEXT [--session ID]
+  ob-improve add --kind bug|friction|feature --surface chat|desktop|nav|cron|persona|config|other --title TEXT --detail TEXT [--session ID] [--plugin SLUG]
 
 Files one product report. A matching open report increments its hit count.
+A new report is relayed to the marketplace, which pushes it to GitHub (the
+open-bot repo, or the --plugin plugin's repo), falling back to a direct
+GitHub issue from this instance, then to the local queue only.
 EOF
 }
 
@@ -39,6 +42,7 @@ case "$cmd" in
     title=""
     detail=""
     session=""
+    plugin=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --kind)
@@ -56,6 +60,9 @@ case "$cmd" in
         --session)
           [ $# -ge 2 ] || { usage; exit 2; }
           session="$2"; shift 2 ;;
+        --plugin)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          plugin="$2"; shift 2 ;;
         *)
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
@@ -67,10 +74,11 @@ case "$cmd" in
       --arg title "$title" \
       --arg detail "$detail" \
       --arg session "$session" \
-      '{kind: $kind, surface: $surface, title: $title, detail: $detail} + (if $session == "" then {} else {sessionId: $session} end)')
+      --arg plugin "$plugin" \
+      '{kind: $kind, surface: $surface, title: $title, detail: $detail} + (if $session == "" then {} else {sessionId: $session} end) + (if $plugin == "" then {} else {plugin: $plugin} end)')
     out=$(request "$body")
     fail_on_error "$out"
-    printf '%s\n' "$out" | jq '{id, duplicate, hits}'
+    printf '%s\n' "$out" | jq '{id, duplicate, hits, plugin, issue, warning}'
     echo "Filed."
     ;;
   -h|--help|help)
