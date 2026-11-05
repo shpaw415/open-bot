@@ -66,7 +66,10 @@ approval. Admins can still override the status from the review queue.
 - `GITHUB_TOKEN` — optional; raises raw.githubusercontent rate limits when
   fetching READMEs, opens security issues on plugin repos when a publish
   is rejected by the review, and pushes product-report issues filed through
-  `POST /api/issues` (needs `public_repo` / issues scope)
+  `POST /api/issues`. It only ever reads repo trees and creates issues —
+  never pushes code — so issue-write permission is all it needs (a
+  fine-grained token with Issues: write on the repos it files to, or
+  classic `public_repo` to file on arbitrary public plugin repos)
 - `OPEN_BOT_REPO` (var, wrangler.jsonc) — repo that receives open-bot
   product-report issues filed through `POST /api/issues`, default
   `shpaw415/open-bot`
