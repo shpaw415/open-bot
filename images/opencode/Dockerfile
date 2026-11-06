@@ -81,6 +81,7 @@ COPY scripts/ob-cron.sh /usr/local/bin/ob-cron
 COPY scripts/ob-persona.sh /usr/local/bin/ob-persona
 COPY scripts/ob-project.sh /usr/local/bin/ob-project
 COPY scripts/ob-group.sh /usr/local/bin/ob-group
+COPY scripts/ob-skill.sh /usr/local/bin/ob-skill
 COPY scripts/ob-report.sh /usr/local/bin/ob-report
 COPY scripts/ob-thread.sh /usr/local/bin/ob-thread
 COPY scripts/ob-media.sh /usr/local/bin/ob-media

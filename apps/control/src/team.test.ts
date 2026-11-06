@@ -17,6 +17,10 @@ import {
   weeklyWindowStart,
 } from "./team"
 
+// Patches arriving over the wire are untrusted JSON — the typed overlay
+// cannot express invalid provider ids, so rejection tests go through this.
+const rawPatch = (patch: unknown) => patch as Partial<TeamConfig>
+
 function freshDb() {
   const db = openDatabase(
     join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
@@ -161,9 +165,10 @@ test("overlay saves merge per field: omitted keeps, blank and null clear", () =>
     apiKey: null,
     model: "@cf/black-forest-labs/flux-2-klein-9b",
   })
-  const blank = saveTeamConfig(db, {
-    providers: { image: { provider: "" } },
-  })
+  const blank = saveTeamConfig(
+    db,
+    rawPatch({ providers: { image: { provider: "" } } }),
+  )
   expect(blank.providers.image).toEqual({
     provider: null,
     accountId: "acc-2",
@@ -243,14 +248,20 @@ test("saveTeamConfig validates catalog overlay sections", () => {
   const db = freshDb()
   // Unknown provider ids are rejected per section, nothing is stored.
   expect(() =>
-    saveTeamConfig(db, {
-      providers: { image: { provider: "cloudflare", model: "m" } },
-    }),
+    saveTeamConfig(
+      db,
+      rawPatch({
+        providers: { image: { provider: "cloudflare", model: "m" } },
+      }),
+    ),
   ).toThrow(/unsupported image provider/)
   expect(() =>
-    saveTeamConfig(db, {
-      providers: { watchdog: { provider: "nope", model: "m" } },
-    }),
+    saveTeamConfig(
+      db,
+      rawPatch({
+        providers: { watchdog: { provider: "nope", model: "m" } },
+      }),
+    ),
   ).toThrow(/unsupported watchdog provider/)
   expect(getTeamConfig(db).providers.image).toBeUndefined()
 
@@ -283,20 +294,23 @@ test("saveTeamConfig canonicalizes and validates the voice overlay", () => {
   const db = freshDb()
   // Legacy Workers AI ids are stored canonical, blank models take the
   // provider default, and the retired whisper model remaps to turbo.
-  saveTeamConfig(db, {
-    providers: {
-      voice: {
-        sttProvider: "deepgram-stt",
-        sttAccountId: "a".repeat(32),
-        sttApiKey: "k".repeat(40),
-        sttModel: null,
-        ttsProvider: "workers-ai-tts",
-        ttsAccountId: null,
-        ttsApiKey: null,
-        ttsModel: "@cf/deepgram/aura-1",
+  saveTeamConfig(
+    db,
+    rawPatch({
+      providers: {
+        voice: {
+          sttProvider: "deepgram-stt",
+          sttAccountId: "a".repeat(32),
+          sttApiKey: "k".repeat(40),
+          sttModel: null,
+          ttsProvider: "workers-ai-tts",
+          ttsAccountId: null,
+          ttsApiKey: null,
+          ttsModel: "@cf/deepgram/aura-1",
+        },
       },
-    },
-  })
+    }),
+  )
   let voice = getTeamConfig(db).providers.voice
   expect(voice?.sttProvider).toBe("cloudflare-stt")
   expect(voice?.sttModel).toBe("@cf/openai/whisper-large-v3-turbo")
@@ -312,7 +326,10 @@ test("saveTeamConfig canonicalizes and validates the voice overlay", () => {
   // A provider on the wrong side, an unknown model, and a model for the
   // model-less xAI TTS are all rejected without touching the stored config.
   expect(() =>
-    saveTeamConfig(db, { providers: { voice: { sttProvider: "xai-tts" } } }),
+    saveTeamConfig(
+      db,
+      rawPatch({ providers: { voice: { sttProvider: "xai-tts" } } }),
+    ),
   ).toThrow(/unsupported speech provider/)
   expect(() =>
     saveTeamConfig(db, {

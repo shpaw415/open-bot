@@ -32,6 +32,31 @@ export type PublicCatalogSpec = {
   allowCustomModel: boolean
 }
 
+// Provider id unions, mirroring the control catalogs — overlay and form
+// state that carries a provider is checked against these, not `string`.
+export type ImageProviderId =
+  | "cloudflare-workers-ai"
+  | "xai"
+  | "xai-gateway"
+  | "openai"
+  | "google"
+  | "stability"
+  | "replicate"
+export type VideoProviderId =
+  | "xai"
+  | "xai-gateway"
+  | "openai"
+  | "google"
+  | "replicate"
+  | "fal"
+export type Model3dProviderId = "meshy" | "tripo" | "replicate" | "fal"
+export type System1ProviderId =
+  | "cloudflare-jev"
+  | "cloudflare-clef"
+  | "laya"
+  | "selfhosted-clef"
+export type WatchdogProviderId = "workers-ai" | "openai" | "xai" | "custom"
+
 // system1ProviderPublic() adds endpoint composition metadata on top.
 export type System1PublicSpec = PublicCatalogSpec & {
   endpointPlaceholder: string

@@ -190,6 +190,20 @@
       "when": 1793884270600,
       "tag": "0026_robust_karen_page",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1793906812414,
+      "tag": "0027_modern_red_wolf",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1793928190576,
+      "tag": "0028_lively_synch",
+      "breakpoints": true
     }
   ]
 }

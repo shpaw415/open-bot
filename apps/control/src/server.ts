@@ -71,6 +71,7 @@ import {
   syncModel3dAuth,
   syncSystem1,
   syncVideoAuth,
+  syncVikingCodexAuth,
   syncWatchdogConfig,
   writeProjectFile,
 } from "./docker"
@@ -137,12 +138,10 @@ import {
   handlePersonas,
   personaScope,
   resolvePersona,
-  seedSkillDescriptions,
 } from "./personas"
 import {
   pluginOriginForCronJob,
   pluginOwnership,
-  pluginSkillGroups,
 } from "./plugin-ownership"
 import {
   handlePluginPagesStatus,
@@ -231,10 +230,14 @@ import {
   videoProviders,
 } from "./video-providers"
 import {
-  assertSkillInput,
-  createVikingSkills,
-  skillNameError,
-} from "./viking-skills"
+  embedCatalogById,
+  isVikingEmbedProviderId,
+  vikingEmbedCatalogPublic,
+} from "./viking-embedding-catalog"
+import { probeVikingHealth, type VikingHealth } from "./viking-health"
+import { supportedVlmProviderIds } from "./viking-models"
+import { createVikingSkills } from "./viking-skills"
+import { handleSkills, isSkillsRequest } from "./skills-routes"
 import { vikingUserKey } from "./viking-user"
 import {
   applyVoicePatch,
@@ -1471,6 +1474,7 @@ async function api(
     url.pathname === "/api/thread-dirs" ||
     url.pathname.startsWith("/api/thread-dirs/")
   const isCatalogDirsPath = url.pathname.startsWith("/api/catalog/dirs")
+  const isSkillsPath = isSkillsRequest(url.pathname)
   const isCouncilsPath = isCouncilPath(url.pathname)
   const isDelegations = isDelegationsPath(url.pathname)
   const isPluginPath =
@@ -1485,6 +1489,7 @@ async function api(
     isPersonaPath ||
     isThreadDirsPath ||
     isCatalogDirsPath ||
+    isSkillsPath ||
     isCouncilsPath ||
     isDelegations ||
     isPluginPath ||
@@ -1521,6 +1526,13 @@ async function api(
       }
       if (isCatalogDirsPath) {
         const handled = handleCatalogDirs(req, url, db, agent, hub)
+        if (handled) return handled
+        return json({ error: "not found" }, 404)
+      }
+      if (isSkillsPath) {
+        const handled = await handleSkills(req, url, db, agent, hub, () =>
+          skillsClient(agent, db),
+        )
         if (handled) return handled
         return json({ error: "not found" }, 404)
       }
@@ -2098,37 +2110,136 @@ async function api(
     )
     return json({ ok: true, applied })
   }
+  if (url.pathname === "/api/viking/health" && req.method === "GET") {
+    // Passive health read — never wakes a sleeping desktop. OpenViking is a
+    // desktop sidecar, so an asleep desktop means the instance is down by
+    // design and that is the honest answer.
+    const phase = await desktopPhase(user.id)
+    if (phase !== "running") {
+      const body: VikingHealth = {
+        status: phase === "starting" ? "starting" : "asleep",
+        detail:
+          phase === "starting"
+            ? "the desktop is starting — OpenViking comes up with it"
+            : "OpenViking sleeps with the desktop — start the desktop to bring it up",
+        errors: [],
+        components: [],
+        checkedAt: Date.now(),
+      }
+      return json(body)
+    }
+    const desktop = db.desktop(user.id)
+    if (!desktop) {
+      return json({
+        status: "asleep",
+        detail: "no desktop exists for this user yet",
+        errors: [],
+        components: [],
+        checkedAt: Date.now(),
+      } satisfies VikingHealth)
+    }
+    try {
+      const base = await endpoint(user.id, "viking", 1933)
+      return json(await probeVikingHealth(base, desktop.vikingKey))
+    } catch (error) {
+      return json({
+        status: "down",
+        detail:
+          error instanceof Error
+            ? `the OpenViking container is unreachable: ${error.message}`
+            : "the OpenViking container is unreachable",
+        errors: [],
+        components: [],
+        checkedAt: Date.now(),
+      } satisfies VikingHealth)
+    }
+  }
   if (url.pathname === "/api/viking" && req.method === "GET") {
     const saved = db.getVikingProvider(user.id)
     return json({
       baseURL: saved?.baseURL ?? "",
       hasKey: Boolean(saved?.apiKey),
+      embedProvider: saved?.embedProvider ?? "",
+      embedAccountId: saved?.embedAccountId ?? "",
       embedModel: saved?.embedModel ?? "",
       embedDimension: saved?.embedDimension || 1536,
       vlmModel: saved?.vlmModel ?? "",
+      vlmSource: saved?.vlmSource ?? "custom",
+      vlmProvider: saved?.vlmProvider ?? "",
+      // OpenCode provider ids the VLM picker may offer; the models
+      // themselves come from /api/models (the desktop's live setup).
+      supportedVlmProviders: supportedVlmProviderIds(),
+      embedProviders: vikingEmbedCatalogPublic(),
     })
   }
   if (url.pathname === "/api/viking" && req.method === "PUT") {
     const body = await readJson(req)
     const current = db.getVikingProvider(user.id)
     const typedKey = String(body.apiKey ?? "").trim()
+    const vlmSource = body.vlmSource === "opencode" ? "opencode" : "custom"
+    const vlmProvider = String(body.vlmProvider ?? "").trim()
+    if (
+      vlmSource === "opencode" &&
+      !supportedVlmProviderIds().includes(vlmProvider)
+    ) {
+      return json(
+        {
+          error: `OpenViking cannot use the OpenCode provider "${vlmProvider || "(none)"}" for its VLM`,
+        },
+        400,
+      )
+    }
+    const embedProvider = String(body.embedProvider ?? "").trim()
+    if (!isVikingEmbedProviderId(embedProvider)) {
+      return json(
+        {
+          error: `Unknown embedding provider "${embedProvider || "(none)"}"`,
+        },
+        400,
+      )
+    }
     const next: VikingProvider = {
       baseURL: String(body.baseURL ?? "").trim(),
       apiKey: typedKey || current?.apiKey || "",
+      embedProvider,
+      embedAccountId: String(body.embedAccountId ?? "").trim(),
       embedModel: String(body.embedModel ?? "").trim(),
       embedDimension: Number(body.embedDimension),
       vlmModel: String(body.vlmModel ?? "").trim(),
+      vlmSource,
+      vlmProvider: vlmSource === "opencode" ? vlmProvider : "",
     }
-    if (!vikingProviderReady(next)) {
+    // Typed boolean (not a narrowing alias): vikingProviderReady is a
+    // type predicate, and an aliased negation would narrow the
+    // already-typed `next` to never inside the error branch.
+    const ready: boolean = vikingProviderReady(next)
+    if (!ready) {
+      const entry = embedCatalogById(embedProvider)
+      const missing: string[] = []
+      if (entry?.accountMode === "required" && !next.embedAccountId)
+        missing.push("account id")
+      if (entry?.keyMode === "required" && !next.apiKey) missing.push("API key")
+      if (entry?.baseMode === "required" && !next.baseURL)
+        missing.push("base URL")
+      if (!next.embedModel) missing.push("embed model")
+      if (!next.vlmModel)
+        missing.push(
+          vlmSource === "opencode" ? "VLM provider and model" : "VLM model",
+        )
       return json(
         {
-          error:
-            "base URL, API key, embed model, dimension, and VLM model are required",
+          error: `Missing for ${entry?.label ?? "this provider"}: ${missing.join(", ") || "check the form"}`,
         },
         400,
       )
     }
     db.setUserVikingProvider(user.id, next)
+    // Best effort: if this save switches to a Codex subscription VLM on a
+    // running desktop, push the current OpenCode tokens over now (the
+    // provider choice itself still applies on the next desktop start).
+    if (vlmSource === "opencode" && vlmProvider === "openai") {
+      void syncVikingCodexAuth(user.id).catch(() => false)
+    }
     return json({ ok: true })
   }
   if (url.pathname === "/api/image" && req.method === "GET") {
@@ -2833,90 +2944,12 @@ async function api(
       .filter((line) => line.startsWith(`${project.path}/`))
     return json({ files })
   }
-  if (url.pathname === "/api/skills" && req.method === "GET") {
-    const name = url.searchParams.get("name")?.trim() ?? ""
-    if (name) {
-      const nameError = skillNameError(name)
-      if (nameError) return json({ error: nameError }, 400)
-    }
-    const skills = await skillsClient(user, db)
-    if (name) return json(await skills.get(name))
-    const ownership = pluginOwnership(db, user.id)
-    const groups = pluginSkillGroups(db, user.id)
-    // Seed skills ride along read-only: the persona picker catalogs them,
-    // so the Skills tab must list them too — otherwise most picker entries
-    // could never be organized into a directory from the UI.
-    let seeds: Map<string, string>
-    try {
-      seeds = await seedSkillDescriptions(user.id)
-    } catch {
-      seeds = new Map()
-    }
-    const listed = await skills.list()
-    const seen = new Set(listed.map((skill) => skill.name))
-    return json({
-      skills: [
-        ...listed.map((skill) => {
-          const plugin = ownership.skillByName.get(skill.name)
-          const group = groups.get(skill.name) ?? null
-          return {
-            ...skill,
-            group,
-            seed: false,
-            plugin: plugin ?? undefined,
-          }
-        }),
-        ...[...seeds.entries()]
-          .filter(([name]) => !seen.has(name))
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([name, description]) => ({
-            name,
-            description,
-            group: null,
-            seed: true,
-          })),
-      ],
-    })
-  }
-  if (url.pathname === "/api/skills" && req.method === "PUT") {
-    const body = await readJson(req)
-    const input = {
-      name: String(body.name ?? "").trim(),
-      description: String(body.description ?? "").trim(),
-      body: String(body.body ?? ""),
-    }
-    const previousName = String(body.previousName ?? "").trim()
-    assertSkillInput(input)
-    if (previousName) {
-      const previousError = skillNameError(previousName)
-      if (previousError) return json({ error: previousError }, 400)
-    }
-    const skills = await skillsClient(user, db)
-    // A rename carries the directory membership over: the label points at
-    // the skill, not the name.
-    const carriedDir =
-      previousName && previousName !== input.name
-        ? (db
-            .catalogDirItems(user.id, "skill")
-            .find((row) => row.name === previousName)?.dirId ?? null)
-        : null
-    await skills.save(input, previousName)
-    if (previousName && previousName !== input.name) {
-      db.setCatalogDirItem(user.id, "skill", input.name, carriedDir)
-      db.removeCatalogDirItems(user.id, "skill", [previousName])
-    }
-    return json({ ok: true })
-  }
-  if (url.pathname === "/api/skills" && req.method === "DELETE") {
-    const body = await readJson(req)
-    const name = String(body.name ?? "").trim()
-    const nameError = skillNameError(name)
-    if (nameError) return json({ error: nameError }, 400)
-    const skills = await skillsClient(user, db)
-    await skills.remove(name)
-    // The skill is gone: its directory membership would dangle.
-    db.removeCatalogDirItems(user.id, "skill", [name])
-    return json({ ok: true })
+  if (isSkillsRequest(url.pathname)) {
+    const handled = await handleSkills(req, url, db, user, hub, () =>
+      skillsClient(user, db),
+    )
+    if (handled) return handled
+    return json({ error: "not found" }, 404)
   }
   if (url.pathname === "/api/providers" && req.method === "GET") {
     const desktop = await ensure(user, db)

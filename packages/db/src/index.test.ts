@@ -201,9 +201,13 @@ describe("drizzle migrations", () => {
     db.setUserVikingProvider("a", {
       baseURL: "https://own.test/v1",
       apiKey: "k",
+      embedProvider: "custom-openai-compatible",
+      embedAccountId: "",
       embedModel: "embed",
       embedDimension: 8,
       vlmModel: "vlm",
+      vlmSource: "custom",
+      vlmProvider: "",
     })
     expect(db.getVikingProvider("a")?.baseURL).toBe("https://own.test/v1")
     db.setImageProvider("a", {
@@ -369,16 +373,24 @@ describe("usage ledger", () => {
     db.setVikingProvider({
       baseURL: "https://example.test/v1",
       apiKey: "secret",
+      embedProvider: "cloudflare-workers-ai",
+      embedAccountId: "acct-1",
       embedModel: "embed-up",
       embedDimension: 1024,
       vlmModel: "vlm-up",
+      vlmSource: "custom",
+      vlmProvider: "",
     })
     expect(db.getVikingProvider()).toEqual({
       baseURL: "https://example.test/v1",
       apiKey: "secret",
+      embedProvider: "cloudflare-workers-ai",
+      embedAccountId: "acct-1",
       embedModel: "embed-up",
       embedDimension: 1024,
       vlmModel: "vlm-up",
+      vlmSource: "custom",
+      vlmProvider: "",
     })
   })
 
@@ -411,30 +423,46 @@ describe("usage ledger", () => {
     db.setVikingProvider({
       baseURL: "https://default.test/v1",
       apiKey: "default-key",
+      embedProvider: "openai",
+      embedAccountId: "",
       embedModel: "embed-default",
       embedDimension: 1536,
       vlmModel: "vlm-default",
+      vlmSource: "custom",
+      vlmProvider: "",
     })
     expect(db.getVikingProvider("a")).toEqual({
       baseURL: "https://default.test/v1",
       apiKey: "default-key",
+      embedProvider: "openai",
+      embedAccountId: "",
       embedModel: "embed-default",
       embedDimension: 1536,
       vlmModel: "vlm-default",
+      vlmSource: "custom",
+      vlmProvider: "",
     })
     db.setUserVikingProvider("a", {
-      baseURL: "https://own.test/v1",
+      baseURL: "",
       apiKey: "own-key",
+      embedProvider: "cloudflare-workers-ai",
+      embedAccountId: "acct-own",
       embedModel: "embed-own",
       embedDimension: 768,
-      vlmModel: "vlm-own",
+      vlmModel: "gpt-5-codex",
+      vlmSource: "opencode",
+      vlmProvider: "openai",
     })
     expect(db.getVikingProvider("a")).toEqual({
-      baseURL: "https://own.test/v1",
+      baseURL: "",
       apiKey: "own-key",
+      embedProvider: "cloudflare-workers-ai",
+      embedAccountId: "acct-own",
       embedModel: "embed-own",
       embedDimension: 768,
-      vlmModel: "vlm-own",
+      vlmModel: "gpt-5-codex",
+      vlmSource: "opencode",
+      vlmProvider: "openai",
     })
     expect(db.getVikingProvider("b")?.baseURL).toBe("https://default.test/v1")
   })

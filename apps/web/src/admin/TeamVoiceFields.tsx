@@ -36,6 +36,14 @@ export function TeamVoiceFields({
   secrets,
   onChange,
 }: TeamVoiceFieldsProps) {
+  if (providers.length === 0) {
+    return (
+      <Typography variant="caption" color="error">
+        Provider catalog unavailable — the control plane is older than this
+        dashboard. Update it before editing these settings.
+      </Typography>
+    )
+  }
   return (
     <Stack spacing={1.5} sx={{ mt: 0.5 }}>
       {(["stt", "tts"] as const).map((side) => (

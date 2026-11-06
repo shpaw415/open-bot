@@ -8,7 +8,15 @@ import Select from "@shpaw415/mui-lite/Select"
 import Switch from "@shpaw415/mui-lite/Switch"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import AccessibleDialog, {
@@ -37,16 +45,21 @@ import { useDebounced, useEventStream, useMobile } from "./hooks"
 import {
   AddIcon,
   ChatIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CloseIcon,
   DeleteIcon,
   EditIcon,
   PlayArrowIcon,
   RefreshIcon,
   ScheduleIcon,
+  SearchIcon,
   SettingsIcon,
 } from "./icons"
 import { ModelSelect } from "./ModelSelect"
 import type { PersonaInfo } from "./Personalities"
 import { PARAM_JOB } from "./routes"
+import { normalizeSearchText } from "./search"
 import Stack from "./stack"
 import { Tip } from "./Tip"
 
@@ -84,6 +97,9 @@ type Model = { providerID: string; modelID: string; name?: string }
 
 const MIN_EVERY_SECONDS = 60
 const MAX_EVERY_SECONDS = 31_536_000
+
+/** Persisted open state of the plugin-guards collapsible (absent = closed). */
+const GUARDS_OPEN_KEY = "ob-cron-guards-open"
 
 const UNIT_SECONDS: Record<IntervalUnit, number> = {
   minutes: 60,
@@ -155,8 +171,64 @@ function cronModelLabel(job: CronJobInfo, models: Model[]): string {
   return match?.name ?? `${job.providerId}/${job.modelId}`
 }
 
+/**
+ * Plugin publish guards: one auto-created job per published plugin, named
+ * `plugin:<id>:guard` — the same name contract the control plane keys on
+ * (`GUARD_JOB_RE` in apps/control/src/cron.ts). Machine jobs, not the
+ * user's own automations.
+ */
+export function isGuardJob(job: Pick<CronJobInfo, "name">): boolean {
+  return /^plugin:.+:guard$/.test(job.name)
+}
+
+/**
+ * Split the list into the user's automations and the plugin guards, each
+ * side keeping its loaded order. The guards render together under one
+ * « Garde des plugins » collapsible (the shared guard thread's title)
+ * instead of one card per published plugin in the main list.
+ */
+export function partitionGuardJobs(jobs: CronJobInfo[]): {
+  regular: CronJobInfo[]
+  guards: CronJobInfo[]
+} {
+  const regular: CronJobInfo[] = []
+  const guards: CronJobInfo[] = []
+  for (const job of jobs) (isGuardJob(job) ? guards : regular).push(job)
+  return { regular, guards }
+}
+
 function cronDisplayName(job: CronJobInfo): string {
+  if (isGuardJob(job))
+    // Stripping the plugin prefix leaves every guard titled "guard";
+    // inside the guards section the plugin is the identity that matters.
+    return (
+      job.plugin?.name ?? job.name.slice("plugin:".length, -":guard".length)
+    )
   return job.plugin ? job.name.replace(/^plugin:[^:]+:/, "") : job.name
+}
+
+/**
+ * Search-field filter over the loaded jobs: displayed name, instruction,
+ * script, cron expression and owning plugin. Accents and case are
+ * ignored like the global search; a blank query keeps the full list.
+ */
+export function filterCronJobs(
+  jobs: CronJobInfo[],
+  query: string,
+): CronJobInfo[] {
+  const q = normalizeSearchText(query.trim())
+  if (!q) return jobs
+  return jobs.filter((job) =>
+    [
+      cronDisplayName(job),
+      job.name,
+      job.message,
+      job.script ?? "",
+      job.cronExpr ?? "",
+      job.plugin?.name ?? "",
+      job.plugin?.id ?? "",
+    ].some((text) => normalizeSearchText(text).includes(q)),
+  )
 }
 
 /**
@@ -187,6 +259,43 @@ export function CronView({
   const mobile = useMobile()
   const { subscribe } = useEventStream(true)
   const [jobs, setJobs] = useState<CronJobInfo[]>([])
+  const [jobQuery, setJobQuery] = useState("")
+  // Deferred like the threads filter: typing stays live, the list
+  // recomputes off the critical path.
+  const deferredJobQuery = useDeferredValue(jobQuery)
+  const shownJobs = useMemo(
+    () => filterCronJobs(jobs, deferredJobQuery),
+    [jobs, deferredJobQuery],
+  )
+  const searchingJobs = deferredJobQuery.trim() !== ""
+  // Plugin guards (one machine job per published plugin) leave the main
+  // list for a single collapsible after the user's own automations.
+  const { regular: regularJobs, guards: guardJobs } = useMemo(
+    () => partitionGuardJobs(shownJobs),
+    [shownJobs],
+  )
+  // Collapsed by default so real automations come first; the user's
+  // choice persists like the dashboard's other collapsibles.
+  const [guardsOpen, setGuardsOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(GUARDS_OPEN_KEY) === "1"
+    } catch {
+      return false
+    }
+  })
+  const guardsRegionId = useId()
+
+  function toggleGuards() {
+    setGuardsOpen((open) => {
+      try {
+        localStorage.setItem(GUARDS_OPEN_KEY, open ? "0" : "1")
+      } catch {
+        // storage denied (sandboxed frame): the choice just does not persist
+      }
+      return !open
+    })
+  }
+
   const [notices, setNotices] = useState<CronNotice[]>([])
   const [loadError, setLoadError] = useState("")
   const [noticesError, setNoticesError] = useState("")
@@ -465,6 +574,14 @@ export function CronView({
     ? (jobs.find((item) => item.id === result.jobId)?.sessionId ?? null)
     : null
 
+  // The collapsed guards header carries the signals its hidden cards
+  // would show: an unviewed guard result or a failed guard is never
+  // discoverable only after expanding.
+  const guardsHaveResult = guardJobs.some((job) =>
+    notices.some((notice) => notice.jobId === job.id && !notice.viewedAt),
+  )
+  const guardsHaveError = guardJobs.some((job) => job.lastError)
+
   /** Interval form state → wire seconds; null = invalid (caller reports). */
   function currentEverySeconds(): number | null {
     const picked = everySecondsFrom(everyValue, everyUnit)
@@ -652,6 +769,184 @@ export function CronView({
     }
   }
 
+  /** One automation card — shared by the main list and the guards section. */
+  function renderJobCard(job: CronJobInfo) {
+    return (
+      <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography
+            variant="subtitle2"
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {cronDisplayName(job)}
+          </Typography>
+          {busyId === job.id ? (
+            <CircularProgress size={1.2} />
+          ) : (
+            <Switch
+              size="small"
+              checked={job.enabled}
+              aria-label={
+                job.enabled
+                  ? `Mettre en pause ${job.name}`
+                  : `Réactiver ${job.name}`
+              }
+              onChange={() => void toggleJob(job)}
+            />
+          )}
+        </Stack>
+        <Stack
+          direction="row"
+          spacing={0.75}
+          alignItems="center"
+          sx={{ mt: 0.75, flexWrap: "wrap", rowGap: 0.75 }}
+        >
+          {job.plugin ? (
+            <PluginBadge plugin={job.plugin} maxWidth={120} />
+          ) : null}
+          {notices.some(
+            (notice) => notice.jobId === job.id && !notice.viewedAt,
+          ) ? (
+            <Chip size="small" color="primary">
+              nouveau résultat
+            </Chip>
+          ) : null}
+          <Chip size="small" variant="outlined">
+            {cronScheduleLabel(job)}
+          </Chip>
+          <Chip size="small" variant="outlined">
+            {cronRunLabel(job.runKind)}
+          </Chip>
+        </Stack>
+        <Typography
+          variant="body2"
+          color="textSecondary"
+          sx={{
+            mt: 0.5,
+            overflow: "hidden",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+          }}
+        >
+          {job.runKind === "script" || job.runKind === "auto"
+            ? job.script
+            : job.message}
+        </Typography>
+        <Typography
+          variant="caption"
+          color="textSecondary"
+          sx={{
+            mt: 0.5,
+            overflow: "hidden",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+          }}
+        >
+          {job.enabled
+            ? `Prochaine exécution ${formatFrWhen(job.nextRunAt)}`
+            : "En pause — ne s’exécute pas"}{" "}
+          • {cronModelLabel(job, models)} •{" "}
+          {personaName(job.personaId ?? undefined)}
+        </Typography>
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{
+            mt: 1,
+            flexWrap: "wrap",
+            rowGap: 1,
+            "@media (max-width:400px)": {
+              flexWrap: "nowrap",
+              overflowX: "auto",
+            },
+          }}
+        >
+          <Chip
+            size="small"
+            variant="outlined"
+            color={
+              job.lastError ? "error" : job.lastRunAt ? "success" : undefined
+            }
+          >
+            {job.lastError
+              ? "échec"
+              : job.lastRunAt
+                ? `exécutée ${formatFrAgo(job.lastRunAt)}`
+                : "jamais exécutée"}
+          </Chip>
+          <Box sx={{ flex: 1 }} />
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<EditIcon />}
+            disabled={Boolean(busyId)}
+            onClick={() => openForm(job)}
+          >
+            Modifier
+          </Button>
+          <Tip title="Exécute une fois maintenant; l’horaire habituel reste inchangé.">
+            <Button
+              size="small"
+              variant="text"
+              startIcon={<PlayArrowIcon />}
+              disabled={Boolean(busyId)}
+              onClick={() => void runJob(job)}
+            >
+              {busyId === job.id ? "Exécution…" : "Exécuter maintenant"}
+            </Button>
+          </Tip>
+          {notices.some((notice) => notice.jobId === job.id) ? (
+            <Button
+              size="small"
+              variant="text"
+              startIcon={<ChatIcon />}
+              disabled={Boolean(busyId)}
+              onClick={() => openJobResult(job)}
+            >
+              Résultat
+            </Button>
+          ) : null}
+          {job.sessionId && onOpenThread ? (
+            <Button
+              size="small"
+              variant="text"
+              disabled={Boolean(busyId)}
+              onClick={() => openJobThread(job)}
+            >
+              Ouvrir le fil
+            </Button>
+          ) : null}
+          <IconButton
+            size="small"
+            aria-label={`Supprimer ${job.name}`}
+            disabled={Boolean(busyId)}
+            onClick={() => setDeleteTarget(job)}
+          >
+            <DeleteIcon width={18} height={18} />
+          </IconButton>
+        </Stack>
+        {job.lastError ? (
+          <Typography
+            variant="caption"
+            color="error"
+            sx={{ display: "block", mt: 0.5 }}
+          >
+            {job.lastError}
+          </Typography>
+        ) : null}
+      </Paper>
+    )
+  }
+
   return (
     <>
       <Stack spacing={1.5}>
@@ -690,6 +985,47 @@ export function CronView({
             </IconButton>
           </Tip>
         </Stack>
+        {jobs.length > 0 ? (
+          <Stack direction="row" spacing={1} alignItems="center">
+            {/* Native field like the threads/apps filters: real
+                placeholder + aria-label, Escape or ✕ clears. It filters
+                the jobs already loaded; it is not a server search. */}
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <label className="ob-filter-field">
+                <SearchIcon width={14} height={14} />
+                <input
+                  value={jobQuery}
+                  onChange={(event) => setJobQuery(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") setJobQuery("")
+                  }}
+                  placeholder="Filtrer les automatisations"
+                  aria-label="Filtrer les automatisations"
+                  type="search"
+                />
+                {jobQuery ? (
+                  <button
+                    type="button"
+                    className="ob-filter-clear"
+                    aria-label="Effacer le filtre d’automatisations"
+                    onClick={() => setJobQuery("")}
+                  >
+                    <CloseIcon width={13} height={13} />
+                  </button>
+                ) : null}
+              </label>
+            </Box>
+            {searchingJobs ? (
+              <Typography
+                variant="caption"
+                color="textSecondary"
+                sx={{ flexShrink: 0 }}
+              >
+                {shownJobs.length} / {jobs.length}
+              </Typography>
+            ) : null}
+          </Stack>
+        ) : null}
         <Box className="ob-cron-list">
           {jobs.length === 0 && !loadError ? (
             <Stack
@@ -705,185 +1041,99 @@ export function CronView({
                 de programmer une tâche récurrente.
               </Typography>
             </Stack>
+          ) : searchingJobs && shownJobs.length === 0 ? (
+            <Typography
+              variant="body2"
+              color="textSecondary"
+              sx={{ p: 1.5, textAlign: "center" }}
+            >
+              Aucune automatisation ne correspond à « {deferredJobQuery.trim()}{" "}
+              ».
+            </Typography>
           ) : (
-            jobs.map((job) => (
-              <Paper key={job.id} variant="outlined" sx={{ p: 1.5 }}>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Typography
-                    variant="subtitle2"
-                    sx={{
-                      flex: 1,
-                      minWidth: 0,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
+            <>
+              {regularJobs.map((job) => renderJobCard(job))}
+              {guardJobs.length > 0 ? (
+                <Box
+                  role="region"
+                  aria-label="Garde des plugins"
+                  id={guardsRegionId}
+                >
+                  <Stack
+                    direction="row"
+                    spacing={0.5}
+                    alignItems="center"
+                    sx={{ minHeight: 40 }}
                   >
-                    {cronDisplayName(job)}
-                  </Typography>
-                  {busyId === job.id ? (
-                    <CircularProgress size={1.2} />
-                  ) : (
-                    <Switch
-                      size="small"
-                      checked={job.enabled}
-                      aria-label={
-                        job.enabled
-                          ? `Mettre en pause ${job.name}`
-                          : `Réactiver ${job.name}`
-                      }
-                      onChange={() => void toggleJob(job)}
-                    />
-                  )}
-                </Stack>
-                <Stack
-                  direction="row"
-                  spacing={0.75}
-                  alignItems="center"
-                  sx={{ mt: 0.75, flexWrap: "wrap", rowGap: 0.75 }}
-                >
-                  {job.plugin ? (
-                    <PluginBadge plugin={job.plugin} maxWidth={120} />
-                  ) : null}
-                  {notices.some(
-                    (notice) => notice.jobId === job.id && !notice.viewedAt,
-                  ) ? (
-                    <Chip size="small" color="primary">
-                      nouveau résultat
-                    </Chip>
-                  ) : null}
-                  <Chip size="small" variant="outlined">
-                    {cronScheduleLabel(job)}
-                  </Chip>
-                  <Chip size="small" variant="outlined">
-                    {cronRunLabel(job.runKind)}
-                  </Chip>
-                </Stack>
-                <Typography
-                  variant="body2"
-                  color="textSecondary"
-                  sx={{
-                    mt: 0.5,
-                    overflow: "hidden",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                  }}
-                >
-                  {job.runKind === "script" || job.runKind === "auto"
-                    ? job.script
-                    : job.message}
-                </Typography>
-                <Typography
-                  variant="caption"
-                  color="textSecondary"
-                  sx={{
-                    mt: 0.5,
-                    overflow: "hidden",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                  }}
-                >
-                  {job.enabled
-                    ? `Prochaine exécution ${formatFrWhen(job.nextRunAt)}`
-                    : "En pause — ne s’exécute pas"}{" "}
-                  • {cronModelLabel(job, models)} •{" "}
-                  {personaName(job.personaId ?? undefined)}
-                </Typography>
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  sx={{
-                    mt: 1,
-                    flexWrap: "wrap",
-                    rowGap: 1,
-                    "@media (max-width:400px)": {
-                      flexWrap: "nowrap",
-                      overflowX: "auto",
-                    },
-                  }}
-                >
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    color={
-                      job.lastError
-                        ? "error"
-                        : job.lastRunAt
-                          ? "success"
-                          : undefined
-                    }
-                  >
-                    {job.lastError
-                      ? "échec"
-                      : job.lastRunAt
-                        ? `exécutée ${formatFrAgo(job.lastRunAt)}`
-                        : "jamais exécutée"}
-                  </Chip>
-                  <Box sx={{ flex: 1 }} />
-                  <Button
-                    size="small"
-                    variant="text"
-                    startIcon={<EditIcon />}
-                    disabled={Boolean(busyId)}
-                    onClick={() => openForm(job)}
-                  >
-                    Modifier
-                  </Button>
-                  <Tip title="Exécute une fois maintenant; l’horaire habituel reste inchangé.">
                     <Button
-                      size="small"
                       variant="text"
-                      startIcon={<PlayArrowIcon />}
-                      disabled={Boolean(busyId)}
-                      onClick={() => void runJob(job)}
+                      onClick={toggleGuards}
+                      aria-expanded={guardsOpen}
+                      aria-controls={guardsRegionId}
+                      sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        justifyContent: "flex-start",
+                        px: 1,
+                        py: 0.5,
+                        textTransform: "none",
+                        textAlign: "left",
+                        gap: 0.75,
+                        color: "var(--text-secondary)",
+                        "@media (pointer: coarse)": { minHeight: 44 },
+                      }}
                     >
-                      {busyId === job.id ? "Exécution…" : "Exécuter maintenant"}
+                      {guardsOpen ? (
+                        <ChevronDownIcon width={16} height={16} aria-hidden />
+                      ) : (
+                        <ChevronRightIcon width={16} height={16} aria-hidden />
+                      )}
+                      <Typography
+                        variant="subtitle2"
+                        component="span"
+                        sx={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        Garde des plugins
+                      </Typography>
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        sx={{
+                          height: 22,
+                          borderRadius: "8px",
+                          flexShrink: 0,
+                          "& .MUI_Chip_Content": {
+                            padding: 0,
+                            paddingRight: "8px",
+                          },
+                        }}
+                      >
+                        {guardJobs.length}
+                      </Chip>
+                      {guardsHaveResult ? (
+                        <Chip size="small" color="primary">
+                          nouveau résultat
+                        </Chip>
+                      ) : null}
+                      {guardsHaveError ? (
+                        <Chip size="small" variant="outlined" color="error">
+                          échec
+                        </Chip>
+                      ) : null}
                     </Button>
-                  </Tip>
-                  {notices.some((notice) => notice.jobId === job.id) ? (
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<ChatIcon />}
-                      disabled={Boolean(busyId)}
-                      onClick={() => openJobResult(job)}
-                    >
-                      Résultat
-                    </Button>
+                  </Stack>
+                  {guardsOpen ? (
+                    <Stack spacing={1} sx={{ mt: 0.5 }}>
+                      {guardJobs.map((job) => renderJobCard(job))}
+                    </Stack>
                   ) : null}
-                  {job.sessionId && onOpenThread ? (
-                    <Button
-                      size="small"
-                      variant="text"
-                      disabled={Boolean(busyId)}
-                      onClick={() => openJobThread(job)}
-                    >
-                      Ouvrir le fil
-                    </Button>
-                  ) : null}
-                  <IconButton
-                    size="small"
-                    aria-label={`Supprimer ${job.name}`}
-                    disabled={Boolean(busyId)}
-                    onClick={() => setDeleteTarget(job)}
-                  >
-                    <DeleteIcon width={18} height={18} />
-                  </IconButton>
-                </Stack>
-                {job.lastError ? (
-                  <Typography
-                    variant="caption"
-                    color="error"
-                    sx={{ display: "block", mt: 0.5 }}
-                  >
-                    {job.lastError}
-                  </Typography>
-                ) : null}
-              </Paper>
-            ))
+                </Box>
+              ) : null}
+            </>
           )}
         </Box>
         {noticesError ? (

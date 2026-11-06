@@ -311,6 +311,8 @@ export const PARAM_FILE = "file"
 export const PARAM_COUNCIL = "council"
 export const PARAM_MEMBER = "member"
 export const PARAM_PREVIEW = "preview"
+/** Thread screen stage open beside the chat (`?screen=1`). */
+export const PARAM_SCREEN = "screen"
 /** Split file previewer: the desktop path open beside the thread. */
 export const PARAM_FILEVIEW = "fileview"
 export const PARAM_JOB = "job"

@@ -5,7 +5,7 @@ description: Save a finished procedure when the user corrects a deliverable, or 
 
 # Refine
 
-A refine skill is the whole finished job, including the correction the user should not have to send again. It is not a schedule. Do not use cron. Do not write the host OpenViking. Do not print the API key. The name `refine` is reserved.
+A refine skill is the whole finished job, including the correction the user should not have to send again. It is not a schedule. Do not use cron. Do not write a local SKILL.md. Do not print the API key. The name `refine` is reserved.
 
 ## When
 
@@ -27,22 +27,17 @@ Do the correction first. Then search this desktop before writing:
 
 If one is close, replace it so the correction is in the steps. Otherwise create one. Do not stop to ask. One sentence in the final reply is enough. The user can edit or delete it on the Config page under Custom skills.
 
-Name: kebab-case, at most 64 characters. Not `refine`, and not a built-in name (`desktop`, `cron`, `cf-ai`, `shortcut`, `persona`). The description is one line: when to load it, including the words the user would say.
+Name: kebab-case, at most 64 characters. Not a built-in name (`desktop`, `cron`, `cf-ai`, `shortcut`, `refine`, `skill`). The description is one line: when to load it, including the words the user would say.
 
-Read `X-API-Key` from `~/.openviking/ovcli.conf`. Do not print it. Do not pass `wait`.
-
-Create:
+Write and replace with `ob-skill` (the `skill` skill has the full commands) — it confirms server-side:
 
 ```sh
-curl -sS -X POST http://viking:1933/api/v1/skills \
-  -H "X-API-Key: $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"data":{"name":"logo-cutout","description":"when to use it, one line","content":"# Logo cutout\n\nfinished steps, including the correction"}}'
+ob-skill save logo-cutout \
+  --description "Cut a logo out of its background when the user asks" \
+  --file skill.md
 ```
 
-Replace by DELETE `http://viking:1933/api/v1/skills/<name>` then the same POST. Do not use PUT — it can hang on a loaded server.
-
-Confirm with `openviking_read` on `viking://user/skills/<name>/SKILL.md`. If the request times out, the skill was usually written: read it before retrying, or you will create a duplicate.
+Add `--group LABEL` when the user organizes skills by topic and the group matters.
 
 Also `openviking_remember` one line: the name, the trigger, and that the steps live in that skill.
 
@@ -53,6 +48,6 @@ Before the same kind of job, search skills and follow the match. Do not rediscov
 ## Do not
 
 - Do not write a local SKILL.md.
-- Do not use `openviking_write` on the skills tree.
+- Do not curl OpenViking or use `openviking_write` for skills — `ob-skill` only.
 - Do not store secrets.
 - Do not save a one-off, a destructive step, or something that will not recur.

@@ -150,6 +150,49 @@ export function showLiveScreen(input: {
   return input.handoff && input.isLast && !input.held && !input.dismissed
 }
 
+/**
+ * What the in-thread screen card shows for one handoff bubble. Older
+ * shares are receipts whatever the desktop does now; a live hold wins
+ * over a stale postponed stamp (takeover from the Desktop tab); an open
+ * stage pane collapses the card so only one frame drives.
+ */
+export type ScreenCardState =
+  | "older"
+  | "done"
+  | "later"
+  | "asleep"
+  | "error"
+  | "opening"
+  | "held"
+  | "opened"
+  | "live"
+
+export function screenCardState(input: {
+  isLast: boolean
+  held: boolean
+  outcome: "none" | "done" | "later"
+  running: boolean
+  screenLive: boolean
+  screenError: string
+  opened: boolean
+}): ScreenCardState {
+  if (!input.isLast) return "older"
+  if (input.opened) return "opened"
+  if (input.held) return "held"
+  if (input.outcome !== "none") return input.outcome
+  if (!input.running) return "asleep"
+  if (!input.screenLive) return input.screenError ? "error" : "opening"
+  return "live"
+}
+
+/**
+ * Posted to the thread when the user hands the screen back with
+ * « C'est fait, à toi ». Agent-facing canned prompts stay in English
+ * (like the resume prompt) even though the buttons are French.
+ */
+export const SCREEN_DONE_PROMPT =
+  "Done on the screen. You have the desktop again."
+
 export function handoffStamp(message: {
   text: string
   sentAt: number | null
@@ -252,10 +295,17 @@ export function splitCouncil(text: string): {
   return { text: stripped, council: slugs[0] ?? "", councils: slugs }
 }
 
-export function vncFrameSrc(path: string, interactive: boolean): string {
+/** Stage fit: scale the remote screen to the frame, or native 1:1. */
+export type VncFit = "scale" | "native"
+
+export function vncFrameSrc(
+  path: string,
+  interactive: boolean,
+  fit: VncFit = "scale",
+): string {
   const query = new URLSearchParams({
     autoconnect: "1",
-    resize: "scale",
+    resize: fit === "native" ? "off" : "scale",
     path,
     view_only: interactive ? "0" : "1",
   })

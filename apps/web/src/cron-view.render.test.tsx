@@ -52,7 +52,9 @@ const oneShotJob = {
 
 const requests: { path: string; method: string; body: string }[] = []
 
-function installFetch(overrides: { job?: unknown; notices?: unknown[] } = {}) {
+function installFetch(
+  overrides: { job?: unknown; jobs?: unknown[]; notices?: unknown[] } = {},
+) {
   const real = (globalThis as any).fetch
   ;(globalThis as any).fetch = (
     input: RequestInfo | URL,
@@ -70,7 +72,7 @@ function installFetch(overrides: { job?: unknown; notices?: unknown[] } = {}) {
     const body = path.startsWith("/api/cron/notices")
       ? (overrides.notices ?? [])
       : path === "/api/cron"
-        ? [overrides.job ?? oneShotJob]
+        ? (overrides.jobs ?? [overrides.job ?? oneShotJob])
         : path === "/api/models"
           ? { models: [] }
           : path === "/api/personas"
@@ -100,6 +102,143 @@ async function flush(ms: number) {
 function buttons(container: HTMLElement): HTMLButtonElement[] {
   return [...container.querySelectorAll("button")] as HTMLButtonElement[]
 }
+
+describe("CronView — search field (rendered)", () => {
+  test("loaded jobs come with a search field above the list", async () => {
+    const RealSocket = (globalThis as any).WebSocket
+    ;(globalThis as any).WebSocket = class {
+      close() {}
+    }
+    const restoreFetch = installFetch()
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    act(() => {
+      root.render(
+        <StrictMode>
+          <CronView me={me} />
+        </StrictMode>,
+      )
+    })
+    try {
+      await flush(60)
+      expect(container.textContent).toContain("Rappel facture")
+      const field = container.querySelector(
+        'input[type="search"]',
+      ) as HTMLInputElement | null
+      expect(field).toBeTruthy()
+      expect(must(field).getAttribute("aria-label")).toBe(
+        "Filtrer les automatisations",
+      )
+      expect(must(field).getAttribute("placeholder")).toBe(
+        "Filtrer les automatisations",
+      )
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+      restoreFetch()
+      ;(globalThis as any).WebSocket = RealSocket
+    }
+  })
+})
+
+describe("CronView — plugin guards under one collapsible (rendered)", () => {
+  const guardJob = (id: string, pluginId: string, pluginName: string) => ({
+    ...oneShotJob,
+    id,
+    name: `plugin:${pluginId}:guard`,
+    kind: "cron",
+    cronExpr: "0 9 * * *",
+    atMs: null,
+    runKind: "auto",
+    script: "check-updates",
+    message: "guard",
+    plugin: { id: pluginId, name: pluginName },
+  })
+
+  test("guards collapse by default; the header still signals result and error", async () => {
+    const RealSocket = (globalThis as any).WebSocket
+    ;(globalThis as any).WebSocket = class {
+      close() {}
+    }
+    localStorage.removeItem("ob-cron-guards-open")
+    const restoreFetch = installFetch({
+      jobs: [
+        oneShotJob,
+        guardJob("g1", "weather-pro", "Weather Pro"),
+        {
+          ...guardJob("g2", "stock", "Stock"),
+          lastError: "dépôt injoignable",
+        },
+      ],
+      notices: [
+        {
+          id: "n1",
+          jobId: "g1",
+          jobName: "plugin:weather-pro:guard",
+          summary: "Nouveau fil de discussion.",
+          createdAt: Date.now() - HOUR,
+          viewedAt: null,
+        },
+      ],
+    })
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    act(() => {
+      root.render(
+        <StrictMode>
+          <CronView me={me} />
+        </StrictMode>,
+      )
+    })
+    try {
+      await flush(60)
+      // The user's own automation stays in the main list, expanded.
+      expect(container.textContent).toContain("Rappel facture")
+      const toggle = buttons(container).find((button) =>
+        button.textContent?.includes("Garde des plugins"),
+      )
+      expect(toggle).toBeTruthy()
+      expect(must(toggle).getAttribute("aria-expanded")).toBe("false")
+      // Both guards count on the header, and their signals ride it too:
+      // an unviewed guard result and a failed guard are never hidden.
+      expect(must(toggle).textContent).toContain("2")
+      expect(must(toggle).textContent).toContain("nouveau résultat")
+      expect(must(toggle).textContent).toContain("échec")
+      // Collapsed: no guard card (plugin title, error text) in the list.
+      expect(container.textContent).not.toContain("Weather Pro")
+      expect(container.textContent).not.toContain("dépôt injoignable")
+      expect(
+        buttons(container).filter((b) => b.textContent === "Modifier"),
+      ).toHaveLength(1)
+      // Expand: every guard gets its full card, titled by its plugin.
+      await act(async () => {
+        must(toggle).click()
+        await sleep(20)
+      })
+      expect(must(toggle).getAttribute("aria-expanded")).toBe("true")
+      expect(container.textContent).toContain("Weather Pro")
+      expect(container.textContent).toContain("Stock")
+      expect(container.textContent).toContain("dépôt injoignable")
+      expect(
+        buttons(container).filter((b) => b.textContent === "Modifier"),
+      ).toHaveLength(3)
+      // Collapse again: the cards leave with it.
+      await act(async () => {
+        must(toggle).click()
+        await sleep(20)
+      })
+      expect(must(toggle).getAttribute("aria-expanded")).toBe("false")
+      expect(container.textContent).not.toContain("Weather Pro")
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+      restoreFetch()
+      ;(globalThis as any).WebSocket = RealSocket
+    }
+  })
+})
 
 describe("CronView — one-shot edit (R04, rendered)", () => {
   test("pre-filled date, collapsed advanced, name-only save sends no schedule", async () => {

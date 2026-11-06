@@ -13,27 +13,32 @@ Usage:
   ob-persona add --name NAME --instruction TEXT [--skills "a,b,c" | --skills none]
               [--mcp "a,b" | --mcp none]
   ob-persona update ID [--name NAME] [--instruction TEXT | --append TEXT]
-              [--skills "a,b,c" | --skills none] [--skills-append NAME | --skill NAME]...
-              [--skills-clear]
-              [--mcp "a,b" | --mcp none] [--mcp-append NAME]... [--mcp-clear]
+               [--skills "a,b,c" | --skills none] [--skills-append NAME | --skill NAME]...
+               [--skills-remove NAME | --skill-remove NAME]... [--skills-clear]
+               [--mcp "a,b" | --mcp none] [--mcp-append NAME]... [--mcp-remove NAME]...
+               [--mcp-clear]
   ob-persona remove ID
 
 Skill scopes: --skills replaces the editable list (the base list for your own
 personalities, the extras for plugin-owned and built-in ones — their base is
 locked to the desktop's seed set or the plugin's declared set).
---skills-append/--skill add one name (repeatable, accepts a comma list).
+--skills-append/--skill add one name (repeatable, accepts a comma list);
+--skills-remove/--skill-remove drop one name from the editable list the same
+way (a base name of a locked personality is refused — it is always allowed).
 --skills-clear removes the restriction (plugin and built-in personas keep
 their base list). --skills none blocks every skill on any personality —
 including locked-base ones. A personality with an empty list loads all
 skills. Built-in personalities cannot be renamed, re-instructed, or deleted.
 The Assistant is the exception on skills: its base is every skill (seed,
-plugin, and custom), so there is nothing to add — --skills/--skills-append
-refuse; only its MCP base is the seed set, extended with --mcp-append.
+plugin, and custom), so there is nothing to add or remove —
+--skills/--skills-append/--skills-remove refuse; only its MCP base is the
+seed set, extended with --mcp-append and narrowed with --mcp-remove.
 
 MCP scopes work the same way on MCP server names: --mcp replaces the editable
-server list, --mcp-append adds one (repeatable, comma list ok), --mcp-clear
-removes the restriction. --mcp none blocks every MCP server on any
-personality. An unrestricted personality loads every configured MCP server.
+server list, --mcp-append adds one (repeatable, comma list ok), --mcp-remove
+drops one from the editable list, --mcp-clear removes the restriction.
+--mcp none blocks every MCP server on any personality. An unrestricted
+personality loads every configured MCP server.
 
 Creating or editing a personality does not change the current thread.
 The user starts a new thread and picks it.
@@ -64,9 +69,14 @@ urlencode() {
   printf '%s' "$1" | jq -sRr @uri
 }
 
-# "a, b,c" -> ["a","b","c"] (trimmed, empties dropped)
+# "a, b\nc" -> ["a","b","c"] (comma/space/newline separated, empties dropped).
+# -Rs slurps the whole input as one string: the repeatable flags accumulate
+# names with embedded newlines, and a per-line -R would run the filter once
+# per line and emit several arrays (the length guards then read a multi-line
+# "0
+# 1" as an illegal number).
 list_to_json() {
-  printf '%s' "$1" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))'
+  printf '%s' "$1" | jq -Rs 'gsub("[\\s,]+"; ",") | split(",") | map(select(length > 0))'
 }
 
 [ $# -ge 1 ] || { usage; exit 2; }
@@ -207,9 +217,11 @@ case "$cmd" in
     append=""
     skills_json=""
     appends=""
+    skills_removes=""
     skills_clear=""
     mcp_json=""
     mcp_appends=""
+    mcp_removes=""
     mcp_clear=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -238,6 +250,12 @@ case "$cmd" in
           appends="$appends
 $2"
           shift 2 ;;
+        --skills-remove|--skill-remove)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          [ -n "$2" ] || { echo "ob-persona: --skills-remove needs a skill name" >&2; exit 2; }
+          skills_removes="$skills_removes
+$2"
+          shift 2 ;;
         --skills-clear)
           skills_clear=1; shift ;;
         --mcp)
@@ -254,6 +272,12 @@ $2"
           [ $# -ge 2 ] || { usage; exit 2; }
           [ -n "$2" ] || { echo "ob-persona: --mcp-append needs a server name" >&2; exit 2; }
           mcp_appends="$mcp_appends
+$2"
+          shift 2 ;;
+        --mcp-remove)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          [ -n "$2" ] || { echo "ob-persona: --mcp-remove needs a server name" >&2; exit 2; }
+          mcp_removes="$mcp_removes
 $2"
           shift 2 ;;
         --mcp-clear)
@@ -280,8 +304,8 @@ $append"
     fi
 
     needs_current=""
-    if [ -n "$skills_json" ] || [ -n "$appends" ] || [ -n "$skills_clear" ] \
-       || [ -n "$mcp_json" ] || [ -n "$mcp_appends" ] || [ -n "$mcp_clear" ]; then
+    if [ -n "$skills_json" ] || [ -n "$appends" ] || [ -n "$skills_removes" ] || [ -n "$skills_clear" ] \
+       || [ -n "$mcp_json" ] || [ -n "$mcp_appends" ] || [ -n "$mcp_removes" ] || [ -n "$mcp_clear" ]; then
       needs_current=1
       out=$(request GET /api/personas)
       fail_on_error "$out"
@@ -348,6 +372,53 @@ $append"
       skills_none="false"
     fi
 
+    # --skills-remove drops names from the editable list — the extras for
+    # plugin-owned and built-in personas (a locked-base name is refused: it
+    # is always allowed), the base list for user personas (refused while
+    # unrestricted — there is no list to remove from). It chains from an
+    # in-progress --skills/--skills-append value, and never touches the
+    # block-all flag: removing a name must not unblock the rest.
+    if [ -n "$skills_removes" ]; then
+      remove_json=$(list_to_json "$skills_removes")
+      [ "$(printf '%s' "$remove_json" | jq 'length')" -gt 0 ] || { echo "ob-persona: --skills-remove needs a skill name" >&2; exit 2; }
+      if [ "$(printf '%s' "$persona_json" | jq -r '.id')" = "assistant" ]; then
+        echo "ob-persona: the Assistant loads every skill — there is nothing to remove; block skills with --skills none instead" >&2
+        exit 1
+      fi
+      if [ -n "$extras_mode" ]; then
+        clash=$(printf '%s' "$remove_json" | jq -r --argjson base "$base_json" \
+          '.[] | select(. as $n | $base | index($n))' | head -n 1)
+        if [ -n "$clash" ]; then
+          echo "ob-persona: '$clash' is in the base skill list — it is always allowed and cannot be removed" >&2
+          exit 1
+        fi
+        if [ -n "$skills_field" ]; then
+          current_json="$skills_value"
+        else
+          current_json=$(printf '%s' "$persona_json" | jq -c '(.skillsExtra // [])')
+          skills_field="skillsExtra"
+        fi
+      else
+        if [ -n "$skills_field" ]; then
+          current_json="$skills_value"
+        else
+          current_json=$(printf '%s' "$persona_json" | jq -c '.skills')
+          if [ "$current_json" = "null" ]; then
+            echo "ob-persona: this personality loads all skills — restrict it with --skills \"a,b\" before removing names" >&2
+            exit 1
+          fi
+          skills_field="skills"
+        fi
+      fi
+      skills_value=$(printf '%s' "$current_json" | jq -c --argjson drop "$remove_json" '. - $drop')
+      # An empty result on a user persona's base list would read as "all
+      # skills" — the opposite of the removal. Name the explicit states.
+      if [ "$skills_field" = "skills" ] && [ "$skills_value" = "[]" ]; then
+        echo "ob-persona: that was the only allowed skill — block every skill with --skills none or lift the restriction with --skills-clear instead" >&2
+        exit 1
+      fi
+    fi
+
     if [ -n "$skills_clear" ]; then
       if [ -n "$extras_mode" ]; then
         skills_field="skillsExtra"
@@ -398,6 +469,38 @@ $append"
       fi
       mcp_value=$(printf '%s' "$current_json" | jq -c --argjson add "$add_json" '. + [$add[]] | unique')
       mcp_none="false"
+    fi
+
+    # --mcp-remove mirrors --skills-remove on the editable MCP server list.
+    if [ -n "$mcp_removes" ]; then
+      remove_json=$(list_to_json "$mcp_removes")
+      [ "$(printf '%s' "$remove_json" | jq 'length')" -gt 0 ] || { echo "ob-persona: --mcp-remove needs a server name" >&2; exit 2; }
+      if [ -n "$extras_mode" ]; then
+        clash=$(printf '%s' "$remove_json" | jq -r --argjson base "$mcp_base_json" \
+          '.[] | select(. as $n | $base | index($n))' | head -n 1)
+        if [ -n "$clash" ]; then
+          echo "ob-persona: '$clash' is in the base server list — it is always allowed and cannot be removed" >&2
+          exit 1
+        fi
+        if [ -n "$mcp_field" ]; then
+          current_json="$mcp_value"
+        else
+          current_json=$(printf '%s' "$persona_json" | jq -c '(.mcpExtra // [])')
+          mcp_field="mcpExtra"
+        fi
+      else
+        if [ -n "$mcp_field" ]; then
+          current_json="$mcp_value"
+        else
+          current_json=$(printf '%s' "$persona_json" | jq -c '.mcp')
+          if [ "$current_json" = "null" ]; then
+            echo "ob-persona: this personality loads every MCP server — restrict it with --mcp \"a,b\" before removing names" >&2
+            exit 1
+          fi
+          mcp_field="mcp"
+        fi
+      fi
+      mcp_value=$(printf '%s' "$current_json" | jq -c --argjson drop "$remove_json" '. - $drop')
     fi
 
     if [ -n "$mcp_clear" ]; then

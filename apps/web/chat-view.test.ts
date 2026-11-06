@@ -8,6 +8,7 @@ import {
   modelActivity,
   nearBottom,
   samePayload,
+  screenCardState,
   showLiveScreen,
   splitScreenHandoff,
   threadBubbles,
@@ -262,6 +263,48 @@ describe("visible text", () => {
     expect(
       vncFrameSrc("desktop/view/websockify?token=ses_abc", true),
     ).toContain("view_only=0")
+    // 1:1 stage fit: noVNC keeps the native resolution and scrolls.
+    expect(
+      vncFrameSrc("desktop/view/websockify?token=ses_abc", true, "native"),
+    ).toContain("resize=off")
+    expect(
+      vncFrameSrc("desktop/view/websockify?token=ses_abc", true, "scale"),
+    ).toContain("resize=scale")
+  })
+
+  test("screen card state walks the handoff lifecycle", () => {
+    const base = {
+      isLast: true,
+      held: false,
+      outcome: "none" as const,
+      running: true,
+      screenLive: true,
+      screenError: "",
+      opened: false,
+    }
+    expect(screenCardState(base)).toBe("live")
+    expect(screenCardState({ ...base, screenLive: false })).toBe("opening")
+    expect(
+      screenCardState({ ...base, screenLive: false, screenError: "boom" }),
+    ).toBe("error")
+    expect(screenCardState({ ...base, held: true })).toBe("held")
+    // Opened in the stage pane: the card collapses, held or not.
+    expect(screenCardState({ ...base, opened: true })).toBe("opened")
+    expect(screenCardState({ ...base, held: true, opened: true })).toBe(
+      "opened",
+    )
+    expect(screenCardState({ ...base, outcome: "done" })).toBe("done")
+    expect(screenCardState({ ...base, outcome: "later" })).toBe("later")
+    expect(screenCardState({ ...base, running: false })).toBe("asleep")
+    // Older shares are receipts whatever the desktop is doing now.
+    expect(screenCardState({ ...base, isLast: false })).toBe("older")
+    expect(
+      screenCardState({ ...base, isLast: false, held: true, running: false }),
+    ).toBe("older")
+    // A live hold wins over a stale postponed stamp (desktop-tab takeover).
+    expect(screenCardState({ ...base, held: true, outcome: "later" })).toBe(
+      "held",
+    )
   })
 
   test("turns a bare workspace image path into markdown and blocks other paths", () => {

@@ -22,12 +22,22 @@ describe("sticky log pills clear the composer", () => {
     // ~34px pill + at least ~10px clear of the log's bottom edge.
     expect(bottomOf(css, ".ob-jump-wrap")).toBeGreaterThanOrEqual(44)
     expect(bottomOf(css, ".ob-councils-fab-wrap")).toBeGreaterThanOrEqual(44)
+    expect(bottomOf(css, ".ob-screen-fab-wrap")).toBeGreaterThanOrEqual(44)
   })
 
   test("narrow screens stack Councils one line above Jump to latest", () => {
     const jump = bottomOf(css, ".ob-jump-wrap")
     const narrow = css.match(
       /@media \(max-width: 599px\) \{\s*\.ob-councils-fab-wrap \{\s*bottom: (\d+(?:\.\d+)?)px/,
+    )
+    expect(narrow).not.toBeNull()
+    expect(Number(narrow?.[1])).toBeGreaterThanOrEqual(jump + 40)
+  })
+
+  test("narrow screens stack the screen pill above Jump to latest too", () => {
+    const jump = bottomOf(css, ".ob-jump-wrap")
+    const narrow = css.match(
+      /@media \(max-width: 599px\) \{\s*\.ob-screen-fab-wrap \{\s*bottom: (\d+(?:\.\d+)?)px/,
     )
     expect(narrow).not.toBeNull()
     expect(Number(narrow?.[1])).toBeGreaterThanOrEqual(jump + 40)

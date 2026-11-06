@@ -1,30 +1,34 @@
 import Box from "@shpaw415/mui-lite/Box"
 import Button from "@shpaw415/mui-lite/Button"
-import { CircularProgress } from "@shpaw415/mui-lite/Progress"
+import IconButton from "@shpaw415/mui-lite/IconButton"
 import Typography from "@shpaw415/mui-lite/Typography"
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
-import Markdown from "react-markdown"
-import { ChatLink } from "./chat-link"
-import { chatUrlTransform, nonMediaFileName } from "./chat-markdown"
+import { ChatMarkdown } from "./chat-markdown"
 import {
   applyMessageDelta,
   type ChatMessage,
-  chatImageUrl,
   eventTouchesSession,
   nearBottom,
   type StreamEvent,
+  type TranscriptEntry,
+  transcriptBubbles,
   visibleMessages,
 } from "./chat-view"
-import { MarkdownCodeBlock } from "./code-copy"
-import { remarkAgentFiles } from "./file-refs"
-import { ChevronDownIcon } from "./icons"
+import {
+  CheckCircleIcon,
+  ChevronDownIcon,
+  ContentCopyIcon,
+  StopIcon,
+} from "./icons"
 import { createLatestGuard } from "./latest-guard"
+import { MediaImage } from "./MediaDownload"
 import {
   EMPTY_PAGE_META,
   infoPredatesWindow,
@@ -37,9 +41,14 @@ import {
   parseMessagePage,
   tailLimit,
 } from "./message-page"
+import { MessageSkeletons } from "./message-skeletons"
 import { clampPreviewWidth } from "./PreviewView"
 import { PARAM_COUNCIL, PARAM_MEMBER } from "./routes"
 import Stack from "./stack"
+import { THREADS_UI } from "./texts"
+import { WorkLine } from "./thread-timeline"
+import { formatWhen } from "./time"
+import { type TimelineRow, timelineRows } from "./timeline"
 
 export type CouncilMemberInfo = {
   sessionId: string
@@ -121,45 +130,193 @@ function CouncilDot({ live }: { live: boolean }) {
   )
 }
 
-const councilMarkdownComponents = {
-  pre: MarkdownCodeBlock,
-  a: ChatLink,
-  img: ({ src, alt }: { src?: string; alt?: string }) => {
-    const resolved = typeof src === "string" ? chatImageUrl(src) : ""
-    if (!resolved) return null
-    const fileName = nonMediaFileName(resolved)
-    if (fileName) return <ChatLink href={resolved}>{alt || fileName}</ChatLink>
-    return (
-      <div className="ob-media-wrap">
-        <img src={resolved} alt={alt ?? ""} />
-      </div>
-    )
-  },
+/**
+ * Session ids of the council's running members and subagents, members
+ * first — the stop button's abort targets.
+ */
+export function councilRunningIds(
+  data: CouncilData,
+  statusOf: (sessionId: string) => { type?: string } | undefined,
+): string[] {
+  return [...data.members, ...(data.subagents ?? [])]
+    .filter((member) => councilRunning(statusOf(member.sessionId)))
+    .map((member) => member.sessionId)
 }
 
-function CouncilMarkdown({ text }: { text: string }) {
+/**
+ * Header stop for the whole council: aborts every running member (and
+ * subagent) through the caller's `onStop`. Sessions and transcripts
+ * survive — this cancels the current turns, it does not close the
+ * council. Hidden when nothing runs; busy while the aborts land.
+ */
+function CouncilStopButton({
+  runningCount,
+  onStop,
+}: {
+  runningCount: number
+  onStop: () => Promise<void>
+}) {
+  const [stopping, setStopping] = useState(false)
+  if (runningCount === 0) return null
   return (
-    <Markdown
-      remarkPlugins={[remarkAgentFiles]}
-      urlTransform={chatUrlTransform}
-      components={councilMarkdownComponents}
+    <Button
+      size="small"
+      variant="contained"
+      color="error"
+      startIcon={<StopIcon width={14} height={14} />}
+      disabled={stopping}
+      onClick={() => {
+        setStopping(true)
+        void onStop().finally(() => setStopping(false))
+      }}
     >
-      {text}
-    </Markdown>
+      {stopping ? "Stopping…" : "Stop council"}
+    </Button>
   )
 }
 
-// Read-only transcript of one council member: same markdown surface as the
-// main chat (minus plugin cards), fed by the same message route the dashboard
-// polls, live-updated from the shared event stream.
+// One transcript bubble, same DOM as the main thread's MessageBubble
+// (Workspace): ob-msg wrapper, CSS-only bubble surface, attached images,
+// and the quiet meta row underneath (time · copy). The main bubble's
+// thread-bound extras — screen handoff, preview embed, read-aloud, send
+// marks, plugin cards — stay out: they act on the open dashboard
+// thread, not on a member's worker session.
+function CouncilBubble({ entry }: { entry: TranscriptEntry }) {
+  const message = entry.message
+  const mine = message.info?.role === "user"
+  const [copied, setCopied] = useState(false)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) clearTimeout(copyTimer.current)
+    },
+    [],
+  )
+  const copyMessage = () => {
+    navigator.clipboard
+      ?.writeText(message.text)
+      .then(() => {
+        setCopied(true)
+        if (copyTimer.current !== null) clearTimeout(copyTimer.current)
+        copyTimer.current = setTimeout(() => setCopied(false), 2000)
+      })
+      .catch(() => {})
+  }
+  const copyButton = message.text.trim() ? (
+    // Plain title, not the main bubble's Tip: the tooltip portals, and
+    // this read-only transcript is also server-rendered in tests.
+    <IconButton
+      size="small"
+      title={copied ? THREADS_UI.copiedMessage : THREADS_UI.copyMessage}
+      aria-label={THREADS_UI.copyMessage}
+      onClick={copyMessage}
+    >
+      {copied ? (
+        <CheckCircleIcon width={15} height={15} />
+      ) : (
+        <ContentCopyIcon width={15} height={15} />
+      )}
+    </IconButton>
+  ) : null
+  const timeMark = message.sentAt ? (
+    <time
+      className="ob-bubble-time"
+      dateTime={new Date(message.sentAt).toISOString()}
+    >
+      {formatWhen(message.sentAt)}
+    </time>
+  ) : null
+  return (
+    <div className={`ob-msg ${mine ? "ob-msg-user" : "ob-msg-assistant"}`}>
+      <Box
+        title={mine ? "You" : "Agent"}
+        className={`ob-bubble ${mine ? "ob-bubble-user" : "ob-bubble-assistant"}`}
+      >
+        <div className="ob-md">
+          {message.text.trim() ? <ChatMarkdown text={message.text} /> : null}
+          {message.images.map((src) => (
+            <MediaImage key={src} src={src} />
+          ))}
+        </div>
+      </Box>
+      {mine ? (
+        <div className="ob-msg-meta ob-msg-meta-user">
+          {timeMark}
+          {copyButton}
+        </div>
+      ) : copyButton || timeMark ? (
+        <div className="ob-msg-meta">
+          {copyButton}
+          {timeMark}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+// The main thread's derived rows for one member: burst-merged bubbles
+// (transcriptBubbles, no receipts on a read-only transcript) interleaved
+// with one WorkLine per assistant turn — the tool calls a member made,
+// previously invisible here. `startUserCount` anchors the lazily loaded
+// window exactly like the main log.
+function councilTimelineRows(
+  messages: ChatMessage[],
+  startUserCount: number,
+  running: boolean,
+): TimelineRow[] {
+  const entries = transcriptBubbles(messages, [], undefined, startUserCount)
+  return timelineRows(entries, messages, { live: running })
+}
+
+function CouncilRows({ rows }: { rows: TimelineRow[] }) {
+  return (
+    <>
+      {rows.map((row) =>
+        row.kind === "work" ? (
+          <WorkLine key={row.key} work={row.work} />
+        ) : (
+          <CouncilBubble
+            key={row.entry.message.info?.id ?? `bubble-${row.index}`}
+            entry={row.entry}
+          />
+        ),
+      )}
+    </>
+  )
+}
+
+/** A member transcript rendered exactly like the main message thread. */
+export function CouncilTimeline({
+  messages,
+  startUserCount,
+  running = false,
+}: {
+  messages: ChatMessage[]
+  startUserCount: number
+  running?: boolean
+}) {
+  const rows = useMemo(
+    () => councilTimelineRows(messages, startUserCount, running),
+    [messages, startUserCount, running],
+  )
+  return <CouncilRows rows={rows} />
+}
+
+// Read-only transcript of one council member: the main thread's timeline
+// UI (burst-merged bubbles + per-turn work rows with the tool calls),
+// fed by the same message route the dashboard polls, live-updated from
+// the shared event stream. `running` is the member's own busy state —
+// it marks the last turn's work row as still in progress.
 function MemberTranscript({
   sessionId,
   subscribe,
   live,
+  running,
 }: {
   sessionId: string
   subscribe: (listener: (event: StreamEvent) => void) => () => void
   live: boolean
+  running: boolean
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(true)
@@ -397,15 +554,14 @@ function MemberTranscript({
     el.scrollTop = el.scrollHeight
   }, [messages])
 
-  const bubbles = visibleMessages(messages)
+  const rows = useMemo(
+    () => councilTimelineRows(messages, pageMetaState.startUserCount, running),
+    [messages, pageMetaState.startUserCount, running],
+  )
   if (loading) {
     return (
-      <Stack
-        alignItems="center"
-        justifyContent="center"
-        sx={{ flex: 1, minHeight: 120 }}
-      >
-        <CircularProgress size={1.2} />
+      <Stack sx={{ flex: 1, minHeight: 120, p: 1 }}>
+        <MessageSkeletons rows={4} label="Loading messages…" />
       </Stack>
     )
   }
@@ -432,13 +588,7 @@ function MemberTranscript({
         {pageMetaState.hasMore ? (
           <div ref={topSentinelRef} className="ob-load-older">
             {olderLoading ? (
-              <Stack direction="row" spacing={1} alignItems="center">
-                {/* mui-lite numeric size is rem — "14px", never 14 */}
-                <CircularProgress size="14px" />
-                <Typography variant="caption" color="textSecondary">
-                  Loading older messages…
-                </Typography>
-              </Stack>
+              <MessageSkeletons rows={3} label="Loading older messages…" />
             ) : olderError ? (
               <Button
                 size="small"
@@ -458,35 +608,15 @@ function MemberTranscript({
             )}
           </div>
         ) : null}
-        {bubbles.length === 0 && !pageMetaState.hasMore ? (
+        {rows.length === 0 && !pageMetaState.hasMore ? (
           <Typography variant="body2" color="textSecondary">
             No messages yet.
           </Typography>
-        ) : bubbles.length === 0 ? null : (
-          bubbles.map((entry, index) => {
-            const mine = entry.info?.role === "user"
-            return (
-              <Box
-                key={entry.info?.id ?? index}
-                className={`ob-bubble ${mine ? "ob-bubble-user" : "ob-bubble-assistant"}`}
-                sx={{
-                  bgcolor: mine ? "primary.main" : undefined,
-                  color: mine ? "primary.contrastText" : "text.primary",
-                  border: mine ? "none" : "1px solid",
-                  borderColor: mine ? undefined : "divider",
-                }}
-              >
-                <div className="ob-md">
-                  {entry.text.trim() ? (
-                    <CouncilMarkdown text={entry.text} />
-                  ) : null}
-                </div>
-              </Box>
-            )
-          })
+        ) : rows.length === 0 ? null : (
+          <CouncilRows rows={rows} />
         )}
       </Stack>
-      {!atBottom && bubbles.length > 0 ? (
+      {!atBottom && rows.length > 0 ? (
         <div className="ob-jump-wrap">
           <button
             type="button"
@@ -821,6 +951,7 @@ function councilBody(
       sessionId={member.sessionId}
       subscribe={subscribe}
       live={live}
+      running={councilRunning(statusOf(member.sessionId))}
     />
   ) : (
     <Typography variant="body2" color="textSecondary" sx={{ p: 2 }}>
@@ -877,6 +1008,7 @@ export function CouncilPane({
   councils,
   selectedCouncilName,
   onSelectCouncil,
+  onStop,
 }: {
   data: CouncilData
   selectedId: string
@@ -893,11 +1025,10 @@ export function CouncilPane({
   councils?: readonly CouncilGroupOption[]
   selectedCouncilName?: string
   onSelectCouncil?: (name: string) => void
+  /** Aborts every running member/subagent turn (see CouncilStopButton). */
+  onStop?: () => Promise<void>
 }) {
-  const subagents = data.subagents ?? []
-  const runningCount = [...data.members, ...subagents].filter((member) =>
-    councilRunning(statusOf(member.sessionId)),
-  ).length
+  const runningCount = councilRunningIds(data, statusOf).length
   return (
     <>
       <div className="ob-preview-split" onPointerDown={onDrag} />
@@ -912,6 +1043,9 @@ export function CouncilPane({
             Council {data.name}
             {runningCount > 0 ? ` — ${runningCount} working` : ""}
           </Typography>
+          {onStop ? (
+            <CouncilStopButton runningCount={runningCount} onStop={onStop} />
+          ) : null}
           <Button size="small" variant="text" onClick={onFullscreen}>
             Full screen
           </Button>
@@ -952,6 +1086,7 @@ export function CouncilOverlay({
   councils,
   selectedCouncilName,
   onSelectCouncil,
+  onStop,
 }: {
   data: CouncilData
   selectedId: string
@@ -964,13 +1099,20 @@ export function CouncilOverlay({
   councils?: readonly CouncilGroupOption[]
   selectedCouncilName?: string
   onSelectCouncil?: (name: string) => void
+  /** Aborts every running member/subagent turn (see CouncilStopButton). */
+  onStop?: () => Promise<void>
 }) {
+  const runningCount = councilRunningIds(data, statusOf).length
   return (
     <div className="ob-preview-overlay">
       <Stack direction="row" spacing={1} alignItems="center">
         <Typography variant="caption" sx={{ flex: 1, color: "#fff" }}>
           Council {data.name}
+          {runningCount > 0 ? ` — ${runningCount} working` : ""}
         </Typography>
+        {onStop ? (
+          <CouncilStopButton runningCount={runningCount} onStop={onStop} />
+        ) : null}
         <Button size="small" variant="contained" onClick={onClose}>
           Close
         </Button>

@@ -201,12 +201,96 @@ export type WatchdogFinding = {
   lastSeenAt: number
 }
 
+export type VikingVlmSource = "custom" | "opencode"
+
+export type VikingEmbedProvider =
+  | "cloudflare-workers-ai"
+  | "openai"
+  | "voyage"
+  | "cohere"
+  | "jina"
+  | "gemini"
+  | "dashscope"
+  | "minimax"
+  | "volcengine"
+  | "ollama"
+  | "litellm"
+  | "local"
+  | "custom-openai-compatible"
+
+const VIKING_EMBED_PROVIDERS: readonly VikingEmbedProvider[] = [
+  "cloudflare-workers-ai",
+  "openai",
+  "voyage",
+  "cohere",
+  "jina",
+  "gemini",
+  "dashscope",
+  "minimax",
+  "volcengine",
+  "ollama",
+  "litellm",
+  "local",
+  "custom-openai-compatible",
+]
+
+export function inferVikingEmbedProvider(
+  baseURL: string,
+  embedModel = "",
+): VikingEmbedProvider {
+  const value = baseURL.trim()
+  if (!value && embedModel === "bge-small-zh-v1.5-f16") return "local"
+  let host = ""
+  try {
+    host = new URL(value).hostname.toLowerCase()
+  } catch {
+    return "custom-openai-compatible"
+  }
+  if (host === "api.cloudflare.com") return "cloudflare-workers-ai"
+  if (host === "api.openai.com") return "openai"
+  if (host === "api.voyageai.com") return "voyage"
+  if (host === "api.cohere.com") return "cohere"
+  if (host === "api.jina.ai") return "jina"
+  if (host === "generativelanguage.googleapis.com") return "gemini"
+  if (host === "dashscope.aliyuncs.com") return "dashscope"
+  if (host.startsWith("api.minimax.")) return "minimax"
+  if (host === "ark.cn-beijing.volces.com") return "volcengine"
+  if (value.includes(":11434")) return "ollama"
+  return "custom-openai-compatible"
+}
+
+function normalizeVikingEmbedProvider(
+  provider: string | null | undefined,
+  baseURL: string,
+  embedModel: string,
+): VikingEmbedProvider {
+  return VIKING_EMBED_PROVIDERS.includes(provider as VikingEmbedProvider)
+    ? (provider as VikingEmbedProvider)
+    : inferVikingEmbedProvider(baseURL, embedModel)
+}
+
+export function cloudflareAccountIdFromBaseURL(baseURL: string): string {
+  try {
+    return new URL(baseURL).pathname.match(/\/accounts\/([^/]+)/)?.[1] ?? ""
+  } catch {
+    return ""
+  }
+}
+
 export type VikingProvider = {
   baseURL: string
   apiKey: string
+  embedProvider: VikingEmbedProvider
+  embedAccountId: string
   embedModel: string
   embedDimension: number
   vlmModel: string
+  // Where the VLM comes from: the embedding provider's OpenAI-compatible
+  // endpoint ("custom") or a model connected in the desktop's OpenCode
+  // ("opencode", vlmProvider is the OpenCode provider id and vlmModel its
+  // model id).
+  vlmSource: VikingVlmSource
+  vlmProvider: string
 }
 
 export type UserKey = {
@@ -238,20 +322,67 @@ export type UserQuota = {
   updatedAt: number
 }
 
+function validHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === "http:" || url.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+const VIKING_CUSTOM_VLM_PROVIDERS: readonly VikingEmbedProvider[] = [
+  "cloudflare-workers-ai",
+  "openai",
+  "ollama",
+  "litellm",
+  "custom-openai-compatible",
+]
+
 export function vikingProviderReady(
   value: VikingProvider | null,
 ): value is VikingProvider {
   if (!value) return false
-  try {
-    const url = new URL(value.baseURL)
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false
-  } catch {
-    return false
-  }
+  const baseURL = value.baseURL.trim()
+  const apiKey = value.apiKey.trim()
+  const embedReady = (() => {
+    switch (value.embedProvider) {
+      case "local":
+        return true
+      case "ollama":
+        return validHttpUrl(baseURL)
+      case "litellm":
+        return baseURL === "" || validHttpUrl(baseURL)
+      case "cloudflare-workers-ai":
+        return (
+          value.embedAccountId.trim() !== "" &&
+          apiKey !== "" &&
+          (baseURL === "" || validHttpUrl(baseURL))
+        )
+      case "custom-openai-compatible":
+        return validHttpUrl(baseURL)
+      case "openai":
+        // Base optional: an empty URL falls back to the public OpenAI
+        // endpoint at resolve time.
+        return apiKey !== "" && (baseURL === "" || validHttpUrl(baseURL))
+      default:
+        return apiKey !== "" && (baseURL === "" || validHttpUrl(baseURL))
+    }
+  })()
+  if (!embedReady) return false
+  const vlmReady =
+    value.vlmSource === "opencode"
+      ? value.vlmProvider.trim() !== "" && value.vlmModel.trim() !== ""
+      : value.vlmModel.trim() !== "" &&
+        VIKING_CUSTOM_VLM_PROVIDERS.includes(value.embedProvider) &&
+        // Cloudflare derives its base from the account id; OpenAI falls
+        // back to its public endpoint when no override is stored.
+        (value.embedProvider === "cloudflare-workers-ai" ||
+          value.embedProvider === "openai" ||
+          validHttpUrl(baseURL))
   return (
-    value.apiKey.trim() !== "" &&
     value.embedModel.trim() !== "" &&
-    value.vlmModel.trim() !== "" &&
+    vlmReady &&
     Number.isInteger(value.embedDimension) &&
     value.embedDimension > 0
   )
@@ -1015,20 +1146,39 @@ export function openDatabase(path: string) {
           .select({
             baseURL: desktops.vikingBaseUrl,
             apiKey: desktops.vikingApiKey,
+            embedProvider: desktops.vikingEmbedProvider,
+            embedAccountId: desktops.vikingEmbedAccountId,
             embedModel: desktops.vikingEmbedModel,
             embedDimension: desktops.vikingEmbedDimension,
             vlmModel: desktops.vikingVlmModel,
+            vlmSource: desktops.vikingVlmSource,
+            vlmProvider: desktops.vikingVlmProvider,
           })
           .from(desktops)
           .where(eq(desktops.userId, userId))
           .get()
-        if (own?.baseURL) {
+        if (own && (own.baseURL || own.embedProvider || own.embedModel)) {
+          const baseURL = own.baseURL ?? ""
+          const embedModel = own.embedModel ?? ""
+          const embedProvider = normalizeVikingEmbedProvider(
+            own.embedProvider,
+            baseURL,
+            embedModel,
+          )
           return {
-            baseURL: own.baseURL,
+            baseURL,
             apiKey: own.apiKey ?? "",
-            embedModel: own.embedModel ?? "",
+            embedProvider,
+            embedAccountId:
+              own.embedAccountId ??
+              (embedProvider === "cloudflare-workers-ai"
+                ? cloudflareAccountIdFromBaseURL(baseURL)
+                : ""),
+            embedModel,
             embedDimension: own.embedDimension ?? 1536,
             vlmModel: own.vlmModel ?? "",
+            vlmSource: own.vlmSource === "opencode" ? "opencode" : "custom",
+            vlmProvider: own.vlmProvider ?? "",
           }
         }
       }
@@ -1038,12 +1188,25 @@ export function openDatabase(path: string) {
         .where(eq(vikingProvider.id, 1))
         .get()
       if (!row) return null
+      const embedProvider = normalizeVikingEmbedProvider(
+        row.embedProvider,
+        row.baseURL,
+        row.embedModel,
+      )
       return {
         baseURL: row.baseURL,
         apiKey: row.apiKey,
+        embedProvider,
+        embedAccountId:
+          row.embedAccountId ??
+          (embedProvider === "cloudflare-workers-ai"
+            ? cloudflareAccountIdFromBaseURL(row.baseURL)
+            : ""),
         embedModel: row.embedModel,
         embedDimension: row.embedDimension,
         vlmModel: row.vlmModel,
+        vlmSource: row.vlmSource === "opencode" ? "opencode" : "custom",
+        vlmProvider: row.vlmProvider ?? "",
       }
     },
     setVikingProvider(value: VikingProvider) {
@@ -1062,9 +1225,13 @@ export function openDatabase(path: string) {
         .set({
           vikingBaseUrl: value.baseURL,
           vikingApiKey: value.apiKey,
+          vikingEmbedProvider: value.embedProvider,
+          vikingEmbedAccountId: value.embedAccountId,
           vikingEmbedModel: value.embedModel,
           vikingEmbedDimension: value.embedDimension,
           vikingVlmModel: value.vlmModel,
+          vikingVlmSource: value.vlmSource,
+          vikingVlmProvider: value.vlmProvider,
         })
         .where(eq(desktops.userId, userId))
         .run()

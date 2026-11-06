@@ -40,6 +40,13 @@ import { isUploadPath } from "./join-file"
 import { model3dAuthReady } from "./model3d-providers"
 import { docker, sh } from "./shell"
 import { videoAuthReady } from "./video-providers"
+import { resolveVikingEmbedding } from "./viking-embedding-catalog"
+import {
+  codexBootstrapFromOpencodeAuth,
+  type OpencodeAuthEntry,
+  type ResolvedVikingVlm,
+  resolveVikingVlm,
+} from "./viking-models"
 import { ensureVikingUser, vikingUserKey } from "./viking-user"
 
 const starting = new Map<string, Promise<void>>()
@@ -322,7 +329,12 @@ async function waitHttp(
   throw new Error(`${name} did not become ready (${last})`)
 }
 
-function vikingConfig(desktop: Desktop, viking: VikingProvider) {
+function vikingConfig(
+  desktop: Desktop,
+  viking: VikingProvider,
+  vlm: ResolvedVikingVlm,
+) {
+  const embed = resolveVikingEmbedding(viking)
   return {
     server: {
       host: "0.0.0.0",
@@ -336,23 +348,101 @@ function vikingConfig(desktop: Desktop, viking: VikingProvider) {
     },
     embedding: {
       dense: {
-        provider: "openai",
-        model: viking.embedModel,
-        api_key: viking.apiKey,
-        api_base: viking.baseURL,
-        dimension: viking.embedDimension,
+        provider: embed.provider,
+        model: embed.model,
+        api_key: embed.apiKey,
+        ...(embed.apiBase ? { api_base: embed.apiBase } : {}),
+        dimension: embed.dimension,
         input: "text",
       },
     },
-    vlm: {
-      provider: "openai",
-      model: viking.vlmModel,
-      api_key: viking.apiKey,
-      api_base: viking.baseURL,
-      temperature: 0,
-      max_retries: 2,
-    },
+    vlm:
+      vlm.backend === "openai-codex"
+        ? {
+            // No api_key: the Codex backend resolves OAuth tokens from
+            // its auth store, bootstrapped from the desktop's OpenCode
+            // login (syncVikingCodexAuth).
+            provider: "openai-codex",
+            model: vlm.model,
+            temperature: 0,
+            max_retries: 2,
+          }
+        : {
+            provider: vlm.backend,
+            model: vlm.model,
+            api_key: vlm.apiKey,
+            ...(vlm.apiBase ? { api_base: vlm.apiBase } : {}),
+            temperature: 0,
+            max_retries: 2,
+          },
   }
+}
+
+const VIKING_CODEX_BOOTSTRAP_PATH = "/app/.openviking/codex-bootstrap.json"
+const VIKING_CODEX_AUTH_PATH = "/app/.openviking/codex_auth.json"
+
+// Read the desktop's OpenCode auth.json straight from its home volume —
+// works whether or not the opencode container is up (the Viking container
+// is created first, so its VLM resolution cannot wait for OpenCode).
+async function readOpencodeAuthFromVolume(
+  userId: string,
+): Promise<Record<string, OpencodeAuthEntry> | null> {
+  const n = names(userId)
+  const result = await sh(
+    [
+      "docker",
+      "run",
+      "--rm",
+      "--entrypoint",
+      "cat",
+      "-v",
+      `${n.home}:/home/agent:ro`,
+      opencodeImage,
+      "/home/agent/.local/share/opencode/auth.json",
+    ],
+    undefined,
+    30_000,
+  )
+  if (result.code !== 0) return null
+  try {
+    const parsed: unknown = JSON.parse(result.stdout)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null
+    }
+    return parsed as Record<string, OpencodeAuthEntry>
+  } catch {
+    return null
+  }
+}
+
+// Write the converted Codex bootstrap file into the running Viking
+// container. OpenCode stays the token-refresh owner: OpenViking's
+// external mode re-reads this file whenever the tokens change. Re-synced
+// on every desktop start so a refreshed OpenCode login propagates.
+export async function syncVikingCodexAuth(userId: string): Promise<boolean> {
+  const n = names(userId)
+  if (!(await isRunning(n.viking))) return false
+  const auth =
+    (await captureOpencodeAuth(userId).catch(() => null)) ??
+    (await readOpencodeAuthFromVolume(userId))
+  const content = codexBootstrapFromOpencodeAuth(
+    auth as Record<string, OpencodeAuthEntry> | null,
+  )
+  if (!content) return false
+  const written = await sh(
+    [
+      "docker",
+      "exec",
+      "-i",
+      n.viking,
+      "sh",
+      "-c",
+      `mkdir -p /app/.openviking && cat > ${VIKING_CODEX_BOOTSTRAP_PATH} && chmod 600 ${VIKING_CODEX_BOOTSTRAP_PATH}`,
+    ],
+    content,
+    30_000,
+  )
+  return written.code === 0
 }
 
 async function runDetached(args: string[]) {
@@ -507,39 +597,68 @@ async function startDesktopInner(
   // Lazy: viking is only guaranteed non-null when the provider gate passed,
   // so the config (and args) must not be built while the container runs.
   // Validation lives here so a heal-path recreation without configured
-  // models fails with the same 503 as a cold start.
-  const vikingArgs = (): string[] => {
-    if (!vikingProviderReady(viking)) {
-      throw new HttpError(
-        503,
-        "Set OpenViking models in Config before starting a desktop.",
-        "viking_models_missing",
+  // models fails with the same 503 as a cold start. An OpenCode-sourced VLM
+  // resolves its credential from the desktop's OpenCode auth (read from
+  // the home volume — OpenCode itself is not up yet), with the resolved
+  // chat vault keys as the API-key fallback.
+  let vikingArgsPromise: Promise<string[]> | null = null
+  const resolvedVlm: { current: ResolvedVikingVlm | null } = { current: null }
+  const vikingArgs = (): Promise<string[]> => {
+    vikingArgsPromise ??= (async () => {
+      if (!vikingProviderReady(viking)) {
+        throw new HttpError(
+          503,
+          "Set OpenViking models in Config before starting a desktop.",
+          "viking_models_missing",
+        )
+      }
+      const auth =
+        viking.vlmSource === "opencode"
+          ? await readOpencodeAuthFromVolume(userId)
+          : null
+      const resolution = resolveVikingVlm(
+        viking,
+        auth,
+        (slug) => chatKeys.find((entry) => entry.slug === slug)?.key ?? "",
       )
-    }
-    return [
-      "--name",
-      n.viking,
-      "--network",
-      n.network,
-      "--network-alias",
-      "viking",
-      "--label",
-      "open-bot-role=viking",
-      "--label",
-      `open-bot-user=${n.key}`,
-      "--memory",
-      "1.5g",
-      "--cpus",
-      "1",
-      "-e",
-      `OPENVIKING_CONF_CONTENT=${JSON.stringify(vikingConfig(desktop, viking))}`,
-      "-v",
-      `${n.vikingData}:/data`,
-      vikingImage,
-    ]
+      if ("error" in resolution) {
+        throw new HttpError(503, resolution.error, "viking_vlm_unresolved")
+      }
+      resolvedVlm.current = resolution.vlm
+      return [
+        "--name",
+        n.viking,
+        "--network",
+        n.network,
+        "--network-alias",
+        "viking",
+        "--label",
+        "open-bot-role=viking",
+        "--label",
+        `open-bot-user=${n.key}`,
+        "--memory",
+        "1.5g",
+        "--cpus",
+        "1",
+        "-e",
+        `OPENVIKING_CONF_CONTENT=${JSON.stringify(vikingConfig(desktop, viking, resolution.vlm))}`,
+        ...(resolution.vlm.backend === "openai-codex"
+          ? [
+              "-e",
+              `OPENVIKING_CODEX_BOOTSTRAP_PATH=${VIKING_CODEX_BOOTSTRAP_PATH}`,
+              "-e",
+              `OPENVIKING_CODEX_AUTH_PATH=${VIKING_CODEX_AUTH_PATH}`,
+            ]
+          : []),
+        "-v",
+        `${n.vikingData}:/data`,
+        vikingImage,
+      ]
+    })()
+    return vikingArgsPromise
   }
   if (!(await isRunning(n.viking))) {
-    await removeAndRunDetached(n.viking, vikingArgs())
+    await removeAndRunDetached(n.viking, await vikingArgs())
   }
   const vikingReady = await waitReadyWithHeal(
     n.viking,
@@ -548,8 +667,11 @@ async function startDesktopInner(
     "/health",
     undefined,
     180000,
-    vikingArgs(),
+    await vikingArgs(),
   )
+  if (resolvedVlm.current?.backend === "openai-codex") {
+    await syncVikingCodexAuth(userId).catch(() => false)
+  }
   await ensureVikingUser(`http://${vikingReady.ip}:1933`, desktop.vikingKey)
 
   let createdOpencode = false
@@ -627,6 +749,11 @@ async function startDesktopInner(
     opencodeArgs,
   )
   if (opencodeReady.healed) createdOpencode = true
+  // OpenCode may have refreshed its Codex OAuth tokens while booting —
+  // push the fresh bootstrap to Viking (it stays the refresh owner).
+  if (resolvedVlm.current?.backend === "openai-codex") {
+    await syncVikingCodexAuth(userId).catch(() => false)
+  }
   if (createdOpencode) {
     try {
       await syncImageAuth(

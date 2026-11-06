@@ -6,10 +6,12 @@ import {
   CouncilGroupSwitcher,
   CouncilOverlay,
   CouncilPane,
+  CouncilTimeline,
+  councilRunningIds,
   councilSwitchPatch,
   memberMetaText,
 } from "./CouncilView"
-import type { StreamEvent } from "./chat-view"
+import type { ChatMessage, ChatPart, StreamEvent } from "./chat-view"
 
 const data: CouncilData = {
   id: "c1",
@@ -197,6 +199,52 @@ describe("CouncilOverlay — render", () => {
     expect(html.match(/aria-pressed="false"/g)).toHaveLength(5)
   })
 
+  test("stop button shows only with a handler and a running member", () => {
+    const stop = async () => {}
+    // baseProps has s1 running: both surfaces offer the stop.
+    const overlay = renderToStaticMarkup(
+      <CouncilOverlay {...baseProps} mobile={false} onStop={stop} />,
+    )
+    expect(overlay).toContain("Stop council")
+    const pane = renderToStaticMarkup(
+      <CouncilPane
+        {...baseProps}
+        mobile={false}
+        width={420}
+        paneRef={() => {}}
+        onFullscreen={() => {}}
+        onDrag={() => {}}
+        onStop={stop}
+      />,
+    )
+    expect(pane).toContain("Stop council")
+    // Nobody running: nothing to stop.
+    const idle = renderToStaticMarkup(
+      <CouncilOverlay
+        {...baseProps}
+        mobile={false}
+        statusOf={() => ({ type: "idle" })}
+        onStop={stop}
+      />,
+    )
+    expect(idle).not.toContain("Stop council")
+    // No handler wired (read-only embed): no dead button.
+    const unwired = renderToStaticMarkup(
+      <CouncilOverlay {...baseProps} mobile={false} />,
+    )
+    expect(unwired).not.toContain("Stop council")
+  })
+
+  test("councilRunningIds collects running members then subagents", () => {
+    expect(councilRunningIds(data, baseProps.statusOf)).toEqual(["s1"])
+    expect(
+      councilRunningIds(data, (id) =>
+        id === "s2" || id === "s3" ? { type: "busy" } : { type: "idle" },
+      ),
+    ).toEqual(["s2", "s3"])
+    expect(councilRunningIds(data, () => undefined)).toEqual([])
+  })
+
   test("mobile strip says so when the council has no members", () => {
     const html = renderToStaticMarkup(
       <CouncilOverlay
@@ -206,5 +254,100 @@ describe("CouncilOverlay — render", () => {
       />,
     )
     expect(html).toContain("No members in this council.")
+  })
+})
+
+const userMsg = (id: string, text: string, at: number): ChatMessage => ({
+  info: { id, role: "user", time: { created: at } },
+  parts: [{ type: "text", text }],
+})
+
+const assistantMsg = (
+  id: string,
+  created: number,
+  completed: number | undefined,
+  parts: ChatPart[],
+): ChatMessage => ({
+  info: {
+    id,
+    role: "assistant",
+    time: completed ? { created, completed } : { created },
+  },
+  parts,
+})
+
+const toolPart = (name: string, title?: string): ChatPart => ({
+  type: "tool",
+  tool: name,
+  state: { status: "completed", ...(title ? { title } : {}) },
+})
+
+describe("CouncilTimeline — main-thread parity", () => {
+  const messages = [
+    userMsg("u1", "review the auth code", 1_000),
+    assistantMsg("a1", 2_000, 5_000, [
+      toolPart("read", "src/auth.ts"),
+      { type: "text", text: "checking" },
+    ]),
+    assistantMsg("a2", 5_500, 62_000, [
+      toolPart("grep", "token"),
+      { type: "text", text: "found it" },
+    ]),
+  ]
+
+  test("renders the main thread's bubbles with a per-turn work row", () => {
+    const html = renderToStaticMarkup(
+      <CouncilTimeline messages={messages} startUserCount={0} />,
+    )
+    // Same bubble DOM as Workspace's MessageBubble.
+    expect(html).toContain("ob-msg ob-msg-user")
+    expect(html).toContain("ob-bubble ob-bubble-user")
+    expect(html).toContain("ob-msg ob-msg-assistant")
+    expect(html).toContain("ob-bubble ob-bubble-assistant")
+    expect(html).toContain("ob-msg-meta")
+    // Burst merging: the two assistant replies are one bubble.
+    expect(html.match(/ob-msg-assistant/g)).toHaveLength(1)
+    expect(html).toContain("checking")
+    expect(html).toContain("found it")
+    // Tool work the old transcript dropped: one summary row for the turn.
+    expect(html).toContain("ob-work-head")
+    expect(html).toContain("2 étapes")
+    // The work row lands after its turn's bubble, like the main log.
+    expect(html.indexOf("found it")).toBeLessThan(html.indexOf("ob-work"))
+  })
+
+  test("a tool-only live turn still shows its running work row", () => {
+    const html = renderToStaticMarkup(
+      <CouncilTimeline
+        messages={[
+          userMsg("u1", "scan", 1_000),
+          assistantMsg("a1", 2_000, undefined, [toolPart("bash", "ls")]),
+        ]}
+        startUserCount={0}
+        running
+      />,
+    )
+    expect(html).not.toContain("ob-msg-assistant")
+    expect(html).toContain("ob-work-head")
+    expect(html).toContain("En cours")
+    expect(html).toContain("ob-work-dot")
+  })
+
+  test("attached images render inside the bubble, not dropped", () => {
+    const html = renderToStaticMarkup(
+      <CouncilTimeline
+        messages={[
+          assistantMsg("a1", 2_000, 3_000, [
+            {
+              type: "file",
+              mime: "image/png",
+              url: "data:image/png;base64,iVBORw0KGgo=",
+            },
+          ]),
+        ]}
+        startUserCount={0}
+      />,
+    )
+    expect(html).toContain("data:image/png;base64")
   })
 })

@@ -891,7 +891,7 @@ export function TeamTab({
                 <Typography variant="caption" color="textSecondary">
                   {section.description}
                 </Typography>
-                {section.section === "voice" && voiceProviders.length > 0 ? (
+                {section.section === "voice" ? (
                   <TeamVoiceFields
                     providers={voiceProviders}
                     values={overlay.voice ?? {}}
@@ -900,7 +900,7 @@ export function TeamTab({
                       setOverlayValue("voice", field, value)
                     }
                   />
-                ) : (providerCatalogs[section.section]?.length ?? 0) > 0 ? (
+                ) : section.section !== "chat" ? (
                   <TeamProviderFields
                     section={section.section}
                     providers={providerCatalogs[section.section] ?? []}

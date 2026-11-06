@@ -6,6 +6,9 @@ export const reservedSkillNames = new Set([
   "cf-ai",
   "shortcut",
   "refine",
+  // Seed skill that teaches ob-skill itself — a custom skill with this
+  // name would shadow the tooling docs in every catalog.
+  "skill",
 ])
 const skillNamePattern = /^[A-Za-z0-9_-]{1,64}$/
 const maxDescription = 1024

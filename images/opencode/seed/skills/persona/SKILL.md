@@ -36,22 +36,27 @@ ob-persona remove ID
 
 Skill scopes: restrict which skills load in threads running the personality.
 `--skills "a,b,c"` replaces the editable list (`--skills-append NAME` or
-`--skill NAME` adds one, repeatable; `--skills-clear` removes the
+`--skill NAME` adds one, repeatable; `--skills-remove NAME` drops one from the
+editable list, repeatable, comma list ok; `--skills-clear` removes the
 restriction). `--skills none` blocks every skill on any personality. MCP
 server scopes work the same way on server names: `--mcp "a,b"` /
-`--mcp-append NAME` / `--mcp-clear`, and `--mcp none` blocks every MCP
-server. On a plugin-owned or built-in personality the editable lists are the
-extras — the base lists are locked (the plugin's declared set, or the
-desktop's built-in skills/MCP servers for a built-in) and base names are
-refused, but `none` still blocks everything. The Assistant takes no skill
-extras at all (it already loads every skill; `--skills`/`--skills-append`
-refuse) — extend only its MCP servers. Restricting changes what future
-threads load; the current thread is unchanged. Names are slugs — never globs.
+`--mcp-append NAME` / `--mcp-remove NAME` / `--mcp-clear`, and `--mcp none`
+blocks every MCP server. On a plugin-owned or built-in personality the
+editable lists are the extras — add and remove both work there — but the base
+lists are locked (the plugin's declared set, or the desktop's built-in
+skills/MCP servers for a built-in) and base names are refused, though `none`
+still blocks everything. The Assistant takes no skill extras at all (it
+already loads every skill; `--skills`/`--skills-append`/`--skills-remove`
+refuse) — extend and narrow only its MCP servers. Restricting changes what
+future threads load; the current thread is unchanged. Names are slugs —
+never globs.
 
 ```sh
 ob-persona add --name "Researcher" --instruction "Dig deep, cite sources." --skills "research,media"
 ob-persona update ID --skills-append preview
+ob-persona update ID --skills-remove media
 ob-persona update ID --mcp "stock,files"
+ob-persona update ID --mcp-remove stock
 ```
 
 Rules:

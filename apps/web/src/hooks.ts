@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react"
 import type { StreamEvent } from "./chat-view"
 import { readUnread, subscribeUnread } from "./notify"
 
@@ -19,6 +19,52 @@ export function useMobile(breakpoint = 899): boolean {
 /** True while the viewport is at most `max` px wide (inclusive). */
 export function useViewportBelow(max: number): boolean {
   return useMobile(max)
+}
+
+/** The small-screen breakpoint, reused for panes (see below). */
+export const NARROW_PANE_MAX = 899
+
+/**
+ * True when a measured pane width fits only the small-screen layout.
+ * 0 means "not measured yet" and is never narrow — until the first
+ * measurement lands, the viewport flags keep deciding.
+ */
+export function isNarrowPane(width: number, max = NARROW_PANE_MAX): boolean {
+  return width > 0 && width <= max
+}
+
+/**
+ * The element's own width, tracked live. In the global split screen a
+ * view's pane can be phone-narrow while the window stays wide, so
+ * space-driven layout must key on the pane, not `window.innerWidth`
+ * (which `useMobile` reads). Returns the ref to attach and the width
+ * in px (0 until measured). `clientWidth` includes padding, so an
+ * inner padding change at the breakpoint cannot feed back into the
+ * measured width and oscillate.
+ */
+export function useElementWidth<T extends HTMLElement>(): [
+  RefObject<T | null>,
+  number,
+] {
+  const ref = useRef<T | null>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () =>
+      setWidth((current) =>
+        current === el.clientWidth ? current : el.clientWidth,
+      )
+    update()
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update)
+      return () => window.removeEventListener("resize", update)
+    }
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  return [ref, width]
 }
 
 export function useUnreadThreads(): ReadonlySet<string> {

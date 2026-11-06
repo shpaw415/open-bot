@@ -50,6 +50,7 @@ import {
   CouncilPane,
   clampCouncilWidth,
   councilRunning,
+  councilRunningIds,
   councilSwitchPatch,
 } from "./CouncilView"
 import type { CronJobInfo } from "./CronView"
@@ -74,10 +75,11 @@ import {
   nearBottom,
   type PluginCardBlock,
   previewFrameSrc,
+  SCREEN_DONE_PROMPT,
   type SendReceipt,
   type SendStatus,
+  screenCardState,
   showLivePreview,
-  showLiveScreen,
   speakableText,
   splitPluginCards,
   type TranscriptEntry,
@@ -86,7 +88,6 @@ import {
   userMessageCount,
   visibleMessages,
   visibleText,
-  vncFrameSrc,
 } from "./chat-view"
 import { Chip } from "./chip"
 import { ComposerPickers } from "./composer-controls"
@@ -116,7 +117,9 @@ import {
 import { FilePreviewOverlay, FilePreviewPane } from "./FileView"
 import { FilePreviewContext, filePathFromSrc } from "./file-view"
 import {
+  isNarrowPane,
   useDebounced,
+  useElementWidth,
   useEventStream,
   useMobile,
   useUnreadThreads,
@@ -141,7 +144,6 @@ import {
   GroupsIcon,
   MicIcon,
   MoreVertIcon,
-  OpenInNewIcon,
   PauseIcon,
   PlayArrowIcon,
   RefreshIcon,
@@ -181,6 +183,7 @@ import {
   parseMessagePage,
   tailLimit,
 } from "./message-page"
+import { MessageSkeletons } from "./message-skeletons"
 import {
   createSettingsSaver,
   type MeLike,
@@ -217,9 +220,16 @@ import {
   PARAM_FILEVIEW,
   PARAM_MEMBER,
   PARAM_PREVIEW,
+  PARAM_SCREEN,
   PARAM_THREAD,
   type WorkspaceTab,
 } from "./routes"
+import {
+  ScreenCard,
+  ScreenOverlay,
+  ScreenPane,
+  ScreenStage,
+} from "./ScreenView"
 import Stack from "./stack"
 import { Tip } from "./Tip"
 import { STATES, THREAD, THREADS_UI } from "./texts"
@@ -334,57 +344,6 @@ function messageKey(
   const role = message.info?.role ?? "m"
   if (message.sentAt != null) return `${index}:${role}:${message.sentAt}`
   return `${index}:${role}:${visibleText(message).slice(0, 48)}`
-}
-
-type VncWindow = Window & {
-  UI?: {
-    forceSetting?: (name: string, value: boolean) => void
-    updateViewOnly?: () => void
-  }
-}
-
-function lockVnc(win: VncWindow | null, interactive: boolean) {
-  try {
-    win?.UI?.forceSetting?.("view_only", !interactive)
-    win?.UI?.updateViewOnly?.()
-  } catch {
-    // frame not ready, or the page blocked access
-  }
-}
-
-function VncFrame({
-  path,
-  interactive,
-  title,
-  className,
-}: {
-  path: string
-  interactive: boolean
-  title: string
-  className?: string
-}) {
-  return (
-    <iframe
-      title={title}
-      className={className}
-      src={vncFrameSrc(path, interactive)}
-      onLoad={(event) => {
-        const frame = event.currentTarget
-        const lock = () =>
-          lockVnc(frame.contentWindow as VncWindow | null, interactive)
-        lock()
-        window.setTimeout(lock, 400)
-      }}
-    />
-  )
-}
-
-function openVnc(path: string, interactive: boolean) {
-  const pop = window.open(vncFrameSrc(path, interactive), "_blank")
-  if (!pop) return
-  const lock = () => lockVnc(pop as VncWindow, interactive)
-  pop.addEventListener("load", lock)
-  window.setTimeout(lock, 800)
 }
 
 function AppLauncher({
@@ -711,10 +670,12 @@ type BubbleViewProps = {
   speechLoading: string | null
   lastHandoff: number
   held: boolean
-  dismissedHandoff: string
+  screenOutcome: { stamp: string; kind: "done" | "later" } | null
   screenLive: boolean
   screenPath: string
   screenError: string
+  screenOpened: boolean
+  screenReloadKey: number
   running: boolean
   sending: boolean
   stopping: boolean
@@ -722,7 +683,13 @@ type BubbleViewProps = {
   renderers: Map<string, PluginRenderer>
   onTakeControl: () => void
   onScreenDone: () => void
-  onScreenClose: () => void
+  onReleaseSilent: () => void
+  onScreenLater: () => void
+  onScreenResume: () => void
+  onOpenScreen: () => void
+  onCloseScreen: () => void
+  onScreenRetry: () => void
+  onStartDesktop: () => void
   onOpenPreview: () => void
   onOpenCouncil: (name: string) => void
   previewLive: boolean
@@ -743,10 +710,12 @@ const MessageBubble = memo(function MessageBubble({
   speechLoading,
   lastHandoff,
   held,
-  dismissedHandoff,
+  screenOutcome,
   screenLive,
   screenPath,
   screenError,
+  screenOpened,
+  screenReloadKey,
   running,
   sending,
   stopping,
@@ -754,7 +723,13 @@ const MessageBubble = memo(function MessageBubble({
   renderers,
   onTakeControl,
   onScreenDone,
-  onScreenClose,
+  onReleaseSilent,
+  onScreenLater,
+  onScreenResume,
+  onOpenScreen,
+  onCloseScreen,
+  onScreenRetry,
+  onStartDesktop,
   onOpenPreview,
   onOpenCouncil,
   previewLive,
@@ -769,13 +744,18 @@ const MessageBubble = memo(function MessageBubble({
   const role = message.info?.role ?? "message"
   const mine = role === "user"
   const stamp = handoffStamp(message)
-  const watching =
-    showLiveScreen({
-      handoff: Boolean(message.handoff),
-      isLast: index === lastHandoff,
-      held,
-      dismissed: stamp === dismissedHandoff,
-    }) && screenLive
+  const cardState = screenCardState({
+    isLast: index === lastHandoff,
+    held,
+    outcome:
+      screenOutcome && screenOutcome.stamp === stamp
+        ? screenOutcome.kind
+        : "none",
+    running,
+    screenLive,
+    screenError,
+    opened: screenOpened,
+  })
   const [copied, setCopied] = useState(false)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyMessage = () => {
@@ -825,48 +805,24 @@ const MessageBubble = memo(function MessageBubble({
             <MediaImage key={src} src={src} />
           ))}
           {message.handoff ? (
-            <div className={watching ? "ob-screen" : undefined}>
-              {watching ? (
-                <VncFrame
-                  title="thread screen"
-                  path={screenPath}
-                  interactive={false}
-                />
-              ) : (
-                <Typography variant="body2" color="textSecondary">
-                  {index !== lastHandoff
-                    ? "Screen was shared in a later reply."
-                    : held
-                      ? "You have the screen below."
-                      : stamp === dismissedHandoff
-                        ? "Screen closed."
-                        : screenError || "Ouverture de l’écran…"}
-                </Typography>
-              )}
-              {index === lastHandoff && !held && stamp !== dismissedHandoff ? (
-                <Stack direction="row" spacing={1}>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    disabled={!running || sending || stopping || controlBusy}
-                    onClick={onTakeControl}
-                  >
-                    {THREADS_UI.takeControl}
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    disabled={!running || sending || stopping}
-                    onClick={onScreenDone}
-                  >
-                    Done
-                  </Button>
-                  <Button size="small" variant="text" onClick={onScreenClose}>
-                    Close
-                  </Button>
-                </Stack>
-              ) : null}
-            </div>
+            <ScreenCard
+              state={cardState}
+              path={screenPath}
+              error={screenError}
+              timeLabel={message.sentAt ? formatWhen(message.sentAt) : ""}
+              reloadKey={screenReloadKey}
+              takeDisabled={!running || sending || stopping || controlBusy}
+              doneDisabled={!running || sending || stopping || controlBusy}
+              onTakeControl={onTakeControl}
+              onDone={onScreenDone}
+              onReleaseSilent={onReleaseSilent}
+              onLater={onScreenLater}
+              onResume={onScreenResume}
+              onOpenStage={onOpenScreen}
+              onCloseStage={onCloseScreen}
+              onRetry={onScreenRetry}
+              onStartDesktop={onStartDesktop}
+            />
           ) : null}
           {message.preview ? (
             <div className="ob-preview-note">
@@ -3065,7 +3021,10 @@ export function Workspace({
   const [screenError, setScreenError] = useState("")
   const [held, setHeld] = useState(false)
   const [holdOrigin, setHoldOrigin] = useState<"desktop" | "chat">("chat")
-  const [dismissedHandoff, setDismissedHandoff] = useState("")
+  const [screenOutcome, setScreenOutcome] = useState<{
+    stamp: string
+    kind: "done" | "later"
+  } | null>(null)
   const [previewMode, setPreviewMode] = useState<"closed" | "pane" | "overlay">(
     () =>
       searchParam(locationSearch, PARAM_PREVIEW) === "1"
@@ -3085,7 +3044,7 @@ export function Workspace({
   const previewRowRef = useRef<HTMLDivElement>(null)
   const previewPaneRef = useRef<HTMLDivElement>(null)
   /** Which side pane opened last — Escape dismisses in Back's order. */
-  const lastPaneRef = useRef<"preview" | "council" | "file" | "">("")
+  const lastPaneRef = useRef<"preview" | "council" | "file" | "screen" | "">("")
   const widthRef = useRef(previewWidth)
   const [councilMode, setCouncilMode] = useState<"closed" | "pane" | "overlay">(
     () =>
@@ -3122,6 +3081,20 @@ export function Workspace({
   })
   const fileWidthRef = useRef(fileWidth)
   const filePaneRef = useRef<HTMLDivElement>(null)
+  const [screenMode, setScreenMode] = useState<"closed" | "pane" | "overlay">(
+    () =>
+      searchParam(locationSearch, PARAM_SCREEN) === "1"
+        ? typeof window !== "undefined" && window.innerWidth <= 899
+          ? "overlay"
+          : "pane"
+        : "closed",
+  )
+  const [screenWidth, setScreenWidth] = useState(() => {
+    const raw = Number(sessionStorage.getItem("ob-screen-width"))
+    return Number.isFinite(raw) && raw >= 280 ? raw : 560
+  })
+  const screenWidthRef = useRef(screenWidth)
+  const screenPaneRef = useRef<HTMLDivElement>(null)
   const [filePath, setFilePath] = useState(() =>
     searchParam(locationSearch, PARAM_FILEVIEW),
   )
@@ -3130,7 +3103,15 @@ export function Workspace({
   const councilLoadGuard = useRef(createLatestGuard())
   const [controlBusy, setControlBusy] = useState(false)
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([])
-  const mobile = useMobile()
+  const viewportMobile = useMobile()
+  // Small-screen layout is space-driven: in the global split screen this
+  // workspace may sit in a phone-narrow pane while the window stays wide,
+  // so its own measured width (root ref below) flips it to the mobile
+  // layout exactly like a narrow viewport does. Until the first
+  // measurement lands (width 0), the viewport flag alone decides.
+  const [workspaceRef, workspaceWidth] = useElementWidth<HTMLDivElement>()
+  const narrowPane = isNarrowPane(workspaceWidth)
+  const mobile = viewportMobile || narrowPane
   // Threads history behavior: swap-in overlay on phones AND mid-width
   // desktops (single permanent history column only ≥1200px).
   const threadsOverlay = mobile || midWidth
@@ -3138,8 +3119,9 @@ export function Workspace({
   // Preview/council panes are URL screens (?preview=1, ?council=name,
   // ?member=id): opening pushes, Back/Forward and reload restore them,
   // member switches replace. The mode itself (pane vs overlay) stays a
-  // viewport concern below; the URL only carries open/closed + identity.
+  // layout-width concern below; the URL only carries open/closed + identity.
   const previewParam = searchParam(locationSearch, PARAM_PREVIEW) === "1"
+  const screenParam = searchParam(locationSearch, PARAM_SCREEN) === "1"
   const councilParam = searchParam(locationSearch, PARAM_COUNCIL)
   const memberParam = searchParam(locationSearch, PARAM_MEMBER)
   const fileParam = searchParam(locationSearch, PARAM_FILEVIEW)
@@ -3153,6 +3135,16 @@ export function Workspace({
       setPreviewMode("closed")
     }
   }, [previewParam, previewMode, mobile])
+  useEffect(() => {
+    if (screenParam && screenMode === "closed") {
+      lastPaneRef.current = "screen"
+      setScreenMode(mobile ? "overlay" : "pane")
+    }
+    if (!screenParam && screenMode !== "closed") {
+      if (document.fullscreenElement) void document.exitFullscreen()
+      setScreenMode("closed")
+    }
+  }, [screenParam, screenMode, mobile])
   useEffect(() => {
     if (councilParam) {
       if (councilParam.toLowerCase() !== councilName.toLowerCase()) {
@@ -3729,6 +3721,19 @@ export function Workspace({
         )
       : ""
   const screenLive = screen?.sessionId === sessionId
+  // The agent still waits on a postponed share of this thread.
+  const screenWaiting =
+    screenOutcome?.kind === "later" &&
+    screenOutcome.stamp === lastHandoffStamp(shown)
+  const screenTitle =
+    sessions.find((item) => item.id === sessionId)?.title || THREAD.untitled
+  const screenApps = sessionId ? (
+    <AppLauncher
+      sessionId={sessionId}
+      disabled={!screen || screen.sessionId !== sessionId}
+      onError={setError}
+    />
+  ) : undefined
   // a draft typed before any thread existed, handed to the composer on mount
   const migrateDraft =
     sessionId && !draftSessionRef.current ? draftRef.current : ""
@@ -3738,7 +3743,13 @@ export function Workspace({
   const bubbleActionsRef = useRef({
     takeControl: () => {},
     screenDone: () => {},
-    screenClose: () => {},
+    releaseSilent: () => {},
+    screenLater: () => {},
+    screenResume: () => {},
+    openScreen: () => {},
+    closeScreen: () => {},
+    screenRetry: () => {},
+    startDesktop: () => {},
     openPreview: () => {},
     openCouncil: (_name: string) => {},
   })
@@ -3746,7 +3757,13 @@ export function Workspace({
     () => ({
       takeControl: () => bubbleActionsRef.current.takeControl(),
       screenDone: () => bubbleActionsRef.current.screenDone(),
-      screenClose: () => bubbleActionsRef.current.screenClose(),
+      releaseSilent: () => bubbleActionsRef.current.releaseSilent(),
+      screenLater: () => bubbleActionsRef.current.screenLater(),
+      screenResume: () => bubbleActionsRef.current.screenResume(),
+      openScreen: () => bubbleActionsRef.current.openScreen(),
+      closeScreen: () => bubbleActionsRef.current.closeScreen(),
+      screenRetry: () => bubbleActionsRef.current.screenRetry(),
+      startDesktop: () => bubbleActionsRef.current.startDesktop(),
       openPreview: () => bubbleActionsRef.current.openPreview(),
       openCouncil: (name: string) => bubbleActionsRef.current.openCouncil(name),
     }),
@@ -3787,10 +3804,27 @@ export function Workspace({
   bubbleActionsRef.current = {
     takeControl: () => void takeControl(),
     screenDone: () => {
-      dismissScreen()
-      void prompt("Done on the screen.")
+      if (held) void releaseControl(true)
+      else {
+        stampScreenOutcome("done")
+        void prompt(SCREEN_DONE_PROMPT)
+      }
     },
-    screenClose: () => dismissScreen(),
+    releaseSilent: () => void releaseControl(false),
+    screenLater: () => stampScreenOutcome("later"),
+    screenResume: () => clearScreenOutcome(),
+    openScreen: () => {
+      const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
+      const next = clampPreviewWidth(screenWidthRef.current, parent)
+      screenWidthRef.current = next
+      setScreenWidth(next)
+      setScreenMode(mobile ? "overlay" : "pane")
+      lastPaneRef.current = "screen"
+      pushSearch({ [PARAM_SCREEN]: "1" })
+    },
+    closeScreen: () => closeScreenStage(),
+    screenRetry: () => setDesktopKey((key) => key + 1),
+    startDesktop: () => void start(),
     openPreview: () => {
       const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
       const next = clampPreviewWidth(widthRef.current, parent)
@@ -4330,6 +4364,7 @@ export function Workspace({
           {
             [PARAM_THREAD]: null,
             [PARAM_PREVIEW]: null,
+            [PARAM_SCREEN]: null,
             [PARAM_COUNCIL]: null,
             [PARAM_MEMBER]: null,
             [PARAM_FILEVIEW]: null,
@@ -4649,13 +4684,16 @@ export function Workspace({
     if (councilMode === "overlay" && !mobile) setCouncilMode("pane")
     if (fileMode === "pane" && mobile) setFileMode("overlay")
     if (fileMode === "overlay" && !mobile) setFileMode("pane")
-  }, [mobile, previewMode, councilMode, fileMode])
+    if (screenMode === "pane" && mobile) setScreenMode("overlay")
+    if (screenMode === "overlay" && !mobile) setScreenMode("pane")
+  }, [mobile, previewMode, councilMode, fileMode, screenMode])
   // biome-ignore lint/correctness/useExhaustiveDependencies: mode-keyed Escape subscription; the close handlers are render-fresh closures over refs and the identity-stable pane nav
   useEffect(() => {
     if (
       previewMode === "closed" &&
       councilMode === "closed" &&
-      fileMode === "closed"
+      fileMode === "closed" &&
+      screenMode === "closed"
     )
       return
     const onKey = (event: KeyboardEvent) => {
@@ -4663,15 +4701,18 @@ export function Workspace({
       // One pane at a time, topmost first — the same order Back uses.
       if (lastPaneRef.current === "file" && fileMode !== "closed")
         closeFilePane()
+      else if (lastPaneRef.current === "screen" && screenMode !== "closed")
+        closeScreenStage()
       else if (lastPaneRef.current === "council" && councilMode !== "closed")
         closeCouncilPane()
       else if (previewMode !== "closed") closePreview()
+      else if (screenMode !== "closed") closeScreenStage()
       else if (councilMode !== "closed") closeCouncilPane()
       else if (fileMode !== "closed") closeFilePane()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [previewMode, councilMode, fileMode])
+  }, [previewMode, councilMode, fileMode, screenMode])
   useEffect(() => {
     if (!running || !sessionId || lastPreview < 0) {
       setPreviewFrame(null)
@@ -4770,8 +4811,15 @@ export function Workspace({
     (id: string) => sessionStatus[id],
     [sessionStatus],
   )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: desktopKey is the manual screen reload
   useEffect(() => {
-    if (tab === "desktop" || !running || !sessionId || !needsScreen) return
+    if (
+      tab === "desktop" ||
+      !running ||
+      !sessionId ||
+      (!needsScreen && screenMode === "closed")
+    )
+      return
     let cancelled = false
     const load = async () => {
       try {
@@ -4798,15 +4846,25 @@ export function Workspace({
     return () => {
       cancelled = true
     }
-  }, [tab, running, sessionId, needsScreen])
+  }, [tab, running, sessionId, needsScreen, screenMode, desktopKey])
 
   useEffect(() => {
     setHeld(false)
-    setDismissedHandoff(
-      sessionId
-        ? (sessionStorage.getItem(`ob-screen-dismiss:${sessionId}`) ?? "")
-        : "",
-    )
+    if (!sessionId) {
+      setScreenOutcome(null)
+    } else {
+      const stored = sessionStorage.getItem(`ob-screen-outcome:${sessionId}`)
+      const split = stored ? stored.indexOf("|") : -1
+      const kind = split > 0 ? stored?.slice(0, split) : ""
+      if (stored && (kind === "done" || kind === "later")) {
+        setScreenOutcome({ stamp: stored.slice(split + 1), kind })
+      } else {
+        // Legacy one-way dismiss key: it covered both Done and Close,
+        // and Done was the common path.
+        const legacy = sessionStorage.getItem(`ob-screen-dismiss:${sessionId}`)
+        setScreenOutcome(legacy ? { stamp: legacy, kind: "done" } : null)
+      }
+    }
     if (!running || !sessionId) return
     let cancelled = false
     void (async () => {
@@ -4855,8 +4913,11 @@ export function Workspace({
       if (holdSession === sessionId) {
         const stamp = lastHandoffStamp(shown)
         if (stamp) {
-          sessionStorage.setItem(`ob-screen-dismiss:${sessionId}`, stamp)
-          setDismissedHandoff(stamp)
+          sessionStorage.setItem(
+            `ob-screen-outcome:${sessionId}`,
+            `later|${stamp}`,
+          )
+          setScreenOutcome({ stamp, kind: "later" })
         }
       }
     })()
@@ -5125,6 +5186,7 @@ export function Workspace({
     pushSearch({
       [PARAM_THREAD]: null,
       [PARAM_PREVIEW]: null,
+      [PARAM_SCREEN]: null,
       [PARAM_COUNCIL]: null,
       [PARAM_MEMBER]: null,
       [PARAM_FILEVIEW]: null,
@@ -5142,6 +5204,7 @@ export function Workspace({
       pushSearch({
         [PARAM_THREAD]: id,
         [PARAM_PREVIEW]: null,
+        [PARAM_SCREEN]: null,
         [PARAM_COUNCIL]: null,
         [PARAM_MEMBER]: null,
         [PARAM_FILEVIEW]: null,
@@ -5425,6 +5488,7 @@ export function Workspace({
           {
             [PARAM_THREAD]: null,
             [PARAM_PREVIEW]: null,
+            [PARAM_SCREEN]: null,
             [PARAM_COUNCIL]: null,
             [PARAM_MEMBER]: null,
             [PARAM_FILEVIEW]: null,
@@ -5467,6 +5531,7 @@ export function Workspace({
             {
               [PARAM_THREAD]: null,
               [PARAM_PREVIEW]: null,
+              [PARAM_SCREEN]: null,
               [PARAM_COUNCIL]: null,
               [PARAM_MEMBER]: null,
               [PARAM_FILEVIEW]: null,
@@ -5505,6 +5570,35 @@ export function Workspace({
       setError(caught instanceof Error ? caught.message : "Échec de l’arrêt")
     } finally {
       setStopBusy(false)
+    }
+  }
+
+  // Stop council: abort every running member/subagent turn of the open
+  // council through the same per-session abort as the main thread's Stop.
+  // Turns cancel in place — sessions, transcripts, and the council
+  // itself stay (closing/deleting is ob-thread council close).
+  async function stopCouncil() {
+    if (!councilData) return
+    const ids = councilRunningIds(councilData, councilStatusOf)
+    if (ids.length === 0) return
+    setError("")
+    const results = await Promise.allSettled(
+      ids.map((id) =>
+        api(`/api/opencode/session/${encodeURIComponent(id)}/abort`, {
+          method: "POST",
+        }),
+      ),
+    )
+    const failed = results.filter((result) => result.status === "rejected")
+    if (failed.length > 0) {
+      const first = failed[0]
+      const detail =
+        first?.status === "rejected" && first.reason instanceof Error
+          ? first.reason.message
+          : ""
+      setError(
+        `Could not stop ${failed.length} of ${ids.length} council members${detail ? `: ${detail}` : ""}`,
+      )
     }
   }
 
@@ -5585,6 +5679,31 @@ export function Workspace({
     setTimeout(() => void loadThreads(), 600)
   }
 
+  function writeScreenOutcome(
+    id: string,
+    stamp: string,
+    kind: "done" | "later",
+  ) {
+    sessionStorage.setItem(`ob-screen-outcome:${id}`, `${kind}|${stamp}`)
+    sessionStorage.removeItem(`ob-screen-dismiss:${id}`)
+    setScreenOutcome({ stamp, kind })
+  }
+
+  function stampScreenOutcome(kind: "done" | "later") {
+    if (!sessionId) return
+    const stamp = lastHandoffStamp(shown)
+    if (!stamp) return
+    writeScreenOutcome(sessionId, stamp, kind)
+  }
+
+  function clearScreenOutcome() {
+    if (sessionId) {
+      sessionStorage.removeItem(`ob-screen-outcome:${sessionId}`)
+      sessionStorage.removeItem(`ob-screen-dismiss:${sessionId}`)
+    }
+    setScreenOutcome(null)
+  }
+
   async function takeControl() {
     if (!sessionId || !running || stopping || controlBusy || held) return
     setControlBusy(true)
@@ -5600,6 +5719,7 @@ export function Workspace({
       setScreen(next)
       setHoldOrigin(tab === "desktop" ? "desktop" : "chat")
       setHeld(true)
+      clearScreenOutcome()
       await api(`/api/opencode/session/${sessionId}/abort`, {
         method: "POST",
       }).catch(() => {})
@@ -5610,14 +5730,6 @@ export function Workspace({
     } finally {
       setControlBusy(false)
     }
-  }
-
-  function dismissScreen() {
-    if (!sessionId) return
-    const stamp = lastHandoffStamp(shown)
-    if (!stamp) return
-    sessionStorage.setItem(`ob-screen-dismiss:${sessionId}`, stamp)
-    setDismissedHandoff(stamp)
   }
 
   async function releaseControl(notify = true) {
@@ -5632,11 +5744,10 @@ export function Workspace({
       })
       setHeld(false)
       if (stamp) {
-        sessionStorage.setItem(`ob-screen-dismiss:${sessionId}`, stamp)
-        setDismissedHandoff(stamp)
+        writeScreenOutcome(sessionId, stamp, notify ? "done" : "later")
       }
       if (notify) {
-        void prompt("Done on the screen. You have the desktop again.")
+        void prompt(SCREEN_DONE_PROMPT)
       }
     } catch (caught) {
       setError(
@@ -5716,7 +5827,7 @@ export function Workspace({
     setPreviewMode("closed")
     // Topmost pane closes by traversing Back; with the council also open
     // this pane may not be the top entry, so strip its param in place.
-    if (councilParam || fileParam)
+    if (councilParam || fileParam || screenParam)
       pushSearch({ [PARAM_PREVIEW]: null }, { replace: true })
     else
       backOr(
@@ -5761,7 +5872,7 @@ export function Workspace({
   function closeCouncilPane() {
     if (document.fullscreenElement) void document.exitFullscreen()
     setCouncilMode("closed")
-    if (previewParam || fileParam)
+    if (previewParam || fileParam || screenParam)
       pushSearch(
         { [PARAM_COUNCIL]: null, [PARAM_MEMBER]: null },
         { replace: true },
@@ -5827,7 +5938,7 @@ export function Workspace({
   function closeFilePane() {
     if (document.fullscreenElement) void document.exitFullscreen()
     setFileMode("closed")
-    if (previewParam || councilParam)
+    if (previewParam || councilParam || screenParam)
       pushSearch({ [PARAM_FILEVIEW]: null }, { replace: true })
     else
       backOr(
@@ -5836,6 +5947,55 @@ export function Workspace({
             [PARAM_FILEVIEW]: null,
           }),
       )
+  }
+
+  function onScreenDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startW = screenWidthRef.current
+    const parent = previewRowRef.current?.clientWidth ?? window.innerWidth
+    document.body.classList.add("ob-preview-dragging")
+    const move = (next: PointerEvent) => {
+      const width = clampPreviewWidth(startW - (next.clientX - startX), parent)
+      screenWidthRef.current = width
+      setScreenWidth(width)
+    }
+    const up = () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", up)
+      document.body.classList.remove("ob-preview-dragging")
+      sessionStorage.setItem("ob-screen-width", String(screenWidthRef.current))
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", up)
+  }
+
+  function openScreenFullscreen() {
+    const el = screenPaneRef.current
+    if (!el?.requestFullscreen) {
+      setScreenMode("overlay")
+      return
+    }
+    void el.requestFullscreen().catch(() => setScreenMode("overlay"))
+  }
+
+  function closeScreenStage() {
+    if (document.fullscreenElement) void document.exitFullscreen()
+    setScreenMode("closed")
+    if (previewParam || councilParam || fileParam)
+      pushSearch({ [PARAM_SCREEN]: null }, { replace: true })
+    else
+      backOr(
+        paneNavRef.current.pathname +
+          patchSearch(paneNavRef.current.search, { [PARAM_SCREEN]: null }),
+      )
+  }
+
+  // Stage (pane/overlay) hand-back tells the agent when the hold began
+  // in the chat; a Desktop-tab hold stays silent, as before.
+  function toggleStageControl() {
+    if (held) void releaseControl(holdOrigin === "chat")
+    else void takeControl()
   }
 
   const phaseColor = stopping
@@ -5872,7 +6032,10 @@ export function Workspace({
     <ProjectRefsContext.Provider value={projectList}>
       <FilePreviewContext.Provider value={openChatFile}>
         <Stack
-          className="ob-workspace"
+          ref={workspaceRef}
+          className={
+            narrowPane ? "ob-workspace ob-workspace-narrow" : "ob-workspace"
+          }
           sx={{ height: "100%", minHeight: 0, p: mobile ? 0.5 : 1 }}
           spacing={mobile ? 0.5 : 0.75}
         >
@@ -6214,23 +6377,10 @@ export function Workspace({
                   ) : null}
                   {stopping ? <Divider /> : null}
                   {/* Opening a thread with a cached transcript paints it
-                    instantly; this row says the catch-up fetch is still
-                    reconciling against opencode. */}
-                  {messagesLoading && shown.length > 0 ? (
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      className="ob-status-row"
-                      sx={{ px: mobile ? 1 : 1.5, py: mobile ? 0.25 : 0.75 }}
-                    >
-                      <CircularProgress size={1.2} />
-                      <Typography variant="caption" color="textSecondary">
-                        {THREADS_UI.messagesCatchingUp}
-                      </Typography>
-                    </Stack>
-                  ) : null}
-                  {messagesLoading && shown.length > 0 ? <Divider /> : null}
+                    instantly; while the catch-up fetch reconciles against
+                    opencode, skeleton bubbles at the end of the log (in
+                    the timeline branch below) say newer messages may
+                    still land — no status row above the log. */}
                   <Box
                     className="ob-chat-log"
                     ref={outputRef}
@@ -6279,37 +6429,9 @@ export function Workspace({
                         spacing={1}
                       >
                         <Stack spacing={1} sx={{ width: "min(620px, 100%)" }}>
-                          <Skeleton
-                            key="bubble-user-0"
-                            variant="rounded"
-                            height={44}
-                            width="42%"
-                            sx={{ alignSelf: "flex-end" }}
-                          />
-                          <Skeleton
-                            key="bubble-assistant-0"
-                            variant="rounded"
-                            height={72}
-                            width="78%"
-                          />
-                          <Skeleton
-                            key="bubble-user-1"
-                            variant="rounded"
-                            height={44}
-                            width="30%"
-                            sx={{ alignSelf: "flex-end" }}
-                          />
-                          <Skeleton
-                            key="bubble-assistant-1"
-                            variant="rounded"
-                            height={56}
-                            width="64%"
-                          />
-                          <Skeleton
-                            key="bubble-assistant-2"
-                            variant="rounded"
-                            height={48}
-                            width="56%"
+                          <MessageSkeletons
+                            rows={5}
+                            label={THREADS_UI.loadingMessages}
                           />
                         </Stack>
                       </Stack>
@@ -6372,21 +6494,10 @@ export function Workspace({
                         {pageMetaState.hasMore ? (
                           <div ref={topSentinelRef} className="ob-load-older">
                             {olderLoading ? (
-                              <Stack
-                                direction="row"
-                                spacing={1}
-                                alignItems="center"
-                              >
-                                {/* mui-lite numeric size is rem — "14px",
-                                  never size={14} (a 224px wheel) */}
-                                <CircularProgress size="14px" />
-                                <Typography
-                                  variant="caption"
-                                  color="textSecondary"
-                                >
-                                  {THREADS_UI.loadingOlder}
-                                </Typography>
-                              </Stack>
+                              <MessageSkeletons
+                                rows={3}
+                                label={THREADS_UI.loadingOlder}
+                              />
                             ) : olderError ? (
                               <Button
                                 size="small"
@@ -6419,10 +6530,12 @@ export function Workspace({
                               speechLoading={speechLoadingKey}
                               lastHandoff={lastHandoff}
                               held={held}
-                              dismissedHandoff={dismissedHandoff}
+                              screenOutcome={screenOutcome}
                               screenLive={screenLive}
                               screenPath={screen?.path ?? ""}
                               screenError={screenError}
+                              screenOpened={screenMode !== "closed"}
+                              screenReloadKey={desktopKey}
                               running={running}
                               sending={sending}
                               stopping={stopping}
@@ -6430,7 +6543,13 @@ export function Workspace({
                               renderers={pluginRenderers}
                               onTakeControl={bubbleActions.takeControl}
                               onScreenDone={bubbleActions.screenDone}
-                              onScreenClose={bubbleActions.screenClose}
+                              onReleaseSilent={bubbleActions.releaseSilent}
+                              onScreenLater={bubbleActions.screenLater}
+                              onScreenResume={bubbleActions.screenResume}
+                              onOpenScreen={bubbleActions.openScreen}
+                              onCloseScreen={bubbleActions.closeScreen}
+                              onScreenRetry={bubbleActions.screenRetry}
+                              onStartDesktop={bubbleActions.startDesktop}
                               onOpenPreview={bubbleActions.openPreview}
                               onOpenCouncil={bubbleActions.openCouncil}
                               openedCouncil={
@@ -6448,6 +6567,12 @@ export function Workspace({
                             />
                           ),
                         )}
+                        {messagesLoading ? (
+                          <MessageSkeletons
+                            rows={2}
+                            label={THREADS_UI.messagesCatchingUp}
+                          />
+                        ) : null}
                         <QueueDock
                           items={queueItems}
                           busyId={queueBusyId}
@@ -6521,6 +6646,30 @@ export function Workspace({
                         </div>
                       </div>
                     ) : null}
+                    {(screenWaiting ||
+                      (held && holdOrigin === "chat" && !atBottom)) &&
+                    screenMode === "closed" ? (
+                      <div className="ob-screen-fab-wrap">
+                        <button
+                          type="button"
+                          className="ob-screen-fab"
+                          onClick={() => {
+                            if (screenWaiting) bubbleActions.screenResume()
+                            const el = outputRef.current
+                            stickRef.current = true
+                            setAtBottom(true)
+                            setReadingMode(false)
+                            if (el) el.scrollTop = el.scrollHeight
+                          }}
+                        >
+                          <ComputerIcon width={16} height={16} />
+                          {held && holdOrigin === "chat"
+                            ? THREADS_UI.screenYouDriveShort
+                            : THREADS_UI.screenWaitingPill}
+                          <span className="ob-councils-fab-dot" />
+                        </button>
+                      </div>
+                    ) : null}
                   </Box>
                   {visibleTurnIssue && (tab === "chat" || chatDocked) ? (
                     <Alert
@@ -6557,32 +6706,8 @@ export function Workspace({
                         : `Reply failed: ${visibleTurnIssue.detail}`}
                     </Alert>
                   ) : null}
-                  {held &&
-                  holdOrigin === "chat" &&
-                  screen?.sessionId === sessionId ? (
-                    <div className="ob-takeover">
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Typography variant="caption" sx={{ flex: 1 }}>
-                          You have the desktop
-                        </Typography>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          disabled={
-                            !running || sending || stopping || controlBusy
-                          }
-                          onClick={() => void releaseControl()}
-                        >
-                          Done
-                        </Button>
-                      </Stack>
-                      <VncFrame
-                        title="your screen"
-                        path={screen.path}
-                        interactive
-                      />
-                    </div>
-                  ) : null}
+                  {/* The held screen lives in its handoff card now (ScreenCard);
+                      the old takeover block pinned above the composer is gone. */}
                   {/* Full-size orb at the bottom only. In reading mode the
                     same animation lives inside the composer pill (mini
                     orb + status on the field line) — one surface, no
@@ -6695,6 +6820,7 @@ export function Workspace({
                   councils={councilSwitcherRows}
                   selectedCouncilName={councilName}
                   onSelectCouncil={switchCouncil}
+                  onStop={stopCouncil}
                 />
               ) : null}
               {councilMode === "pane" && !councilData ? (
@@ -6746,10 +6872,44 @@ export function Workspace({
                   onDrag={onFileDrag}
                 />
               ) : null}
+              {screenMode === "pane" ? (
+                <ScreenPane
+                  title={screenTitle}
+                  path={screen?.sessionId === sessionId ? screen.path : ""}
+                  error={screenError}
+                  held={held}
+                  reloadKey={desktopKey}
+                  controlDisabled={
+                    !running || sending || stopping || controlBusy
+                  }
+                  onToggleControl={toggleStageControl}
+                  onReload={() => setDesktopKey((key) => key + 1)}
+                  apps={screenApps}
+                  width={screenWidth}
+                  paneRef={screenPaneRef}
+                  onClose={closeScreenStage}
+                  onFullscreen={openScreenFullscreen}
+                  onDrag={onScreenDrag}
+                />
+              ) : null}
             </Box>
           </Box>
           {previewMode === "overlay" && previewSrc ? (
             <PreviewOverlay src={previewSrc} onClose={closePreview} />
+          ) : null}
+          {screenMode === "overlay" ? (
+            <ScreenOverlay
+              title={screenTitle}
+              path={screen?.sessionId === sessionId ? screen.path : ""}
+              error={screenError}
+              held={held}
+              reloadKey={desktopKey}
+              controlDisabled={!running || sending || stopping || controlBusy}
+              onToggleControl={toggleStageControl}
+              onReload={() => setDesktopKey((key) => key + 1)}
+              apps={screenApps}
+              onClose={closeScreenStage}
+            />
           ) : null}
           {councilMode === "overlay" && councilData ? (
             <CouncilOverlay
@@ -6764,6 +6924,7 @@ export function Workspace({
               councils={councilSwitcherRows}
               selectedCouncilName={councilName}
               onSelectCouncil={switchCouncil}
+              onStop={stopCouncil}
             />
           ) : null}
           {councilMode === "overlay" && !councilData ? (
@@ -6829,94 +6990,19 @@ export function Workspace({
                 </Typography>
               </Paper>
             ) : (
-              <>
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  sx={{ flexWrap: "wrap", rowGap: 1 }}
-                >
-                  <Typography
-                    variant="caption"
-                    color="textSecondary"
-                    sx={{ flex: 1 }}
-                  >
-                    {stopping
-                      ? THREADS_UI.sleepStopping
-                      : held
-                        ? THREADS_UI.screenHeld
-                        : THREADS_UI.screenViewOnly(
-                            sessions.find((item) => item.id === sessionId)
-                              ?.title || THREAD.untitled,
-                          )}
-                  </Typography>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    disabled={!running || stopping || controlBusy}
-                    onClick={() =>
-                      void (held ? releaseControl(false) : takeControl())
-                    }
-                  >
-                    {held ? THREADS_UI.releaseControl : THREADS_UI.takeControl}
-                  </Button>
-                  <Tip title={THREADS_UI.reloadScreen}>
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<RefreshIcon />}
-                      onClick={() => setDesktopKey((key) => key + 1)}
-                      disabled={!screen || screen.sessionId !== sessionId}
-                    >
-                      Reload
-                    </Button>
-                  </Tip>
-                  <Tip title="Open VNC in a new tab">
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<OpenInNewIcon />}
-                      disabled={
-                        !screen || screen.sessionId !== sessionId || held
-                      }
-                      onClick={() => {
-                        if (!screen || screen.sessionId !== sessionId || held)
-                          return
-                        openVnc(screen.path, false)
-                      }}
-                    >
-                      {THREADS_UI.popOut}
-                    </Button>
-                  </Tip>
-                  <AppLauncher
-                    sessionId={sessionId}
-                    disabled={!screen || screen.sessionId !== sessionId}
-                    onError={setError}
-                  />
-                </Stack>
-                {screen?.sessionId === sessionId ? (
-                  <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-                    <VncFrame
-                      key={`${screen.sessionId}-${desktopKey}-${held ? "held" : "view"}`}
-                      title="desktop"
-                      path={screen.path}
-                      interactive={held}
-                      className="ob-frame"
-                    />
-                  </Box>
-                ) : (
-                  <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}>
-                    <Typography variant="subtitle1" component="p">
-                      {screenError
-                        ? THREADS_UI.screenUnavailable
-                        : THREADS_UI.screenOpening}
-                    </Typography>
-                    <Typography variant="body2" color="textSecondary">
-                      {screenError || THREADS_UI.screenOpeningBody}
-                    </Typography>
-                  </Paper>
-                )}
-              </>
+              <ScreenStage
+                title={screenTitle}
+                path={screen?.sessionId === sessionId ? screen.path : ""}
+                error={screenError}
+                held={held}
+                reloadKey={desktopKey}
+                controlDisabled={!running || stopping || controlBusy}
+                onToggleControl={() =>
+                  void (held ? releaseControl(false) : takeControl())
+                }
+                onReload={() => setDesktopKey((key) => key + 1)}
+                apps={screenApps}
+              />
             )}
           </Box>
 

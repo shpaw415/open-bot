@@ -1,5 +1,12 @@
-import type { PublicCatalogSpec } from "./provider-catalog"
-import type { VoiceSpec } from "./voice-catalog"
+import type {
+  ImageProviderId,
+  Model3dProviderId,
+  PublicCatalogSpec,
+  System1ProviderId,
+  VideoProviderId,
+  WatchdogProviderId,
+} from "./provider-catalog"
+import type { SttProviderId, TtsProviderId, VoiceSpec } from "./voice-catalog"
 
 export type Me = {
   id: string
@@ -97,27 +104,29 @@ export type QuotaState = {
 }
 
 export type TeamProviderOverlay = {
+  // Chat providers are the desktop's live opencode ids, not a static
+  // catalog — that one stays a plain string by design.
   chat?: { provider?: string | null; model?: string | null }
   image?: {
-    provider?: string | null
+    provider?: ImageProviderId | null
     accountId?: string | null
     apiKey?: string | null
     model?: string | null
   }
   video?: {
-    provider?: string | null
+    provider?: VideoProviderId | null
     accountId?: string | null
     apiKey?: string | null
     model?: string | null
   }
   model3d?: {
-    provider?: string | null
+    provider?: Model3dProviderId | null
     accountId?: string | null
     apiKey?: string | null
     model?: string | null
   }
   system1?: {
-    provider?: string | null
+    provider?: System1ProviderId | null
     endpoint?: string | null
     apiKey?: string | null
     gatewayToken?: string | null
@@ -127,17 +136,17 @@ export type TeamProviderOverlay = {
     slug?: string | null
   }
   voice?: {
-    sttProvider?: string | null
+    sttProvider?: SttProviderId | null
     sttAccountId?: string | null
     sttApiKey?: string | null
     sttModel?: string | null
-    ttsProvider?: string | null
+    ttsProvider?: TtsProviderId | null
     ttsAccountId?: string | null
     ttsApiKey?: string | null
     ttsModel?: string | null
   }
   watchdog?: {
-    provider?: string | null
+    provider?: WatchdogProviderId | null
     accountId?: string | null
     apiKey?: string | null
     model?: string | null

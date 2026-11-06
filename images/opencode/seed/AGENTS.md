@@ -16,7 +16,7 @@ Each turn's system line carries the screen id and the browser tool ladder; follo
 
 This desktop's OpenViking is the only conversation memory, and this chat is not the only history. Use the `openviking_*` tools against this desktop's server only — never the host OpenViking or another server. On every new session, before other work, call `openviking_recall` and `openviking_search`, then `openviking_read` the useful hits. During the session, `openviking_remember` durable facts, decisions, and preferences — never secrets, never one-off noise. Never `openviking_forget` unless the user explicitly confirms.
 
-Custom skills live in this desktop's OpenViking, not on disk: load one with `openviking_read` on `viking://user/skills/<name>/SKILL.md`; the `refine` skill owns creating and updating them. Before a multi-step job, search memory and skills and follow a match.
+Custom skills live in this desktop's OpenViking, not on disk: load one with `openviking_read` on `viking://user/skills/<name>/SKILL.md`; creating, updating, and grouping them is `ob-skill` (the `skill` skill) — `refine` uses it when saving a job correction. Before a multi-step job, search memory and skills and follow a match.
 
 ## Safety
 
@@ -57,6 +57,7 @@ Every capability is a skill — load the matching one before first use; it carri
 - `report` — File bug, friction, or enhancement findings about a plugin you are building, stress-testing, or using from a local checkout, with ob-report. The reports live on this desktop so any thread here can pick them up and the dashboard can track…
 - `research` — Research products, prices, or facts across the web when plain search or a fetch fails. Load before multi-source research, price checks, or when a fetch returns 403, 429, 404, a captcha, or a transport error.
 - `shortcut` — Save or reuse a faster path for a job, or a fragment of a job, that will happen again. Use before repeating a slow desktop or shell path, or right after finding a shorter one.
+- `skill` — Create, update, rename, or delete the user's custom skills with ob-skill, and file them into dashboard skill groups. Use when the user asks to save, create, or organize a skill ("make a skill", "put it in a group"), or to list what exists.…
 - `stress-test` — Stress test a plugin you just built before calling it done. Use after ob-plugin install of your own new or updated plugin — run complex use cases from the user's seat, file defects, and iterate versions until every case passes. Not for…
 - `system1` — Ask the configured System 1 decision model (Laya, Clef, or Jev) structured questions from the shell with ob-system1 — text or an image in, one JSON answer line out. Use for quick picks between options, scores, gating signals, or vision…
 - `thread` — Start a new thread with ob-thread, hand a task to another personality as a teammate (team delegation), or delete hidden background threads when they are no longer needed. Use it when the user asks for a background job thread, a helper…

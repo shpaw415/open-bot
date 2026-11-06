@@ -17,11 +17,12 @@ Each desktop's OpenViking instance (the memory server on port 1933) needs an **e
 
 1. Log in to the control plane.
 2. Open **Config** (per user, saves to your own desktop) or **Admin → OpenViking models (default)** (account-wide fallback).
-3. Fill the form:
+3. Pick an **Embedding provider** — the form shows only the fields that provider needs. For the Cloudflare example:
 
 | Field | Value |
 | --- | --- |
-| Base URL | `https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1` |
+| Embedding provider | Cloudflare Workers AI |
+| Cloudflare account id | your account ID (dashboard overview, right sidebar) |
 | API key | your Workers AI token |
 | Embed model | `@cf/qwen/qwen3-embedding-0.6b` |
 | Embed dimension | `1024` |
@@ -29,7 +30,11 @@ Each desktop's OpenViking instance (the memory server on port 1933) needs an **e
 
 4. **Save OpenViking models** — a blank API key keeps the already-saved key.
 
-The Base URL is the Workers AI OpenAI-compatible endpoint; model IDs keep the `@cf/` prefix.
+Cloudflare needs no Base URL: the OpenAI-compatible endpoint (`https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1`) is derived from the account id, and model IDs keep the `@cf/` prefix. Other providers: OpenAI, Voyage AI, Cohere, Jina AI, Google Gemini, Alibaba DashScope, MiniMax and Volcengine Ark need just an API key (each with its default endpoint — an optional base URL override), Ollama and a LiteLLM proxy need their base URL, the in-container local model needs nothing, and Custom OpenAI-compatible takes any `/embeddings`-shaped endpoint. Switching the provider also retints the suggested embed dimension.
+
+## VLM from your OpenCode setup
+
+The form's **VLM source** can be switched from the embedding endpoint to **OpenCode model**: pick a provider and a model from the ones connected in OpenCode on your desktop (the list loads on demand, which starts a sleeping desktop), and OpenViking calls it with that setup's existing login — nothing to paste. An OpenAI **Codex subscription** works through OpenViking's native `openai-codex` backend: the control plane converts OpenCode's OAuth entry into a bootstrap auth file on every desktop start and OpenCode keeps owning token refresh. xAI (including its OAuth login), Z.AI / GLM coding plan, Anthropic, Google, OpenRouter and a few others route through OpenViking's LiteLLM/GLM backends with the desktop's stored credential (a matching Keys-tab key is the fallback). The embedding endpoint can double as the VLM endpoint only for OpenAI-compatible providers (Cloudflare, OpenAI, Ollama, LiteLLM, custom); a native embedding provider (Voyage, Cohere, …) serves embeddings only, so the VLM must come from OpenCode — the form switches and explains itself.
 
 ## Apply
 

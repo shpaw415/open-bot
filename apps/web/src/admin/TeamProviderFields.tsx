@@ -1,4 +1,5 @@
 import Select from "@shpaw415/mui-lite/Select"
+import Typography from "@shpaw415/mui-lite/Typography"
 import { useEffect, useState } from "react"
 import { CatalogFields, CatalogModelSelect } from "../ProviderFields"
 import {
@@ -59,6 +60,15 @@ export function TeamProviderFields({
 
   const providerKnown =
     providerId === "" || Boolean(specForId(providers, providerId))
+
+  if (providers.length === 0) {
+    return (
+      <Typography variant="caption" color="error">
+        Provider catalog unavailable — the control plane is older than this
+        dashboard. Update it before editing these settings.
+      </Typography>
+    )
+  }
 
   return (
     <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ rowGap: 1 }}>

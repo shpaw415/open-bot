@@ -3,8 +3,11 @@ import {
   type CronJobInfo,
   cronScheduleLabel,
   everySecondsFrom,
+  filterCronJobs,
   intervalFromSeconds,
   intervalLabel,
+  isGuardJob,
+  partitionGuardJobs,
 } from "./CronView"
 
 describe("intervalLabel — real French, no 'les 1'", () => {
@@ -82,5 +85,82 @@ describe("cronScheduleLabel — the truth about time", () => {
     )
     expect(label).toMatch(/^Une seule fois, le \d+/)
     expect(label).toMatch(/\(/)
+  })
+})
+
+describe("filterCronJobs — the automations search field", () => {
+  const jobs = [
+    job({ id: "a", name: "Résumé du matin", message: "Résume mes courriels" }),
+    job({
+      id: "b",
+      name: "Veille prix",
+      message: "Surveille les billets",
+      runKind: "script",
+      script: "curl https://example.com/prix",
+    }),
+    job({
+      id: "c",
+      name: "plugin:stock:Suivi bourse",
+      message: "Cours du jour",
+      kind: "cron",
+      cronExpr: "0 9 * * 1-5",
+      plugin: { id: "stock", name: "Stock" },
+    }),
+  ]
+  const ids = (list: CronJobInfo[]) => list.map((item) => item.id)
+
+  test("an empty or blank query keeps every job, in order", () => {
+    expect(ids(filterCronJobs(jobs, ""))).toEqual(["a", "b", "c"])
+    expect(ids(filterCronJobs(jobs, "  "))).toEqual(["a", "b", "c"])
+  })
+
+  test("matches name and instruction, accents and case ignored", () => {
+    expect(ids(filterCronJobs(jobs, "resume"))).toEqual(["a"])
+    expect(ids(filterCronJobs(jobs, "BILLETS"))).toEqual(["b"])
+  })
+
+  test("matches the script, the cron expression and the plugin name", () => {
+    expect(ids(filterCronJobs(jobs, "curl"))).toEqual(["b"])
+    expect(ids(filterCronJobs(jobs, "1-5"))).toEqual(["c"])
+    expect(ids(filterCronJobs(jobs, "stock"))).toEqual(["c"])
+  })
+
+  test("no match gives an empty list", () => {
+    expect(filterCronJobs(jobs, "introuvable")).toEqual([])
+  })
+})
+
+describe("guard grouping — plugin:<id>:guard under one collapsible", () => {
+  test("isGuardJob follows the control plane's GUARD_JOB_RE contract", () => {
+    expect(isGuardJob(job({ name: "plugin:weather-pro:guard" }))).toBe(true)
+    expect(isGuardJob(job({ name: "plugin:stock:guard" }))).toBe(true)
+    // Other plugin jobs and user jobs that merely mention a guard stay out.
+    expect(isGuardJob(job({ name: "plugin:weather-pro:Suivi bourse" }))).toBe(
+      false,
+    )
+    expect(isGuardJob(job({ name: "plugin:guard" }))).toBe(false)
+    expect(isGuardJob(job({ name: "Veille guard" }))).toBe(false)
+    expect(isGuardJob(job({ name: "Résumé du matin" }))).toBe(false)
+  })
+
+  test("partition keeps each side in loaded order, guards together", () => {
+    const jobs = [
+      job({ id: "g1", name: "plugin:weather-pro:guard" }),
+      job({ id: "a", name: "Résumé du matin" }),
+      job({ id: "g2", name: "plugin:stock:guard" }),
+      job({ id: "b", name: "Veille prix" }),
+    ]
+    const { regular, guards } = partitionGuardJobs(jobs)
+    expect(regular.map((item) => item.id)).toEqual(["a", "b"])
+    expect(guards.map((item) => item.id)).toEqual(["g1", "g2"])
+  })
+
+  test("no guards (or nothing but guards) partitions cleanly", () => {
+    expect(partitionGuardJobs([job({ id: "a" })]).guards).toEqual([])
+    expect(
+      partitionGuardJobs([job({ id: "g1", name: "plugin:weather-pro:guard" })])
+        .regular,
+    ).toEqual([])
+    expect(partitionGuardJobs([])).toEqual({ regular: [], guards: [] })
   })
 })

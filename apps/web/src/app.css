@@ -946,6 +946,21 @@ body,
   padding: 4px 0 2px;
 }
 
+/* While an older page loads, the sentinel holds bubble-shaped skeletons
+   (MessageSkeletons) instead of a spinner + caption: stretch to the
+   reading column so the placeholders sit where the messages will land. */
+.ob-load-older:has(.ob-msg-skeletons) {
+  justify-content: stretch;
+}
+
+.ob-msg-skeletons {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
 .ob-chat-docked .ob-chat-log {
   padding: 8px 10px;
 }
@@ -1029,7 +1044,7 @@ body,
   color: var(--ob-text);
 }
 
-.ob-bubble:has(.ob-screen),
+.ob-bubble:has(.ob-screen-card),
 .ob-bubble:has(.ob-preview) {
   max-width: min(920px, 96%);
   width: min(920px, 96%);
@@ -1223,32 +1238,425 @@ body.ob-preview-dragging iframe {
   pointer-events: none;
 }
 
-.ob-screen {
+/* ---- Thread screen (handoff card + stage) ----
+   In the thread the agent's screen share is a guided request card:
+   title, status pill, three steps, the live frame, one primary action
+   per state. Taking control happens in place (ring + ribbon + taller
+   frame) — never by teleporting above the composer. Finished shares
+   collapse to one-line receipts. The dedicated page / pane / overlay
+   reuse one black stage with a floating dock. */
+.ob-screen-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  height: 420px;
   margin-top: 8px;
+  border: 1px solid var(--ob-border);
+  border-radius: 12px;
+  background: var(--ob-surface);
+  overflow: hidden;
   overflow-anchor: none;
 }
 
-.ob-screen iframe,
-.ob-takeover iframe {
+.ob-screen-card-held {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: -1px;
+}
+
+.ob-screen-ribbon {
+  background: var(--ob-accent-btn);
+  color: var(--ob-accent-btn-text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+}
+
+.ob-screen-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.ob-screen-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  border: 1px solid var(--ob-border);
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: var(--ob-text-2);
+  background: rgba(14, 16, 20, 0.82);
+  max-width: 100%;
+}
+
+.ob-screen-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ob-muted);
+  flex-shrink: 0;
+}
+
+.ob-screen-pill-live .ob-screen-dot {
+  background: var(--ob-success);
+}
+
+.ob-screen-pill-held {
+  background: var(--ob-success);
+  border-color: transparent;
+  color: #0c1410;
+}
+
+.ob-screen-pill-held .ob-screen-dot {
+  background: #0c1410;
+}
+
+.ob-screen-pill-warn .ob-screen-dot {
+  background: var(--ob-warning);
+}
+
+.ob-screen-pill-err {
+  color: var(--ob-danger);
+}
+
+.ob-screen-pill-err .ob-screen-dot {
+  background: var(--ob-danger);
+}
+
+.ob-screen-steps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--ob-muted);
+}
+
+.ob-screen-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ob-screen-step-n {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ob-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ob-text-2);
+  flex-shrink: 0;
+}
+
+.ob-screen-step-on {
+  color: var(--ob-text);
+  font-weight: 600;
+}
+
+.ob-screen-step-on .ob-screen-step-n {
+  background: var(--ob-accent-btn);
+  border-color: var(--ob-accent-btn);
+  color: var(--ob-accent-btn-text);
+}
+
+.ob-screen-step-done .ob-screen-step-n {
+  background: var(--ob-success);
+  border-color: var(--ob-success);
+  color: #0c1410;
+}
+
+.ob-screen-media {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  max-height: 420px;
+  background: #000;
+}
+
+.ob-screen-card-held .ob-screen-media {
+  max-height: min(62vh, 640px);
+}
+
+.ob-screen-media iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+.ob-screen-skel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--ob-elevated);
+  color: var(--ob-text-2);
+  font-size: 13px;
+}
+
+.ob-screen-skel-short {
+  aspect-ratio: 16 / 5;
+}
+
+.ob-screen-skel-hint {
+  font-size: 11.5px;
+  color: var(--ob-muted);
+}
+
+.ob-screen-keys {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border-top: 1px solid var(--ob-border);
+}
+
+.ob-screen-keys-v {
+  flex-direction: column;
+  align-items: stretch;
+  border-top: 0;
+  padding: 2px 0 0;
+}
+
+.ob-screen-keys-lab {
+  font-size: 11px;
+  color: var(--ob-muted);
+}
+
+.ob-screen-keys-hint {
+  margin-left: auto;
+}
+
+.ob-screen-paste {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ob-screen-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-top: 1px solid var(--ob-border);
+}
+
+.ob-screen-receipt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  border: 1px solid var(--ob-border);
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: var(--ob-surface);
+  color: var(--ob-text-2);
+  font-size: 12.5px;
+}
+
+.ob-screen-receipt-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ob-screen-receipt-text strong {
+  color: var(--ob-text);
+}
+
+/* Black stage: dedicated page, split pane, phone overlay. */
+.ob-screen-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ob-screen-stage:fullscreen {
+  border-radius: 0;
+}
+
+.ob-screen-stage-frame {
   flex: 1;
   width: 100%;
   min-height: 0;
   border: 0;
-  border-radius: 12px;
   background: #000;
 }
 
-.ob-takeover {
+.ob-screen-place {
+  flex: 1;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
-  height: min(420px, 46vh);
-  margin: 0 8px 8px;
-  flex-shrink: 0;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--ob-text);
+}
+
+.ob-screen-stage-pill {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+  max-width: calc(100% - 20px);
+}
+
+.ob-screen-focusnote {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+}
+
+.ob-screen-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  background: rgba(16, 19, 26, 0.94);
+  border: 1px solid var(--ob-border);
+  border-radius: 999px;
+  padding: 5px 6px;
+  transition:
+    opacity 200ms ease,
+    transform 200ms ease;
+}
+
+.ob-screen-dock-idle {
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-screen-dock {
+    transition: none;
+  }
+}
+
+@media (max-width: 599px) {
+  .ob-screen-dock {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .ob-screen-dock::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.ob-screen-pop-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.ob-screen-pop {
+  position: absolute;
+  left: 50%;
+  bottom: 58px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 190px;
+  max-width: calc(100% - 24px);
+  background: var(--ob-elevated);
+  border: 1px solid var(--ob-border);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+}
+
+.ob-screen-pop-label {
+  font-size: 10.5px;
+  color: var(--ob-muted);
+  padding: 2px 6px 4px;
+}
+
+.ob-screen-pop-apps {
+  min-width: min(280px, calc(100% - 24px));
+}
+
+/* Screen panes ride the preview pane chrome; only the frame differs. */
+.ob-preview-pane .ob-screen-stage,
+.ob-preview-overlay .ob-screen-stage {
+  border-radius: 12px;
+}
+
+.ob-preview-pane:fullscreen .ob-screen-stage {
+  border-radius: 0;
+}
+
+/* Floating "the agent waits / you drive" pill, bottom-left of the log
+   (jump pill is centered, councils are bottom-right). Same zero-height
+   sticky trick; bottom covers the pill height plus clearance. */
+.ob-screen-fab-wrap {
+  position: sticky;
+  bottom: 44px;
+  height: 0;
+  display: flex;
+  justify-content: flex-start;
+  z-index: 2;
+}
+
+.ob-screen-fab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ob-border);
+  border-radius: 999px;
+  background: var(--ob-elevated);
+  color: var(--ob-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 14px;
+  margin-left: 4px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.ob-screen-fab:hover {
+  border-color: var(--ob-accent);
+}
+
+.ob-screen-fab:focus-visible {
+  outline: 2px solid var(--ob-accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 599px) {
+  .ob-screen-fab-wrap {
+    bottom: 86px;
+  }
 }
 
 .ob-md {
@@ -1744,14 +2152,6 @@ body.ob-preview-dragging iframe {
   font-size: 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.ob-frame {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  border: 0;
-  background: #000;
 }
 
 .ob-code-pre {
@@ -2817,4 +3217,58 @@ body.ob-home-dragging iframe {
 .ob-skip-link:focus {
   left: 8px;
   top: 8px;
+}
+
+/* Narrow split pane: the workspace carries .ob-workspace-narrow when its
+   own measured width fits only the small-screen layout (hooks.ts
+   isNarrowPane) while the window stays wide, so the media queries above
+   never fire. These rules mirror the chat-scoped declarations of the
+   max-width:899px blocks — keep them in sync when those change. */
+.ob-workspace-narrow .ob-chat-log {
+  padding: 8px 10px;
+  gap: 8px;
+}
+.ob-workspace-narrow .ob-chat-log-inner {
+  gap: 8px;
+}
+.ob-workspace-narrow .ob-bubble-user {
+  max-width: 88%;
+  padding: 8px 12px;
+}
+.ob-workspace-narrow .ob-bubble-assistant {
+  padding: 0;
+}
+.ob-workspace-narrow .ob-workspace-bar {
+  gap: 6px;
+  min-height: 32px;
+}
+.ob-workspace-narrow .ob-threads-bar {
+  min-height: 28px;
+}
+.ob-workspace-narrow .ob-status-row {
+  min-height: 24px;
+}
+.ob-workspace-narrow .ob-input-row {
+  gap: 8px;
+}
+.ob-workspace-narrow .ob-queue-card,
+.ob-workspace-narrow .ob-queue-card-editing {
+  max-width: 88%;
+  width: auto;
+}
+.ob-workspace-narrow .ob-queue-card-editing {
+  width: 88%;
+}
+.ob-workspace-narrow .ob-orb-row {
+  min-height: 64px;
+}
+.ob-workspace-narrow .ob-orb-row-leave {
+  min-height: 0;
+}
+.ob-workspace-narrow .ob-join-preview,
+.ob-workspace-narrow .ob-join-preview-button {
+  width: 104px;
+}
+.ob-workspace-narrow .ob-join-preview-button {
+  height: 78px;
 }

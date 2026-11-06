@@ -255,9 +255,17 @@ export function voiceProviderById(id: string) {
   return voiceProviders.find((item) => item.id === canonical)
 }
 
-export function voiceProviderForKind(id: string, kind: VoiceKind) {
+export type VoiceSpecForKind<K extends VoiceKind> = VoiceProviderSpec & {
+  id: K extends "stt" ? SttProviderId : TtsProviderId
+  kind: K
+}
+
+export function voiceProviderForKind<K extends VoiceKind>(
+  id: string,
+  kind: K,
+): VoiceSpecForKind<K> | undefined {
   const spec = voiceProviderById(id)
-  return spec && spec.kind === kind ? spec : undefined
+  return spec && spec.kind === kind ? (spec as VoiceSpecForKind<K>) : undefined
 }
 
 export function voiceProvidersPublic() {

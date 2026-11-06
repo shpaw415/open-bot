@@ -3,7 +3,14 @@ import Button from "@shpaw415/mui-lite/Button"
 import Select from "@shpaw415/mui-lite/Select"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useCallback, useEffect, useId, useMemo, useState } from "react"
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react"
 import AccessibleDialog, {
   DialogActions,
   DialogContent,
@@ -26,11 +33,12 @@ import {
 } from "./directory-sections"
 import { confirmDiscard, snapshotDirty } from "./discard-guard"
 import { useEventStream } from "./hooks"
-import { ExtensionIcon, PsychologyIcon } from "./icons"
+import { CloseIcon, ExtensionIcon, PsychologyIcon, SearchIcon } from "./icons"
+import { normalizeSearchText } from "./search"
 import Stack from "./stack"
 import { Tip } from "./Tip"
 
-type SkillSummary = {
+export type SkillSummary = {
   name: string
   description: string
   /** Manifest group label (display only). */
@@ -38,6 +46,28 @@ type SkillSummary = {
   plugin?: { id: string; name: string }
   /** Desktop seed skill: listed read-only (Move only, no edit/delete). */
   seed?: boolean
+}
+
+/**
+ * Search-field filter over the loaded skills: name, description, group
+ * label and owning plugin. Accents and case are ignored like the global
+ * search; a blank query keeps the full list.
+ */
+export function filterSkills(
+  skills: SkillSummary[],
+  query: string,
+): SkillSummary[] {
+  const q = normalizeSearchText(query.trim())
+  if (!q) return skills
+  return skills.filter((skill) =>
+    [
+      skill.name,
+      skill.description,
+      skill.group ?? "",
+      skill.plugin?.name ?? "",
+      skill.plugin?.id ?? "",
+    ].some((text) => normalizeSearchText(text).includes(q)),
+  )
 }
 
 type SkillDetail = SkillSummary & {
@@ -65,6 +95,15 @@ const BUILTIN_LABEL = "Built-in"
 
 export function CustomSkills() {
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [skillQuery, setSkillQuery] = useState("")
+  // Deferred like the threads filter: typing stays live, the list
+  // recomputes off the critical path.
+  const deferredSkillQuery = useDeferredValue(skillQuery)
+  const shownSkills = useMemo(
+    () => filterSkills(skills, deferredSkillQuery),
+    [skills, deferredSkillQuery],
+  )
+  const searchingSkills = deferredSkillQuery.trim() !== ""
   const [dirs, setDirs] = useState<CatalogDir[]>([])
   const [dirOf, setDirOf] = useState<Map<string, string>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -130,9 +169,11 @@ export function CustomSkills() {
   const { subscribe } = useEventStream(true)
   useEffect(() => {
     return subscribe((event) => {
-      if (event.type === "catalog.changed") void loadDirs()
+      // Skills writes (dashboard or agent/CLI) emit catalog.changed too —
+      // reload the whole list, not just the directories.
+      if (event.type === "catalog.changed") void load()
     })
-  }, [subscribe, loadDirs])
+  }, [subscribe, load])
 
   function openNew() {
     setError("")
@@ -371,7 +412,7 @@ export function CustomSkills() {
         }
       return ungrouped
     }
-    for (const skill of skills) {
+    for (const skill of shownSkills) {
       const bucket = bucketFor(skill)
       bucket.skills.push(skill)
       bucket.group.count++
@@ -384,7 +425,7 @@ export function CustomSkills() {
       ...(builtin ? [builtin] : []),
       ...(ungrouped ? [ungrouped] : []),
     ]
-  }, [skills, dirs, dirOf])
+  }, [shownSkills, dirs, dirOf])
 
   const groupActions = (dir: CatalogDir, index: number) => (
     <Stack direction="row" spacing={0.25} alignItems="center">
@@ -516,7 +557,9 @@ export function CustomSkills() {
       status={
         !loading && skills.length > 0
           ? {
-              label: `${skills.length}`,
+              label: searchingSkills
+                ? `${shownSkills.length} / ${skills.length}`
+                : `${skills.length}`,
             }
           : null
       }
@@ -524,6 +567,34 @@ export function CustomSkills() {
       <Stack spacing={1.5}>
         {error && !draft ? <Alert severity="error">{error}</Alert> : null}
         {saved ? <Alert severity="success">{saved}</Alert> : null}
+        {skills.length > 0 ? (
+          /* Native field like the threads/apps filters: real placeholder
+             + aria-label, Escape or ✕ clears. It filters the skills
+             already loaded; it is not a server search. */
+          <label className="ob-filter-field">
+            <SearchIcon width={14} height={14} />
+            <input
+              value={skillQuery}
+              onChange={(event) => setSkillQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setSkillQuery("")
+              }}
+              placeholder="Filter skills"
+              aria-label="Filter skills"
+              type="search"
+            />
+            {skillQuery ? (
+              <button
+                type="button"
+                className="ob-filter-clear"
+                aria-label="Clear skill filter"
+                onClick={() => setSkillQuery("")}
+              >
+                <CloseIcon width={13} height={13} />
+              </button>
+            ) : null}
+          </label>
+        ) : null}
         {loading && skills.length === 0 ? (
           <>
             <Alert severity="info">
@@ -537,9 +608,18 @@ export function CustomSkills() {
             title="No skills yet"
             subtext="Add one below, or ask the agent to create one. Plugins can install their own."
           />
+        ) : searchingSkills && shownSkills.length === 0 ? (
+          <EmptyState
+            icon={<PsychologyIcon width={24} height={24} />}
+            title={`No skills match “${deferredSkillQuery.trim()}”`}
+            subtext="Try another term, or clear the filter to see every skill."
+          />
         ) : (
           <Stack spacing={2}>
             {sections.map((section) => {
+              // While searching, groups with no match disappear entirely
+              // (their saved collapse state is untouched).
+              if (searchingSkills && section.skills.length === 0) return null
               const dirIndex =
                 section.group.id !== null
                   ? dirs.findIndex((d) => d.id === section.group.id)

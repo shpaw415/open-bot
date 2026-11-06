@@ -10,7 +10,7 @@ import {
   stopDesktop,
 } from "./docker"
 import type { EventHub } from "./events"
-import { imageProviderPublic } from "./image-providers"
+import { imageProviderById, imageProviderPublic } from "./image-providers"
 import { handleAdminImprovements } from "./improvements"
 import {
   keyVault,
@@ -25,10 +25,10 @@ import {
   VAULT_CAP_KEY,
   vaultCapMb,
 } from "./media-vault"
-import { model3dProviderPublic } from "./model3d-providers"
+import { model3dProviderById, model3dProviderPublic } from "./model3d-providers"
 import { randomToken } from "./passwords"
 import { DISK_CAP_KEY, desktopDiskMaxGb, MAX_DISK_CAP_GB } from "./stats"
-import { system1ProviderPublic } from "./system1"
+import { system1ProviderById, system1ProviderPublic } from "./system1"
 import {
   getTeamConfig,
   getTeamOpencodeAuth,
@@ -46,9 +46,12 @@ import {
   teamKeysPublic,
 } from "./team-apply"
 import { dayLabel, fillDays, usageDays, utcDay } from "./usage"
-import { videoProviderPublic } from "./video-providers"
-import { voiceProvidersPublic } from "./voice-catalog"
-import { watchdogProviderPublic } from "./watchdog-catalog"
+import { videoProviderById, videoProviderPublic } from "./video-providers"
+import { voiceProviderForKind, voiceProvidersPublic } from "./voice-catalog"
+import {
+  watchdogProviderById,
+  watchdogProviderPublic,
+} from "./watchdog-catalog"
 import {
   deleteUserMedia,
   MAX_MEDIA_CAP_MB,
@@ -91,7 +94,9 @@ function emptyKind() {
 
 // Import source: the admin's own provider setups become the shared overlay.
 // ttsVoice/voiceLanguage and the watchdog toggles stay per-user and are
-// never copied.
+// never copied. Provider ids resolve through the catalogs (legacy voice
+// ids canonicalize); an unrecognized stored id imports as unset instead of
+// poisoning the overlay.
 function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
   const overlay: TeamProviderOverlay = {}
   const desktop = db.desktop(userId)
@@ -104,7 +109,7 @@ function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
   const image = db.getRawImageProvider(userId)
   if (image) {
     overlay.image = {
-      provider: image.provider,
+      provider: imageProviderById(image.provider)?.id ?? null,
       accountId: image.accountId,
       apiKey: image.apiKey,
       model: image.model,
@@ -113,7 +118,7 @@ function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
   const video = db.getRawVideoProvider(userId)
   if (video) {
     overlay.video = {
-      provider: video.provider,
+      provider: videoProviderById(video.provider)?.id ?? null,
       accountId: video.accountId,
       apiKey: video.apiKey,
       model: video.model,
@@ -122,7 +127,7 @@ function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
   const model3d = db.getRawModel3dProvider(userId)
   if (model3d) {
     overlay.model3d = {
-      provider: model3d.provider,
+      provider: model3dProviderById(model3d.provider)?.id ?? null,
       accountId: model3d.accountId,
       apiKey: model3d.apiKey,
       model: model3d.model,
@@ -131,7 +136,7 @@ function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
   const system1 = db.getSystem1(userId)
   if (system1) {
     overlay.system1 = {
-      provider: system1.provider,
+      provider: system1ProviderById(system1.provider)?.id ?? null,
       endpoint: system1.endpoint,
       apiKey: system1.apiKey,
       gatewayToken: system1.gatewayToken,
@@ -144,11 +149,11 @@ function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
   const voice = db.getVoiceConfig(userId)
   if (voice.sttProvider || voice.ttsProvider) {
     overlay.voice = {
-      sttProvider: voice.sttProvider,
+      sttProvider: voiceProviderForKind(voice.sttProvider, "stt")?.id ?? null,
       sttAccountId: voice.sttAccountId,
       sttApiKey: voice.sttApiKey,
       sttModel: voice.sttModel,
-      ttsProvider: voice.ttsProvider,
+      ttsProvider: voiceProviderForKind(voice.ttsProvider, "tts")?.id ?? null,
       ttsAccountId: voice.ttsAccountId,
       ttsApiKey: voice.ttsApiKey,
       ttsModel: voice.ttsModel,
@@ -157,7 +162,7 @@ function providerOverlayFromUser(db: Db, userId: string): TeamProviderOverlay {
   const watchdog = db.getWatchdogConfig(userId)
   if (watchdog.provider) {
     overlay.watchdog = {
-      provider: watchdog.provider,
+      provider: watchdogProviderById(watchdog.provider)?.id ?? null,
       accountId: watchdog.accountId,
       apiKey: watchdog.apiKey,
       model: watchdog.model,

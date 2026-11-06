@@ -55,6 +55,7 @@ import { useTeamMode } from "./team"
 import { QuotaMeter } from "./team-quota"
 import { CONFIG_CHAT } from "./texts"
 import { VideoProvider } from "./VideoProvider"
+import { VikingHealth } from "./VikingHealth"
 import { VikingModels } from "./VikingModels"
 import { VoiceProvider } from "./VoiceProvider"
 import { Watchdog } from "./Watchdog"
@@ -630,7 +631,12 @@ function renderSection(
         </>
       )
     case "memory":
-      return <VikingModels endpoint="/api/viking" />
+      return (
+        <>
+          <VikingHealth />
+          <VikingModels endpoint="/api/viking" />
+        </>
+      )
     case "nav":
       return <System1 />
     case "media":

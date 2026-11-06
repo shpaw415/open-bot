@@ -201,7 +201,7 @@ test("overlay patch clears blanks, omits blank secrets", () => {
   const patch = overlayPatch({
     chat: { provider: "", model: "gpt" },
     image: {
-      provider: "cloudflare",
+      provider: "cloudflare-workers-ai",
       accountId: "",
       apiKey: "",
       model: "flux",
@@ -209,7 +209,7 @@ test("overlay patch clears blanks, omits blank secrets", () => {
   })
   expect(patch.chat).toEqual({ provider: null, model: "gpt" })
   expect(patch.image).toEqual({
-    provider: "cloudflare",
+    provider: "cloudflare-workers-ai",
     accountId: null,
     model: "flux",
   } as TeamProviderOverlay["image"])
@@ -219,7 +219,7 @@ test("overlay patch round-trips through the draft", () => {
   const patch = overlayPatch(
     overlayDraft({
       voice: {
-        sttProvider: "cloudflare",
+        sttProvider: "cloudflare-stt",
         sttAccountId: null,
         sttApiKey: "k",
         sttModel: null,
@@ -233,7 +233,7 @@ test("overlay patch round-trips through the draft", () => {
   // Blank voice keys are secrets: omitted from the patch so the stored
   // shared key survives (ttsApiKey), typed ones round-trip (sttApiKey).
   expect(patch.voice).toEqual({
-    sttProvider: "cloudflare",
+    sttProvider: "cloudflare-stt",
     sttAccountId: null,
     sttApiKey: "k",
     sttModel: null,
@@ -244,6 +244,7 @@ test("overlay patch round-trips through the draft", () => {
 })
 
 test("overlay draft canonicalizes legacy voice provider ids", () => {
+  // Stored JSON from before the catalog consolidation — untyped by design.
   const draft = overlayDraft({
     voice: {
       sttProvider: "deepgram-stt",
@@ -255,7 +256,7 @@ test("overlay draft canonicalizes legacy voice provider ids", () => {
       ttsApiKey: null,
       ttsModel: null,
     },
-  })
+  } as unknown as TeamProviderOverlay)
   expect(draft.voice?.sttProvider).toBe("cloudflare-stt")
   expect(draft.voice?.ttsProvider).toBe("cloudflare-tts")
   expect(draft.voice?.sttModel).toBe("@cf/deepgram/nova-3")
