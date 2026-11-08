@@ -256,3 +256,52 @@ test(
     expect(result.stderr).toContain("ob-skill: name is a built-in skill")
   }),
 )
+
+test(
+  "every request carries a hard curl timeout so the CLI cannot hang",
+  withHome(async (home) => {
+    fakeCurl(home, {
+      "GET /api/skills": '{"skills":[{"name":"a","description":"d"}]}',
+    })
+    const result = await run(home, ["list"])
+    expect(result.code).toBe(0)
+    const args = await argsOf(home)
+    const at = args.indexOf("--max-time")
+    expect(at).toBeGreaterThanOrEqual(0)
+    expect(args[at + 1]).toBe("90")
+  }),
+)
+
+test(
+  "save prints the indexing note when the write is durable but unconfirmed",
+  withHome(async (home) => {
+    fakeCurl(home, {
+      "PUT /api/skills": '{"ok":true,"confirmed":false}',
+    })
+    const result = await run(home, [
+      "save",
+      "logo-cutout",
+      "--description",
+      "d",
+      "--body",
+      "b",
+    ])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("saved logo-cutout")
+    expect(result.stdout).toContain("still indexing")
+    expect(result.stdout).toContain("do not retry")
+  }),
+)
+
+test(
+  "get on a missing skill hints at indexing right after a save",
+  withHome(async (home) => {
+    fakeCurl(home, {
+      "GET /api/skills?name=logo": '{"error":"skill not found"}',
+    })
+    const result = await run(home, ["get", "logo"])
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("skill not found")
+    expect(result.stderr).toContain("may still be indexing")
+  }),
+)

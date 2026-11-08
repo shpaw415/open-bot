@@ -27,6 +27,7 @@ import {
   DarkModeIcon,
   ExtensionIcon,
   FolderIcon,
+  KeyIcon,
   LightModeIcon,
   LogoutIcon,
   MemoryIcon,
@@ -274,6 +275,7 @@ const NOTICE_ICONS: Record<NoticeItem["kind"], React.ReactNode> = {
   plugin: <ExtensionIcon width={16} height={16} />,
   security: <AdminPanelSettingsIcon width={16} height={16} />,
   hardware: <MemoryIcon width={16} height={16} />,
+  permission: <KeyIcon width={16} height={16} />,
 }
 
 function NoticeRow({

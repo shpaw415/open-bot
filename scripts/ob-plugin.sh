@@ -127,10 +127,11 @@ fail_on_error() {
     echo "ob-plugin: $msg" >&2
     exit 1
   fi
-  # Success responses are always JSON objects. Anything else (an HTML error
-  # page from the edge, a truncated body) is a failure — print a compact
-  # digest instead of echoing markup or feeding it to jq as a result.
-  if ! printf '%s' "$1" | jq -e 'if type == "object" then true else empty end' >/dev/null 2>&1; then
+  # Success responses are JSON documents — objects (the common case) or
+  # arrays (e.g. GET /api/cron). Anything that does not parse as JSON (an
+  # HTML error page from the edge, a truncated body) is a failure — print a
+  # compact digest instead of echoing markup or feeding it to jq as a result.
+  if ! printf '%s' "$1" | jq -e 'if type == "object" or type == "array" then true else empty end' >/dev/null 2>&1; then
     digest=$(printf '%s' "$1" | tr '\n\r' '  ' | sed 's/<[^>]*>//g' | sed 's/  */ /g' | cut -c1-200)
     echo "ob-plugin: control plane returned a non-JSON error page${digest:+: $digest}" >&2
     echo "  the edge/tunnel in front of $BASE may be failing — retry, or check marketplace status" >&2
@@ -1007,11 +1008,21 @@ EOF
     # Soft advisory: plugin source ships publicly (GitHub repo + marketplace),
     # so personal information must never be hard-coded in it. The marketplace
     # privacy review rejects publishes that leak it — fix before publishing.
+    # Excluded from the scan: lockfiles (machine-generated dependency
+    # metadata — versioned specs like lodash@4.17.21 and sha512- integrity
+    # digests are not personal data) and test/spec/fixture files (fictitious
+    # data is their point; the publish-time AI review still reads them).
     privacy_hits=$(grep -rInE \
       '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+|([0-9]{3}[-. ][0-9]{3}[-. ][0-9]{4})|([0-9]{3}[- ][0-9]{3}[- ][0-9]{3})' \
       "$dir" \
-      --exclude-dir=node_modules --exclude-dir=.git 2>/dev/null \
-      | grep -viE '@(example|sample|test|acme)\.|@(example|sample|test|acme)(\.|,| |$)|example\.(com|org|net|ca)|acme\.|jane\.doe|john\.doe' \
+      --exclude-dir=node_modules --exclude-dir=.git \
+      --exclude-dir=fixtures --exclude-dir=__tests__ \
+      --exclude='package-lock.json' --exclude='npm-shrinkwrap.json' \
+      --exclude='bun.lock' --exclude='bun.lockb' \
+      --exclude='yarn.lock' --exclude='pnpm-lock.yaml' \
+      --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' \
+      2>/dev/null \
+      | grep -viE '@(example|sample|test|acme)\.|@(example|sample|test|acme)(\.|,| |$)|example\.(com|org|net|ca)|acme\.|jane\.doe|john\.doe|\.(test|invalid|example|localhost)([^A-Za-z]|$)|@[0-9]+(\.[0-9]+)+|"[^"]*integrity[^"]*": *"(sha512|sha1)-|(sha512|sha256)-[A-Za-z0-9+/=_-]{20,}' \
       | head -20 || true)
     if [ -n "$privacy_hits" ]; then
       echo "warning: possible personal information in plugin files — published source is public; use placeholders (example.com, Acme Corp, Alex) and personalize through settings/vault/runtime data instead (see the plugin-privacy skill):"

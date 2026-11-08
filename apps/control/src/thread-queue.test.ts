@@ -1,10 +1,11 @@
-import { openDatabase, type User } from "@open-bot/db"
 import { describe, expect, test } from "bun:test"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { openDatabase, type User } from "@open-bot/db"
 import type { EventHub } from "./events"
 import {
+  drainThreadQueues,
   handleThreadQueue,
   isTailDuplicate,
   parseQueueSubmission,
@@ -203,9 +204,10 @@ describe("handleThreadQueue", () => {
       `/api/thread-queue/s1/${secondId}/send-now`,
     )
     expect(sendNow?.status).toBe(200)
-    expect(
-      db.threadQueue("u1", "s1").map((row) => row.text),
-    ).toEqual(["second", "premier, corrigé"])
+    expect(db.threadQueue("u1", "s1").map((row) => row.text)).toEqual([
+      "second",
+      "premier, corrigé",
+    ])
 
     const removed = await call("DELETE", `/api/thread-queue/s1/${secondId}`)
     expect(removed?.status).toBe(200)
@@ -216,5 +218,49 @@ describe("handleThreadQueue", () => {
       files: [],
     })
     expect(empty?.status).toBe(400)
+  })
+})
+
+describe("drainThreadQueues", () => {
+  test("attempts one flush per queued session across users; empty table is a no-op", async () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    const at = 1_700_000_000_000
+    for (const [id, userId, sessionId] of [
+      ["q1", "u1", "s1"],
+      ["q2", "u1", "s1"],
+      ["q3", "u1", "s2"],
+      ["q4", "u2", "s9"],
+    ] as const) {
+      db.enqueueThreadMessage({
+        id,
+        userId,
+        sessionId,
+        text: `text ${id}`,
+        files: "[]",
+        createdAt: at,
+      })
+    }
+    const hub = { emit: () => {} } as unknown as EventHub
+    const calls: string[] = []
+    const flushed = () => Promise.resolve(false)
+    drainThreadQueues(db, hub, (_dbArg, _hub, userId, sessionId) => {
+      calls.push(`${userId}/${sessionId}`)
+      return flushed()
+    })
+    await Promise.resolve()
+    expect(calls.sort()).toEqual(["u1/s1", "u1/s2", "u2/s9"])
+
+    calls.length = 0
+    db.clearThreadQueue("u1", "s1")
+    db.clearThreadQueue("u1", "s2")
+    db.clearThreadQueue("u2", "s9")
+    drainThreadQueues(db, hub, () => {
+      calls.push("must-not-run")
+      return flushed()
+    })
+    await Promise.resolve()
+    expect(calls).toEqual([])
   })
 })

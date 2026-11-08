@@ -10,6 +10,8 @@ import {
   normalizeTarget,
   schemeError,
   shapeState,
+  tabArgError,
+  tabsLine,
   verbFrom,
 } from "./chrome"
 
@@ -241,6 +243,54 @@ test("switch and closetab match by 1-based index or url/text substring", () => {
   expect(matchTab(tabTargets, "DOCS")?.id).toBe("t2")
   expect(matchTab(tabTargets, "nope")).toBeNull()
   expect(matchTab(tabTargets, "")).toBeNull()
+})
+
+test("switch and closetab prefer the stable tab id from tab list", () => {
+  // The id survives tabs opening/closing around it; the numeric order does
+  // not, so `tab list` prints it and the verbs accept it.
+  expect(matchTab(tabTargets, "t2")?.id).toBe("t2")
+  expect(matchTab(tabTargets, "T2")?.id).toBe("t2")
+  expect(matchTab(tabTargets, "t9")).toBeNull()
+})
+
+test("tab list rows carry the stable id beside the 1-based index", async () => {
+  const real = globalThis.fetch
+  globalThis.fetch = (async () =>
+    Response.json([
+      {
+        type: "page",
+        id: "t1",
+        url: "https://a.test/",
+        title: "First",
+        webSocketDebuggerUrl: "ws://a",
+      },
+      {
+        type: "page",
+        id: "t2",
+        url: "https://b.test/",
+        title: "Second",
+        webSocketDebuggerUrl: "ws://b",
+      },
+    ])) as unknown as typeof fetch
+  try {
+    const line = await tabsLine(9222, undefined)
+    expect(line.tabs[0]).toMatchObject({
+      index: 1,
+      id: "t1",
+      url: "https://a.test/",
+      active: true,
+    })
+    expect(line.tabs[1]).toMatchObject({ index: 2, id: "t2", active: false })
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test("a numeric tab miss names the recovery instead of a bare no-match", () => {
+  expect(tabArgError("9")).toContain("tab 9 no longer exists")
+  expect(tabArgError("9")).toContain("tab list")
+  expect(tabArgError(" 3 ")).toContain("tab 3 no longer exists")
+  expect(tabArgError("nope")).toBe("no tab matches nope")
 })
 
 test("closing the last tab reports browserClosed instead of unreachable", async () => {

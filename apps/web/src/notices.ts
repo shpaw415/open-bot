@@ -7,7 +7,12 @@
  * changes, so one user's notices can never leak into another's view.
  */
 
-export type NoticeKind = "reply" | "plugin" | "security" | "hardware"
+export type NoticeKind =
+  | "reply"
+  | "plugin"
+  | "security"
+  | "hardware"
+  | "permission"
 
 export type NoticeItem = {
   id: string
@@ -262,5 +267,41 @@ export function noticeFromHardwareEvent(
     body: detail,
     dedupeKey: `hardware:${heading}:${Number.isFinite(percent) ? Math.round(percent) : "x"}`,
     href: "/hardware",
+  }
+}
+
+export type PermissionNoticeProps = {
+  title?: unknown
+  body?: unknown
+  sessionId?: unknown
+}
+
+/**
+ * Permission ask auto-rejected on a headless desktop → notice. The entry
+ * carries the session so it opens the thread where the ask happened.
+ */
+export function noticeFromPermissionEvent(
+  props: PermissionNoticeProps | undefined,
+  id: string,
+): NoticeInput {
+  const heading =
+    typeof props?.title === "string" && props.title.trim()
+      ? props.title.trim().slice(0, 120)
+      : "permission request"
+  const detail =
+    typeof props?.body === "string" && props.body.trim()
+      ? props.body.trim().slice(0, 500)
+      : ""
+  const sessionId =
+    typeof props?.sessionId === "string" && props.sessionId
+      ? props.sessionId
+      : undefined
+  return {
+    id,
+    kind: "permission",
+    title: heading,
+    body: detail,
+    sessionId,
+    dedupeKey: `permission:${heading}`,
   }
 }

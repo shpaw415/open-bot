@@ -80,6 +80,9 @@ describe("sse parser", () => {
     expect(forwardable(undefined)).toBe(false)
     expect(forwardable("file.watcher.updated")).toBe(true)
     expect(forwardable("file.edited")).toBe(true)
+    // feeds the permission-asks observer (auto-reject on headless desktops)
+    expect(forwardable("permission.asked")).toBe(true)
+    expect(forwardable("permission.replied")).toBe(false)
   })
 })
 

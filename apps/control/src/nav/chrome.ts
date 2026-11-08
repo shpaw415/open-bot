@@ -201,15 +201,25 @@ async function newTab(
 }
 
 export type TabLine = {
-  tabs: { index: number; url: string; title: string; active: boolean }[]
+  tabs: {
+    index: number
+    id: string
+    url: string
+    title: string
+    active: boolean
+  }[]
 }
 
-async function tabsLine(port: number, session: string | undefined) {
+export async function tabsLine(port: number, session: string | undefined) {
   const targets = await listPageTargets(port)
   const active = pickPageTarget(targets, readActiveTabId(session))
   return {
     tabs: targets.map((target, index) => ({
       index: index + 1,
+      // The stable CDP target id: /json/list order shifts as tabs open and
+      // close, so the id — not the number — is the handle that keeps
+      // listing and acting on the same tab.
+      id: target.id,
       url: target.url,
       title: target.title,
       active: target.id === active?.id,
@@ -217,13 +227,21 @@ async function tabsLine(port: number, session: string | undefined) {
   }
 }
 
-// switch/closetab take the 1-based index tabs prints, or a url substring.
+// switch/closetab take the stable tab id `tab list` prints (preferred), the
+// 1-based index, or a url/title substring. Both switchTab and closeTab
+// resolve against a fresh /json/list inside the same verb and act by the id
+// captured from that listing, so a list and an action never interleave over
+// mismatched state.
 export function matchTab(
   targets: PageTarget[],
   arg: string,
 ): PageTarget | null {
   const value = arg.trim()
   if (!value) return null
+  const byId = targets.find(
+    (item) => item.id.toLowerCase() === value.toLowerCase(),
+  )
+  if (byId) return byId
   if (/^\d+$/.test(value)) {
     const index = Number(value) - 1
     return targets[index] ?? null
@@ -238,6 +256,15 @@ export function matchTab(
   )
 }
 
+// A numeric miss means the numbered tab from the agent's earlier listing is
+// gone or the order shifted; name the recovery instead of a bare no-match.
+export function tabArgError(arg: string): string {
+  const value = arg.trim()
+  if (/^\d+$/.test(value))
+    return `tab ${value} no longer exists — run tab list again, or pass the tab id it prints`
+  return `no tab matches ${arg}`
+}
+
 async function switchTab(
   port: number,
   session: string | undefined,
@@ -245,7 +272,7 @@ async function switchTab(
 ): Promise<PageState> {
   const targets = await listPageTargets(port)
   const target = matchTab(targets, arg)
-  if (!target) throw new Error(`no tab matches ${arg}`)
+  if (!target) throw new Error(tabArgError(arg))
   writeActiveTabId(session, target.id)
   const socket = await openSocket(target.webSocketDebuggerUrl)
   try {
@@ -266,7 +293,7 @@ export async function closeTab(
   const target = arg.trim()
     ? matchTab(targets, arg)
     : pickPageTarget(targets, activeId)
-  if (!target) throw new Error(arg.trim() ? `no tab matches ${arg}` : USAGE)
+  if (!target) throw new Error(arg.trim() ? tabArgError(arg) : USAGE)
   const gone = await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`, {
     signal: AbortSignal.timeout(4000),
   }).catch(() => null)

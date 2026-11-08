@@ -117,12 +117,14 @@ describe("viking skills", () => {
     })
     const skills = createVikingSkills("http://viking:1933/", "k", fetchImpl)
     await skills.save(skill)
-    // Deletes first so a retry after a lost response can never 409 on an
-    // existing name (the duplicate-creation failure mode from the field).
-    expect(calls[1]?.init?.method).toBe("DELETE")
-    expect(calls[2]?.init?.method).toBe("POST")
-    expect(calls[2]?.url).toBe("http://viking:1933/api/v1/skills")
-    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({
+    // Snapshots the (absent) skill, deletes first so a retry after a lost
+    // response can never 409 on an existing name (the duplicate-creation
+    // failure mode from the field), then posts.
+    expect(calls[1]?.init?.method ?? "GET").toBe("GET")
+    expect(calls[2]?.init?.method).toBe("DELETE")
+    expect(calls[3]?.init?.method).toBe("POST")
+    expect(calls[3]?.url).toBe("http://viking:1933/api/v1/skills")
+    expect(JSON.parse(String(calls[3]?.init?.body))).toEqual({
       data: {
         name: "search-web",
         description: skill.description,
@@ -131,7 +133,7 @@ describe("viking skills", () => {
       wait: false,
     })
     // The read-back confirm proves the write landed without a sync wait.
-    expect(calls[3]?.init?.method ?? "GET").toBe("GET")
+    expect(calls[4]?.init?.method ?? "GET").toBe("GET")
   })
 
   test("updates in place by delete and post instead of the wedging PUT", async () => {
@@ -156,6 +158,7 @@ describe("viking skills", () => {
       calls.map((call) => `${call.init?.method ?? "GET"} ${call.url}`),
     ).toEqual([
       "POST http://viking:1933/api/v1/skills/validate",
+      "GET http://viking:1933/api/v1/skills/search-web?include_content=true&include_files=false",
       "DELETE http://viking:1933/api/v1/skills/search-web",
       "POST http://viking:1933/api/v1/skills",
       "GET http://viking:1933/api/v1/skills/search-web?include_content=true&include_files=false",
@@ -358,7 +361,7 @@ describe("viking skills", () => {
     await skills.save({ ...skill, body: `${skill.body}\n` })
   })
 
-  test("confirm still fails when the stored body genuinely differs", async () => {
+  test("save resolves unconfirmed when the read-back genuinely lags", async () => {
     const { fetchImpl } = mockFetch((url, init) => {
       const method = init?.method ?? "GET"
       if (url.endsWith("/validate"))
@@ -379,7 +382,150 @@ describe("viking skills", () => {
       confirmAttempts: 2,
       confirmPollDelayMs: 1,
     })
-    await expect(skills.save(skill)).rejects.toThrow("read-back never matched")
+    // The POST landed — the write is durable. A lagging read-back is a
+    // receipt (confirmed:false), never a failure: the 502 here is what
+    // triggered the field's blind save retries.
+    await expect(skills.save(skill)).resolves.toEqual({ confirmed: false })
+  })
+
+  test("replace rides out a rate-limited POST before confirming", async () => {
+    let posts = 0
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "POST" && url.endsWith("/skills")) {
+        posts += 1
+        if (posts < 3)
+          return Response.json(
+            { status: "error", error: { message: "rate limited" } },
+            { status: 429 },
+          )
+        return { status: "ok", result: {} }
+      }
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: { name: "search-web", content: skill.body },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      postRetryDelayMs: 1,
+      confirmPollDelayMs: 1,
+    })
+    await expect(skills.save(skill)).resolves.toEqual({ confirmed: true })
+    expect(posts).toBe(3)
+  })
+
+  test("a failed replace restores the previous content instead of losing the skill", async () => {
+    const postBodies: string[] = []
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "POST" && url.endsWith("/skills")) {
+        postBodies.push(String(init?.body))
+        // The rate limit is transient: the replace attempts fail, the
+        // rollback (carrying the previous body) lands.
+        if (String(init?.body).includes("# previous body"))
+          return { status: "ok", result: {} }
+        return Response.json(
+          { status: "error", error: { message: "rate limited" } },
+          { status: 429 },
+        )
+      }
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            description: "old",
+            content: "# previous body",
+          },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      postRetryDelayMs: 1,
+      confirmPollDelayMs: 1,
+    })
+    await expect(skills.save(skill)).rejects.toThrow(
+      "previous content was restored",
+    )
+    // 3 replace attempts + 1 successful rollback; the last POST carries the
+    // snapshotted previous body.
+    expect(postBodies.length).toBe(4)
+    expect(JSON.parse(postBodies[3]).data.content).toBe("# previous body")
+  })
+
+  test("a failed replace whose rollback also fails names the loss", async () => {
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "POST" && url.endsWith("/skills"))
+        return Response.json(
+          { status: "error", error: { message: "server error" } },
+          { status: 500 },
+        )
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: { name: "search-web", content: "# previous body" },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      postRetryDelayMs: 1,
+      confirmPollDelayMs: 1,
+    })
+    await expect(skills.save(skill)).rejects.toThrow(
+      "restoring the previous content failed too",
+    )
+  })
+
+  test("a failed first-time save does not attempt a rollback", async () => {
+    let posts = 0
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "POST" && url.endsWith("/skills")) {
+        posts += 1
+        return Response.json(
+          { status: "error", error: { message: "boom" } },
+          { status: 500 },
+        )
+      }
+      return Response.json(
+        { status: "error", error: { message: "not found" } },
+        { status: 404 },
+      )
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      postRetryDelayMs: 1,
+      confirmPollDelayMs: 1,
+    })
+    // No snapshot exists (the skill was absent), so the raw error surfaces
+    // after the bounded POST retries — no phantom rollback POSTs.
+    await expect(skills.save(skill)).rejects.toThrow("boom")
+    expect(posts).toBe(3)
   })
 
   test("remove retries the indexing 409 instead of leaving the skill behind", async () => {

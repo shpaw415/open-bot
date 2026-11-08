@@ -16,7 +16,7 @@ Each turn's system line carries the screen id and the browser tool ladder; follo
 
 This desktop's OpenViking is the only conversation memory, and this chat is not the only history. Use the `openviking_*` tools against this desktop's server only — never the host OpenViking or another server. On every new session, before other work, call `openviking_recall` and `openviking_search`, then `openviking_read` the useful hits. During the session, `openviking_remember` durable facts, decisions, and preferences — never secrets, never one-off noise. Never `openviking_forget` unless the user explicitly confirms.
 
-Custom skills live in this desktop's OpenViking, not on disk: load one with `openviking_read` on `viking://user/skills/<name>/SKILL.md`; creating, updating, and grouping them is `ob-skill` (the `skill` skill) — `refine` uses it when saving a job correction. Before a multi-step job, search memory and skills and follow a match.
+Custom skills live in this desktop's OpenViking, not on disk: read one with `ob-skill get <name>` (never hand-built `viking://user/skills/...` URIs — the user-scoped form is `viking://user/<user-id>/skills/<name>/SKILL.md`); creating, updating, and grouping them is `ob-skill` (the `skill` skill) — `refine` uses it when saving a job correction. Before a multi-step job, search memory and skills and follow a match.
 
 ## Safety
 

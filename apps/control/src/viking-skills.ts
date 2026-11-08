@@ -33,12 +33,22 @@ const DEFAULT_DELETE_WAIT_MS = 40_000
 const DEFAULT_DELETE_POLL_DELAY_MS = 1_000
 const DEFAULT_CONFIRM_ATTEMPTS = 12
 const DEFAULT_CONFIRM_POLL_DELAY_MS = 1_000
+// Field 2026-11-07: a save whose POST already landed must still answer
+// within a bounded budget. Stacking the 40 s delete gate and the 12 s
+// confirm on top of slow calls read as a hang, agents blind-retried into
+// 429s, and a 429'd POST after a landed delete left the skill missing.
+const DEFAULT_SAVE_BUDGET_MS = 25_000
+const DEFAULT_POST_ATTEMPTS = 3
+const DEFAULT_POST_RETRY_DELAY_MS = 1_000
 
 export type VikingSkillsOptions = {
   deleteWaitMs?: number
   deletePollDelayMs?: number
   confirmAttempts?: number
   confirmPollDelayMs?: number
+  saveBudgetMs?: number
+  postAttempts?: number
+  postRetryDelayMs?: number
 }
 
 function sleep(ms: number) {
@@ -129,6 +139,10 @@ export function createVikingSkills(
   const confirmAttempts = options.confirmAttempts ?? DEFAULT_CONFIRM_ATTEMPTS
   const confirmPollDelayMs =
     options.confirmPollDelayMs ?? DEFAULT_CONFIRM_POLL_DELAY_MS
+  const saveBudgetMs = options.saveBudgetMs ?? DEFAULT_SAVE_BUDGET_MS
+  const postAttempts = options.postAttempts ?? DEFAULT_POST_ATTEMPTS
+  const postRetryDelayMs =
+    options.postRetryDelayMs ?? DEFAULT_POST_RETRY_DELAY_MS
   const root = baseUrl.replace(/\/$/, "")
 
   async function call(path: string, init?: RequestInit) {
@@ -143,8 +157,9 @@ export function createVikingSkills(
         },
         // Writes return as soon as the files land (wait:false below); reads
         // are fs-backed. The budget is only a safety net for a loaded
-        // OpenViking.
-        signal: AbortSignal.timeout(60_000),
+        // OpenViking — 20 s keeps one wedged call from stacking into the
+        // minute-scale hangs seen in the field.
+        signal: AbortSignal.timeout(20_000),
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : "request failed"
@@ -210,12 +225,16 @@ export function createVikingSkills(
 
   // A skill written seconds ago is still being indexed server-side; DELETE
   // (and POST-over-existing) answer 409 until that settles — observed for
-  // 6-15s on a loaded OpenViking. Poll the conflict within the delete budget;
+  // 6-15s on a loaded OpenViking. Poll the conflict within the delete budget
+  // (never past `deadline` when the caller shares a save budget);
   // 404 counts as gone (fresh create). Giving up here is what made reinstalls
   // fail their read-back: the swallowed delete left the old skill in place
   // while POST either 409'd or left the stale body visible to the confirm.
-  async function deleteWithRetry(name: string) {
-    const deadline = Date.now() + deleteWaitMs
+  async function deleteWithRetry(
+    name: string,
+    deadline = Number.POSITIVE_INFINITY,
+  ) {
+    const limit = Math.min(Date.now() + deleteWaitMs, deadline)
     for (let attempt = 0; ; attempt++) {
       try {
         return await call(`/api/v1/skills/${encodeURIComponent(name)}`, {
@@ -224,7 +243,7 @@ export function createVikingSkills(
       } catch (error) {
         if (!(error instanceof HttpError)) throw error
         if (error.status === 404) return null
-        if (error.status !== 409 || Date.now() >= deadline) throw error
+        if (error.status !== 409 || Date.now() >= limit) throw error
         await sleep(deletePollDelayMs)
       }
     }
@@ -241,14 +260,53 @@ export function createVikingSkills(
     return error
   }
 
+  function retryablePost(error: unknown) {
+    if (!(error instanceof HttpError)) return false
+    // 429 = OpenViking rate limit under agent retry storms; 5xx and the 502
+    // network wrapper are transient. Other 4xx (validation, name conflict)
+    // fail fast — retrying those only burns the budget.
+    return error.status === 429 || error.status >= 500
+  }
+
+  // POST with a bounded retry for rate limits and transient server errors —
+  // the field showed a first-attempt 429 permanently failing a replace whose
+  // delete had already landed.
+  async function postSkill(payload: string, deadline: number) {
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < postAttempts; attempt++) {
+      if (attempt > 0) await sleep(postRetryDelayMs)
+      try {
+        return await call("/api/v1/skills", { method: "POST", body: payload })
+      } catch (error) {
+        lastError = error
+        if (!retryablePost(error) || Date.now() >= deadline) throw error
+      }
+    }
+    throw lastError
+  }
+
+  // Best-effort pre-delete snapshot of an existing skill: the rollback
+  // payload when a same-name replace's POST cannot land. Absent skills (or
+  // two failed reads) return null — nothing to roll back to.
+  async function snapshotSkill(name: string): Promise<SkillDetail | null> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await sleep(250)
+      try {
+        return await get(name)
+      } catch {
+        // absent or unreadable — try once more, then give up
+      }
+    }
+    return null
+  }
+
   // wait:false returns after the files are written; semantic indexing keeps
-  // running server-side. Sync waits here were pushing plugin installs past
-  // two minutes (and the Skills editor past its timeout) on a loaded
-  // OpenViking — and a client timeout during a sync wait still leaves the
-  // write committed, so blind retries created duplicates. Reads see the new
-  // body immediately (once the delete gate has actually landed), which is
-  // what this confirm checks.
-  async function confirmSave(input: SkillDetail) {
+  // running server-side, so the read-back can lag a few seconds on a loaded
+  // OpenViking. The write is durable the moment POST answers — a lagging
+  // read-back is reported as confirmed:false, never as a failure (field
+  // 2026-11-07: the 502 here read as "save failed" and triggered the exact
+  // blind retries that made things worse).
+  async function confirmSave(input: SkillDetail, deadline: number) {
     // skillBody() trims the stored body, while manifest bodies typically end
     // with a newline — compare normalized or every newline-terminated skill
     // "fails" the confirm forever (the 2026-10-15 install outage).
@@ -257,16 +315,13 @@ export function createVikingSkills(
       if (attempt > 0) await sleep(confirmPollDelayMs)
       try {
         const saved = await get(input.name)
-        if (saved.body === want) return
+        if (saved.body === want) return true
       } catch {
         // not visible yet — poll again
       }
+      if (Date.now() >= deadline) return false
     }
-    throw new HttpError(
-      502,
-      `saved ${input.name}, but the read-back never matched — re-read viking://user skills before retrying (a timeout here does not mean the write failed)`,
-      "skill_confirm",
-    )
+    return false
   }
 
   return {
@@ -295,12 +350,15 @@ export function createVikingSkills(
 
     get,
 
-    async save(input: SkillDetail, previousName = "") {
+    async save(input: SkillDetail, previousName = ""): Promise<{
+      confirmed: boolean
+    }> {
       assertSkillInput(input)
       if (previousName && previousName !== input.name) {
         const previousError = skillNameError(previousName)
         if (previousError) throw new HttpError(400, previousError, "skill_name")
       }
+      const deadline = Date.now() + saveBudgetMs
       const validated = await call("/api/v1/skills/validate", {
         method: "POST",
         body: JSON.stringify({ data: data(input) }),
@@ -319,9 +377,12 @@ export function createVikingSkills(
       }
       const payload = JSON.stringify({ data: data(input), wait: false })
       if (previousName && previousName !== input.name) {
-        await call("/api/v1/skills", { method: "POST", body: payload })
+        // Rename keeps the loss-proof order: the new name lands first, the
+        // old one is removed only after — a failure here leaves a duplicate,
+        // never a hole.
+        await postSkill(payload, deadline)
         try {
-          await deleteWithRetry(previousName)
+          await deleteWithRetry(previousName, deadline)
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "delete failed"
@@ -334,17 +395,46 @@ export function createVikingSkills(
       } else {
         // Same-name updates used to go through PUT, which wedges on a loaded
         // OpenViking (no response even at 120 s while POST answers fast).
-        // DELETE + POST is the same replace through the fast paths. The
-        // delete must actually land before the POST: swallowing a 409 here
-        // left the old skill serving stale content to the confirm below.
+        // DELETE + POST is the same replace through the fast paths — but the
+        // delete landing before a failed POST is the one window where the
+        // skill could vanish (field 2026-11-07: a 429'd POST right after a
+        // successful delete left the skill missing). Snapshot the current
+        // content first and roll it back if the POST cannot land.
+        const snapshot = await snapshotSkill(input.name)
         try {
-          await deleteWithRetry(input.name)
+          await deleteWithRetry(input.name, deadline)
         } catch (error) {
           throw indexingError(input.name, error)
         }
-        await call("/api/v1/skills", { method: "POST", body: payload })
+        try {
+          await postSkill(payload, deadline)
+        } catch (error) {
+          if (!snapshot) throw error
+          const reason =
+            error instanceof Error ? error.message : "post failed"
+          // Recovery gets a grace past the normal budget — restoring the
+          // previous content matters more than answering fast.
+          let restored = false
+          try {
+            await postSkill(
+              JSON.stringify({ data: data(snapshot), wait: false }),
+              deadline + 5_000,
+            )
+            restored = true
+          } catch {
+            // rollback failed too — reported below
+          }
+          throw new HttpError(
+            502,
+            restored
+              ? `replace of ${input.name} failed (${reason}) — the previous content was restored, retry the save`
+              : `replace of ${input.name} failed (${reason}) and restoring the previous content failed too — re-save the skill now`,
+            "skill_replace",
+          )
+        }
       }
-      await confirmSave(input)
+      const confirmed = await confirmSave(input, deadline)
+      return { confirmed }
     },
 
     async remove(name: string) {

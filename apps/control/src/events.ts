@@ -20,6 +20,9 @@ const FORWARDED = new Set([
   "message.part.updated",
   "file.edited",
   "file.watcher.updated",
+  // Not a dashboard event: the permission-asks observer rejects it (headless
+  // sessions can never answer an ask); forwarding feeds that observer.
+  "permission.asked",
 ])
 
 const PING_MS = 30_000

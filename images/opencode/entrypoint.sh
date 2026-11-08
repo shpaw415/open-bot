@@ -60,8 +60,16 @@ prompt='You are a conversational bot, not a coding assistant. Do not follow a so
 # prompt stays single-sourced; callers opt in per session (POST /session agent
 # field, control plane maps steps:"unlimited" onto it).
 step_cap=$(jq -r 'if (.stepCap | type) == "number" and (.stepCap | floor) == .stepCap and .stepCap >= 1 and .stepCap <= 100000 then .stepCap else 512 end' /home/agent/.config/open-bot/agent-cap.json 2>/dev/null || echo 512)
+# The bash deny map lives only in seed/opencode.json. Port patterns are
+# anchored to the host:port connection shape (":9224" … ":9231" — the managed
+# screens' CDP ports) plus the chrome debugging flag, so hash or UUID text
+# containing bare "922" no longer trips a rule (field 2026-11-07: the old
+# "*922*" substring glob denied evidence SHA-256 hashes and council UUIDs in
+# ob-thread post messages). opencode's glob matcher escapes "[" and "]"
+# literally — character classes like ":922[0-9]" match nothing — so the ports
+# are enumerated exactly with "*" only.
 jq --arg prompt "$prompt" --argjson step_cap "$step_cap" --slurpfile seed /opt/open-bot/seed/opencode.json \
-  '.permission = {"*":"allow","external_directory":"allow","doom_loop":"allow","question":"deny","bash":{"*":"allow","*922*":"deny","*devtools*":"deny","*vncdo*":"deny","*google-chrome*":"deny","*chromium*":"deny","*websockify*":"deny","*Xvfb*":"deny","*x11vnc*":"deny","*xclip*":"deny","*xsel*":"deny"}} | .plugin = (((.plugin // []) + ["/home/agent/.config/opencode/plugins/tool-guards.ts"]) | unique) | .agent.build.prompt = $prompt | .agent.build.steps = $step_cap | .agent."build-unlimited" = (.agent.build | .prompt = $prompt | del(.steps)) | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
+  '.permission = $seed[0].permission | .plugin = (((.plugin // []) + ["/home/agent/.config/opencode/plugins/tool-guards.ts"]) | unique) | .agent.build.prompt = $prompt | .agent.build.steps = $step_cap | .agent."build-unlimited" = (.agent.build | .prompt = $prompt | del(.steps)) | .agent.title = $seed[0].agent.title | .agent.namer = $seed[0].agent.namer | .mcp = ((.mcp // {}) | del(.blender)) | .agent = ((.agent // {}) | del(."blender-worker")) | .agent.build.tools = (((.agent.build.tools // {}) | delpaths([["blender_*"]])))' \
   /home/agent/.config/opencode/opencode.json > /tmp/oc-perm.json
 mv /tmp/oc-perm.json /home/agent/.config/opencode/opencode.json
 cp /opt/open-bot/seed/openviking-config.json /home/agent/.config/opencode/openviking-config.json

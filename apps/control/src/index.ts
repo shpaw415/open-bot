@@ -34,6 +34,7 @@ import { EventHub } from "./events"
 import { setFileWatchSink } from "./file-watch"
 import { resolveDesktopProviders } from "./key-vault"
 import { hashPassword, randomToken } from "./passwords"
+import { dispatchPermissionAsks } from "./permission-asks"
 import { dispatchPluginHooks } from "./plugin-hooks"
 import { convertGuardCrons } from "./plugins"
 import { flushPendingPluginConfigs, reapplyPluginSetup } from "./plugins-apply"
@@ -43,6 +44,7 @@ import { startStuckWatch } from "./stuck"
 import { pushTeamOpencodeAuth } from "./team-apply"
 import {
   dispatchThreadQueueFlush,
+  drainThreadQueues,
   flushThreadQueuesForUser,
 } from "./thread-queue"
 import { resolveWatchdogConfig, watchdogContainerPayload } from "./watchdog"
@@ -92,6 +94,7 @@ const hub = new EventHub(
     dispatchPluginHooks(db, userId, event)
     dispatchDelegationWakes(db, userId, event)
     dispatchThreadQueueFlush(db, hub, userId, event)
+    dispatchPermissionAsks(db, hub, userId, event)
   },
 )
 onDesktopReady((userId) => {
@@ -170,6 +173,12 @@ startStuckWatch(db, hub)
 startBackupScheduler(db)
 startStatsSampler(db, hub)
 void reconnectDesktopNetworks()
+
+// Backstop for the persisted message queue: the idle-driven flush is
+// single-shot, so one missed session.idle or failed send would strand a
+// queue until the next desktop sleep/wake. The drain re-runs the
+// self-gated flush for every queued session on a timer.
+setInterval(() => drainThreadQueues(db, hub), 30_000)
 
 const RESTART_COOLDOWN_MS = 5 * 60_000
 const restartAttempts = new Map<string, number>()

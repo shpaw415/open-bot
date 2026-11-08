@@ -49,7 +49,7 @@ async function skillItems(db: Db, userId: string): Promise<RefItem[]> {
     id: skill.name,
     name: skill.name,
     detail: `custom skill: ${skill.description}`,
-    hint: `load with openviking_read on viking://user/skills/${skill.name}/SKILL.md; replace by DELETE http://viking:1933/api/v1/skills/${skill.name} then POST /api/v1/skills (PUT can hang)`,
+    hint: `read or replace with ob-skill (get ${skill.name} / save ${skill.name}); raw API: DELETE http://viking:1933/api/v1/skills/${skill.name} then POST /api/v1/skills (PUT can hang)`,
   }))
 }
 

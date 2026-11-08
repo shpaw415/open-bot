@@ -7,6 +7,7 @@ import { useEventStream, useMobile } from "./hooks"
 import {
   type NoticeInput,
   noticeFromHardwareEvent,
+  noticeFromPermissionEvent,
   noticeFromPluginEvent,
   noticeFromSecurityEvent,
   pushNotice,
@@ -170,6 +171,18 @@ export function AgentNotices({
           | undefined
         const id = `hardware-notice-${Date.now()}`
         setToast(deliver(noticeFromHardwareEvent(props, id), () => {}))
+        return
+      }
+      if (event.type === "permission.notice") {
+        const props = event.properties as
+          | {
+              title?: unknown
+              body?: unknown
+              sessionId?: unknown
+            }
+          | undefined
+        const id = `permission-notice-${Date.now()}`
+        setToast(deliver(noticeFromPermissionEvent(props, id), () => {}))
         return
       }
       const armId = armsSession(event)

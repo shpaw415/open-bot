@@ -35,7 +35,9 @@ test("refine is seeded and the standing lines name it", () => {
   expect(prompt).toContain(
     "save a user correction or an obvious missing finish with the refine skill",
   )
-  expect(text("seed/skills/refine/SKILL.md")).toContain("Do not pass `wait`")
+  expect(text("seed/skills/refine/SKILL.md")).toContain(
+    "Do not curl OpenViking",
+  )
   expect(text("seed/skills/shortcut/SKILL.md")).not.toContain('"wait":true')
   expect(text("seed/skills/gen-image/SKILL.md")).toContain("--cutout")
   expect(text("Dockerfile")).toContain("python3-pil")

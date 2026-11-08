@@ -1420,6 +1420,20 @@ describe("thread message queue", () => {
       "q2",
     ])
     expect(db.threadQueueSessions("u1").sort()).toEqual(["s1", "s2"])
+    db.enqueueThreadMessage({
+      id: "q4",
+      userId: "u2",
+      sessionId: "s2",
+      text: "other user",
+      files: "[]",
+      createdAt: at,
+    })
+    expect(
+      db
+        .threadQueuePairs()
+        .map((row) => `${row.userId}/${row.sessionId}`)
+        .sort(),
+    ).toEqual(["u1/s1", "u1/s2", "u2/s2"])
     db.promoteThreadQueueItem("u1", "q2")
     expect(db.threadQueue("u1", "s1").map((row) => row.id)).toEqual([
       "q2",

@@ -23,7 +23,7 @@ This is not a product report. Do not file it with `ob-improve`. A faster desktop
 Do the correction first. Then search this desktop before writing:
 
 - `openviking_search` and `openviking_find` for the job
-- `openviking_read` a close skill at `viking://user/skills/<name>/SKILL.md`
+- `ob-skill get <name>` for a close skill (never hand-built `viking://user/skills/...` URIs)
 
 If one is close, replace it so the correction is in the steps. Otherwise create one. Do not stop to ask. One sentence in the final reply is enough. The user can edit or delete it on the Config page under Custom skills.
 

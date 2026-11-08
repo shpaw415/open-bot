@@ -31,11 +31,14 @@ request() {
   method="$1"
   path="$2"
   body="${3:-}"
+  # --max-time: a save can legitimately spend ~25 s server-side (indexing
+  # gates); 90 s is the hard stop so the CLI never hangs forever on a
+  # wedged control plane.
   if [ -n "$body" ]; then
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" \
+    curl -sS --max-time 90 -X "$method" -H "Authorization: Bearer $TOKEN" \
       -H "content-type: application/json" -d "$body" "$BASE$path"
   else
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path"
+    curl -sS --max-time 90 -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path"
   fi
 }
 
@@ -94,6 +97,12 @@ read_body() {
     return
   fi
   if [ "$file" = "-" ]; then
+    # Reading a terminal stdin blocks forever waiting for EOF (field
+    # 2026-11-07: `save --file -` typed without a pipe hung the CLI).
+    if [ -t 0 ]; then
+      echo "ob-skill: --file - reads piped stdin, but stdin is a terminal — pipe into the command or use --body TEXT" >&2
+      exit 2
+    fi
     cat
   elif [ -n "$file" ]; then
     cat "$file"
@@ -161,7 +170,18 @@ case "$cmd" in
   get)
     [ -n "$name" ] && [ "$pos_count" -eq 1 ] || { usage; exit 2; }
     out=$(request GET "/api/skills?name=$(urlencode "$name")")
-    fail_on_error "$out"
+    msg=$(printf '%s' "$out" | jq -r '.error // empty' 2>/dev/null) || msg=""
+    if [ -n "$msg" ]; then
+      case "$msg" in
+        *"not found"*|*"Not found"*)
+          echo "ob-skill: $msg (if this follows a save within seconds, OpenViking may still be indexing — retry shortly)" >&2
+          ;;
+        *)
+          echo "ob-skill: $msg" >&2
+          ;;
+      esac
+      exit 1
+    fi
     printf '%s' "$out" | jq -r '"# " + .name + " — " + .description, "", .body'
     ;;
   save)
@@ -171,11 +191,16 @@ case "$cmd" in
       --arg body "$content" '{name: $name, description: $description, body: $body}')
     out=$(request PUT /api/skills "$body")
     fail_on_error "$out"
+    confirmed=$(printf '%s' "$out" | jq -r 'if .confirmed == false then "false" else "true" end' 2>/dev/null) || confirmed="true"
+    index_note=""
+    if [ "$confirmed" = "false" ]; then
+      index_note=" (OpenViking is still indexing — ob-skill get may 404 for a few seconds; the write is durable, do not retry)"
+    fi
     if [ -n "$group_label" ]; then
       assign_group "$name" "$group_label"
-      echo "saved $name (group: $group_label)"
+      echo "saved $name (group: $group_label)$index_note"
     else
-      echo "saved $name"
+      echo "saved $name$index_note"
     fi
     ;;
   rename)

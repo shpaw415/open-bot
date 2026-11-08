@@ -12,6 +12,8 @@ import {
   MARK_ROOT_ID,
   markScript,
   normalize,
+  OBNAV_FP_FN,
+  openSocket,
   PROBE,
   pickPageTarget,
   probeSnapshot,
@@ -370,5 +372,161 @@ test("the active tab id round-trips through the cdp dir", () => {
   } finally {
     if (previous === undefined) delete process.env.HOME
     else process.env.HOME = previous
+  }
+})
+
+test("an explicit label[for] names an input in probe and fingerprint", () => {
+  // Behavioral: run the page-side helpers against a fake DOM.
+  const labels: Record<string, string> = { email: "Email address" }
+  const doc = {
+    querySelector: (selector: string) => {
+      const match = /^label\[for="(.*)"\]$/.exec(selector)
+      if (match && labels[match[1]])
+        return { textContent: ` ${labels[match[1]]} ` }
+      return null
+    },
+  }
+  const make = new Function(
+    "document",
+    `${OBNAV_FP_FN}
+     return { labelFor: __obLabelFor, fp: __obFp }`,
+  ) as (d: unknown) => {
+    labelFor: (el: unknown) => string
+    fp: (el: unknown) => string
+  }
+  const { labelFor, fp } = make(doc)
+  const el = (attrs: Record<string, string>) => ({
+    tagName: "INPUT",
+    innerText: "",
+    id: attrs.id ?? "",
+    getAttribute: (name: string) => (name in attrs ? attrs[name] : null),
+    getRootNode: () => doc,
+  })
+  // The explicit label text wins over id/innerText; aria-label still wins
+  // over it; an id with no label falls back to the id as before.
+  expect(labelFor(el({ id: "email" }))).toBe("Email address")
+  expect(fp(el({ id: "email" }))).toBe("INPUT||Email address")
+  expect(fp(el({ id: "email", "aria-label": "Search here" }))).toBe(
+    "INPUT||Search here",
+  )
+  expect(fp(el({ id: "orphan" }))).toBe("INPUT||orphan")
+  expect(labelFor(el({}))).toBe("")
+  // The probe's element label chain uses it too, right after aria-label.
+  expect(PROBE).toContain(
+    'el.getAttribute("aria-label") || __obLabelFor(el) || el.innerText',
+  )
+})
+
+test("probe attaches visible popup options of an open aria combobox", async () => {
+  const { actionScript } = (await import("./cdp")) as {
+    actionScript: (action: {
+      kind: "select"
+      targetId: string
+      label: string
+    }) => string
+  }
+  // Popup options are collected from the aria-controls/aria-owns container
+  // (bounded 8), with a bounded global fallback (16) for an expanded
+  // trigger whose popup is not linked.
+  expect(PROBE).toContain(`scope.querySelectorAll('[role="option"]')`)
+  expect(PROBE).toContain('el.getAttribute("aria-controls")')
+  expect(PROBE).toContain('el.getAttribute("aria-owns")')
+  expect(PROBE).toContain("optionsIn(scope, 8)")
+  expect(PROBE).toContain("optionsIn(document, 16)")
+  // Only rendered options count: hidden popups contribute nothing.
+  expect(PROBE).toContain('style.display === "none"')
+  // Native selects keep their own option listing.
+  expect(PROBE).toContain('if (el.tagName === "SELECT")')
+  // The select action completes the loop: a listed option is clickable on
+  // a combobox, not just on a native SELECT.
+  const script = actionScript({ kind: "select", targetId: "n2", label: "Blue" })
+  expect(script).toContain("el.tagName === 'SELECT'")
+  expect(script).toContain("document.getElementById(ctrl)")
+  expect(script).toContain("querySelectorAll('[role=option]')")
+  expect(script).toContain("option.click()")
+})
+
+test("type action drives the native prototype value setter for React inputs", async () => {
+  const { actionScript } = (await import("./cdp")) as {
+    actionScript: (action: {
+      kind: "type"
+      targetId: string
+      text: string
+    }) => string
+  }
+  const script = actionScript({ kind: "type", targetId: "n2", text: "hi" })
+  expect(script).toContain(
+    "getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')",
+  )
+  expect(script).toContain("HTMLTextAreaElement.prototype")
+  expect(script).toContain("HTMLInputElement.prototype")
+  expect(script).toContain("desc.set.call(el")
+  // The events React's onChange listens for keep firing.
+  expect(script).toContain("el.focus()")
+  expect(script).toContain("new Event('input', { bubbles: true })")
+  expect(script).toContain("new Event('change', { bubbles: true })")
+})
+
+test("a timed-out call rejects cleanly, drops its late reply and leaves the socket usable", async () => {
+  const events: unknown[] = []
+  const held: number[] = []
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request)) return undefined
+      return new Response("no", { status: 404 })
+    },
+    websocket: {
+      open() {},
+      message(ws, message) {
+        const raw = JSON.parse(String(message)) as {
+          id?: number
+          method?: string
+        }
+        if (raw.method === "hold") {
+          held.push(raw.id ?? 0)
+          return
+        }
+        if (raw.method === "release") {
+          for (const id of held)
+            ws.send(JSON.stringify({ id, result: { late: true } }))
+          held.length = 0
+        }
+        if (raw.method === "push")
+          ws.send(JSON.stringify({ method: "Fake.event" }))
+        ws.send(JSON.stringify({ id: raw.id, result: { ok: raw.method } }))
+      },
+      close() {},
+    },
+  })
+  try {
+    const socket = await openSocket(
+      `ws://127.0.0.1:${server.port}/ws`,
+      (message) => events.push(message),
+      80,
+    )
+    try {
+      // The renderer never answers this one: honest, bounded rejection.
+      await expect(socket.call("hold")).rejects.toThrow(
+        "cdp call timed out: hold",
+      )
+      // Ask the server to flush the late reply for the timed-out id, then
+      // keep using the same socket for the next call.
+      expect(await socket.call("release")).toEqual({ ok: "release" })
+      await Bun.sleep(60)
+      // The late reply was dropped, not buffered as a phantom event, and
+      // the following call resolved through the same pending machinery.
+      expect(events).toEqual([])
+      expect(await socket.call("push")).toEqual({ ok: "push" })
+      await Bun.sleep(60)
+      expect(events).toContainEqual({ method: "Fake.event" })
+      // A call after close fails fast instead of burning the timeout.
+      socket.close()
+      await expect(socket.call("ping")).rejects.toThrow("cdp connection closed")
+    } finally {
+      socket.close()
+    }
+  } finally {
+    server.stop(true)
   }
 })

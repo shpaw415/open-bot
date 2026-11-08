@@ -120,7 +120,7 @@ async function skillsRoutes(
             .catalogDirItems(user.id, "skill")
             .find((row) => row.name === previousName)?.dirId ?? null)
         : null
-    await skills.save(input, previousName)
+    const saved = await skills.save(input, previousName)
     if (previousName && previousName !== input.name) {
       db.setCatalogDirItem(user.id, "skill", input.name, carriedDir)
       db.removeCatalogDirItems(user.id, "skill", [previousName])
@@ -128,7 +128,18 @@ async function skillsRoutes(
     // An open Skills tab never sees agent/CLI writes otherwise — the tab
     // refreshes everything on catalog.changed, not just its directories.
     hub.emit(user.id, { type: "catalog.changed" })
-    return json({ ok: true })
+    // confirmed !== false keeps older client shapes (and fakes) truthful;
+    // an unconfirmed save is still durable — the read-back lagged, that's
+    // all. Reporting it as success-with-note stops the blind retries that
+    // the 502 used to trigger.
+    if (saved?.confirmed === false) {
+      return json({
+        ok: true,
+        confirmed: false,
+        note: `${input.name} is written; OpenViking is still indexing it — a get may 404 for a few seconds. Do not retry the save (it already landed).`,
+      })
+    }
+    return json({ ok: true, confirmed: true })
   }
   if (req.method === "DELETE") {
     const body = (await req.json().catch(() => null)) as Record<

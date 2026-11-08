@@ -383,6 +383,119 @@ test("ob-plugin publish stops with a clear message when no marketplace is config
   }
 })
 
+test("ob-plugin guard status accepts a top-level JSON cron array", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-guard-"))
+  try {
+    const bin = fakeCurl(
+      home,
+      JSON.stringify([
+        {
+          id: "j1",
+          name: "plugin:price-scout:guard",
+          enabled: true,
+          runCount: 3,
+          nextRunAt: 1760000000000,
+        },
+      ]),
+    )
+    const result = await run(home, ["guard", "status", "price-scout"], bin)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe("")
+    expect(result.stdout).toContain(
+      "guard: plugin:price-scout:guard [j1] enabled, runs=3",
+    )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("ob-plugin doctor privacy scan skips lockfiles, versioned specs, and test fixtures", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-privacy-"))
+  try {
+    flakyRawCurl(home, true)
+    const bin = join(home, "bin")
+    writeFileSync(
+      join(bin, "gh"),
+      '#!/bin/sh\n[ "$1" = api ] && echo shpaw415/price-scout\n',
+    )
+    chmodSync(join(bin, "gh"), 0o755)
+    writeFileSync(
+      join(bin, "git"),
+      "#!/bin/sh\necho 'abc123\trefs/tags/v0.1.0'\n",
+    )
+    chmodSync(join(bin, "git"), 0o755)
+    const dir = doctorFixture(home)
+    // Lockfile: versioned specs + sha512 integrity digests.
+    writeFileSync(
+      join(dir, "bun.lock"),
+      [
+        '    "lodash": ["lodash@4.17.21", "", {}, "sha512-Ki1vAXU6BQcG92yJ8P3wY5oN7rQ9mZ2aC4eD6fG8hJ0kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hI4jK6lM8nP0qRsTuVwXyZ=="],',
+        '    "@babel/code-frame": ["@babel/code-frame@8.0.6", "", {}, "sha512-uMHhvmDmwFiLuiozaoRYTZHqMFuu3fem/X9JY78lohAuLoh8LSGGC8JqUzo2cVuBsBxkjMZNk56CE7ock8Xxkw=="],',
+      ].join("\n"),
+    )
+    // A spec + digest outside a lockfile must not warn either.
+    mkdirSync(join(dir, "src"), { recursive: true })
+    writeFileSync(
+      join(dir, "src/deps.ts"),
+      [
+        'import x from "lodash@4.17.21"',
+        'const spec = "@scope/name@1.2.3"',
+        'const integrity = "sha512-Ki1vAXU6BQcG92yJ8P3wY5oN7rQ9mZ2aC4eD6fG8hJ0kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hI4jK6lM8nP0qRsTuVwXyZ=="',
+      ].join("\n"),
+    )
+    // Fictitious fixture data in the scaffold's own test/fixture files.
+    // (Nested so doctor's top-level `ls *.test.ts` does not run bun test.)
+    writeFileSync(
+      join(dir, "src/app.test.ts"),
+      'test("rejects bad email", () => expect(v("bob@not-example.org")).toBe(false))\n',
+    )
+    mkdirSync(join(dir, "fixtures"), { recursive: true })
+    writeFileSync(
+      join(dir, "fixtures/rejection.json"),
+      '{"email": "fake.user@somedomain.test", "phone": "450-555-1234"}\n',
+    )
+    const result = await run(home, ["doctor", dir], bin)
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("ready: ob-plugin publish")
+    expect(result.stdout).not.toContain("possible personal information")
+    expect(result.stdout).not.toContain("bun.lock")
+    expect(result.stdout).not.toContain("app.test.ts")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("ob-plugin doctor privacy scan still flags real personal contacts", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-privacy-"))
+  try {
+    flakyRawCurl(home, true)
+    const bin = join(home, "bin")
+    writeFileSync(
+      join(bin, "gh"),
+      '#!/bin/sh\n[ "$1" = api ] && echo shpaw415/price-scout\n',
+    )
+    chmodSync(join(bin, "gh"), 0o755)
+    writeFileSync(
+      join(bin, "git"),
+      "#!/bin/sh\necho 'abc123\trefs/tags/v0.1.0'\n",
+    )
+    chmodSync(join(bin, "git"), 0o755)
+    const dir = doctorFixture(home)
+    mkdirSync(join(dir, "src"), { recursive: true })
+    writeFileSync(
+      join(dir, "src/contact.ts"),
+      'export const support = "marie.tremblay@videotron.ca"\n',
+    )
+    const result = await run(home, ["doctor", dir], bin)
+    // Advisory: exit stays 0, but the warning must name the leaking file.
+    expect(result.stdout).toContain("possible personal information")
+    expect(result.stdout).toContain("contact.ts")
+    expect(result.stdout).toContain("marie.tremblay@videotron.ca")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test("ob-plugin comments renders millisecond createdAt as a sane UTC date", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-plugin-comments-"))
   try {

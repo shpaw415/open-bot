@@ -22,7 +22,7 @@ Before touching anything, write 3-5 complex use cases a real user could ask for,
 Test the installed payload, never your draft. For skills, read the installed copy and follow it literally:
 
 ```sh
-openviking_read viking://user/skills/<skill-name>/SKILL.md
+ob-skill get <skill-name>
 ```
 
 - Skills: follow the installed copy in this thread on each planned case, as if a fresh thread had asked.

@@ -2232,6 +2232,16 @@ export function openDatabase(path: string) {
         .all()
         .map((row) => row.sessionId)
     },
+    /** Distinct user+session pairs holding queued messages, across all users. */
+    threadQueuePairs() {
+      return orm
+        .selectDistinct({
+          userId: threadQueue.userId,
+          sessionId: threadQueue.sessionId,
+        })
+        .from(threadQueue)
+        .all()
+    },
     clearThreadQueue(userId: string, sessionId: string) {
       orm
         .delete(threadQueue)

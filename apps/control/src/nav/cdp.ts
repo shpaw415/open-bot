@@ -183,8 +183,14 @@ export async function connectCdp(
 // onEvent receives every CDP message that is not a response to a pending
 // call — the domain events (Runtime.consoleAPICalled, Network.*, Log.*) the
 // devtools recorder buffers between CLI calls. Callers without it keep the
-// old drop-unknown-messages behavior.
-export function openSocket(url: string, onEvent?: (message: unknown) => void) {
+// old drop-unknown-messages behavior. callTimeoutMs overrides the per-call
+// deadline (tests); every call rejects cleanly on timeout and the socket
+// stays usable for the next one.
+export function openSocket(
+  url: string,
+  onEvent?: (message: unknown) => void,
+  callTimeoutMs = CALL_TIMEOUT,
+) {
   const ws = new WebSocket(url)
   const pending = new Map<
     number,
@@ -194,12 +200,20 @@ export function openSocket(url: string, onEvent?: (message: unknown) => void) {
       timer: ReturnType<typeof setTimeout>
     }
   >()
+  // Replies to calls that already timed out. A wedged renderer that finally
+  // answers must not leak into the domain-event stream the devtools
+  // recorder buffers (it would read as a phantom console/network event).
+  const stale = new Set<number>()
   let next = 0
   ws.onmessage = (event) => {
     const message = JSON.parse(String(event.data)) as {
       id?: number
       result?: unknown
       error?: { message?: string }
+    }
+    if (message.id !== undefined && stale.has(message.id)) {
+      stale.delete(message.id)
+      return
     }
     if (!message.id || !pending.has(message.id)) {
       if (onEvent) onEvent(message)
@@ -228,12 +242,28 @@ export function openSocket(url: string, onEvent?: (message: unknown) => void) {
           return new Promise((done, fail) => {
             const timer = setTimeout(() => {
               pending.delete(id)
-              // A renderer that never answers is crashed or frozen, not slow;
-              // callers get a fast, explicit error instead of a silent hang.
+              // A renderer that never answers is crashed or frozen, not
+              // slow; callers get a fast, explicit error instead of a
+              // silent hang, and the late reply (if any) is dropped.
+              stale.add(id)
               fail(new Error(`cdp call timed out: ${method}`))
-            }, CALL_TIMEOUT)
+            }, callTimeoutMs)
             pending.set(id, { resolve: done, reject: fail, timer })
-            ws.send(JSON.stringify({ id, method, params }))
+            // A closed/closing socket discards sends silently per spec —
+            // fail the call now instead of letting it burn the timeout.
+            if (ws.readyState !== 1) {
+              clearTimeout(timer)
+              pending.delete(id)
+              fail(new Error("cdp connection closed"))
+              return
+            }
+            try {
+              ws.send(JSON.stringify({ id, method, params }))
+            } catch {
+              clearTimeout(timer)
+              pending.delete(id)
+              fail(new Error("cdp connection closed"))
+            }
           })
         },
         close() {
@@ -252,6 +282,7 @@ export function openSocket(url: string, onEvent?: (message: unknown) => void) {
         waiter.reject(new Error("cdp connection closed"))
       }
       pending.clear()
+      stale.clear()
     }
   })
 }
@@ -422,11 +453,20 @@ export async function captureMarked(
 }
 
 // Page-side identity for one stamped element: tag + role + the most stable
-// label available (aria-label / id / name / placeholder before visible
-// text). The probe records it next to each id so a later action can
-// re-resolve the element when the stamped node is gone.
-export const OBNAV_FP_FN = `const __obFp = (el) => {
-  const stable = el.getAttribute("aria-label") || el.id || el.getAttribute("name") || el.getAttribute("placeholder") || ""
+// label available (aria-label / explicit <label for> text / id / name /
+// placeholder before visible text). The probe records it next to each id so
+// a later action can re-resolve the element when the stamped node is gone.
+export const OBNAV_FP_FN = `const __obLabelFor = (el) => {
+  const id = el.id
+  if (!id) return ""
+  try {
+    const root = el.getRootNode ? el.getRootNode() : document
+    const lab = (root || document).querySelector('label[for="' + id + '"]')
+    return lab ? (lab.textContent || "").replace(/\\s+/g, " ").trim() : ""
+  } catch (e) { return "" }
+}
+const __obFp = (el) => {
+  const stable = el.getAttribute("aria-label") || __obLabelFor(el) || el.id || el.getAttribute("name") || el.getAttribute("placeholder") || ""
   const text = stable || (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 40)
   return el.tagName + "|" + (el.getAttribute("role") || "") + "|" + text
 }`
@@ -540,7 +580,26 @@ export function actionScript(action: Act) {
   }
   if (action.kind === "type") {
     const text = JSON.stringify(action.text)
-    return `(() => { const el = ${find}; if (!el) return false; el.focus(); if ('value' in el) { el.value = ${text}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } return true })()`
+    return `(() => {
+    const el = ${find}
+    if (!el) return false
+    el.focus()
+    if ('value' in el) {
+      // React (and friends) ignore a plain .value write on controlled
+      // inputs: onChange only fires when the native prototype setter is
+      // used, so the DOM write and React state stay in sync.
+      let desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')
+      if (!desc || !desc.set) {
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        desc = Object.getOwnPropertyDescriptor(proto, 'value')
+      }
+      if (desc && desc.set) desc.set.call(el, ${text})
+      else el.value = ${text}
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    return true
+  })()`
   }
   if (action.kind === "enter") {
     return `(async () => {
@@ -593,7 +652,29 @@ export function actionScript(action: Act) {
   })()`
   }
   const label = JSON.stringify(action.label)
-  return `(() => { const el = ${find}; if (!el || el.tagName !== 'SELECT') return false; const option = [...el.options].find((item) => item.label === ${label}); if (!option) return false; el.value = option.value; el.dispatchEvent(new Event('change', { bubbles: true })); return true })()`
+  return `(() => {
+    const el = ${find}
+    if (!el) return false
+    const want = ${label}
+    const norm = (value) => (value || '').replace(/\\s+/g, ' ').trim()
+    if (el.tagName === 'SELECT') {
+      const option = [...el.options].find((item) => norm(item.label) === want)
+      if (!option) return false
+      el.value = option.value
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    }
+    // ARIA combobox (Base UI Select & friends): pick by clicking the
+    // rendered option inside the popup the trigger controls (aria-controls
+    // / aria-owns), or anywhere visible when the popup is unlinked.
+    const ctrl = el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || ''
+    const scope = (ctrl && document.getElementById(ctrl)) || document
+    const options = [...scope.querySelectorAll('[role=option]')].slice(0, 64)
+    const option = options.find((item) => norm(item.innerText || item.textContent) === want)
+    if (!option) return false
+    option.click()
+    return true
+  })()`
 }
 
 export const PROBE = `(() => {
@@ -619,6 +700,34 @@ export const PROBE = `(() => {
     const style = getComputedStyle(cand)
     if (style.visibility === "hidden" || style.display === "none") continue
     topModal = cand
+  }
+  // Custom ARIA comboboxes (Base UI Select & friends) list their choices in
+  // a popup of [role=option] elements, often portaled to body. Only
+  // rendered (visible) options count, so a closed trigger reads like any
+  // other control until its popup is open.
+  const optionOf = (opt) => {
+    const rect = opt.getBoundingClientRect()
+    if (rect.width < 2 && rect.height < 2) return ""
+    const style = getComputedStyle(opt)
+    if (style.visibility === "hidden" || style.display === "none") return ""
+    const text = (opt.innerText || opt.textContent || "").replace(/\\s+/g, " ").trim()
+    return text ? text.slice(0, 80) : ""
+  }
+  const optionsIn = (scope, cap) => {
+    const found = []
+    try {
+      for (const opt of scope.querySelectorAll('[role="option"]')) {
+        if (found.length >= cap) break
+        const label = optionOf(opt)
+        if (label) found.push({ label })
+      }
+    } catch (e) {}
+    return found
+  }
+  let allOptionsCache = null
+  const allOptions = () => {
+    if (!allOptionsCache) allOptionsCache = optionsIn(document, 16)
+    return allOptionsCache
   }
   // document.querySelectorAll stops at shadow boundaries; sites built from
   // web components (custom account tiles, embedded players) keep their real
@@ -647,7 +756,9 @@ export const PROBE = `(() => {
       const fpNth = fpCounts[fpKey] || 0
       fpCounts[fpKey] = fpNth + 1
       bag.fp[id] = { k: fpKey, n: fpNth }
-      const label = (el.getAttribute("aria-label") || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
+      // An explicit <label for="id"> is the input's accessible name; prefer
+      // its text over innerText/placeholder/name (aria-label still wins).
+      const label = (el.getAttribute("aria-label") || __obLabelFor(el) || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
       const item = {
         target_id: id,
         role: el.getAttribute("role") || el.tagName.toLowerCase(),
@@ -658,7 +769,22 @@ export const PROBE = `(() => {
       }
       const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
       item.actionable = !center || el === center || el.contains(center)
-      if (el.tagName === "SELECT") item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
+      if (el.tagName === "SELECT") {
+        item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
+      } else {
+        // Open ARIA combobox: attach its visible popup options like a
+        // native select would. aria-controls/aria-owns names the popup;
+        // an expanded trigger without a resolvable popup falls back to the
+        // page's visible option list (bounded globally).
+        const expanded = el.getAttribute("aria-expanded") === "true"
+        if (expanded || el.getAttribute("role") === "combobox") {
+          const ctrl = el.getAttribute("aria-controls") || el.getAttribute("aria-owns") || ""
+          const scope = ctrl ? document.getElementById(ctrl) : null
+          let found = scope ? optionsIn(scope, 8) : []
+          if (!found.length && expanded) found = allOptions()
+          if (found.length) item.options = found
+        }
+      }
       // 0 the topmost modal's controls, 1 text-entry targets (composers,
       // chat boxes, form fields), 2 search controls, 3 body content, 4
       // same-document anchors (TOC jumps), 5 site chrome and settings

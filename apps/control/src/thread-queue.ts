@@ -295,6 +295,32 @@ export function flushThreadQueuesForUser(
   }
 }
 
+/**
+ * Periodic backstop for queues the idle pump silently dropped. The
+ * idle flush is single-shot: a missed session.idle (SSE reconnect
+ * gap), a transient status-fetch timeout, or a failed prompt send
+ * leaves the queue intact with no turn running — so no next idle ever
+ * comes and the queue strands until the desktop happens to sleep and
+ * wake (observed live: nine messages stuck 2h15m after a clean
+ * finish=stop turn). Re-running the gate on a timer heals every
+ * variant: the flush is idempotent and self-gating (busy check,
+ * errored-turn hold, in-flight lock) and costs one sqlite distinct
+ * when no queue exists.
+ */
+export function drainThreadQueues(
+  db: Db,
+  hub: EventHub,
+  flush: typeof flushThreadQueue = flushThreadQueue,
+): void {
+  const users = new Set<string>()
+  for (const pair of db.threadQueuePairs()) users.add(pair.userId)
+  for (const userId of users) {
+    for (const sessionId of db.threadQueueSessions(userId)) {
+      void flush(db, hub, userId, sessionId).catch(() => {})
+    }
+  }
+}
+
 /** SSE-pump observer: a session going idle flushes its queue head. */
 export function dispatchThreadQueueFlush(
   db: Db,

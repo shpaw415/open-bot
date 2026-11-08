@@ -147,10 +147,13 @@ describe("resolve reference line", () => {
 
   test("built-in personas are reference only", async () => {
     const db = memoryDb()
+    // Designer was removed from the built-in roster (2026-11-01: Assistant
+    // and plugin-creator are the only built-ins) — the reference resolves
+    // against the roster that exists.
     const line = await resolveReferenceLine(
       db,
       { id: "u" } as never,
-      "@personas/Designer look",
+      "@personas/Assistant look",
     )
     expect(line).toContain("reference only")
   })
