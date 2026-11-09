@@ -54,6 +54,21 @@ export function wakeableSessionRow(row: {
   return !row.title.startsWith("worker:") && !row.title.startsWith("cron-run:")
 }
 
+// An explicit --from may also name a managed worker session (#3): a council
+// member delegating a reviewer names its own worker: session, and that
+// nested chain needs the same completion wake. Inference stays top-level
+// only (wakeableSessionRow); subagents and ephemeral cron runs never anchor.
+export function explicitWakeableSessionRow(row: {
+  id?: unknown
+  parentID?: unknown
+  title?: unknown
+}): boolean {
+  if (typeof row.id !== "string" || !row.id) return false
+  if (row.parentID) return false
+  if (typeof row.title !== "string") return false
+  return !row.title.startsWith("cron-run:")
+}
+
 async function fetchJson<T>(
   base: string,
   headers: Record<string, string>,
@@ -134,15 +149,32 @@ export async function resolveDelegationCreator(
       parentID?: unknown
       title?: unknown
     }>(base, headers, `/session/${encodeURIComponent(fromRaw)}`)
-    if (row && wakeableSessionRow(row))
+    if (row && explicitWakeableSessionRow(row))
       return { creator: fromRaw, warning: null }
   }
   const inferred = await inferBusyChat(base, headers)
   if (!fromRaw) return { creator: inferred, warning: null }
   return {
     creator: inferred,
-    warning: `--from ignored: ${fromRaw} is not a top-level chat session`,
+    warning: `--from ignored: ${fromRaw} is not a wakeable session (a top-level chat or a managed worker thread)`,
   }
+}
+
+// The delegating (parent) session recorded for a managed thread, newest
+// watch first — what `ob-thread parent` and notify-parent resolve against
+// (#62). Null when the thread was not delegated (or its watch is gone).
+export function delegationCreatorOf(
+  db: Db,
+  userId: string,
+  subjectSessionId: string,
+): string | null {
+  if (typeof db.delegationWatchesBySubject !== "function") return null
+  const rows = db.delegationWatchesBySubject(userId, subjectSessionId)
+  if (!rows.length) return null
+  const newest = [...rows].sort(
+    (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+  )[0]
+  return newest?.creatorSessionId ?? null
 }
 
 export function recordDelegation(

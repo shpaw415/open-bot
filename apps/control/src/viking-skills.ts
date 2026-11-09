@@ -37,18 +37,34 @@ const DEFAULT_CONFIRM_POLL_DELAY_MS = 1_000
 // within a bounded budget. Stacking the 40 s delete gate and the 12 s
 // confirm on top of slow calls read as a hang, agents blind-retried into
 // 429s, and a 429'd POST after a landed delete left the skill missing.
-const DEFAULT_SAVE_BUDGET_MS = 25_000
+// Field 2026-11-09 (#88/#92): each call still carried its own flat 20 s
+// timeout, blind to the save deadline — one slow confirm GET stacked past
+// the budget and callers killed the CLI after the write had landed. Every
+// call inside a save now gets min(per-call cap, time left to the deadline),
+// and a timed-out POST is reconciled by read-back before any retry.
+const DEFAULT_SAVE_BUDGET_MS = 15_000
 const DEFAULT_POST_ATTEMPTS = 3
 const DEFAULT_POST_RETRY_DELAY_MS = 1_000
+const DEFAULT_CALL_TIMEOUT_MS = 10_000
+const DEFAULT_CONFIRM_BUDGET_MS = 3_000
 
 export type VikingSkillsOptions = {
   deleteWaitMs?: number
   deletePollDelayMs?: number
   confirmAttempts?: number
   confirmPollDelayMs?: number
+  confirmBudgetMs?: number
   saveBudgetMs?: number
   postAttempts?: number
   postRetryDelayMs?: number
+  callTimeoutMs?: number
+}
+
+// A timeout is not "not reachable": the request may have landed server-side
+// (#92 — the CLI reported OpenViking unreachable after a successful write,
+// inviting duplicate retries). Callers and tests match on this code.
+export function isVikingTimeout(error: unknown): boolean {
+  return error instanceof HttpError && error.code === "viking_timeout"
 }
 
 function sleep(ms: number) {
@@ -143,9 +159,17 @@ export function createVikingSkills(
   const postAttempts = options.postAttempts ?? DEFAULT_POST_ATTEMPTS
   const postRetryDelayMs =
     options.postRetryDelayMs ?? DEFAULT_POST_RETRY_DELAY_MS
+  const callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+  const confirmBudgetMs = options.confirmBudgetMs ?? DEFAULT_CONFIRM_BUDGET_MS
   const root = baseUrl.replace(/\/$/, "")
 
-  async function call(path: string, init?: RequestInit) {
+  async function call(path: string, init?: RequestInit, deadline?: number) {
+    // Deadline-aware: a call inside a save never outlives the save budget
+    // (a flat per-call timeout is what stacked into the field's hangs).
+    const remaining =
+      deadline === undefined || !Number.isFinite(deadline)
+        ? callTimeoutMs
+        : Math.max(1, Math.min(callTimeoutMs, deadline - Date.now()))
     let response: Response
     try {
       response = await fetchImpl(`${root}${path}`, {
@@ -155,13 +179,17 @@ export function createVikingSkills(
           "x-api-key": apiKey,
           ...init?.headers,
         },
-        // Writes return as soon as the files land (wait:false below); reads
-        // are fs-backed. The budget is only a safety net for a loaded
-        // OpenViking — 20 s keeps one wedged call from stacking into the
-        // minute-scale hangs seen in the field.
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(remaining),
       })
     } catch (error) {
+      const name = error instanceof Error ? error.name : ""
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new HttpError(
+          504,
+          "desktop OpenViking timed out — the request may still have landed; read back before retrying",
+          "viking_timeout",
+        )
+      }
       const message = error instanceof Error ? error.message : "request failed"
       throw new HttpError(
         502,
@@ -190,11 +218,13 @@ export function createVikingSkills(
     return unwrapVikingResult(body)
   }
 
-  async function get(name: string): Promise<SkillDetail> {
+  async function get(name: string, deadline?: number): Promise<SkillDetail> {
     const nameError = skillNameError(name)
     if (nameError) throw new HttpError(400, nameError, "skill_name")
     const result = await call(
       `/api/v1/skills/${encodeURIComponent(name)}?include_content=true&include_files=false`,
+      undefined,
+      deadline,
     )
     const content =
       isRecord(result) && typeof result.content === "string"
@@ -237,9 +267,11 @@ export function createVikingSkills(
     const limit = Math.min(Date.now() + deleteWaitMs, deadline)
     for (let attempt = 0; ; attempt++) {
       try {
-        return await call(`/api/v1/skills/${encodeURIComponent(name)}`, {
-          method: "DELETE",
-        })
+        return await call(
+          `/api/v1/skills/${encodeURIComponent(name)}`,
+          { method: "DELETE" },
+          limit,
+        )
       } catch (error) {
         if (!(error instanceof HttpError)) throw error
         if (error.status === 404) return null
@@ -268,17 +300,44 @@ export function createVikingSkills(
     return error.status === 429 || error.status >= 500
   }
 
+  // True when a read-back shows exactly this body already stored. Used to
+  // reconcile a timed-out POST (#85/#92): the write often landed, and a
+  // blind retry or rollback would duplicate or clobber it. Gets its own
+  // short grace — knowing whether the write landed matters more than the
+  // nominal budget.
+  async function bodyLanded(input: SkillDetail): Promise<boolean> {
+    try {
+      const saved = await get(input.name, Date.now() + 5_000)
+      return saved.body === input.body.trim()
+    } catch {
+      return false
+    }
+  }
+
   // POST with a bounded retry for rate limits and transient server errors —
   // the field showed a first-attempt 429 permanently failing a replace whose
-  // delete had already landed.
-  async function postSkill(payload: string, deadline: number) {
+  // delete had already landed. A timeout is different from an explicit
+  // rejection: reconcile by read-back first, and only re-POST when the
+  // body provably did not land.
+  async function postSkill(
+    payload: string,
+    deadline: number,
+    reconcile?: () => Promise<boolean>,
+  ) {
     let lastError: unknown = null
     for (let attempt = 0; attempt < postAttempts; attempt++) {
       if (attempt > 0) await sleep(postRetryDelayMs)
       try {
-        return await call("/api/v1/skills", { method: "POST", body: payload })
+        return await call(
+          "/api/v1/skills",
+          { method: "POST", body: payload },
+          deadline,
+        )
       } catch (error) {
         lastError = error
+        if (isVikingTimeout(error) && reconcile && (await reconcile())) {
+          return null
+        }
         if (!retryablePost(error) || Date.now() >= deadline) throw error
       }
     }
@@ -287,12 +346,17 @@ export function createVikingSkills(
 
   // Best-effort pre-delete snapshot of an existing skill: the rollback
   // payload when a same-name replace's POST cannot land. Absent skills (or
-  // two failed reads) return null — nothing to roll back to.
-  async function snapshotSkill(name: string): Promise<SkillDetail | null> {
+  // two failed reads) return null — nothing to roll back to. An empty-body
+  // read is not a snapshot either: rolling back to "" would erase the skill.
+  async function snapshotSkill(
+    name: string,
+    deadline?: number,
+  ): Promise<SkillDetail | null> {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) await sleep(250)
       try {
-        return await get(name)
+        const found = await get(name, deadline)
+        return found.body ? found : null
       } catch {
         // absent or unreadable — try once more, then give up
       }
@@ -311,15 +375,20 @@ export function createVikingSkills(
     // with a newline — compare normalized or every newline-terminated skill
     // "fails" the confirm forever (the 2026-10-15 install outage).
     const want = input.body.trim()
+    // The read-back gets its own short budget inside the save deadline:
+    // the write is already durable, so confirming must never be what makes
+    // a save look hung (#92).
+    const limit = Math.min(deadline, Date.now() + confirmBudgetMs)
     for (let attempt = 0; attempt < confirmAttempts; attempt++) {
       if (attempt > 0) await sleep(confirmPollDelayMs)
+      if (Date.now() >= limit) return false
       try {
-        const saved = await get(input.name)
+        const saved = await get(input.name, limit)
         if (saved.body === want) return true
       } catch {
         // not visible yet — poll again
       }
-      if (Date.now() >= deadline) return false
+      if (Date.now() >= limit) return false
     }
     return false
   }
@@ -350,7 +419,10 @@ export function createVikingSkills(
 
     get,
 
-    async save(input: SkillDetail, previousName = ""): Promise<{
+    async save(
+      input: SkillDetail,
+      previousName = "",
+    ): Promise<{
       confirmed: boolean
     }> {
       assertSkillInput(input)
@@ -359,10 +431,14 @@ export function createVikingSkills(
         if (previousError) throw new HttpError(400, previousError, "skill_name")
       }
       const deadline = Date.now() + saveBudgetMs
-      const validated = await call("/api/v1/skills/validate", {
-        method: "POST",
-        body: JSON.stringify({ data: data(input) }),
-      })
+      const validated = await call(
+        "/api/v1/skills/validate",
+        {
+          method: "POST",
+          body: JSON.stringify({ data: data(input) }),
+        },
+        deadline,
+      )
       if (isRecord(validated) && validated.valid === false) {
         const errors = Array.isArray(validated.errors) ? validated.errors : []
         const message = errors
@@ -380,7 +456,7 @@ export function createVikingSkills(
         // Rename keeps the loss-proof order: the new name lands first, the
         // old one is removed only after — a failure here leaves a duplicate,
         // never a hole.
-        await postSkill(payload, deadline)
+        await postSkill(payload, deadline, () => bodyLanded(input))
         try {
           await deleteWithRetry(previousName, deadline)
         } catch (error) {
@@ -400,18 +476,22 @@ export function createVikingSkills(
         // skill could vanish (field 2026-11-07: a 429'd POST right after a
         // successful delete left the skill missing). Snapshot the current
         // content first and roll it back if the POST cannot land.
-        const snapshot = await snapshotSkill(input.name)
+        const snapshot = await snapshotSkill(input.name, deadline)
         try {
           await deleteWithRetry(input.name, deadline)
         } catch (error) {
           throw indexingError(input.name, error)
         }
         try {
-          await postSkill(payload, deadline)
+          await postSkill(payload, deadline, () => bodyLanded(input))
         } catch (error) {
+          // Never roll back over a write that actually landed: a final
+          // reconcile covers the timeout that exhausted the POST retries.
+          if (await bodyLanded(input)) {
+            return { confirmed: true }
+          }
           if (!snapshot) throw error
-          const reason =
-            error instanceof Error ? error.message : "post failed"
+          const reason = error instanceof Error ? error.message : "post failed"
           // Recovery gets a grace past the normal budget — restoring the
           // previous content matters more than answering fast.
           let restored = false
@@ -419,6 +499,7 @@ export function createVikingSkills(
             await postSkill(
               JSON.stringify({ data: data(snapshot), wait: false }),
               deadline + 5_000,
+              () => bodyLanded(snapshot),
             )
             restored = true
           } catch {

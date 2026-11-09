@@ -14,10 +14,12 @@ usage() {
 Usage:
   ob-project list
   ob-project add --path PATH [--name NAME]
+  ob-project rename ID --name NAME
   ob-project remove ID
 
 PATH is an existing directory. ~ and relative paths are expanded first.
 The folder must be under /home/agent. Removing a project keeps its files.
+rename changes only the display name — the project id and folder stay.
 EOF
 }
 
@@ -115,6 +117,26 @@ case "$cmd" in
       body=$(jq -n --arg path "$resolved" '{path: $path}')
     fi
     out=$(request POST /api/projects "$body")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{id: .project.id, name: .project.name, path: .project.path}'
+    ;;
+  rename)
+    [ $# -ge 1 ] || { usage; exit 2; }
+    id="$1"
+    shift
+    name=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --name)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          name="$2"; shift 2 ;;
+        *)
+          echo "unknown option: $1" >&2; usage; exit 2 ;;
+      esac
+    done
+    [ -n "$name" ] || { usage; exit 2; }
+    body=$(jq -n --arg name "$name" '{name: $name}')
+    out=$(request PATCH "/api/projects/$(urlencode "$id")" "$body")
     fail_on_error "$out"
     printf '%s' "$out" | jq '{id: .project.id, name: .project.name, path: .project.path}'
     ;;

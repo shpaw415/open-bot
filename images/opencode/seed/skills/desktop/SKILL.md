@@ -156,7 +156,7 @@ ob-vnc --session SESSION paste "https://example.com"
 ob-vnc --session SESSION key ctrl-l
 ```
 
-`key` accepts common names like `Return`, `Escape`, `Backspace`, `PageDown` — they are normalized for you.
+`key` accepts common names like `Return`, `Escape`, `Backspace`, `PageDown` — they are normalized for you. `ctrl-plus` works too (it sends the Ctrl+equal zoom chord). Drag with `ob-vnc --session SESSION drag X1 Y1 X2 Y2` (or `drag X2 Y2` from the current pointer). A `WxH` capture needs width 640..3840 and height 480..2400 — for narrow 320/390 CSS checks, capture 640 wide at 200% browser zoom and read the printed `dpr`. Native dialogs (file choosers) are separate X windows and key input follows X focus: `ob-vnc --session SESSION windows` lists them and `ob-vnc --session SESSION focus WINDOW_ID` focuses the dialog before typing a path into it.
 
 Paste exits. Do not run `xclip` or `xsel`. They stay running and the thread stops answering.
 

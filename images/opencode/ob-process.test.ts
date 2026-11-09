@@ -151,18 +151,24 @@ test.skipIf(!python3)(
 )
 
 test.skipIf(!python3)(
-  "a command that exits immediately is refused and cleaned up",
+  "a command that exits immediately is refused, retains its log, and reports its id (#76)",
   () => {
     const home = mkdtempSync(join(tmpdir(), "ob-process-dead-"))
     try {
       const result = run(["start", "--name", "dead", "--", "/bin/false"], home)
       expect(result.code).toBe(1)
       expect(result.stderr).toContain("exited immediately")
+      const idMatch = /\bid (p-[0-9a-f]+)\b/.exec(result.stderr)
+      expect(idMatch).not.toBeNull()
       const regDir = join(home, ".open-bot/processes")
       const rows = existsSync(regDir)
         ? readdirSync(regDir).filter((name) => name.endsWith(".json"))
         : []
       expect(rows).toHaveLength(0)
+      // The documented recovery path works: the retained log is readable
+      // by the id the failure printed.
+      const logResult = run(["log", idMatch?.[1] ?? ""], home)
+      expect(logResult.code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
     }

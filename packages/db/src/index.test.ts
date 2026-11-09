@@ -1455,3 +1455,34 @@ describe("thread message queue", () => {
     expect(db.threadQueue("u1", "s2")).toEqual([])
   })
 })
+
+describe("project rename", () => {
+  test("rename keeps the id, path, and owner scoping (#95)", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite")
+    const db = openDatabase(path)
+    db.createUser({
+      id: "a",
+      email: "a@localhost",
+      passwordHash: "hash",
+      role: "admin",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    })
+    db.createProject({
+      id: "p1",
+      userId: "a",
+      name: "Old name",
+      path: "/home/agent/workspace/old",
+      createdAt: 1,
+    })
+    expect(db.renameProject("p1", "a", "New name")).toBe(true)
+    expect(db.projectById("p1", "a")).toMatchObject({
+      id: "p1",
+      name: "New name",
+      path: "/home/agent/workspace/old",
+    })
+    expect(db.renameProject("p1", "other", "Nope")).toBe(false)
+    expect(db.renameProject("missing", "a", "Nope")).toBe(false)
+  })
+})

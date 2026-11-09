@@ -72,7 +72,10 @@ export function isProjectManageRequest(
 ): boolean {
   if (pathname === "/api/projects" && (method === "GET" || method === "POST"))
     return true
-  return method === "DELETE" && /^\/api\/projects\/[^/]+$/.test(pathname)
+  return (
+    (method === "DELETE" || method === "PATCH") &&
+    /^\/api\/projects\/[^/]+$/.test(pathname)
+  )
 }
 
 // Projects may also point at an existing desktop folder outside the

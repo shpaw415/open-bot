@@ -27,6 +27,7 @@ describe("preview server", () => {
     const root = mkdtempSync(join(tmpdir(), "ob-preview-"))
     mkdirSync(join(root, "nested"))
     writeFileSync(join(root, "index.html"), "<html><body>Home</body></html>")
+    writeFileSync(join(root, "menu.html"), "<html><body>Menu</body></html>")
     writeFileSync(
       join(root, "nested", "index.html"),
       "<html><body>Nested</body></html>",
@@ -40,6 +41,11 @@ describe("preview server", () => {
       const nested = await servePreview(root, "/nested/")
       expect(await nested.text()).toContain("Nested")
       expect((await servePreview(root, "/missing")).status).toBe(404)
+      // #91: Cloudflare Pages serves menu.html at the clean /menu route.
+      const clean = await servePreview(root, "/menu")
+      expect(clean.status).toBe(200)
+      expect(await clean.text()).toContain("Menu")
+      expect((await servePreview(root, "/missing.html")).status).toBe(404)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -1,6 +1,6 @@
 ---
 name: project
-description: Add, list, or remove a folder in the dashboard Projects list. Use ob-project when the user wants a desktop directory to show up as a project or be mentionable with @projects.
+description: Add, list, rename, or remove a folder in the dashboard Projects list. Use ob-project when the user wants a desktop directory to show up as a project or be mentionable with @projects.
 ---
 
 # Projects
@@ -20,6 +20,12 @@ Add an existing folder. `~` is this desktop's home (`/home/agent`):
 ```sh
 ob-project add --path ~/project/user-project
 ob-project add --path ~/plugins-create/my-plugin --name "My plugin"
+```
+
+Rename the list entry (the id and folder stay; never remove+add to rename). Use the id from list:
+
+```sh
+ob-project rename ID --name "New name"
 ```
 
 Remove the list entry (files stay on disk). Use the id from list:
