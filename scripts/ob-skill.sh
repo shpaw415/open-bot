@@ -31,14 +31,14 @@ request() {
   method="$1"
   path="$2"
   body="${3:-}"
-  # --max-time: a save can legitimately spend ~25 s server-side (indexing
-  # gates); 90 s is the hard stop so the CLI never hangs forever on a
-  # wedged control plane.
+  # --max-time: the server bounds a save to ~15 s (plus a short rollback
+  # grace); 35 s is the hard stop so the CLI never hangs forever on a
+  # wedged control plane, and never outlives callers by minutes.
   if [ -n "$body" ]; then
-    curl -sS --max-time 90 -X "$method" -H "Authorization: Bearer $TOKEN" \
+    curl -sS --max-time 35 -X "$method" -H "Authorization: Bearer $TOKEN" \
       -H "content-type: application/json" -d "$body" "$BASE$path"
   else
-    curl -sS --max-time 90 -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path"
+    curl -sS --max-time 35 -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path"
   fi
 }
 

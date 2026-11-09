@@ -2889,6 +2889,15 @@ export function openDatabase(path: string) {
         .run()
       return true
     },
+    renameProject(id: string, userId: string, name: string) {
+      if (!this.projectById(id, userId)) return false
+      orm
+        .update(projects)
+        .set({ name })
+        .where(and(eq(projects.id, id), eq(projects.userId, userId)))
+        .run()
+      return true
+    },
     pendingCronNotices() {
       return orm
         .select()

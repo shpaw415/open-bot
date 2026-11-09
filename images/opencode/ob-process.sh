@@ -130,9 +130,13 @@ if [ "${1:-}" = "start" ]; then
   pid=$!
   sleep 0.5
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "the process exited immediately (cwd $(pwd -P)). Last log lines:" >&2
+    # Keep the log and name the id: `ob-process log ID` reads the retained
+    # file by id, which is the only way back to the full failure output
+    # (#76 — the old message dropped both and deleted the log).
+    exit_status=unknown
+    if wait "$pid" 2>/dev/null; then exit_status=0; else exit_status=$?; fi
+    echo "the process id $id exited immediately (status $exit_status, cwd $(pwd -P)). Full log: $log (read it with: ob-process log $id). Last log lines:" >&2
     tail -n 5 "$log" >&2 || true
-    rm -f "$log"
     exit 1
   fi
   # pgrp (field 5) and starttime (field 22) come from /proc; the stored

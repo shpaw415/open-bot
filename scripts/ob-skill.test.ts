@@ -268,7 +268,9 @@ test(
     const args = await argsOf(home)
     const at = args.indexOf("--max-time")
     expect(at).toBeGreaterThanOrEqual(0)
-    expect(args[at + 1]).toBe("90")
+    // Server bounds a save to ~15 s + rollback grace; the CLI hard stop
+    // tracks that instead of outliving callers by minutes (#88/#92).
+    expect(args[at + 1]).toBe("35")
   }),
 )
 

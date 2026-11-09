@@ -79,10 +79,12 @@ describe("project name", () => {
 })
 
 describe("project manage requests", () => {
-  test("allows list, add, and remove only", () => {
+  test("allows list, add, rename, and remove only", () => {
     expect(isProjectManageRequest("/api/projects", "GET")).toBe(true)
     expect(isProjectManageRequest("/api/projects", "POST")).toBe(true)
     expect(isProjectManageRequest("/api/projects/abc", "DELETE")).toBe(true)
+    expect(isProjectManageRequest("/api/projects/abc", "PATCH")).toBe(true)
+    expect(isProjectManageRequest("/api/projects", "PATCH")).toBe(false)
     expect(isProjectManageRequest("/api/projects/abc/file", "GET")).toBe(false)
     expect(isProjectManageRequest("/api/projects/abc/files", "GET")).toBe(false)
     expect(isProjectManageRequest("/api/projects/abc/search", "POST")).toBe(

@@ -126,3 +126,20 @@ test("a symlink outside the desktop home is rejected before curl", async () => {
     rmSync(outside, { recursive: true, force: true })
   }
 })
+
+test("rename PATCHes the project id with the new name (#95)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-project-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, ["rename", "p1", "--name", "Renamed App"])
+    expect(result.code).toBe(0)
+    const args = await Bun.file(join(home, "curl.args")).text()
+    expect(args).toContain("PATCH")
+    expect(args).toContain("/api/projects/p1")
+    const body = await Bun.file(join(home, "curl.body")).text()
+    expect(JSON.parse(body)).toEqual({ name: "Renamed App" })
+    expect(result.stdout).toContain("p1")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

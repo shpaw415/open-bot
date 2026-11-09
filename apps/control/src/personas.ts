@@ -128,10 +128,9 @@ export function skillsEffective(
 ): string[] | null {
   if (skillsNone) return []
   if (!skills || skills.length === 0) return null
-  const merged = [...skills]
-  for (const name of skillsExtra ?? [])
-    if (!merged.includes(name)) merged.push(name)
-  return merged
+  // Deduped: every name becomes a session permission rule, and a repeated
+  // name repeats the whole rule in opencode's denial output (#8).
+  return [...new Set([...skills, ...(skillsExtra ?? [])])]
 }
 
 // The pre-merged MCP allowlist is three-state: null = all servers, [] =
@@ -225,11 +224,15 @@ export function parseMcpList(
 // listing with it).
 function skillRulesetFromList(effective: string[] | null): ScopeRule[] | null {
   if (effective === null) return null
-  if (effective.length === 0)
+  // The builtin path concatenates seed names with stored extras, which can
+  // repeat a name; one allow rule per distinct skill keeps denial output
+  // (and the session ruleset) free of repeated copies (#8).
+  const unique = [...new Set(effective)]
+  if (unique.length === 0)
     return [{ permission: "skill", pattern: "*", action: "deny" }]
   return [
     { permission: "skill", pattern: "*", action: "deny" },
-    ...effective.map((name) => ({
+    ...unique.map((name) => ({
       permission: "skill",
       pattern: name,
       action: "allow" as const,

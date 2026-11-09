@@ -515,7 +515,7 @@ describe("resolveDelegationCreator", () => {
     expect(out).toEqual({ creator: "chat1", warning: null })
   })
 
-  test("worker:, cron-run:, subagent, and unknown sessions are not wakeable", async () => {
+  test("cron-run:, subagent, and unknown sessions are not wakeable; an explicit worker: anchors a nested wake (#3)", async () => {
     installSessionFetch({
       rows: {
         w1: { id: "w1", title: "worker:job" },
@@ -523,7 +523,12 @@ describe("resolveDelegationCreator", () => {
         sub: { id: "sub", title: "worker:sub", parentID: "w1" },
       },
     })
-    for (const id of ["w1", "c1", "sub", "missing"]) {
+    // Explicitly named managed worker: a council member delegating a
+    // reviewer wakes on its own session.
+    expect(await resolveDelegationCreator(ctx.base, ctx.headers, "w1")).toEqual(
+      { creator: "w1", warning: null },
+    )
+    for (const id of ["c1", "sub", "missing"]) {
       const out = await resolveDelegationCreator(ctx.base, ctx.headers, id)
       expect(out.creator).toBeNull()
       expect(out.warning).toMatch(/--from ignored/)

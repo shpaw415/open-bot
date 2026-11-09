@@ -12,11 +12,16 @@ export function shotSize(raw: string): {
   const scaled = /^([1-3])x?$/.exec(text)
   if (scaled) return { width: null, height: null, scale: Number(scaled[1]) }
   const match = /^([0-9]{3,4})x([0-9]{3,4})$/.exec(text)
-  if (!match) throw new Error("resolution must be 2 or 2560x1600")
+  if (!match)
+    throw new Error(
+      `resolution must be a 1-3 scale (e.g. 2) or WxH with width 640..${WIDTH_MAX} and height 480..${HEIGHT_MAX} (got "${raw.trim()}")`,
+    )
   const width = Number(match[1])
   const height = Number(match[2])
   if (width < 640 || height < 480 || width > WIDTH_MAX || height > HEIGHT_MAX) {
-    throw new Error("resolution must be 2 or 2560x1600")
+    throw new Error(
+      `resolution ${width}x${height} is out of range: width must be 640..${WIDTH_MAX} and height 480..${HEIGHT_MAX}. For narrow 320/390 CSS widths, capture 640 wide at 200% browser zoom and read the printed dpr instead.`,
+    )
   }
   return { width, height, scale: 1 }
 }
@@ -244,7 +249,7 @@ async function main() {
     const current = layout(await socket.call("Page.getLayoutMetrics"))
     const scale = spec.scale
     if (scale < 1 || scale > SCALE_MAX)
-      throw new Error("resolution must be 2 or 2560x1600")
+      throw new Error(`capture scale must be 1..${SCALE_MAX} (got ${scale})`)
     const cssWidth = spec.width ?? current.width
     const cssHeight = spec.height ?? current.height
     if (resized) {

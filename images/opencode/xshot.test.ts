@@ -25,6 +25,11 @@ describe("screenshot resolution", () => {
     expect(() => shotSize("4")).toThrow()
     expect(() => shotSize("100x100")).toThrow()
     expect(() => shotSize("sharp")).toThrow()
+    // #47: the rejection names the real limits instead of implying only
+    // "2" and 2560x1600 exist.
+    expect(() => shotSize("320x1900")).toThrow("640")
+    expect(() => shotSize("320x1900")).toThrow("480")
+    expect(() => shotSize("sharp")).toThrow("WxH")
   })
 })
 

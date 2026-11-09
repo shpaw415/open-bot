@@ -134,15 +134,8 @@ import {
   model3dProviders,
 } from "./model3d-providers"
 import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords"
-import {
-  handlePersonas,
-  personaScope,
-  resolvePersona,
-} from "./personas"
-import {
-  pluginOriginForCronJob,
-  pluginOwnership,
-} from "./plugin-ownership"
+import { handlePersonas, personaScope, resolvePersona } from "./personas"
+import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
 import {
   handlePluginPagesStatus,
   mintPageFrameToken,
@@ -191,6 +184,7 @@ import {
   setScreenHold,
 } from "./screens"
 import { sh } from "./shell"
+import { handleSkills, isSkillsRequest } from "./skills-routes"
 import { hardwareStats } from "./stats"
 import {
   system1EndpointError,
@@ -237,7 +231,6 @@ import {
 import { probeVikingHealth, type VikingHealth } from "./viking-health"
 import { supportedVlmProviderIds } from "./viking-models"
 import { createVikingSkills } from "./viking-skills"
-import { handleSkills, isSkillsRequest } from "./skills-routes"
 import { vikingUserKey } from "./viking-user"
 import {
   applyVoicePatch,
@@ -1312,6 +1305,30 @@ async function handleProjectManage(
     if (!db.deleteProject(id, user.id)) return json({ error: "not found" }, 404)
     hub.emit(user.id, { type: "projects.changed" })
     return json({ ok: true })
+  }
+  if (projectIdMatch && req.method === "PATCH") {
+    // Rename in place (#95): the id — and every reference to it — survives;
+    // only the display name changes. The folder on disk never moves.
+    const id = decodeURIComponent(projectIdMatch[1] ?? "")
+    const body = await readJson(req)
+    const name = projectName(body.name)
+    if (!name) return json({ error: "a project name is required" }, 400)
+    const existing = db.projectById(id, user.id)
+    if (!existing) return json({ error: "not found" }, 404)
+    const clash = db.projectByName(user.id, name)
+    if (clash && clash.id !== id)
+      return json({ error: "a project with this name already exists" }, 409)
+    db.renameProject(id, user.id, name)
+    hub.emit(user.id, { type: "projects.changed" })
+    return json({
+      project: {
+        id,
+        name,
+        path: existing.path,
+        category: projectCategory(existing.path),
+        createdAt: existing.createdAt,
+      },
+    })
   }
   return null
 }

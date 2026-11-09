@@ -6,7 +6,12 @@ import {
   sanitizeRole,
 } from "./councils"
 import { createSession, splitModelRef, UNLIMITED_STEPS_AGENT } from "./cron"
-import { recordDelegation, resolveDelegationCreator } from "./delegations"
+import {
+  delegationCreatorOf,
+  lastTurnEnd,
+  recordDelegation,
+  resolveDelegationCreator,
+} from "./delegations"
 import { desktopDeathInfo, desktopPhase, endpoint } from "./docker"
 import {
   applyModelChoice,
@@ -60,7 +65,8 @@ export function isThreadRequest(pathname: string, method: string): boolean {
   )
     return true
   return (
-    method === "POST" && /^\/api\/threads\/[^/]+\/(?:stop|post)$/.test(pathname)
+    method === "POST" &&
+    /^\/api\/threads\/[^/]+\/(?:stop|post|notify-parent)$/.test(pathname)
   )
 }
 
@@ -380,13 +386,15 @@ export async function handleThreads(
     return listThreads(db, agent)
   if (url.pathname === "/api/threads" && req.method === "DELETE")
     return deleteThreads(req, db, agent)
-  const managed = url.pathname.match(/^\/api\/threads\/([^/]+)\/(stop|post)$/)
+  const managed = url.pathname.match(
+    /^\/api\/threads\/([^/]+)\/(stop|post|notify-parent)$/,
+  )
   if (managed && req.method === "POST") {
     const id = decodeURIComponent(managed[1] ?? "")
     if (!id) return json({ error: "not found" }, 404)
-    return managed[2] === "stop"
-      ? stopThread(id, db, agent)
-      : postThread(req, id, db, agent)
+    if (managed[2] === "stop") return stopThread(id, db, agent)
+    if (managed[2] === "notify-parent") return notifyParent(req, id, db, agent)
+    return postThread(req, id, db, agent)
   }
   const status = url.pathname.match(/^\/api\/threads\/([^/]+)\/status$/)
   if (status && req.method === "GET") {
@@ -485,8 +493,29 @@ async function opencodeBase(db: Db, agent: User): Promise<ResolvedOpencode> {
   const desktop = db.desktop(agent.id)
   if (!desktop) return { error: json({ error: "desktop not found" }, 409) }
   const phase = await desktopPhase(agent.id)
-  if (phase !== "running")
+  if (phase !== "running") {
+    // A bare "not running" reads as a control-plane lie when the workspace
+    // (bash, files, OpenViking) is clearly alive (#30) — it is the opencode
+    // container that is down. When docker gives a definite answer, say why;
+    // the error string stays identical for the CLI's transient-retry match.
+    const death = await desktopDeathInfo(agent.id).catch(() => null)
+    if (death && !death.running)
+      return {
+        error: json(
+          {
+            error: "desktop is not running",
+            state: "desktop_down",
+            desktop: {
+              running: false,
+              oomKilled: death.oomKilled,
+              exitCode: death.exitCode,
+            },
+          },
+          409,
+        ),
+      }
     return { error: json({ error: "desktop is not running" }, 409) }
+  }
   try {
     return {
       base: await endpoint(agent.id, "opencode", 4096),
@@ -616,9 +645,12 @@ async function startThread(req: Request, db: Db, agent: User) {
   // Delegation wake-up: councils and persona teammates re-prompt the
   // coordinating thread when they finish. The creator is the caller's own
   // session (`from`) or, unprovided, the one busy chat on the desktop.
+  // An explicit --from is an explicit wake request (#77): it arms (and is
+  // acknowledged) even for the Assistant, which otherwise skips inference.
   const watchesDelegation =
     Boolean(councilName) ||
-    Boolean(persona && persona.persona.id !== ASSISTANT_ID)
+    Boolean(persona && persona.persona.id !== ASSISTANT_ID) ||
+    Boolean(fromRaw)
   const delegation = watchesDelegation
     ? await resolveDelegationCreator(base, headers, fromRaw)
     : { creator: null, warning: null }
@@ -876,7 +908,13 @@ async function listThreads(db: Db, agent: User) {
     })
     .map((item) => {
       const row = item as { id?: unknown; title?: unknown }
-      return { id: row.id, title: row.title }
+      const thread: Record<string, unknown> = { id: row.id, title: row.title }
+      // Delegated workers can discover their coordinator here (#62).
+      if (typeof row.id === "string") {
+        const creator = delegationCreatorOf(db, agent.id, row.id)
+        if (creator) thread.creatorSessionId = creator
+      }
+      return thread
     })
   return json({ threads })
 }
@@ -988,6 +1026,22 @@ export const STARTING_GRACE_MS = 120_000
 // in-flight-shaped assistant row) older than the grace window is stalled;
 // anything fresher — or unreadable — stays starting so the create/post race
 // keeps `ob-thread wait` polling.
+// Newest message timestamp (completed, else created) in a message list —
+// when the thread last did anything, for status reporting (#65).
+export function lastActivityAt(messages: unknown): number | null {
+  if (!Array.isArray(messages)) return null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const time = (
+      messages[i] as {
+        info?: { time?: { created?: unknown; completed?: unknown } }
+      } | null
+    )?.info?.time
+    if (typeof time?.completed === "number") return time.completed
+    if (typeof time?.created === "number") return time.created
+  }
+  return null
+}
+
 export function turnStateFromMessages(
   messages: unknown,
   now = Date.now(),
@@ -1080,10 +1134,28 @@ async function threadStatus(id: string, db: Db, agent: User) {
     ).catch(() => null)
     const messages = list?.ok ? await list.json().catch(() => null) : null
     const derived = turnStateFromMessages(messages)
-    if (derived === "idle") return json({ id, running: false, state: "idle" })
-    if (derived === "stalled")
-      return json({ id, running: false, state: "stalled" })
-    return json({ id, running: true, state: "starting" })
+    if (derived === "starting")
+      return json({ id, running: true, state: "starting" })
+    const body: Record<string, unknown> = {
+      id,
+      running: false,
+      state: derived,
+    }
+    const creator = delegationCreatorOf(db, agent.id, id)
+    if (creator) body.creatorSessionId = creator
+    // A turn that ended on a provider limit reads as plain idle otherwise,
+    // and the coordinator cannot tell finished from quota-stalled (#65).
+    const end = lastTurnEnd(messages)
+    if (end.state === "error" || end.state === "cut") {
+      if (end.detail) body.lastError = end.detail
+      body.providerLimit =
+        /usage limit|rate.?limit|quota|too many requests|\b429\b/i.test(
+          end.detail,
+        )
+      const activity = lastActivityAt(messages)
+      if (activity !== null) body.lastActivityAt = activity
+    }
+    return json(body)
   }
   const state = typeof entry.type === "string" ? entry.type : "idle"
   return json({ id, running: state !== "idle", state })
@@ -1180,6 +1252,73 @@ async function postThread(req: Request, id: string, db: Db, agent: User) {
     if (effortDropped) result.effortDropped = effortDropped
   }
   return json(result)
+}
+
+// Interim update from a delegated worker to its coordinator (#62): the
+// worker names its OWN thread id; the only reachable target is the creator
+// recorded on its delegation watch, prompted with the same [teammate]
+// convention the completion wake uses. There is no free-form post into a
+// user chat here — manageable scope on the worker plus a recorded creator
+// are both required.
+async function notifyParent(req: Request, id: string, db: Db, agent: User) {
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+  if (typeof body.message !== "string" || !body.message.trim())
+    return json({ error: "message is required" }, 400)
+  if (body.message.length > MESSAGE_LIMIT)
+    return json(
+      { error: `message is limited to ${MESSAGE_LIMIT} characters` },
+      400,
+    )
+  const resolved = await opencodeBase(db, agent)
+  if ("error" in resolved) return resolved.error
+  const { base, headers } = resolved
+  const allowed = await manageableThread(id, base, headers, db, agent)
+  if (!("session" in allowed)) return allowed
+  const creator = delegationCreatorOf(db, agent.id, id)
+  if (!creator)
+    return json(
+      {
+        error:
+          "no delegating thread recorded for this thread — it was not started as a delegation",
+      },
+      404,
+    )
+  const promptBody: Record<string, unknown> = {
+    parts: [
+      {
+        type: "text",
+        text: `[teammate update from ${id}] ${body.message}`,
+      },
+    ],
+  }
+  const binding = db.threadPersona(agent.id, creator)
+  let creatorPersona: PersonaView | null = null
+  try {
+    creatorPersona = binding
+      ? resolvePersona(db, agent.id, binding.personaId)
+      : null
+  } catch {
+    creatorPersona = null
+  }
+  const line = await threadPromptSystem(db, agent.id, creator, creatorPersona)
+  if (line) promptBody.system = line
+  await applyModelChoice(
+    db,
+    agent.id,
+    promptBody,
+    threadModelChoice(db.threadModel(agent.id, creator)),
+  )
+  const posted = await fetch(
+    `${base}/session/${encodeURIComponent(creator)}/prompt_async`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(promptBody),
+      signal: AbortSignal.timeout(PROMPT_TIMEOUT_MS),
+    },
+  ).catch(() => null)
+  if (!posted || !posted.ok) return json({ error: "notify failed" }, 502)
+  return json({ id, parent: creator, notified: true })
 }
 
 // Reads a managed thread's current model pick (`ob-thread model ID`).

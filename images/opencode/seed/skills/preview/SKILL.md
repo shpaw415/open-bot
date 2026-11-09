@@ -42,7 +42,7 @@ export default {
 ob-preview up --session SESSION --entry /home/agent/workspace/app/server.ts
 ```
 
-`bun --hot` reloads that file between edits. Keep asset URLs relative.
+`bun --hot` reloads that file between edits. Keep asset URLs relative. If the preview keeps serving old code after a rebuild (generated imports can outlive the hot reload), run `ob-preview restart --session SESSION` — plain `up` on a live preview is a no-op. Static previews resolve Cloudflare-Pages-style clean routes (`/menu` serves `menu.html`), and preview servers appear in `ob-process list` like any managed process.
 
 ## How the chat embed proxies your server
 

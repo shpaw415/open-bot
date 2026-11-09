@@ -1,13 +1,13 @@
 import type { Db, User } from "@open-bot/db"
 import type { EventHub } from "./events"
 import { httpErrorResponse } from "./http-error"
-import { pluginOwnership, pluginSkillGroups } from "./plugin-ownership"
 import { seedSkillDescriptions } from "./personas"
+import { pluginOwnership, pluginSkillGroups } from "./plugin-ownership"
 import {
   assertSkillInput,
-  createVikingSkills,
-  skillNameError,
+  type createVikingSkills,
   type SkillDetail,
+  skillNameError,
 } from "./viking-skills"
 
 export type VikingSkills = ReturnType<typeof createVikingSkills>
@@ -135,11 +135,12 @@ async function skillsRoutes(
     if (saved?.confirmed === false) {
       return json({
         ok: true,
+        status: "pending",
         confirmed: false,
         note: `${input.name} is written; OpenViking is still indexing it — a get may 404 for a few seconds. Do not retry the save (it already landed).`,
       })
     }
-    return json({ ok: true, confirmed: true })
+    return json({ ok: true, status: "committed", confirmed: true })
   }
   if (req.method === "DELETE") {
     const body = (await req.json().catch(() => null)) as Record<

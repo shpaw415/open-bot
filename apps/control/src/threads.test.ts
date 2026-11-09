@@ -1310,7 +1310,7 @@ describe("POST /api/threads delegation watches", () => {
 
   test("an invalid --from falls back to inference and warns", async () => {
     installDelegationFetch({
-      rows: { w1: { id: "w1", title: "worker:job" } },
+      rows: { w1: { id: "w1", title: "cron-run:job" } },
       status: {},
     })
     const { mock, watches } = watchDb()
@@ -1350,6 +1350,41 @@ describe("POST /api/threads delegation watches", () => {
       subjectSessionId: "ses_1",
       councilId: null,
     })
+  })
+
+  test("an explicit --from arms and acknowledges the wake for an Assistant thread (#77)", async () => {
+    installDelegationFetch({
+      rows: { chat1: { id: "chat1", title: "My chat" } },
+    })
+    const { mock, watches } = watchDb()
+    const res = await post(
+      { title: "Helper", persona: "assistant", from: "chat1", message: "Help" },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      wake?: { armed: boolean; creator: string | null }
+    }
+    expect(body.wake).toEqual({ armed: true, creator: "chat1" })
+    expect(watches).toHaveLength(1)
+  })
+
+  test("a council member's own worker session can anchor a nested wake (#3)", async () => {
+    installDelegationFetch({
+      rows: { w1: { id: "w1", title: "worker:member" } },
+    })
+    const { mock, watches } = watchDb()
+    const res = await post(
+      { title: "Review", council: "review", from: "w1" },
+      mock,
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      wake?: { armed: boolean; creator: string | null }
+    }
+    expect(body.wake?.armed).toBe(true)
+    expect(body.wake?.creator).toBe("w1")
+    expect(watches[0]).toMatchObject({ creatorSessionId: "w1" })
   })
 
   test("plain hidden threads record nothing and report no wake", async () => {
@@ -1825,6 +1860,20 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
     })
   })
 
+  test("a definite desktop death enriches manage-route 409s with the cause (#30)", async () => {
+    installManageFetch()
+    statuses = {}
+    phase = "sleeping"
+    death = { running: false, oomKilled: true, exitCode: 137 }
+    const res = await manage("/api/threads/w1/stop")
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      error: "desktop is not running",
+      state: "desktop_down",
+      desktop: { running: false, oomKilled: true, exitCode: 137 },
+    })
+  })
+
   test("an inconclusive death (mid-recreate) keeps the 409", async () => {
     installManageFetch()
     statuses = {}
@@ -1839,11 +1888,66 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
   test("isThreadRequest matches the manage routes only", () => {
     expect(isThreadRequest("/api/threads/s1/stop", "POST")).toBe(true)
     expect(isThreadRequest("/api/threads/s1/post", "POST")).toBe(true)
+    expect(isThreadRequest("/api/threads/s1/notify-parent", "POST")).toBe(true)
     expect(isThreadRequest("/api/threads/s1/status", "GET")).toBe(true)
     expect(isThreadRequest("/api/threads/s1/status", "POST")).toBe(false)
     expect(isThreadRequest("/api/threads/s1/stop", "GET")).toBe(false)
     expect(isThreadRequest("/api/threads/s1/pause", "POST")).toBe(false)
     expect(isThreadRequest("/api/threads//stop", "POST")).toBe(false)
+  })
+
+  test("status exposes a provider usage-limit failure as lastError (#65)", async () => {
+    installManageFetch({
+      w1: [
+        { info: { role: "user", time: { created: 1 } }, parts: [] },
+        {
+          info: {
+            role: "assistant",
+            error: {
+              name: "APIError",
+              data: { message: "The usage limit has been reached" },
+            },
+            time: { created: 2, completed: 3 },
+          },
+          parts: [],
+        },
+      ],
+    })
+    statuses = {}
+    const res = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.state).toBe("idle")
+    expect(body.lastError).toContain("usage limit")
+    expect(body.providerLimit).toBe(true)
+    expect(body.lastActivityAt).toBe(3)
+  })
+
+  test("notify-parent prompts only the recorded delegation creator (#62)", async () => {
+    installManageFetch()
+    const db = Object.assign(managedDb(["p1"]), {
+      delegationWatchesBySubject: (_userId: string, sessionId: string) =>
+        sessionId === "p1"
+          ? [{ creatorSessionId: "u1", wokenAt: null, pending: false }]
+          : [],
+    })
+    const res = await manage(
+      "/api/threads/p1/notify-parent",
+      { message: "Contract: POST /api/export accepts {format}" },
+      db as never,
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ id: "p1", parent: "u1", notified: true })
+    const prompt = calls.find((call) =>
+      call.url.endsWith("/session/u1/prompt_async"),
+    )
+    expect(prompt).toBeDefined()
+    expect(String(prompt?.init?.body)).toContain("[teammate update")
+    expect(String(prompt?.init?.body)).toContain("POST /api/export")
   })
 
   test("stop aborts a worker thread", async () => {

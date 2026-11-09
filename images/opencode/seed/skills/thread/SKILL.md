@@ -124,7 +124,15 @@ ob-thread read ses_abc123 4
 ob-thread wait ses_abc123 --timeout 30
 ob-thread stop ses_abc123
 ob-thread post ses_abc123 "Stop editing; report what you changed so far"
+ob-thread parent YOUR_SESSION_ID
+ob-thread notify-parent YOUR_SESSION_ID "Contract ready: POST /api/export accepts {format}"
 ```
+
+When you are yourself a delegated worker and must reach your coordinator
+mid-task (an integration contract, a blocker), `parent` prints the
+coordinating thread recorded for yours, and `notify-parent` sends it one
+interim `[teammate update]` message without ending your turn. Pass your
+own session id — the screen id in your system line.
 
 - `read` prints the last N messages (default 6) of a thread you manage — the
   cheap way to see what a teammate or council member wrote before reporting.

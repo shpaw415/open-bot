@@ -48,12 +48,106 @@ export function normalizeTitle(title: string) {
   return title.trim().toLowerCase().replace(/\s+/g, " ")
 }
 
+// Agents paraphrase the same defect endlessly (38 GitHub issues for one
+// ob-skill save hang, in two languages, under varying kinds/surfaces), and
+// an exact-title hash dedupes none of them. When a title names a known
+// tool surface plus a recognizable verb or symptom, the fingerprint is
+// that family key instead — kind and surface excluded, since reporters
+// pick those inconsistently for the same bug. Anything unrecognized keeps
+// the legacy exact-title fingerprint below.
+const SUBJECT_PHRASES: [RegExp, string][] = [
+  [/\bmemory (search|retrieval|lookup)\b|\bsemantic search\b/, "memory-search"],
+  [
+    /\bshell\b|\bbash\b|\bdeny-list\b|\bdebug-port\b|\bfiltre de ports\b/,
+    "shell-guard",
+  ],
+  [
+    /\bskill (catalog|discovery|denial)\b|\bpersona-(scoped|authorized)\b|\binstructions memoire\b|\bshortcut skill\b/,
+    "skill-catalog",
+  ],
+  [
+    /\bskill (save|replacement|replace|writes?)\b|\bopenviking skill\b/,
+    "ob-skill",
+  ],
+]
+const VERB_TOKENS: [RegExp, string][] = [
+  [/\b(save|saves|replace|replacement|write|writes|sauvegarde)\b/, "write"],
+  [/\bclick\b/, "click"],
+  [/\btype\b/, "type"],
+  [/\bread\b/, "read"],
+  [/\bdrag\b/, "drag"],
+  [/\b(search|retrieval|lookup)\b/, "search"],
+  [/\bcapture\b/, "capture"],
+  [/\bstart\b/, "start"],
+]
+const SYMPTOM_CLASSES: [RegExp, string][] = [
+  [
+    /\b(hang|hangs|hung|timeout|timed[ -]?out|times? out|expir\w*|bloqu\w*|blocks?|stuck|unresponsive|lock|no acknowledgement|without acknowledgement|sans accus\w*|ne rend pas)\b/,
+    "hang",
+  ],
+  [/\b(crash\w*)\b|ord\(\)/, "crash"],
+  [
+    /\b(loses|lost|deletes|removes|missing|not_found|not found|dispar\w*|restaur\w*|restor\w*|rollback|quota|429)\b/,
+    "data-loss",
+  ],
+  [
+    /\b(without (activating|updating|transmitting)|not (activating|updating)|ne transmet|controlled|controle\w*|reports success without)\b/,
+    "no-effect",
+  ],
+  [/\b(rejects|refuses|denies|mistakes|flags|filtre)\b/, "false-reject"],
+  [/\b(ranks|ranking|unrelated|high-confidence|highly)\b/, "ranking"],
+  [/\b(stale|perime\w*)\b/, "stale"],
+]
+
+export function canonicalReportKey(title: string): string | null {
+  const folded = title.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()
+  let subject = ""
+  for (const [pattern, name] of SUBJECT_PHRASES) {
+    if (pattern.test(folded)) {
+      subject = name
+      break
+    }
+  }
+  if (!subject) {
+    const tool = /\bob-([a-z][a-z-]*)\b/.exec(folded)
+    if (tool) subject = `ob-${tool[1]}`
+  }
+  if (!subject && /\b(chrome|chromium)\b/.test(folded)) subject = "ob-chrome"
+  if (!subject && /\bpreview\b/.test(folded)) subject = "preview"
+  if (!subject) return null
+  let verb = ""
+  let verbAt = Number.POSITIVE_INFINITY
+  for (const [pattern, name] of VERB_TOKENS) {
+    const match = pattern.exec(folded)
+    if (match && match.index < verbAt) {
+      verb = name
+      verbAt = match.index
+    }
+  }
+  let symptom = ""
+  for (const [pattern, name] of SYMPTOM_CLASSES) {
+    if (pattern.test(folded)) {
+      symptom = name
+      break
+    }
+  }
+  if (!verb && !symptom) return null
+  return `${subject}|${verb}|${symptom}`
+}
+
 export function improvementFingerprint(
   kind: ImprovementKind,
   surface: ImprovementSurface,
   title: string,
   plugin?: string | null,
 ) {
+  const canonical = canonicalReportKey(title)
+  if (canonical) {
+    const scoped = plugin
+      ? `family\0${plugin}\0${canonical}`
+      : `family\0${canonical}`
+    return createHash("sha256").update(scoped).digest("hex")
+  }
   // Without a plugin the hash is the legacy one, so reports filed before
   // plugin routing still dedupe against their open rows.
   const scoped = plugin
