@@ -210,6 +210,7 @@ import {
 import { refreshTeamOpencodeAuth } from "./team-apply"
 import { handleThreadDirs } from "./thread-dirs"
 import { handleThreadQueue, isThreadQueuePath } from "./thread-queue"
+import { splitThread } from "./thread-split"
 import {
   cleanupDeletedThread,
   handleOpencodeRead,
@@ -3596,6 +3597,33 @@ async function api(
     const auth = basic(desktop.opencodePassword)
     if (url.pathname === "/api/opencode/session" && req.method === "POST")
       return createOpencodeSession(req, base, auth, db, user)
+    // Split: a new thread ending at the selected message (inclusive),
+    // source untouched. Resolved onto opencode's fork in thread-split.ts;
+    // intercepted here because the generic proxy has no /split upstream.
+    const splitRef = url.pathname.match(
+      /^\/api\/opencode\/session\/([^/]+)\/split$/,
+    )
+    if (splitRef && req.method === "POST") {
+      const id = decodeURIComponent(splitRef[1] ?? "")
+      const parsed = (await req.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >
+      const body =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed
+          : {}
+      const res = await splitThread({
+        db,
+        userId: user.id,
+        base,
+        headers: auth,
+        sessionId: id,
+        body,
+      })
+      if (res.ok) hub.emit(user.id, { type: "threads.changed" })
+      return res
+    }
     const sessionRef = url.pathname.match(/^\/api\/opencode\/session\/([^/]+)$/)
     if (sessionRef && req.method === "DELETE") {
       const id = decodeURIComponent(sessionRef[1] ?? "")

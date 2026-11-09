@@ -34,6 +34,7 @@ import AccessibleDialog, {
 } from "./AccessibleDialog"
 import AgentOrb from "./AgentOrb"
 import {
+  ApiHttpError,
   api,
   clientId,
   type DesktopStatus,
@@ -141,6 +142,7 @@ import {
   EditIcon,
   FolderIcon,
   FolderOpenIcon,
+  ForkRightIcon,
   GroupsIcon,
   MicIcon,
   MoreVertIcon,
@@ -700,6 +702,11 @@ type BubbleViewProps = {
   openedCouncil: string
   onSpeak: (key: string, text: string) => void
   onStopSpeak: () => void
+  onSplit: (messageId: string) => void
+  /** This bubble's split is copying right now (its icon spins). */
+  splitting: boolean
+  /** A split is in flight somewhere, or a turn is being sent/stopped. */
+  splitDisabled: boolean
 }
 
 const MessageBubble = memo(function MessageBubble({
@@ -739,6 +746,9 @@ const MessageBubble = memo(function MessageBubble({
   openedCouncil,
   onSpeak,
   onStopSpeak,
+  onSplit,
+  splitting,
+  splitDisabled,
 }: BubbleViewProps) {
   const message = entry.message
   const role = message.info?.role ?? "message"
@@ -783,6 +793,29 @@ const MessageBubble = memo(function MessageBubble({
       </IconButton>
     </Tip>
   ) : null
+  // Split ("new thread up to this message"): only on bubbles backed by a
+  // real raw message — pending receipts have no server-side message yet.
+  const splitButton =
+    message.lastMessageId && !entry.pendingId ? (
+      <Tip
+        title={splitting ? THREADS_UI.splittingThread : THREADS_UI.splitThread}
+      >
+        <span>
+          <IconButton
+            size="small"
+            aria-label={THREADS_UI.splitThread}
+            disabled={splitDisabled}
+            onClick={() => onSplit(message.lastMessageId)}
+          >
+            {splitting ? (
+              <CircularProgress size={1.1} />
+            ) : (
+              <ForkRightIcon width={15} height={15} />
+            )}
+          </IconButton>
+        </span>
+      </Tip>
+    ) : null
   const timeMark = message.sentAt ? (
     <time
       className="ob-bubble-time"
@@ -882,10 +915,12 @@ const MessageBubble = memo(function MessageBubble({
           {entry.mark ? <SendMark mark={entry.mark} /> : null}
           {timeMark}
           {copyButton}
+          {splitButton}
         </div>
       ) : message.text.trim() ? (
         <div className="ob-msg-meta">
           {copyButton}
+          {splitButton}
           <Tip
             title={speechKey === bubbleKey ? "Stop reading" : "Read out loud"}
           >
@@ -920,8 +955,11 @@ const MessageBubble = memo(function MessageBubble({
           </Tip>
           {timeMark}
         </div>
-      ) : timeMark ? (
-        <div className="ob-msg-meta">{timeMark}</div>
+      ) : timeMark || splitButton ? (
+        <div className="ob-msg-meta">
+          {splitButton}
+          {timeMark}
+        </div>
       ) : null}
     </div>
   )
@@ -2778,6 +2816,10 @@ export function Workspace({
     setThreadDock((current) => (current === el ? current : el))
   }, [])
   const [error, setError] = useState("")
+  // Raw message id a split ("new thread up to this message") is copying
+  // right now; "" = no split in flight. Blocks duplicate splits and spins
+  // only the bubble that started it.
+  const [splittingId, setSplittingId] = useState("")
   const [projectList, setProjectList] = useState<ProjectMention[]>([])
   const projectsRequestedRef = useRef(false)
   const [reportList, setReportList] = useState<ReportMention[]>([])
@@ -3752,6 +3794,7 @@ export function Workspace({
     startDesktop: () => {},
     openPreview: () => {},
     openCouncil: (_name: string) => {},
+    splitThread: (_messageId: string) => {},
   })
   const bubbleActions = useMemo(
     () => ({
@@ -3766,6 +3809,8 @@ export function Workspace({
       startDesktop: () => bubbleActionsRef.current.startDesktop(),
       openPreview: () => bubbleActionsRef.current.openPreview(),
       openCouncil: (name: string) => bubbleActionsRef.current.openCouncil(name),
+      splitThread: (messageId: string) =>
+        bubbleActionsRef.current.splitThread(messageId),
     }),
     [],
   )
@@ -3850,6 +3895,7 @@ export function Workspace({
       lastPaneRef.current = "council"
       pushSearch({ [PARAM_COUNCIL]: name, [PARAM_MEMBER]: null })
     },
+    splitThread: (messageId: string) => void splitThreadAt(messageId),
   }
   threadActionsRef.current = {
     select: selectThread,
@@ -5217,6 +5263,37 @@ export function Workspace({
     if (mobile) setThreadsOpen(false)
   }
 
+  /**
+   * "New thread up to this message": the server forks the open thread so
+   * the selected message is the new thread's last one (everything older
+   * rides along, the source thread is untouched), then we open the branch
+   * like any explicit thread pick.
+   */
+  async function splitThreadAt(messageId: string) {
+    if (!sessionId || !messageId || splittingId) return
+    setSplittingId(messageId)
+    setError("")
+    try {
+      const created = await api<{ id: string }>(
+        `/api/opencode/session/${encodeURIComponent(sessionId)}/split`,
+        { method: "POST", body: JSON.stringify({ messageId }) },
+      )
+      if (!created.id) throw new Error(THREADS_UI.splitThreadFailed)
+      void loadThreads()
+      selectThread(created.id)
+    } catch (caught) {
+      setError(
+        caught instanceof ApiHttpError && caught.body.code === "thread_busy"
+          ? THREADS_UI.splitThreadBusy
+          : caught instanceof Error && caught.message
+            ? caught.message
+            : THREADS_UI.splitThreadFailed,
+      )
+    } finally {
+      setSplittingId("")
+    }
+  }
+
   function goTab(next: WorkspaceTab) {
     onTab(next)
     setDrawerOpen(false)
@@ -6564,6 +6641,14 @@ export function Workspace({
                               previewError={previewError}
                               onSpeak={speakText}
                               onStopSpeak={stopSpeaking}
+                              onSplit={bubbleActions.splitThread}
+                              splitting={
+                                splittingId !== "" &&
+                                splittingId === row.entry.message.lastMessageId
+                              }
+                              splitDisabled={
+                                splittingId !== "" || sending || stopping
+                              }
                             />
                           ),
                         )}

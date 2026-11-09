@@ -58,6 +58,22 @@ ob-chrome --session SESSION cache clear --reload
 
 `cache clear` busts the browser HTTP cache for dev (`--reload` reloads fresh in the same call); `cache clear --origin URL` wipes one origin's stale app data (cache storage, service workers, localStorage, IndexedDB) instead. Cookies survive unless `--cookies`. `reload --fresh` is a plain hard reload.
 
+## Mobile viewport (device emulation)
+
+For design and responsive work, put the page in a phone viewport — the DevTools device toolbar, from the CLI:
+
+```sh
+ob-chrome --session SESSION viewport mobile
+ob-chrome --session SESSION viewport list
+ob-chrome --session SESSION viewport iphone-14 --landscape
+ob-chrome --session SESSION viewport 390x844 --dpr 3
+ob-chrome --session SESSION viewport rotate
+ob-chrome --session SESSION viewport
+ob-chrome --session SESSION viewport off
+```
+
+`mobile` with no device is the default phone (iPhone 14, 390x844); `list` prints the presets (`iphone-se`, `iphone-14`, `iphone-14-pro-max`, `pixel-7`, `galaxy-s23`, `ipad-mini`), each with its real size, pixel ratio, touch and user agent. A bare `WxH` size is a custom mobile viewport (`--dpr N` sets the pixel ratio, `--landscape`/`--portrait` flip it, `--desktop` makes it a plain resize with no mobile metrics or touch). `rotate` swaps width and height; bare `viewport` reports the live state; `off` returns to the desktop viewport. The printed JSON line carries the measured `width`/`height`/`dpr`/`touch`/`userAgent`, so check it before judging a layout. The mode sticks across navigations and tab switches until `off` — remember to turn it off when the design check is done — and every other tool sees it: `ob-page read` reports the mobile viewport, `eval` media queries match the phone width, and a scaled capture (`capture FILE 2`) shoots the mobile page. Do not use an explicit-size capture (`2560x1600`) while it is on: that capture resizes the viewport itself and fights the emulation.
+
 Row numbering is the printed window: pass the same `--filter` when drilling in, and re-run plain `network` first when new requests arrived. Bodies are best-effort — a response whose body was already evicted says so; run `network N --body` again right after the request. `console|network --clear` empties the buffer.
 
 Read and act on the page with `ob-page --session SESSION`: it controls the browser DOM directly, no screenshots or OCR needed.

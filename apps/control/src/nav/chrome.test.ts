@@ -16,7 +16,7 @@ import {
 } from "./chrome"
 
 const USAGE =
-  "usage: chrome.ts PORT navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval JS"
+  "usage: chrome.ts PORT navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval JS | viewport [list | mobile [PRESET] | PRESET | WxH | rotate | off]"
 
 test("navigate target adds the scheme to a bare domain", () => {
   expect(normalizeTarget("example.com")).toBe("https://example.com")
@@ -79,6 +79,8 @@ test("verbs parse positional and --url forms", () => {
     arg: "example.test",
   })
   expect(verbFrom(["closetab"])).toEqual({ verb: "closetab", arg: "" })
+  // viewport passes through untouched: it parses its own argv tail.
+  expect(verbFrom(["viewport", "mobile"])).toEqual({ verb: "viewport" })
   expect(verbFrom(["url"])).toEqual({ verb: "url" })
   expect(verbFrom(["back"])).toEqual({ verb: "back" })
   expect(verbFrom(["forward"])).toEqual({ verb: "forward" })
@@ -148,6 +150,7 @@ test("usage names every verb", () => {
     "dom",
     "eval",
     "cache",
+    "viewport",
   ]) {
     expect(USAGE).toContain(verb)
   }

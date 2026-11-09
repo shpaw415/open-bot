@@ -122,6 +122,10 @@ export type VisibleMessage = ChatMessage & {
    * readers). */
   councils: string[]
   sentAt: number | null
+  /** Id of the last raw opencode message folded into this bubble (a burst
+   * merge keeps the first message's `info`, so `info.id` alone cannot name
+   * the bubble's end). "" for synthetic bubbles with no raw message. */
+  lastMessageId: string
 }
 
 export type SendStatus = "queued" | "sending" | "sent" | "failed"
@@ -785,6 +789,7 @@ export function visibleMessages(
       council: council.council,
       councils: council.councils,
       sentAt: messageSentAt(message),
+      lastMessageId: messageId,
     })
   }
   return out
@@ -1045,6 +1050,7 @@ export function threadBubbles(
       prev.preview = prev.preview || message.preview
       prev.council = prev.council || message.council
       prev.councils = [...new Set([...prev.councils, ...message.councils])]
+      prev.lastMessageId = message.lastMessageId
       if (message.previewPath) prev.previewPath = message.previewPath
       if (prev.sentAt == null && message.sentAt != null)
         prev.sentAt = message.sentAt

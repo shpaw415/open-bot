@@ -8,7 +8,8 @@
 // ~/.open-bot/devtools/<session>/events.jsonl. `ob-chrome console|network`
 // read that buffer; `network N --body` and `metrics` attach live instead.
 //
-// The process is passive and loopback-only: it never drives the page, and it
+// The process is passive and loopback-only: apart from applying the
+// `ob-chrome viewport` emulation (below), it never drives the page, and it
 // exits on its own after 2 minutes of an unreachable CDP endpoint (stopped
 // screen), so lazy spawns cannot leak.
 
@@ -31,6 +32,14 @@ import {
   pickPageTarget,
   readActiveTabId,
 } from "./cdp"
+import {
+  emulationAction,
+  metricsOverride,
+  shapeSpec,
+  userAgentOverride,
+  type ViewportSpec,
+  viewportSignature,
+} from "./viewport"
 
 const MAX_LOG_BYTES = 2_000_000
 const SWEEP_MS = 5000
@@ -225,6 +234,123 @@ async function snapshotBody(
       snapshots.delete(oldest)
     }
   } catch {}
+}
+
+// ---- recorder-held viewport emulation ----
+//
+// CDP emulation overrides die with the socket that set them, and every CLI
+// call closes its own — so the recorder (the one socket that stays open)
+// holds the `ob-chrome viewport` override. The CLI writes the desired spec
+// to viewport.json beside the body handshake files; the recorder applies
+// or clears it on its poll loop and on every (re)attach, and reports what
+// it applied in viewport-applied.json for the CLI to wait on. Deleting the
+// desired file is "off".
+
+function viewportFile(dir: string) {
+  return join(dir, "viewport.json")
+}
+
+function viewportAppliedFile(dir: string) {
+  return join(dir, "viewport-applied.json")
+}
+
+export function writeDesiredViewport(dir: string, spec: ViewportSpec | null) {
+  mkdirSync(dir, { recursive: true })
+  if (!spec) {
+    try {
+      unlinkSync(viewportFile(dir))
+    } catch {}
+    return
+  }
+  writeFileSync(viewportFile(dir), JSON.stringify(spec))
+}
+
+export function readDesiredViewport(dir: string): ViewportSpec | null {
+  let raw = ""
+  try {
+    raw = readFileSync(viewportFile(dir), "utf8")
+  } catch {
+    return null
+  }
+  try {
+    return shapeSpec(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
+export function readAppliedSignature(dir: string): string {
+  try {
+    const row = JSON.parse(readFileSync(viewportAppliedFile(dir), "utf8")) as {
+      signature?: unknown
+    }
+    return typeof row.signature === "string" ? row.signature : "off"
+  } catch {
+    return "off"
+  }
+}
+
+function writeAppliedSignature(
+  dir: string,
+  signature: string,
+  targetId: string,
+) {
+  try {
+    writeFileSync(
+      viewportAppliedFile(dir),
+      JSON.stringify({ signature, targetId, at: Date.now() }),
+    )
+  } catch {}
+}
+
+// Applies or clears the override to match the desired file; returns the
+// signature now in effect on this socket. Each CDP call is best-effort: a
+// browser that rejects the UA metadata still gets its metrics, and the
+// metrics call is the one that decides success — on its failure the old
+// signature stands, so the next poll retries.
+async function syncViewport(
+  socket: CdpSocket,
+  dir: string,
+  appliedSignature: string,
+  targetId: string,
+): Promise<string> {
+  const desired = readDesiredViewport(dir)
+  const action = emulationAction(appliedSignature, desired)
+  if (action === "none") return appliedSignature
+  if (action === "clear") {
+    await socket
+      .call("Emulation.clearDeviceMetricsOverride")
+      .catch(() => undefined)
+    await socket
+      .call("Emulation.setUserAgentOverride", { userAgent: "" })
+      .catch(() => undefined)
+    await socket
+      .call("Emulation.setTouchEmulationEnabled", { enabled: false })
+      .catch(() => undefined)
+    writeAppliedSignature(dir, "off", targetId)
+    return "off"
+  }
+  if (!desired) return appliedSignature
+  try {
+    await socket.call(
+      "Emulation.setDeviceMetricsOverride",
+      metricsOverride(desired),
+    )
+  } catch {
+    return appliedSignature
+  }
+  await socket
+    .call("Emulation.setUserAgentOverride", userAgentOverride(desired))
+    .catch(() => undefined)
+  await socket
+    .call("Emulation.setTouchEmulationEnabled", {
+      enabled: desired.mobile,
+      ...(desired.mobile ? { maxTouchPoints: 5 } : {}),
+    })
+    .catch(() => undefined)
+  const signature = viewportSignature(desired)
+  writeAppliedSignature(dir, signature, targetId)
+  return signature
 }
 
 function cdpPort(session: string): number {
@@ -556,6 +682,9 @@ export async function record(session: string): Promise<void> {
     handleEvent(open, file, raw, snapshots, () => socket)
   let socket: CdpSocket | null = null
   let bound = ""
+  // Emulation in effect on the live socket; a fresh socket has none, so
+  // every (re)attach resets it and syncViewport re-applies the desired file.
+  let appliedViewport = "off"
   let deadSince = 0
   let lastSweep = 0
   let poll = 0
@@ -570,9 +699,14 @@ export async function record(session: string): Promise<void> {
           socket?.close()
         } catch {}
         socket = null
+        appliedViewport = "off"
         try {
           socket = await attach(target, onMessage)
           bound = target.id
+          // A fresh socket carries no override: say so before re-applying,
+          // so a stale applied file never claims a dead browser's viewport.
+          writeAppliedSignature(dir, "off", bound)
+          appliedViewport = await syncViewport(socket, dir, "off", bound)
         } catch {
           socket = null
           bound = ""
@@ -586,6 +720,7 @@ export async function record(session: string): Promise<void> {
           if (/connection|timed out|closed/i.test(message)) {
             socket = null
             bound = ""
+            appliedViewport = "off"
           }
         })
       }
@@ -597,7 +732,10 @@ export async function record(session: string): Promise<void> {
       lastSweep = now
       for (const event of staleRequests(open, now)) writeEvent(file, event)
     }
-    if (socket) await serveBodyRequest(socket, dir, snapshots)
+    if (socket) {
+      appliedViewport = await syncViewport(socket, dir, appliedViewport, bound)
+      await serveBodyRequest(socket, dir, snapshots)
+    }
     poll += 1
     await Bun.sleep(POLL_MS)
   }

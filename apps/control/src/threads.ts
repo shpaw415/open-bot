@@ -40,7 +40,7 @@ import { deleteSessionMedia } from "./workspace-snapshots"
 // the media vault already skip worker:/cron-run: titled sessions, so a hidden
 // thread never appears there and never files media.
 export const WORKER_TITLE_PREFIX = "worker:"
-const CRON_TITLE_PREFIX = "cron-run:"
+export const CRON_TITLE_PREFIX = "cron-run:"
 const TITLE_LIMIT = 80
 const MESSAGE_LIMIT = 8000
 const PROMPT_TIMEOUT_MS = 30_000

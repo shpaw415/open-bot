@@ -16,14 +16,24 @@ import {
   ensureRecorder,
   eventsDir,
   eventsFile,
+  readAppliedSignature,
   readBodyResult,
   readConsole,
+  readDesiredViewport,
   readNetwork,
   writeBodyRequest,
+  writeDesiredViewport,
 } from "./devtools"
+import {
+  orientationOf,
+  parseViewportRequest,
+  VIEWPORT_PRESETS,
+  type ViewportSpec,
+  viewportSignature,
+} from "./viewport"
 
 const USAGE =
-  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] JS"
+  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] JS | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]"
 
 export type PageState = {
   url: string
@@ -806,6 +816,136 @@ async function evalCmd(
   }
 }
 
+// ---- viewport (mobile / device emulation) ----
+//
+// The DevTools device toolbar as a verb. The override itself is held by
+// the screen's DevTools recorder (its socket is the one that stays open —
+// see devtools.ts); this verb writes the desired spec, makes sure the
+// recorder is running, then waits until the recorder reports it applied
+// AND the live page measures at the new size, so a printed line is proof,
+// not intent. Output is one JSON line shaped like every verb's.
+
+type LiveViewport = {
+  url: string
+  width: number
+  height: number
+  dpr: number
+  touchPoints: number
+  userAgent: string
+}
+
+const LIVE_VIEWPORT_SCRIPT =
+  "({url:location.href,width:window.innerWidth,height:window.innerHeight,dpr:window.devicePixelRatio||1,touchPoints:navigator.maxTouchPoints||0,userAgent:navigator.userAgent||''})"
+
+async function liveViewport(port: number, session: string | undefined) {
+  const { socket } = await resolvePage(port, session)
+  try {
+    const raw = (await evaluate(socket, LIVE_VIEWPORT_SCRIPT)) as
+      | Partial<LiveViewport>
+      | undefined
+    return {
+      url: String(raw?.url ?? ""),
+      width: Number(raw?.width ?? 0),
+      height: Number(raw?.height ?? 0),
+      dpr: Number(raw?.dpr ?? 1),
+      touchPoints: Number(raw?.touchPoints ?? 0),
+      userAgent: String(raw?.userAgent ?? ""),
+    } satisfies LiveViewport
+  } finally {
+    socket.close()
+  }
+}
+
+function viewportLine(live: LiveViewport, desired: ViewportSpec | null) {
+  return {
+    url: live.url,
+    viewport: {
+      mode: !desired ? "desktop" : desired.mobile ? "mobile" : "custom",
+      preset: desired?.preset ? desired.preset : null,
+      width: live.width,
+      height: live.height,
+      dpr: live.dpr,
+      orientation: orientationOf(live),
+      touch: live.touchPoints > 0,
+      userAgent: live.userAgent,
+    },
+  }
+}
+
+// Waits for the recorder to apply (or clear) the desired spec. The applied
+// signature alone could be stale (a dead browser's file), so setting also
+// requires the live page to measure at the spec size; clearing requires
+// the live size or UA to have left the cleared spec behind.
+async function waitViewportApplied(
+  port: number,
+  session: string,
+  dir: string,
+  desired: ViewportSpec | null,
+  cleared: ViewportSpec | null,
+): Promise<LiveViewport> {
+  const expected = viewportSignature(desired)
+  const deadline = Date.now() + 8000
+  for (;;) {
+    const live = await liveViewport(port, session).catch(() => null)
+    if (live && readAppliedSignature(dir) === expected) {
+      if (desired) {
+        if (
+          live.width === desired.width &&
+          live.height === desired.height &&
+          (desired.userAgent === "" || live.userAgent === desired.userAgent)
+        )
+          return live
+      } else if (!cleared) return live
+      else if (
+        live.width !== cleared.width ||
+        live.height !== cleared.height ||
+        (cleared.userAgent !== "" && live.userAgent !== cleared.userAgent)
+      )
+        return live
+    }
+    if (Date.now() > deadline)
+      throw new Error(
+        "viewport did not apply — the screen's devtools recorder did not pick it up; retry once",
+      )
+    await Bun.sleep(250)
+  }
+}
+
+async function viewportCmd(
+  port: number,
+  session: string | undefined,
+  argv: string[],
+): Promise<Record<string, unknown>> {
+  if (!session) throw new Error("viewport needs a session")
+  const dir = eventsDir(session)
+  const current = readDesiredViewport(dir)
+  const request = parseViewportRequest(argv, current)
+  if (request.kind === "list") {
+    return {
+      devices: VIEWPORT_PRESETS.map((row) => ({
+        name: row.preset,
+        label: row.label,
+        width: row.width,
+        height: row.height,
+        dpr: row.dpr,
+      })),
+    }
+  }
+  if (request.kind === "status") {
+    ensureRecorder(session)
+    const live = await liveViewport(port, session)
+    return {
+      ...viewportLine(live, current),
+      applied: readAppliedSignature(dir) === viewportSignature(current),
+    }
+  }
+  const desired = request.kind === "set" ? request.spec : null
+  writeDesiredViewport(dir, desired)
+  ensureRecorder(session)
+  const live = await waitViewportApplied(port, session, dir, desired, current)
+  return viewportLine(live, desired)
+}
+
 export function verbFrom(argv: string[]): {
   verb: string
   url?: string
@@ -919,6 +1059,13 @@ async function main() {
     state = await withHeal(session, () => evalCmd(port, session, args, flags))
   else if (verb === "cache")
     state = await withHeal(session, () => cacheCmd(port, session, args, flags))
+  // viewport parses its own argv tail: its bare flags (--landscape,
+  // --desktop) must not swallow a following preset the way the generic
+  // flag parser would.
+  else if (verb === "viewport")
+    state = await withHeal(session, () =>
+      viewportCmd(port, session, argv.slice(1)),
+    )
   else throw new Error(USAGE)
   // eval --raw: the JSON value alone on the line, no {url, value} envelope.
   if (typeof state === "object" && state !== null && "__raw" in state) {

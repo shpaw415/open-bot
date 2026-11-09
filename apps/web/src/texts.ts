@@ -250,6 +250,11 @@ export const THREADS_UI = {
   cancelEdit: "Annuler",
   copyMessage: "Copier le message",
   copiedMessage: "Copié",
+  splitThread: "Nouvelle conversation jusqu’à ce message",
+  splitThreadFailed: "Échec de la création de la conversation",
+  splitThreadBusy:
+    "La conversation travaille encore — attendez la fin de la réponse ou arrêtez-la, puis réessayez.",
+  splittingThread: "Création de la conversation…",
   workedFor: (duration: string, steps: number) =>
     duration
       ? `A travaillé ${duration} · ${steps} ${steps === 1 ? "étape" : "étapes"}`

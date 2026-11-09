@@ -202,6 +202,38 @@ test("transcriptBubbles keeps pinned URLs through bubble merging", () => {
   ).toBe(true)
 })
 
+test("transcriptBubbles tracks each bubble's last raw message id for splitting", () => {
+  const messages = [
+    { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "hi" }] },
+    {
+      info: { id: "a1", role: "assistant", time: { created: 1, completed: 2 } },
+      parts: [{ type: "text", text: "first" }],
+    },
+    {
+      info: { id: "a2", role: "assistant", time: { created: 3, completed: 4 } },
+      parts: [{ type: "text", text: "second" }],
+    },
+    {
+      info: { id: "u2", role: "user" },
+      parts: [{ type: "text", text: "again" }],
+    },
+  ]
+  const bubbles = transcriptBubbles(messages, [])
+  // The two assistant messages merge into one burst bubble; its end is a2,
+  // not the a1 its `info` still carries.
+  expect(bubbles.map((entry) => entry.message.lastMessageId)).toEqual([
+    "u1",
+    "a2",
+    "u2",
+  ])
+  // A pending receipt bubble has no raw message to split at.
+  const pending = transcriptBubbles(messages, [
+    { id: "r1", text: "later", status: "sending", sentAt: 10, baseline: 2 },
+  ])
+  expect(pending[pending.length - 1]?.message.lastMessageId).toBe("")
+  expect(pending[pending.length - 1]?.pendingId).toBe("r1")
+})
+
 test("transcriptBubbles never renders queued bubbles (the queue lives in its dock)", () => {
   const messages = [
     { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "hi" }] },

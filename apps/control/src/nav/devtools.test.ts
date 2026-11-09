@@ -6,13 +6,17 @@ import {
   consoleText,
   mergeNetworkEvent,
   type NetMap,
+  readAppliedSignature,
   readConsole,
+  readDesiredViewport,
   readNetwork,
   shapeConsole,
   shapeException,
   shapeLogEntry,
   staleRequests,
+  writeDesiredViewport,
 } from "./devtools"
+import { findPreset, viewportSignature } from "./viewport"
 
 afterAll(() => {
   rmSync(join(tmpdir(), "ob-devtools-test"), { recursive: true, force: true })
@@ -266,4 +270,39 @@ test("network reads fold duplicate ids to the last line and filter", () => {
   expect(readNetwork(file, "b.test", 10)).toHaveLength(1)
   expect(readNetwork(file, "", 1)[0].id).toBe("b")
   expect(readNetwork(join(dir, "missing.jsonl"), "", 10)).toEqual([])
+})
+
+// ---- viewport emulation state files ----
+
+test("desired viewport round-trips; clearing deletes the file", () => {
+  const spec = findPreset("iphone-14")
+  if (!spec) throw new Error("preset missing")
+  expect(readDesiredViewport(dir)).toBeNull()
+  writeDesiredViewport(dir, spec)
+  expect(readDesiredViewport(dir)).toEqual(spec)
+  writeDesiredViewport(dir, null)
+  expect(readDesiredViewport(dir)).toBeNull()
+})
+
+test("a corrupt desired file reads as off, never as a crash", () => {
+  writeFileSync(join(dir, "viewport.json"), "{not json")
+  expect(readDesiredViewport(dir)).toBeNull()
+  writeFileSync(join(dir, "viewport.json"), JSON.stringify({ width: 1 }))
+  expect(readDesiredViewport(dir)).toBeNull()
+  writeDesiredViewport(dir, null)
+})
+
+test("applied signature defaults to off without a recorder report", () => {
+  expect(readAppliedSignature(dir)).toBe("off")
+  const spec = findPreset("pixel-7")
+  if (!spec) throw new Error("preset missing")
+  writeFileSync(
+    join(dir, "viewport-applied.json"),
+    JSON.stringify({
+      signature: viewportSignature(spec),
+      targetId: "t1",
+      at: 1,
+    }),
+  )
+  expect(readAppliedSignature(dir)).toBe(viewportSignature(spec))
 })
