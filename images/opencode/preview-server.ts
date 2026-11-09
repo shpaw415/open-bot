@@ -83,6 +83,17 @@ export async function servePreview(root: string, pathname: string) {
     file = join(file, "index.html")
     info = await stat(file).catch(() => null)
   }
+  if (!info?.isFile()) {
+    // Cloudflare Pages clean routes (#91): /menu serves menu.html in
+    // production, so the local preview resolves extensionless paths the
+    // same way — real misses still 404 below.
+    const htmlFile = `${file}.html`
+    const htmlInfo = await stat(htmlFile).catch(() => null)
+    if (htmlInfo?.isFile() && insideRoot(root, htmlFile)) {
+      file = htmlFile
+      info = htmlInfo
+    }
+  }
   if (!info?.isFile() || !insideRoot(root, file)) {
     return new Response("not found", { status: 404 })
   }

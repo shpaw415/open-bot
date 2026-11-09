@@ -159,6 +159,10 @@ async function run(session: string | undefined) {
             )
           if (typeof ok === "string" && ok.startsWith("covered:"))
             throw new Error(`target ${ok.replace("covered:", "covered by ")}`)
+          if (typeof ok === "string" && ok.startsWith("unverified:"))
+            throw new Error(
+              `${verb} on ${id} was not verified (${ok.slice("unverified:".length)}): no observable page change followed it. It may need a real pointer/keyboard event — retry with ob-vnc, or re-read the page to check its state.`,
+            )
           await Bun.sleep(verb === "type" ? 200 : 80)
           // A click that navigates tears the execution context down while the
           // post-action read runs; the click still worked. Settle, then re-read

@@ -81,6 +81,14 @@ xdotool_input() {
       DISPLAY=:$display xdotool click "$1"
       shift
       ;;
+    mousedown)
+      DISPLAY=:$display xdotool mousedown "$1"
+      shift
+      ;;
+    mouseup)
+      DISPLAY=:$display xdotool mouseup "$1"
+      shift
+      ;;
     key | keyup)
       DISPLAY=:$display xdotool "$cmd" "$(xkey "$1")"
       shift
@@ -100,8 +108,16 @@ xdotool_input() {
 
 vnc_input() {
   status=0
-  err=$(vncdo -s "$host" "$@" 2>&1) || status=$?
+  # A wedged vncdo must never hang the CLI (field #72: drag never returned
+  # and left modifiers/buttons stuck). Bounded, with a best-effort local
+  # release of buttons and modifiers on timeout.
+  err=$(timeout 20 vncdo -s "$host" "$@" 2>&1) || status=$?
   [ "$status" -eq 0 ] && return 0
+  if [ "$status" -eq 124 ]; then
+    echo "ob-vnc: vnc input timed out after 20s — released buttons/modifiers locally; run ob-vnc recover, then retry once" >&2
+    DISPLAY=:$display xdotool mouseup 1 keyup ctrl keyup shift keyup alt keyup super >/dev/null 2>&1 || true
+    return "$status"
+  fi
   case "$err" in
     *refused* | *Refused* | *ECONNREFUSED* | *timed\ out*)
       echo "ob-vnc: vnc input unavailable on $host — using the local X display" >&2
@@ -155,9 +171,9 @@ if [ "${1:-}" = "recover" ]; then
     echo "usage: ob-vnc --session SESSION recover" >&2
     exit 1
   fi
-  vnc_input keyup ctrl keyup rctrl keyup shift keyup rshift \
+  vnc_input mouseup 1 mouseup 2 mouseup 3 keyup ctrl keyup rctrl keyup shift keyup rshift \
     keyup alt keyup ralt keyup meta keyup rmeta keyup super keyup rsuper
-  echo "released stuck modifiers. Retry the action once; if the page still does not change, stop input and hand the screen to the user."
+  echo "released stuck modifiers and pointer buttons. Retry the action once; if the page still does not change, stop input and hand the screen to the user."
   exit 0
 fi
 if [ "${1:-}" = "paste" ]; then
@@ -179,12 +195,81 @@ if [ "${1:-}" = "paste" ]; then
   vnc_input type "$text"
   exit 0
 fi
+if [ "${1:-}" = "drag" ]; then
+  shift
+  # drag X2 Y2 drags from the current pointer position; drag X1 Y1 X2 Y2
+  # starts at X1,Y1. Implemented as an explicit move/mousedown/move/mouseup
+  # sequence — vncdotool's own drag verb hangs in the field (#72) and its
+  # parser rejects the 4-coordinate form.
+  if [ "$#" -ne 2 ] && [ "$#" -ne 4 ]; then
+    echo "usage: ob-vnc --session SESSION drag X2 Y2 | drag X1 Y1 X2 Y2" >&2
+    exit 1
+  fi
+  for value in "$@"; do
+    case "$value" in
+      '' | *[!0-9]*)
+        echo "usage: ob-vnc --session SESSION drag X2 Y2 | drag X1 Y1 X2 Y2" >&2
+        exit 1
+        ;;
+    esac
+  done
+  drag_status=0
+  if [ "$#" -eq 4 ]; then
+    start_x=$1 start_y=$2 end_x=$3 end_y=$4
+    vnc_input move "$start_x" "$start_y" mousedown 1 move "$end_x" "$end_y" mouseup 1 || drag_status=$?
+  else
+    vnc_input mousedown 1 move "$1" "$2" mouseup 1 || drag_status=$?
+  fi
+  if [ "$drag_status" -ne 0 ]; then
+    # Never leave the button (or modifiers) held after a failed drag.
+    vnc_input mouseup 1 >/dev/null 2>&1 || true
+    DISPLAY=:$display xdotool mouseup 1 keyup ctrl keyup shift keyup alt keyup super >/dev/null 2>&1 || true
+    echo "ob-vnc: drag failed — pointer button released; run ob-vnc recover if keys still misbehave" >&2
+    exit "$drag_status"
+  fi
+  exit 0
+fi
+if [ "${1:-}" = "windows" ]; then
+  shift
+  if [ "$#" -gt 0 ]; then
+    echo "usage: ob-vnc --session SESSION windows" >&2
+    exit 1
+  fi
+  # Native dialogs (GTK file choosers, #82) are separate X windows; VNC key
+  # input follows X focus, so list windows and focus explicitly instead of
+  # hoping the dialog kept it between calls.
+  active=$(DISPLAY=:$display xdotool getactivewindow 2>/dev/null || true)
+  for win in $(DISPLAY=:$display xdotool search --onlyvisible "" 2>/dev/null); do
+    name=$(DISPLAY=:$display xdotool getwindowname "$win" 2>/dev/null || true)
+    [ -n "$name" ] || continue
+    mark=""
+    [ "$win" = "$active" ] && mark=" [active]"
+    printf '%s %s%s\n' "$win" "$name" "$mark"
+  done
+  exit 0
+fi
+if [ "${1:-}" = "focus" ]; then
+  shift
+  if [ "$#" -ne 1 ]; then
+    echo "usage: ob-vnc --session SESSION focus WINDOW_ID (from: ob-vnc windows)" >&2
+    exit 1
+  fi
+  case "$1" in
+    '' | *[!0-9]*)
+      echo "usage: ob-vnc --session SESSION focus WINDOW_ID (from: ob-vnc windows)" >&2
+      exit 1
+      ;;
+  esac
+  DISPLAY=:$display xdotool windowactivate --sync "$1"
+  echo "focused $1 $(DISPLAY=:$display xdotool getwindowname "$1" 2>/dev/null || true)"
+  exit 0
+fi
 if [ "${1:-}" = "capture" ]; then
   shift
   out=${1:-}
   res=${2:-}
   if [ -z "$out" ] || [ "$#" -gt 2 ]; then
-    echo "usage: ob-vnc --session SESSION capture FILE [2|2560x1600]" >&2
+    echo "usage: ob-vnc --session SESSION capture FILE [2|WxH — width 640..3840, height 480..2400]" >&2
     exit 1
   fi
   if [ -n "$res" ]; then
@@ -213,6 +298,10 @@ if printf '%s\n' "$@" | grep -qx -e key -e keyup; then
         pageup) arg=pgup ;;
         pagedown) arg=pgdn ;;
         insert) arg=ins ;;
+        # Browser zoom-in (#11/#58): vncdotool has no "plus" keysym alias
+        # and crashes on it; Ctrl+equal is the same zoom chord.
+        plus) arg=equal ;;
+        *-plus) arg="${lowered%-plus}-equal" ;;
         *) arg=$lowered ;;
       esac
     fi

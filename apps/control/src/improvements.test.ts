@@ -49,6 +49,78 @@ describe("improvement reports", () => {
     )
   })
 
+  test("fingerprint canonicalizes paraphrased reports of one defect family", () => {
+    // Real agent-filed titles for the ob-skill save hang (38 GitHub issues
+    // from one root cause): wording, language, kind, and surface all vary.
+    const hangTitles = [
+      "ob-skill save hangs after durable write",
+      "ob-skill save persists then hangs",
+      "ob-skill save times out after successful persistence",
+      "ob-skill save reste bloqué après sauvegarde OpenViking réussie",
+      "OpenViking skill save times out despite successful persistence",
+      "ob-skill save hangs without acknowledgement",
+      "ob-skill save reports OpenViking timeout after successful persistence",
+    ]
+    const hangPrints = new Set(
+      hangTitles.map((title, i) =>
+        improvementFingerprint(
+          i % 2 ? "friction" : "bug",
+          i % 2 ? "other" : "config",
+          title,
+        ),
+      ),
+    )
+    expect(hangPrints.size).toBe(1)
+    const lossA = improvementFingerprint(
+      "bug",
+      "config",
+      "ob-skill replacement loses existing skill when upstream returns 429",
+    )
+    const lossB = improvementFingerprint(
+      "bug",
+      "config",
+      "ob-skill replace failing HTTP429 removes the previously installed skill",
+    )
+    expect(lossA).toBe(lossB)
+    // The French quota/restore wording of the same replace failure (#97).
+    expect(
+      improvementFingerprint(
+        "bug",
+        "config",
+        "ob-skill save replace et restauration échouent lors des quotas OpenViking",
+      ),
+    ).toBe(lossA)
+    expect(lossA).not.toBe([...hangPrints][0])
+    // Distinct families stay distinct.
+    const typeA = improvementFingerprint(
+      "bug",
+      "desktop",
+      "ob-page type updates React input DOM but not controlled state",
+    )
+    const typeB = improvementFingerprint(
+      "bug",
+      "nav",
+      "ob-page type changes a React controlled input visually without updating its state",
+    )
+    expect(typeA).toBe(typeB)
+    const memA = improvementFingerprint(
+      "friction",
+      "other",
+      "Memory search returns unrelated high-confidence results",
+    )
+    const memB = improvementFingerprint(
+      "friction",
+      "chat",
+      "Memory retrieval ranks unrelated entities highly for exact technical identifiers",
+    )
+    expect(memA).toBe(memB)
+    expect(new Set([[...hangPrints][0], lossA, typeA, memA]).size).toBe(4)
+    // Plugin scoping still separates canonical families.
+    expect(
+      improvementFingerprint("bug", "config", hangTitles[0], "weather-pro"),
+    ).not.toBe([...hangPrints][0])
+  })
+
   test("fingerprint keeps the legacy hash without a plugin and separates plugins", () => {
     const legacy = improvementFingerprint("bug", "nav", "ob-nav failed")
     expect(improvementFingerprint("bug", "nav", "ob-nav failed", null)).toBe(

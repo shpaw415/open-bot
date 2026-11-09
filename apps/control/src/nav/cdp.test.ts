@@ -214,8 +214,8 @@ test("probe and actions cross shadow boundaries", async () => {
   }
   // The probe walks open shadow roots (web-component tiles keep their real
   // controls there) with a bounded scan.
-  expect(PROBE).toContain("descend(el.shadowRoot)")
-  expect(PROBE).toContain("descend(document)")
+  expect(PROBE).toContain("descend(el.shadowRoot, ox, oy)")
+  expect(PROBE).toContain("descend(document, 0, 0)")
   expect(PROBE).toContain("scanBudget-- <= 0")
   // Every id-targeting action resolves through the shadow-aware lookup.
   for (const action of [
@@ -413,7 +413,7 @@ test("an explicit label[for] names an input in probe and fingerprint", () => {
   expect(labelFor(el({}))).toBe("")
   // The probe's element label chain uses it too, right after aria-label.
   expect(PROBE).toContain(
-    'el.getAttribute("aria-label") || __obLabelFor(el) || el.innerText',
+    'el.getAttribute("aria-label") || __obLabelledBy(el) || __obLabelFor(el) || el.innerText',
   )
 })
 
@@ -529,4 +529,74 @@ test("a timed-out call rejects cleanly, drops its late reply and leaves the sock
   } finally {
     server.stop(true)
   }
+})
+
+test("click script verifies an observable change or reports unverified (#89)", async () => {
+  const { actionScript } = (await import("./cdp")) as {
+    actionScript: (action: { kind: "click"; targetId: string }) => string
+  }
+  const script = actionScript({ kind: "click", targetId: "n7" })
+  expect(script).toContain("(async () => {")
+  expect(script).toContain("'unverified:no-change'")
+  expect(script).toContain("aria-disabled")
+  // The element's own state counts as a change (radio/checkbox/tab picks
+  // change no text, dialog, or URL).
+  expect(script).toContain("el.checked")
+  expect(script).toContain("aria-expanded")
+})
+
+test("type script reports a controlled value that reverts (#53/#57/#64)", async () => {
+  const { actionScript } = (await import("./cdp")) as {
+    actionScript: (action: {
+      kind: "type"
+      targetId: string
+      text: string
+    }) => string
+  }
+  const script = actionScript({ kind: "type", targetId: "n2", text: "hi" })
+  expect(script).toContain("(async () => {")
+  expect(script).toContain("'unverified:value-reverted'")
+})
+
+test("probe lists visible listbox options as their own elements (#33)", async () => {
+  const { PROBE, OBNAV_SELECTOR } = (await import("./cdp")) as {
+    PROBE: string
+    OBNAV_SELECTOR: string
+  }
+  expect(OBNAV_SELECTOR).toContain('[role="option"]')
+  expect(PROBE).toContain('[role="option"]')
+  // Hidden retained option nodes of a closed listbox stay out.
+  expect(PROBE).toContain("checkVisibility")
+  expect(PROBE).toContain('el.getAttribute("aria-selected") === "true"')
+})
+
+test("fingerprint lookup tolerates a vanished twin (#73)", async () => {
+  const { obnavFindExpr } = (await import("./cdp")) as {
+    obnavFindExpr: (idExpr: string) => string
+  }
+  const script = obnavFindExpr(JSON.stringify("n3"))
+  expect(script).toContain("matchCount === 1")
+})
+
+test("accessible name resolves aria-labelledby and wrapping labels (#41)", async () => {
+  const { OBNAV_FP_FN } = (await import("./cdp")) as {
+    OBNAV_FP_FN: string
+  }
+  expect(OBNAV_FP_FN).toContain("aria-labelledby")
+  expect(OBNAV_FP_FN).toContain("el.labels")
+})
+
+test("probe and actions descend into same-origin iframes (#93)", async () => {
+  const { PROBE, actionScript, obnavFindExpr } = (await import("./cdp")) as {
+    PROBE: string
+    actionScript: (action: { kind: string; targetId: string }) => string
+    obnavFindExpr: (idExpr: string) => string
+  }
+  expect(PROBE).toContain("contentDocument")
+  expect(PROBE).toContain("descend(frameDoc")
+  expect(PROBE).toContain("el.ownerDocument.elementFromPoint")
+  const find = obnavFindExpr(JSON.stringify("n3"))
+  expect(find).toContain("contentDocument")
+  const click = actionScript({ kind: "click", targetId: "n7" })
+  expect(click).toContain("el.ownerDocument")
 })

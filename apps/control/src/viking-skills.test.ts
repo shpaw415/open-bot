@@ -528,6 +528,87 @@ describe("viking skills", () => {
     expect(posts).toBe(3)
   })
 
+  test("a POST that times out after landing is reconciled, not retried or rolled back", async () => {
+    let posts = 0
+    let landed = false
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "POST" && url.endsWith("/skills")) {
+        posts += 1
+        landed = true
+        const timeout = new Error("The operation timed out.")
+        timeout.name = "TimeoutError"
+        throw timeout
+      }
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            content: landed ? skill.body : "# previous body",
+          },
+        }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      postRetryDelayMs: 1,
+      confirmPollDelayMs: 1,
+    })
+    await expect(skills.save(skill)).resolves.toEqual({ confirmed: true })
+    // Exactly one POST: no duplicate write, no rollback over the new body.
+    expect(posts).toBe(1)
+  })
+
+  test("an OpenViking timeout is a distinct 504, not 'not reachable'", async () => {
+    const { fetchImpl } = mockFetch(() => {
+      const timeout = new Error("The operation timed out.")
+      timeout.name = "TimeoutError"
+      throw timeout
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl)
+    const error = await skills.get("search-web").catch((caught) => caught)
+    expect(error).toBeInstanceOf(HttpError)
+    expect((error as HttpError).status).toBe(504)
+    expect((error as HttpError).code).toBe("viking_timeout")
+    expect((error as HttpError).message).toContain("read back")
+  })
+
+  test("confirm read-back is time-bounded even with many attempts configured", async () => {
+    let gets = 0
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web")) {
+        gets += 1
+        return {
+          status: "ok",
+          result: { name: "search-web", content: "# something else" },
+        }
+      }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      confirmAttempts: 500,
+      confirmPollDelayMs: 5,
+      confirmBudgetMs: 30,
+    })
+    await expect(skills.save(skill)).resolves.toEqual({ confirmed: false })
+    expect(gets).toBeLessThan(100)
+  })
+
   test("remove retries the indexing 409 instead of leaving the skill behind", async () => {
     let deletes = 0
     const { calls, fetchImpl } = mockFetch((url, init) => {

@@ -31,20 +31,25 @@ Do not stop the task to ask. Save alongside the work. In the final reply, one se
 
 Name: `shortcut-<verb>`, at most 64 characters. Do not use the name `shortcut`.
 
-Read `api_key` from `~/.openviking/ovcli.conf`. Do not print it.
-
-Create:
+Save with `ob-skill` — never curl OpenViking by hand, and never read or
+print the API key. Create or replace (same name means replace):
 
 ```sh
-curl -sS -X POST http://viking:1933/api/v1/skills \
-  -H "X-API-Key: $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"data":{"name":"shortcut-open-mail","description":"when to use it, one line","content":"# Open mail\n\nfast path\n\nReplaces: the slow path"}}'
+ob-skill save shortcut-open-mail \
+  --description "when to use it, one line" \
+  --body "# Open mail
+
+fast path
+
+Replaces: the slow path"
 ```
 
-Do not pass `wait`. The call returns fast with a `uri`, and the content is already written. Confirm with `openviking_read`. If the request times out, read the skill before retrying, or you will create a duplicate.
-
-Replace an existing one by DELETE `http://viking:1933/api/v1/skills/<name>` then the same POST. Do not use PUT — it can hang on a loaded server.
+When replacing, read the current body with `ob-skill get <name>` first and
+preserve everything still true. Confirm with `ob-skill get <name>` after
+saving. If `save` reports the write is durable but still indexing, do not
+retry the save — a get may briefly miss while indexing settles. If a save
+times out, read back with `ob-skill get` before any retry, or you may
+duplicate or clobber a write that already landed.
 
 The description is the trigger: when to load it. The content is the fast path and what it replaces. No secrets.
 

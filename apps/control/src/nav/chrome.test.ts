@@ -4,9 +4,11 @@ import {
   capText,
   closeTab,
   devOrigin,
+  EVAL_TIMEOUT_MS,
   evalRequest,
   flagsFrom,
   matchTab,
+  nextActiveAfterClose,
   normalizeTarget,
   schemeError,
   shapeState,
@@ -353,4 +355,36 @@ test("closetab still fails when the tab survives the close", async () => {
   } finally {
     globalThis.fetch = real
   }
+})
+
+test("closing a tab keeps the previously active survivor active (#24)", () => {
+  const targets = [
+    {
+      id: "t1",
+      url: "https://a.test/",
+      title: "A",
+      webSocketDebuggerUrl: "ws://a",
+    },
+    {
+      id: "t2",
+      url: "https://b.test/",
+      title: "B",
+      webSocketDebuggerUrl: "ws://b",
+    },
+    {
+      id: "t3",
+      url: "https://c.test/",
+      title: "C",
+      webSocketDebuggerUrl: "ws://c",
+    },
+  ]
+  // Closing inactive t3 must not steal focus from active t2 to t1.
+  expect(nextActiveAfterClose(targets.slice(0, 2), "t2")?.id).toBe("t2")
+  // Closing the active tab falls back to the first real survivor.
+  expect(nextActiveAfterClose([targets[0], targets[2]], "t2")?.id).toBe("t1")
+  expect(nextActiveAfterClose([], "t2")).toBeNull()
+})
+
+test("eval gets a documented longer budget than ordinary CDP calls (#67)", () => {
+  expect(EVAL_TIMEOUT_MS).toBe(30_000)
 })

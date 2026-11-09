@@ -136,7 +136,9 @@ export async function connectCdp(
         try {
           const ok = await evaluate(socket, actionScript(action))
           const covered = typeof ok === "string" && ok.startsWith("covered:")
-          if (ok !== false && !covered) break
+          const unverified =
+            typeof ok === "string" && ok.startsWith("unverified:")
+          if (ok !== false && !covered && !unverified) break
           if (attempt === 0) {
             // A transient overlay (search suggest, banner) often clears on
             // its own; give it one chance before calling the target covered.
@@ -145,8 +147,10 @@ export async function connectCdp(
           }
           throw new Error(
             covered
-              ? `target ${ok.replace("covered:", "covered by ")}`
-              : "target covered",
+              ? `target ${(ok as string).replace("covered:", "covered by ")}`
+              : unverified
+                ? `action not verified (${(ok as string).slice("unverified:".length)}): no observable page change followed it`
+                : "target covered",
           )
         } catch (error) {
           const message = error instanceof Error ? error.message : ""
@@ -457,6 +461,10 @@ export async function captureMarked(
 // placeholder before visible text). The probe records it next to each id so
 // a later action can re-resolve the element when the stamped node is gone.
 export const OBNAV_FP_FN = `const __obLabelFor = (el) => {
+  try {
+    const own = el.labels && el.labels[0]
+    if (own) return (own.textContent || "").replace(/\\s+/g, " ").trim()
+  } catch (e) {}
   const id = el.id
   if (!id) return ""
   try {
@@ -465,14 +473,24 @@ export const OBNAV_FP_FN = `const __obLabelFor = (el) => {
     return lab ? (lab.textContent || "").replace(/\\s+/g, " ").trim() : ""
   } catch (e) { return "" }
 }
+const __obLabelledBy = (el) => {
+  const ids = (el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean)
+  if (!ids.length) return ""
+  try {
+    return ids.map((part) => {
+      const node = document.getElementById(part)
+      return node ? (node.textContent || "") : ""
+    }).join(" ").replace(/\\s+/g, " ").trim()
+  } catch (e) { return "" }
+}
 const __obFp = (el) => {
-  const stable = el.getAttribute("aria-label") || __obLabelFor(el) || el.id || el.getAttribute("name") || el.getAttribute("placeholder") || ""
+  const stable = el.getAttribute("aria-label") || __obLabelledBy(el) || __obLabelFor(el) || el.id || el.getAttribute("name") || el.getAttribute("placeholder") || ""
   const text = stable || (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 40)
   return el.tagName + "|" + (el.getAttribute("role") || "") + "|" + text
 }`
 
 export const OBNAV_SELECTOR =
-  'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'
+  'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [role="option"], [contenteditable="true"]'
 
 // Evaluates to the element for an obnav id, crossing shadow boundaries. The
 // probe marks controls inside open shadow roots (web-component tiles,
@@ -490,6 +508,17 @@ export function obnavFindExpr(idExpr: string) {
     if (direct) return direct
     const walk = (root) => {
       for (const el of root.querySelectorAll('*')) {
+        if (el.tagName === 'IFRAME') {
+          let frameDoc = null
+          try { frameDoc = el.contentDocument } catch (e) {}
+          if (frameDoc) {
+            const hit = frameDoc.querySelector('[data-obnav="' + id + '"]')
+            if (hit) return hit
+            const deep = walk(frameDoc)
+            if (deep) return deep
+          }
+          continue
+        }
         const shadow = el.shadowRoot
         if (!shadow) continue
         const hit = shadow.querySelector('[data-obnav="' + id + '"]')
@@ -508,16 +537,20 @@ export function obnavFindExpr(idExpr: string) {
     let budget = 4000
     let seen = -1
     let found = null
-    const descend = (root) => {
+    let firstMatch = null
+    let matchCount = 0
+    const descend = (root, ox, oy) => {
       if (found || budget <= 0) return
       for (const el of root.querySelectorAll(${JSON.stringify(OBNAV_SELECTOR)})) {
         if (budget-- <= 0) return
         const rect = el.getBoundingClientRect()
         if (rect.width < 2 || rect.height < 2) continue
-        if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
+        if (rect.bottom + oy < 0 || rect.top + oy > window.innerHeight || rect.right + ox < 0 || rect.left + ox > window.innerWidth) continue
         const style = getComputedStyle(el)
         if (style.visibility === "hidden" || style.display === "none") continue
         if (__obFp(el) !== rec.k) continue
+        matchCount += 1
+        if (!firstMatch) firstMatch = el
         seen += 1
         if (seen === rec.n) {
           found = el
@@ -526,10 +559,21 @@ export function obnavFindExpr(idExpr: string) {
       }
       for (const el of root.querySelectorAll("*")) {
         if (budget-- <= 0 || found) return
-        if (el.shadowRoot) descend(el.shadowRoot)
+        if (el.shadowRoot) descend(el.shadowRoot, ox, oy)
+        if (el.tagName === 'IFRAME') {
+          let frameDoc = null
+          try { frameDoc = el.contentDocument } catch (e) {}
+          if (!frameDoc || !frameDoc.body) continue
+          const fr = el.getBoundingClientRect()
+          if (fr.width < 2 || fr.height < 2) continue
+          descend(frameDoc, ox + fr.left, oy + fr.top)
+        }
       }
     }
-    descend(document)
+    descend(document, 0, 0)
+    // A twin unmounted since the read shifts every later occurrence; when
+    // exactly one element still carries the fingerprint it is unambiguous.
+    if (!found && matchCount === 1 && budget > 0) found = firstMatch
     if (!found) return null
     found.setAttribute("data-obnav", id)
     if (bag.map) bag.map.set(found, id)
@@ -552,11 +596,12 @@ export function actionScript(action: Act) {
     // With shadow DOM the point can also land on the shadow HOST — an
     // composed-tree ancestor of the target, not a cover — so ancestors along
     // the host chain keep the click allowed too.
-    return `(() => {
+    return `(async () => {
     const el = ${find}
     if (!el) return false
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return 'unverified:disabled'
     const rect = el.getBoundingClientRect()
-    const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+    const center = (el.ownerDocument || document).elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
     const composed = (node) => {
       const chain = []
       let current = node
@@ -574,16 +619,27 @@ export function actionScript(action: Act) {
         name += '.' + center.className.trim().split(/\\s+/).slice(0, 2).join('.')
       return ('covered:' + name).slice(0, 72)
     }
+    // A click that changes nothing observable must not read as success
+    // (#89: a synthetic click on a duplicated login button silently did
+    // nothing while a real pointer click opened the modal). The target's
+    // own state counts — radio/checkbox/tab picks change no URL or text.
+    const snapshot = () => location.href + '|' + document.title + '|' +
+      document.querySelectorAll('dialog[open], [aria-modal="true"], [role="alertdialog"]').length + '|' +
+      ((document.body && document.body.innerText) || '').length + '|' +
+      [el.checked, el.value, el.getAttribute('aria-expanded'), el.getAttribute('aria-checked'), el.getAttribute('aria-selected')].join(',')
+    const before = snapshot()
     el.click()
-    return true
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    return snapshot() !== before ? true : 'unverified:no-change'
   })()`
   }
   if (action.kind === "type") {
     const text = JSON.stringify(action.text)
-    return `(() => {
+    return `(async () => {
     const el = ${find}
     if (!el) return false
     el.focus()
+    const previous = 'value' in el ? String(el.value ?? '') : null
     if ('value' in el) {
       // React (and friends) ignore a plain .value write on controlled
       // inputs: onChange only fires when the native prototype setter is
@@ -597,6 +653,13 @@ export function actionScript(action: Act) {
       else el.value = ${text}
       el.dispatchEvent(new Event('input', { bubbles: true }))
       el.dispatchEvent(new Event('change', { bubbles: true }))
+      // A controlled field whose framework state never took the value
+      // reverts on the next render — report that instead of a DOM-only
+      // success (#37/#53/#57/#64). A formatted-but-different value counts
+      // as taken; only a revert to the exact previous value is a failure.
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      if (previous !== null && previous !== ${text} && String(el.value ?? '') === previous)
+        return 'unverified:value-reverted'
     }
     return true
   })()`
@@ -686,7 +749,7 @@ export const PROBE = `(() => {
   if (!bag.fp) bag.fp = {}
   ${OBNAV_FP_FN}
   const fpCounts = {}
-  const selector = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [contenteditable="true"]'
+  const selector = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="searchbox"], [role="combobox"], [role="checkbox"], [role="menuitem"], [role="option"], [contenteditable="true"]'
   const chrome = 'nav, header, aside, footer, [role="navigation"], [role="banner"], [role="contentinfo"]'
   const entry = 'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]), [role="textbox"], [role="searchbox"]'
   const tiers = [[], [], [], [], [], []]
@@ -734,14 +797,17 @@ export const PROBE = `(() => {
   // controls inside open shadow roots. Walk the light DOM, then descend into
   // open roots — capped so a pathological page cannot stall the probe.
   let scanBudget = 4000
-  const descend = (root) => {
+  const descend = (root, ox, oy) => {
     for (const el of root.querySelectorAll(selector)) {
       if (scanBudget-- <= 0) return
       const rect = el.getBoundingClientRect()
       if (rect.width < 2 || rect.height < 2) continue
-      if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
+      if (rect.bottom + oy < 0 || rect.top + oy > window.innerHeight || rect.right + ox < 0 || rect.left + ox > window.innerWidth) continue
       const style = getComputedStyle(el)
       if (style.visibility === "hidden" || style.display === "none") continue
+      // Closed listboxes keep retained option nodes in the DOM (#33): only
+      // options a user could actually see become click targets.
+      if (el.getAttribute("role") === "option" && typeof el.checkVisibility === "function" && !el.checkVisibility()) continue
       let id = bag.map.get(el)
       if (!id) {
         id = "n" + bag.n
@@ -758,7 +824,7 @@ export const PROBE = `(() => {
       bag.fp[id] = { k: fpKey, n: fpNth }
       // An explicit <label for="id"> is the input's accessible name; prefer
       // its text over innerText/placeholder/name (aria-label still wins).
-      const label = (el.getAttribute("aria-label") || __obLabelFor(el) || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
+      const label = (el.getAttribute("aria-label") || __obLabelledBy(el) || __obLabelFor(el) || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
       const item = {
         target_id: id,
         role: el.getAttribute("role") || el.tagName.toLowerCase(),
@@ -767,8 +833,9 @@ export const PROBE = `(() => {
         editable: el.matches('input, textarea, [contenteditable="true"]') && !el.disabled && !el.readOnly,
         actionable: true,
       }
-      const center = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+      const center = el.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
       item.actionable = !center || el === center || el.contains(center)
+      if (el.getAttribute("role") === "option" && el.getAttribute("aria-selected") === "true") item.value = "selected"
       if (el.tagName === "SELECT") {
         item.options = [...el.options].slice(0, 8).map((option) => ({ label: option.label }))
       } else {
@@ -797,6 +864,7 @@ export const PROBE = `(() => {
       let tier = 5
       if (topModal && topModal.contains(el)) tier = 0
       else if (el.matches(entry) && !el.disabled && !el.readOnly) tier = 1
+      else if (el.getAttribute("role") === "option") tier = 2
       else if (el.closest('[role="search"]')) tier = 2
       else if (el.matches('a[href^="#"]')) tier = el.closest(chrome) ? 4 : 3
       else if (!el.closest(chrome) && !el.matches('input[type="checkbox"]')) tier = 3
@@ -805,10 +873,22 @@ export const PROBE = `(() => {
     if (scanBudget <= 0) return
     for (const el of root.querySelectorAll("*")) {
       if (scanBudget-- <= 0) return
-      if (el.shadowRoot) descend(el.shadowRoot)
+      if (el.shadowRoot) descend(el.shadowRoot, ox, oy)
+      // Same-origin iframes carry whole app surfaces (embedded settings,
+      // business tools): their controls belong in the same read, stamped
+      // in their own document. Cross-origin frames throw on access and
+      // stay out.
+      if (el.tagName === "IFRAME") {
+        let frameDoc = null
+        try { frameDoc = el.contentDocument } catch (e) {}
+        if (!frameDoc || !frameDoc.body) continue
+        const fr = el.getBoundingClientRect()
+        if (fr.width < 2 || fr.height < 2) continue
+        descend(frameDoc, ox + fr.left, oy + fr.top)
+      }
     }
   }
-  descend(document)
+  descend(document, 0, 0)
   const out = []
   const remaining = () => max - out.length
   // Covered controls (behind an overlay/modal backdrop) sort last within
@@ -855,6 +935,12 @@ export const PROBE = `(() => {
     )
     let budget = 20000
     while (walker.nextNode() && budget-- > 0) parts.push(walker.currentNode.nodeValue)
+  }
+  for (const frame of document.querySelectorAll("iframe")) {
+    try {
+      const frameText = frame.contentDocument && frame.contentDocument.body ? (frame.contentDocument.body.innerText || "") : ""
+      if (frameText.trim()) parts.push(frameText)
+    } catch (e) {}
   }
   return {
     url: location.href,

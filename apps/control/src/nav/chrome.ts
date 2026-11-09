@@ -77,11 +77,16 @@ async function readState(socket: CdpSocket): Promise<PageState> {
 async function resolvePage(
   port: number,
   session?: string,
+  callTimeoutMs?: number,
 ): Promise<{ target: PageTarget; socket: CdpSocket }> {
   const targets = await listPageTargets(port)
   const target = pickPageTarget(targets, readActiveTabId(session))
   if (!target) throw new Error("no page on this screen")
-  const socket = await openSocket(target.webSocketDebuggerUrl)
+  const socket = await openSocket(
+    target.webSocketDebuggerUrl,
+    undefined,
+    callTimeoutMs,
+  )
   return { target, socket }
 }
 
@@ -283,6 +288,18 @@ async function switchTab(
   }
 }
 
+// Which tab is active after a close: the previously active survivor when
+// it still exists (closing an inactive tab must not steal focus, #24),
+// otherwise the first real survivor.
+export function nextActiveAfterClose(
+  survivors: PageTarget[],
+  activeId: string,
+): PageTarget | null {
+  return (
+    survivors.find((item) => item.id === activeId) ?? pickPageTarget(survivors)
+  )
+}
+
 export async function closeTab(
   port: number,
   session: string | undefined,
@@ -314,23 +331,26 @@ export async function closeTab(
   if (!closed) throw new Error("tab did not close")
   if (target.id === activeId) clearActiveTabId(session)
   const closedState: PageState = { ...shapeState(null), browserClosed: true }
-  // The screen should follow the survivor, not a closed tab.
+  // The screen should follow the survivor, not a closed tab — and closing
+  // an inactive tab keeps the active one active (#24).
   const survivors = (rest ?? []).filter((item) => item.id !== target.id)
-  const next = pickPageTarget(survivors)
+  const next = nextActiveAfterClose(survivors, activeId)
   if (!next) return closedState
   writeActiveTabId(session, next.id)
   // The close already succeeded; a browser dying around the survivor must
-  // not turn it into a failure (which also made withHeal relaunch it).
+  // not turn it into a failure (which also made withHeal relaunch it). The
+  // answer still names the actual remaining tab from the fresh listing.
+  const survivorState: PageState = { url: next.url, title: next.title }
   try {
     const socket = await openSocket(next.webSocketDebuggerUrl)
     try {
       await front(socket)
-      return await readState(socket).catch(() => shapeState(null))
+      return await readState(socket).catch(() => survivorState)
     } finally {
       socket.close()
     }
   } catch {
-    return closedState
+    return survivorState
   }
 }
 
@@ -768,6 +788,11 @@ export function evalRequest(
 // is the {url, value} envelope every verb prints; --raw prints the JSON
 // value alone so a poll can read fields at the root (`eval '({mode:1})'
 // --raw` -> {"mode":1}).
+//
+// An eval expression may legitimately await sequential iframe/page work
+// far past the ordinary 6 s CDP call budget (#34/#43/#45/#67), so eval —
+// and only eval — gets this documented 30 s ceiling.
+export const EVAL_TIMEOUT_MS = 30_000
 async function evalCmd(
   port: number,
   session: string | undefined,
@@ -776,9 +801,16 @@ async function evalCmd(
 ): Promise<Record<string, unknown>> {
   const { expression, raw } = evalRequest(positional, flags)
   if (!expression.trim()) throw new Error("eval needs a JavaScript expression")
-  const { socket } = await resolvePage(port, session)
+  const { socket } = await resolvePage(port, session, EVAL_TIMEOUT_MS)
   try {
-    const value = await evaluate(socket, expression)
+    const value = await evaluate(socket, expression).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      if (/cdp call timed out/i.test(message))
+        throw new Error(
+          `eval timed out after ${EVAL_TIMEOUT_MS / 1000}s (the eval limit; ordinary CDP calls allow 6s). The page may be wedged, or the expression awaits too much sequential work — split it into smaller evals, or check the renderer with ob-chrome url / ob-memory, then reload the tab if it stays unresponsive.`,
+        )
+      throw error
+    })
     let serialized: string
     try {
       serialized = JSON.stringify(value) ?? String(value)

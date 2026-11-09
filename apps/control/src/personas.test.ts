@@ -41,6 +41,7 @@ const {
   personaSystem,
   resolvePersona,
   skillRuleset,
+  skillsEffective,
 } = await import("./personas")
 
 function open() {
@@ -176,6 +177,12 @@ describe("persona skill scopes", () => {
     rejects([42])
     rejects("weather")
     rejects(Array.from({ length: 65 }, (_, i) => `s-${i}`))
+  })
+
+  test("skill allowlists dedupe so denials never repeat the matrix (#8)", () => {
+    expect(
+      skillsEffective(["research", "research", "media"], ["research"]),
+    ).toEqual(["research", "media"])
   })
 
   test("skillRuleset puts one deny-all first and one allow per skill after", () => {

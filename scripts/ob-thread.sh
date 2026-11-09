@@ -23,6 +23,8 @@ Usage:
   ob-thread delete ID [ID...] | --all
   ob-thread stop ID
   ob-thread post ID [--model PROVIDER/MODEL|default] [--effort LEVEL|default] TEXT
+  ob-thread parent ID
+  ob-thread notify-parent ID TEXT
   ob-thread model ID [--model PROVIDER/MODEL|default] [--effort LEVEL|default]
 
 start creates a thread. Without --display the thread is hidden for background
@@ -604,6 +606,28 @@ $1"; fi
     out=$(request POST "/api/threads/$(urlencode "$1")/stop")
     fail_on_error "$out"
     printf '%s' "$out" | jq '{id, stopped}'
+    ;;
+  parent)
+    [ $# -eq 1 ] || { usage; exit 2; }
+    out=$(request GET /api/threads)
+    fail_on_error "$out"
+    parent_id=$(printf '%s' "$out" | jq -r --arg id "$1" '.threads[] | select(.id == $id) | .creatorSessionId // empty')
+    if [ -n "$parent_id" ]; then
+      printf '%s\n' "$parent_id"
+    else
+      echo "no delegating thread recorded for $1" >&2
+      exit 1
+    fi
+    ;;
+  notify-parent)
+    [ $# -ge 2 ] || { usage; exit 2; }
+    id="$1"
+    shift
+    text="$*"
+    body=$(jq -n --arg message "$text" '{message: $message}')
+    out=$(request POST "/api/threads/$(urlencode "$id")/notify-parent" "$body")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{id, parent, notified}'
     ;;
   post)
     [ $# -ge 2 ] || { usage; exit 2; }

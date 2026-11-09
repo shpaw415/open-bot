@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { ToolGuards } from "./seed/plugins/tool-guards"
+import { bashDenial, ToolGuards } from "./seed/plugins/tool-guards"
 
 type Hooks = {
   "tool.execute.before": (
@@ -129,4 +129,67 @@ test("grep with a directory path is left alone", async () => {
   const output = { args: { pattern: "x", path: dir } }
   await hooks["tool.execute.before"](call("grep", "s1", "c1"), output)
   expect(output.args).toEqual({ pattern: "x", path: dir })
+})
+
+// Field #5/#10/#55/#68/#69: the old glob deny map matched checksums and
+// prose. The bash guard parses quotes and command position instead.
+test("bash guard denies real CDP, browser, and clipboard invocations", () => {
+  expect(bashDenial("curl http://127.0.0.1:9224/json/list")).toContain("9224")
+  expect(bashDenial("curl http://localhost:9222/json/version")).toContain(
+    "9222",
+  )
+  expect(
+    bashDenial("websocat ws://127.0.0.1:9225/devtools/browser/abc"),
+  ).not.toBeNull()
+  expect(
+    bashDenial("google-chrome --remote-debugging-port=9222 about:blank"),
+  ).not.toBeNull()
+  expect(bashDenial("chromium --headless about:blank")).toContain("chromium")
+  expect(bashDenial("echo hi | xclip -selection clipboard")).toContain("xclip")
+  expect(bashDenial("xsel --clipboard --output")).toContain("xsel")
+  expect(bashDenial("sudo /usr/bin/vncdo capture out.png")).toContain("vncdo")
+  expect(bashDenial("FOO=1 Xvfb :99")).toContain("Xvfb")
+  expect(bashDenial("echo $(xclip -o)")).toContain("xclip")
+  expect(bashDenial('echo "$(xsel -b)"')).toContain("xsel")
+  expect(bashDenial("true; websockify 6080 localhost:5900")).toContain(
+    "websockify",
+  )
+})
+
+test("bash guard allows hashes, checksums, and prose mentioning denied words", () => {
+  expect(
+    bashDenial(
+      'ob-thread post ses_1 --message "authority sha256:9224bf0c21 verified"',
+    ),
+  ).toBeNull()
+  expect(
+    bashDenial("python3 prep.py --checksum sha256:9223deadbeef --in artifact"),
+  ).toBeNull()
+  expect(
+    bashDenial(
+      'ob-thread post ses_1 --message "le prixselection et chromium capture xclip devtools"',
+    ),
+  ).toBeNull()
+  expect(bashDenial("echo prixselection")).toBeNull()
+  expect(bashDenial("grep -r xclip docs/")).toBeNull()
+  expect(bashDenial("echo total=9223 items at 12:9223ish")).toBeNull()
+  expect(bashDenial("ob-page read")).toBeNull()
+})
+
+test("bash hook blocks through tool.execute.before with a compact denial", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "guards-"))
+  const hooks = await guards(dir)
+  await expect(
+    hooks["tool.execute.before"](call("bash", "s1", "c1"), {
+      args: { command: "xclip -selection clipboard < secret.txt" },
+    }),
+  ).rejects.toThrow("xclip")
+  await expect(
+    hooks["tool.execute.before"](call("bash", "s1", "c2"), {
+      args: {
+        command:
+          'ob-thread post ses_1 --message "sha256:9224bf0c prixselection"',
+      },
+    }),
+  ).resolves.toBeUndefined()
 })
