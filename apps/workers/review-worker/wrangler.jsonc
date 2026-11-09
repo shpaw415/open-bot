@@ -30,6 +30,35 @@
       "bucket_name": "open-bot-marketplace-releases"
     }
   ],
+  // Worker Previews (branch builds) cannot consume queues and this
+  // worker has no fetch/scheduled handler, so a Preview can never be
+  // invoked; sharing the production bindings is inert. The block only
+  // exists so `wrangler preview` (the Workers Builds preview command)
+  // can build branch previews at all.
+  "previews": {
+    "kv_namespaces": [
+      {
+        "binding": "DYNAMIC_PAGE_KV",
+        "id": "6bc447065f274b4da2df5bfc80fa6964"
+      }
+    ],
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "open-bot-marketplace",
+        "database_id": "fdef926d-637c-4d77-a9e3-af9ed14393d9"
+      }
+    ],
+    "r2_buckets": [
+      {
+        "binding": "RELEASES",
+        "bucket_name": "open-bot-marketplace-releases"
+      }
+    ],
+    "ai": {
+      "binding": "AI"
+    }
+  },
   "queues": {
     "consumers": [
       {
