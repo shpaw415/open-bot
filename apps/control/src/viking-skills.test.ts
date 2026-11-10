@@ -719,3 +719,19 @@ describe("viking response shapes", () => {
     ])
   })
 })
+
+describe("viking timeout diagnostics (#28)", () => {
+  test("timeout errors name the endpoint and elapsed time", async () => {
+    const { fetchImpl } = mockFetch(() => {
+      const timeout = new Error("The operation timed out.")
+      timeout.name = "TimeoutError"
+      throw timeout
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl)
+    const error = await skills.get("search-web").catch((caught) => caught)
+    expect((error as HttpError).message).toContain(
+      "GET /api/v1/skills/search-web",
+    )
+    expect((error as HttpError).message).toMatch(/after \d+ms/)
+  })
+})

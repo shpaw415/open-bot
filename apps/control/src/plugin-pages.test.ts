@@ -1092,3 +1092,36 @@ describe("FRAME_STORAGE_SHIM — executable script", () => {
     expect(shimAt).toBeLessThan(framed.indexOf("data-bun-dev-server-script"))
   })
 })
+
+import { sanitizeTabContextId, withFrameQuery } from "./plugin-pages"
+
+describe("tab context id (#27)", () => {
+  test("accepts uuid-shaped ids, rejects junk", () => {
+    expect(sanitizeTabContextId("9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d")).toBe(
+      "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    )
+    expect(sanitizeTabContextId("")).toBeNull()
+    expect(sanitizeTabContextId("has space")).toBeNull()
+    expect(sanitizeTabContextId("../escape")).toBeNull()
+    expect(sanitizeTabContextId("x".repeat(80))).toBeNull()
+    expect(sanitizeTabContextId(undefined)).toBeNull()
+  })
+
+  test("frame url carries lang and obtab, relative stays relative", () => {
+    const url = withFrameQuery(
+      "/pages/p1/_frame/tok/index.html",
+      "fr",
+      "tab-1234-abcd",
+    )
+    expect(url).toContain("lang=fr")
+    expect(url).toContain("obtab=tab-1234-abcd")
+    expect(url.startsWith("/pages/p1/")).toBe(true)
+  })
+
+  test("invalid tab id is omitted, never throws", () => {
+    const url = withFrameQuery("/pages/p1/x", "en", "bad id!")
+    expect(url).toContain("lang=en")
+    expect(url).not.toContain("obtab")
+    expect(typeof withFrameQuery("ht tp://bad url", "en", null)).toBe("string")
+  })
+})

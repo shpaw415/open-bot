@@ -381,6 +381,7 @@ function AppTab({ tab }: { tab: PluginTab }) {
     retry: boolean
   } | null>(null)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+  const tabContextIdRef = useRef<string>("")
   const [mediaAsk, setMediaAsk] = useState<MediaAsk | null>(null)
   const askRef = useRef<MediaAsk | null>(null)
   const askQueue = useRef<MediaAsk[]>([])
@@ -668,10 +669,23 @@ function AppTab({ tab }: { tab: PluginTab }) {
   useEffect(() => {
     let alive = true
     let current = ""
+    // #27: one stable, non-secret id per mounted tab, sent on every mint
+    // (first, keep-alive remint, retry) so the framed page can tell a
+    // remounted self from a different tab. Never an auth credential.
+    if (!tabContextIdRef.current) {
+      tabContextIdRef.current =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    }
     const mint = () =>
       api<{ frameUrl: string; isolated?: boolean }>("/api/pages/frame", {
         method: "POST",
-        body: JSON.stringify({ pluginId: tab.pluginId, path: tab.path ?? "/" }),
+        body: JSON.stringify({
+          pluginId: tab.pluginId,
+          path: tab.path ?? "/",
+          tabContextId: tabContextIdRef.current,
+        }),
       }).then((body) => {
         if (!alive) return
         current = body.frameUrl

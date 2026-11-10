@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 if [ "${1:-}" != "--session" ] || [ -z "${2:-}" ]; then
-  echo "usage: ob-page --session SESSION read | scroll down|up [pages] | click ID | type ID TEXT" >&2
+  echo "usage: ob-page --session SESSION read | scroll down|up [pages] | click ID | type ID TEXT | upload ID PATH [PATH...]" >&2
   echo "SESSION is the screen id in the system instructions." >&2
   exit 1
 fi

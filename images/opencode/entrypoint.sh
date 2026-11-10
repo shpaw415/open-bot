@@ -5,7 +5,7 @@ mkdir -p /home/agent/workspace /home/agent/plugins-create /home/agent/.config/op
 if [ -d /opt/image-usr-local ]; then
   mkdir -p /usr/local
   cp -a /opt/image-usr-local/. /usr/local/
-  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-media /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview /usr/local/bin/ob-chrome /usr/local/bin/ob-record /usr/local/bin/ob-page /usr/local/bin/ob-process 2>/dev/null || true
+  chmod 755 /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-vnc /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-media /usr/local/bin/ob-improve /usr/local/bin/ob-plugin /usr/local/bin/ob-preview /usr/local/bin/ob-chrome /usr/local/bin/ob-record /usr/local/bin/ob-page /usr/local/bin/ob-process /usr/local/bin/ob-sandbox 2>/dev/null || true
 fi
 # Muse: seed the launcher (+ image-built binary) into ~/.local/bin and
 # point /usr/local/bin/muse at it. The launcher requires its own

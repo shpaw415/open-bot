@@ -148,6 +148,40 @@ export function pageServerCommand(opts: {
 
 // Decode until stable, then reject traversal, backslash, and protocol-relative
 // paths. `new URL("//host", base)` would otherwise replace the upstream origin.
+// #27: a stable, NON-SECRET identity for one mounted dashboard tab. The
+// shell generates it once per tab mount and passes it on every frame mint,
+// so a reminted/remounted opaque iframe can tell "I am the same tab, reset
+// my keyed client state" apart from "a different tab". It is never an auth
+// capability: any id shape is accepted, it only has to be URL-safe and
+// bounded. Plugins read it from location.search (`obtab`).
+export function sanitizeTabContextId(raw: unknown): string | null {
+  if (typeof raw !== "string") return null
+  return /^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(raw) ? raw : null
+}
+
+// Shape the minted frame URL with the host-wide language and, when given,
+// the per-tab context id. Both ride the query string so the framed document
+// request forwards them to the plugin server and the plugin's client JS can
+// read them from location.search. Never throws: on any URL weirdness the
+// minted URL is returned untouched.
+export function withFrameQuery(
+  frameUrl: string,
+  lang: string,
+  tabContextId: string | null,
+): string {
+  try {
+    const parsed = new URL(frameUrl, "http://frame.local")
+    parsed.searchParams.set("lang", lang)
+    const tab = sanitizeTabContextId(tabContextId)
+    if (tab) parsed.searchParams.set("obtab", tab)
+    return frameUrl.startsWith("/")
+      ? `${parsed.pathname}${parsed.search}`
+      : parsed.toString()
+  } catch {
+    return frameUrl
+  }
+}
+
 export function sanitizePluginRest(raw: string | undefined): string | null {
   let rest = raw && raw !== "/" ? raw : "/"
   for (let pass = 0; pass < 4; pass++) {

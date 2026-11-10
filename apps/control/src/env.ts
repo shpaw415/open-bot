@@ -40,6 +40,32 @@ export function publicOrigin() {
   return (process.env.OPEN_BOT_PUBLIC_URL ?? "").replace(/\/+$/, "")
 }
 
+// Sign-in must never be offered on an insecure origin when session cookies
+// are Secure-only (#105): the login "works" but cannot stick, and the user
+// has typed credentials over HTTP. Document requests either redirect to
+// the configured canonical https origin, or get an HTTPS-required page —
+// the credential form is never rendered on http. APIs and static assets
+// keep their own handling (the session endpoint already refuses with the
+// same cause).
+export function dashboardOriginGate(input: {
+  method: string
+  pathname: string
+  proto: string
+  secure: boolean
+  publicUrl: string
+}): { action: "redirect"; to: string } | { action: "block" } | null {
+  if (input.method !== "GET" && input.method !== "HEAD") return null
+  if (!input.secure || input.proto === "https") return null
+  if (input.pathname.startsWith("/api/") || input.pathname.startsWith("/llm/"))
+    return null
+  const last = input.pathname.split("/").at(-1) ?? ""
+  if (/\.[a-z0-9]+$/i.test(last)) return null
+  const publicUrl = input.publicUrl.replace(/\/+$/, "")
+  if (publicUrl.startsWith("https://"))
+    return { action: "redirect", to: `${publicUrl}${input.pathname}` }
+  return { action: "block" }
+}
+
 // Dedicated origin for plugin app iframes. When set, frames load from this
 // host (same control plane, different site) so plugin JS cannot inherit the
 // dashboard session. Empty falls back to a sandboxed same-host frame.

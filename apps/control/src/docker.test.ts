@@ -135,3 +135,30 @@ describe("opencodePatchProgram", () => {
     expect(out.instructions).toEqual(["a.md", "plugin.md"])
   })
 })
+
+import { runningVerdict } from "./docker"
+
+describe("docker inspect running verdict (#101)", () => {
+  test("definite answers only for true/false and missing containers", () => {
+    expect(runningVerdict({ code: 0, stdout: "true\n", stderr: "" })).toBe(true)
+    expect(runningVerdict({ code: 0, stdout: "false\n", stderr: "" })).toBe(
+      false,
+    )
+    expect(
+      runningVerdict({
+        code: 1,
+        stdout: "",
+        stderr: "Error: No such object: x",
+      }),
+    ).toBe(false)
+    expect(
+      runningVerdict({
+        code: 1,
+        stdout: "",
+        stderr: "Cannot connect to the Docker daemon",
+      }),
+    ).toBeNull()
+    expect(runningVerdict({ code: 1, stdout: "", stderr: "" })).toBeNull()
+    expect(runningVerdict({ code: 0, stdout: "", stderr: "" })).toBeNull()
+  })
+})
