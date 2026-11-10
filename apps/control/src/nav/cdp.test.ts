@@ -600,3 +600,25 @@ test("probe and actions descend into same-origin iframes (#93)", async () => {
   const click = actionScript({ kind: "click", targetId: "n7" })
   expect(click).toContain("el.ownerDocument")
 })
+
+test("browser epoch parses from the version payload and detects restarts (#108)", async () => {
+  const { browserEpochFromVersion, recordBrowserEpoch } = (await import(
+    "./cdp"
+  )) as {
+    browserEpochFromVersion: (v: unknown) => string
+    recordBrowserEpoch: (s: string, e: string) => "new" | "same" | "changed"
+  }
+  expect(
+    browserEpochFromVersion({
+      webSocketDebuggerUrl:
+        "ws://127.0.0.1:9222/devtools/browser/b0b8f5d0-1234-5678-abcd-000000000001",
+    }),
+  ).toBe("b0b8f5d0")
+  expect(browserEpochFromVersion({})).toBe("")
+  expect(browserEpochFromVersion(null)).toBe("")
+  const session = `epoch-test-${Math.random().toString(36).slice(2, 8)}`
+  expect(recordBrowserEpoch(session, "aaaa1111")).toBe("new")
+  expect(recordBrowserEpoch(session, "aaaa1111")).toBe("same")
+  expect(recordBrowserEpoch(session, "bbbb2222")).toBe("changed")
+  expect(recordBrowserEpoch(session, "")).toBe("same")
+})

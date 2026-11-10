@@ -77,3 +77,13 @@ describe("capture transform", () => {
     expect(transform.oy).toBe(125)
   })
 })
+
+describe("stale frame recovery (#67)", () => {
+  test("settle expression waits two animation frames", async () => {
+    const { FRAME_SETTLE_EXPRESSION } = await import("./xshot")
+    expect(FRAME_SETTLE_EXPRESSION).toContain("requestAnimationFrame")
+    expect(
+      FRAME_SETTLE_EXPRESSION.match(/requestAnimationFrame/g),
+    ).toHaveLength(2)
+  })
+})

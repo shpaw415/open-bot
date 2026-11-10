@@ -84,7 +84,13 @@ import {
   type ThreadModelChoice,
   validateModelChoice,
 } from "./effort"
-import { cookieSecure, names, webDist } from "./env"
+import {
+  cookieSecure,
+  dashboardOriginGate,
+  names,
+  publicOrigin,
+  webDist,
+} from "./env"
 import type { EventHub, EventsSocketData, Upstream } from "./events"
 import { HttpError, httpErrorResponse } from "./http-error"
 import {
@@ -142,8 +148,10 @@ import {
   proxyPluginPage,
   proxyPluginPageFrame,
   sanitizePluginRest,
+  sanitizeTabContextId,
   schedulePluginPageRestart,
   uiBuildId,
+  withFrameQuery,
 } from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins } from "./plugins"
@@ -1145,6 +1153,25 @@ export function createServer(
           return await api(req, url, db, hub, () => server.timeout(req, 0))
         if (url.pathname.startsWith("/desktop/"))
           return await desktopProxy(req, url, server, db)
+        const gate = dashboardOriginGate({
+          method: req.method,
+          pathname: url.pathname,
+          proto: (
+            req.headers.get("x-forwarded-proto") ??
+            url.protocol.replace(":", "")
+          )
+            .split(",")[0]
+            ?.trim() as string,
+          secure: cookieSecure,
+          publicUrl: publicOrigin(),
+        })
+        if (gate?.action === "redirect")
+          return Response.redirect(`${gate.to}${url.search}`, 302)
+        if (gate?.action === "block")
+          return new Response(
+            "<!doctype html><title>HTTPS required</title><p>This dashboard sets Secure-only session cookies, so sign-in cannot stick on an insecure origin. Open it over https (configure OPEN_BOT_PUBLIC_URL to the canonical https URL to be redirected automatically).</p>",
+            { headers: { "content-type": "text/html; charset=utf-8" } },
+          )
         return await staticFile(url.pathname)
       } catch (error) {
         return httpErrorResponse(error)
@@ -1825,20 +1852,17 @@ async function api(
       return json({ error: "plugin page not found" }, 404)
     }
     const minted = mintPageFrameToken(user.id, pluginId, rest)
-    // The frame URL carries the host-wide language: the framed document
-    // request forwards it to the plugin server (same query pass-through as
-    // every proxied request) and the plugin's client JS reads it from
-    // location.search — the x-open-bot-language header covers the fetches.
-    let frameUrl = minted.frameUrl
-    try {
-      const parsed = new URL(frameUrl, "http://frame.local")
-      parsed.searchParams.set("lang", instanceLanguage(db))
-      frameUrl = frameUrl.startsWith("/")
-        ? `${parsed.pathname}${parsed.search}`
-        : parsed.toString()
-    } catch {
-      // Never fail the mint over URL shaping.
-    }
+    // The frame URL carries the host-wide language (and, when the shell
+    // sends one, the stable per-tab `obtab` context id — #27): the framed
+    // document request forwards them to the plugin server (same query
+    // pass-through as every proxied request) and the plugin's client JS
+    // reads them from location.search — the x-open-bot-language header
+    // covers the fetches. Never fail the mint over URL shaping.
+    const frameUrl = withFrameQuery(
+      minted.frameUrl,
+      instanceLanguage(db),
+      sanitizeTabContextId(body.tabContextId),
+    )
     return json({
       frameUrl,
       expiresAt: minted.expiresAt,

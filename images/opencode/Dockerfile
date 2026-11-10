@@ -149,8 +149,9 @@ COPY images/opencode/chromium-policy.json /etc/chromium/policies/managed/open-bo
 COPY images/opencode/chromium-policy.json /etc/opt/chrome/policies/managed/open-bot.json
 COPY scripts/ob-improve.sh /usr/local/bin/ob-improve
 COPY images/opencode/ob-memory.sh /usr/local/bin/ob-memory
+COPY images/opencode/ob-sandbox.sh /usr/local/bin/ob-sandbox
 COPY images/opencode/ob-tab-sweep.sh /usr/local/bin/ob-tab-sweep
-RUN chmod 755 /usr/local/bin/ob-improve \
+RUN chmod 755 /usr/local/bin/ob-improve /usr/local/bin/ob-sandbox \
      && chmod 755 /usr/local/bin/ob-chrome /usr/local/bin/ob-record /opt/open-bot/record.ts /opt/open-bot/screen-heal.sh
 RUN LC_ALL=C apt-mark showmanual | LC_ALL=C sort > /opt/open-bot/apt-baseline \
      && chmod 755 /usr/local/bin/ob-vnc /usr/local/bin/ob-app /usr/local/bin/ob-process /usr/local/bin/ob-nav /usr/local/bin/ob-system1 /usr/local/bin/ob-cron /usr/local/bin/ob-persona /usr/local/bin/ob-project /usr/local/bin/ob-report /usr/local/bin/ob-thread /usr/local/bin/ob-media /usr/local/bin/ob-api-key /usr/local/bin/ob-config /usr/local/bin/ob-page /usr/local/bin/ob-plugin /usr/local/bin/ob-backup /usr/local/bin/ob-reset /usr/local/bin/ob-preview /usr/local/bin/ob-memory /usr/local/bin/ob-tab-sweep /opt/open-bot/preview-server.ts /opt/open-bot/preview-spawn.ts \

@@ -1,0 +1,6 @@
+[
+  { "query": "open-bot deployment", "note": "broad project term: must return sorted, stable hits" },
+  { "query": "plugin page server", "note": "product vocabulary" },
+  { "query": "what did we decide about backups", "note": "conversational recall shape (#71 class)" },
+  { "query": "zzzz nonexistent token qqxv", "note": "junk query: empty or clearly low-score results are fine; recorded for upstream" }
+]

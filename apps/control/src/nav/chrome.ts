@@ -3,12 +3,14 @@ import {
   type CdpSocket,
   clearActiveTabId,
   evaluate,
+  fetchBrowserEpoch,
   listPageTargets,
   openSocket,
   type PageTarget,
   pickPageTarget,
   present,
   readActiveTabId,
+  recordBrowserEpoch,
   writeActiveTabId,
 } from "./cdp"
 import {
@@ -33,7 +35,7 @@ import {
 } from "./viewport"
 
 const USAGE =
-  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] JS | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]"
+  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] [--timeout SECONDS] JS | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]"
 
 export type PageState = {
   url: string
@@ -42,6 +44,8 @@ export type PageState = {
   text?: string
   via?: string
   browserClosed?: boolean
+  epoch?: string
+  epochChanged?: boolean
 }
 
 export function normalizeTarget(raw: string): string | null {
@@ -91,7 +95,12 @@ async function resolvePage(
 ): Promise<{ target: PageTarget; socket: CdpSocket }> {
   const targets = await listPageTargets(port)
   const target = pickPageTarget(targets, readActiveTabId(session))
-  if (!target) throw new Error("no page on this screen")
+  if (!target) {
+    const epoch = await fetchBrowserEpoch(port)
+    throw new Error(
+      `no page on this screen (cdp port ${port}: ${targets.length} page target(s)${epoch ? `, browser epoch ${epoch}` : ", browser version unreachable"})`,
+    )
+  }
   const socket = await openSocket(
     target.webSocketDebuggerUrl,
     undefined,
@@ -394,7 +403,17 @@ async function navigate(
 async function current(port: number, session?: string): Promise<PageState> {
   const { socket } = await resolvePage(port, session)
   try {
-    return await readState(socket)
+    const state = await readState(socket)
+    // A resumed turn learns here that the browser relaunched (its saved
+    // in-memory page state is gone) instead of mistaking about:blank for
+    // the workflow's own page (#108).
+    const epoch = await fetchBrowserEpoch(port)
+    if (epoch) {
+      state.epoch = epoch
+      if (recordBrowserEpoch(session, epoch) === "changed")
+        state.epochChanged = true
+    }
+    return state
   } finally {
     socket.close()
   }
@@ -803,6 +822,18 @@ export function evalRequest(
 // far past the ordinary 6 s CDP call budget (#34/#43/#45/#67), so eval —
 // and only eval — gets this documented 30 s ceiling.
 export const EVAL_TIMEOUT_MS = 30_000
+
+// `--timeout SECONDS` on eval: legitimate slow exports exceed the default
+// ceiling (#107), so the caller may widen it — bounded, never unbounded.
+export function parseEvalTimeoutMs(
+  flags: Record<string, string | boolean>,
+): number {
+  const raw = flags.timeout
+  if (typeof raw !== "string" || !/^\d+(\.\d+)?$/.test(raw.trim()))
+    return EVAL_TIMEOUT_MS
+  const seconds = Number(raw)
+  return Math.min(180_000, Math.max(1_000, Math.round(seconds * 1000)))
+}
 async function evalCmd(
   port: number,
   session: string | undefined,
@@ -811,15 +842,42 @@ async function evalCmd(
 ): Promise<Record<string, unknown>> {
   const { expression, raw } = evalRequest(positional, flags)
   if (!expression.trim()) throw new Error("eval needs a JavaScript expression")
-  const { socket } = await resolvePage(port, session, EVAL_TIMEOUT_MS)
+  const timeoutMs = parseEvalTimeoutMs(flags)
+  const { target, socket } = await resolvePage(port, session, timeoutMs)
   try {
-    const value = await evaluate(socket, expression).catch((error) => {
+    const value = await evaluate(socket, expression).catch(async (error) => {
       const message = error instanceof Error ? error.message : String(error)
-      if (/cdp call timed out/i.test(message))
-        throw new Error(
-          `eval timed out after ${EVAL_TIMEOUT_MS / 1000}s (the eval limit; ordinary CDP calls allow 6s). The page may be wedged, or the expression awaits too much sequential work — split it into smaller evals, or check the renderer with ob-chrome url / ob-memory, then reload the tab if it stays unresponsive.`,
+      if (!/cdp call timed out/i.test(message)) throw error
+      // A timeout says nothing about whether the action landed (#107: the
+      // WASM export had completed; "recover with navigate" would have
+      // thrown it away). Probe the renderer on a fresh short-budget socket
+      // and report what is actually true before anyone replays anything.
+      let probe: string | null = null
+      try {
+        const probeSocket = await openSocket(
+          target.webSocketDebuggerUrl,
+          undefined,
+          3_000,
         )
-      throw error
+        try {
+          const href = await evaluate(
+            probeSocket,
+            "location.href + '|' + document.readyState",
+          )
+          probe = typeof href === "string" ? href : String(href)
+        } finally {
+          probeSocket.close()
+        }
+      } catch {
+        probe = null
+      }
+      if (probe)
+        throw new Error(
+          `eval timed out after ${timeoutMs / 1000}s but the page still responds (${probe}) — the expression may still be running or may already have completed. Do NOT replay it and do not navigate: inspect its result first (for long actions persist a receipt in a page global and poll it with a short eval), or re-run with a larger --timeout SECONDS (max 180).`,
+        )
+      throw new Error(
+        `eval timed out after ${timeoutMs / 1000}s (the eval limit; ordinary CDP calls allow 6s) and the renderer does not answer a fresh probe either. Check ob-memory, then reload the tab if it stays unresponsive; for legitimately slow work re-run with --timeout SECONDS (max 180) or split the expression.`,
+      )
     })
     let serialized: string
     try {
@@ -1116,7 +1174,7 @@ if (import.meta.main) {
     }
     console.error(
       /timed out|unresponsive/i.test(message)
-        ? `${message}. Recover with ob-chrome --session SESSION navigate URL`
+        ? `${message}. Inspect before recovering (ob-chrome --session SESSION url): a timed-out action may have completed — navigating first can discard its result.`
         : message,
     )
     process.exit(1)

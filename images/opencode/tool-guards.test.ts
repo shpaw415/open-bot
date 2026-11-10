@@ -193,3 +193,33 @@ test("bash hook blocks through tool.execute.before with a compact denial", async
     }),
   ).resolves.toBeUndefined()
 })
+
+test("apply_patch with two sections for one file is denied (#78)", async () => {
+  const { patchRepeatDenial } = await import("./seed/plugins/tool-guards")
+  const dup = [
+    "*** Begin Patch",
+    "*** Update File: src/a.ts",
+    "@@",
+    "-x",
+    "+y",
+    "*** Update File: src/a.ts",
+    "@@",
+    "-p",
+    "+q",
+    "*** End Patch",
+  ].join("\n")
+  expect(patchRepeatDenial(dup)).toContain("src/a.ts")
+  expect(patchRepeatDenial(dup)).toContain("one section per file")
+  const ok = [
+    "*** Begin Patch",
+    "*** Update File: src/a.ts",
+    "@@",
+    "-x",
+    "+y",
+    "*** Add File: src/b.ts",
+    "+new",
+    "*** End Patch",
+  ].join("\n")
+  expect(patchRepeatDenial(ok)).toBeNull()
+  expect(patchRepeatDenial("")).toBeNull()
+})

@@ -405,14 +405,21 @@ case "$cmd" in
     esac
     out=$(request GET "/api/opencode/session/$(urlencode "$id")/message")
     fail_on_error "$out"
+    # Filter to text-bearing messages BEFORE taking the last N: a busy
+    # teammate mid tool-loop has text-less last entries, and slicing first
+    # printed a successful empty page (#106).
     printf '%s' "$out" | jq -r --argjson n "$count" '
       if type != "array" then "(no messages)"
       else
-        (.[-$n:] | map(
+        (map(
           . as $m |
-          ([ $m.parts[]? | select(.type == "text") | .text ] | join("\n")) |
-          if length == 0 then empty else "[\($m.info.role)] \(.)" end
-        ) | join("\n\n"))
+          ([ $m.parts[]? | select(.type == "text") | .text ] | join("\n")) as $text |
+          select($text | length > 0) | "[\($m.info.role)] \($text)"
+        )) as $visible |
+        if ($visible | length) == 0
+        then "(no visible text in \(length) message(s) — recent activity is tool calls; the thread may still be working)"
+        else ($visible[-$n:] | join("\n\n")) + (if ($visible | length) < length then "\n\n(showing the last \($visible[-$n:] | length) visible of \(length) message(s); tool-only entries hidden)" else "" end)
+        end
       end'
     ;;
   councils)
