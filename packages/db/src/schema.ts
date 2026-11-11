@@ -253,6 +253,49 @@ export const threadModels = sqliteTable(
   (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
 )
 
+// Sandbox threads (docs/sandbox-threads-spec.md): a profile is a named
+// per-user capability grant (skills/MCP/tools/network/limits as JSON);
+// a thread row is one ephemeral container running an untrusted prompt
+// under a launch-time snapshot of a profile. The broker token that
+// lets the sandbox call the model is stored hashed (token_hash);
+// destroying the sandbox flips state and revokes it instantly.
+export const sandboxProfiles = sqliteTable(
+  "sandbox_profiles",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    profile: text("profile").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("sandbox_profiles_user_name").on(table.userId, table.name),
+  ],
+)
+
+export const sandboxThreads = sqliteTable(
+  "sandbox_threads",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id"),
+    profileId: text("profile_id"),
+    profile: text("profile").notNull(),
+    container: text("container").notNull(),
+    network: text("network").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    state: text("state").notNull(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    lastActiveAt: integer("last_active_at").notNull(),
+  },
+  (table) => [
+    index("sandbox_threads_user").on(table.userId, table.state),
+    index("sandbox_threads_session").on(table.sessionId),
+  ],
+)
+
 // Dashboard messages queued behind a running turn, persisted so the
 // waiting list survives a reload or a closed browser (it used to live in
 // dashboard state only). The control plane flushes the head of a

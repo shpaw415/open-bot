@@ -91,6 +91,12 @@ import {
   visibleText,
 } from "./chat-view"
 import { Chip } from "./chip"
+import {
+  mergeSandboxSessions,
+  type SandboxProfileEntry,
+  sandboxExpiryLabel,
+  type SandboxThreadInfo,
+} from "./sandbox"
 import { ComposerPickers } from "./composer-controls"
 import {
   clearComposerSeed,
@@ -975,6 +981,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
   mid,
   open,
   personaLabel,
+  sandboxBySession,
   busyIds,
   unread,
   actionBusy,
@@ -997,6 +1004,7 @@ const ThreadsPanel = memo(function ThreadsPanel({
   mid?: boolean
   open: boolean
   personaLabel: (id: string) => string
+  sandboxBySession: ReadonlyMap<string, SandboxThreadInfo>
   busyIds: ReadonlySet<string>
   unread: ReadonlySet<string>
   actionBusy: boolean
@@ -1147,6 +1155,14 @@ const ThreadsPanel = memo(function ThreadsPanel({
                 />
               ) : null}
               <span className="ob-thread-title">{threadTitle(item)}</span>
+              {sandboxBySession.get(item.id) ? (
+                <Chip
+                  label="Bac à sable"
+                  size="small"
+                  variant="outlined"
+                  title={`${sandboxBySession.get(item.id)?.profile} · ${sandboxExpiryLabel(sandboxBySession.get(item.id)?.expiresAt ?? 0, Date.now())}`}
+                />
+              ) : null}
             </span>
           }
           secondary={`${personaLabel(item.id)} · ${formatAgo(threadTime(item))}`}
@@ -2938,6 +2954,16 @@ export function Workspace({
   // Blank-composer pick: bind the new session to the no-step-cap agent so a
   // long coordinating turn is never cut at the default step guard (512).
   const [newUnlimitedSteps, setNewUnlimitedSteps] = useState(false)
+  // Sandbox threads: live rows by session id (badge/bar/merge) and the
+  // blank composer's profile pick.
+  const [sandboxBySession, setSandboxBySession] = useState<
+    Map<string, SandboxThreadInfo>
+  >(() => new Map())
+  const [sandboxProfiles, setSandboxProfiles] = useState<
+    SandboxProfileEntry[]
+  >([])
+  const [newSandboxProfile, setNewSandboxProfile] = useState("")
+  const [sandboxNotice, setSandboxNotice] = useState("")
   const [renameTarget, setRenameTarget] = useState<SessionInfo | null>(null)
   const [renameTitle, setRenameTitle] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<SessionInfo | null>(null)
@@ -3953,6 +3979,8 @@ export function Workspace({
         dirAssignBody,
         delegationBody,
         councilBody,
+        sandboxBody,
+        sandboxProfilesBody,
       ] = await Promise.all([
         // The desktop routes start the desktop server-side (ensure), so a
         // failed poll here means "unavailable right now" — never an empty
@@ -3978,22 +4006,48 @@ export function Workspace({
         ).catch(() => null),
         api<unknown>("/api/delegations").catch(() => null),
         api<unknown>("/api/councils").catch(() => null),
+        api<{ threads?: SandboxThreadInfo[] }>("/api/sandbox-threads").catch(
+          () => null,
+        ),
+        api<{ profiles?: SandboxProfileEntry[] }>(
+          "/api/sandbox-profiles",
+        ).catch(() => null),
       ])
+      if (sandboxBody?.threads)
+        setSandboxBySession(
+          new Map(
+            sandboxBody.threads.map((row) => [row.sessionId, row] as const),
+          ),
+        )
+      if (sandboxProfilesBody?.profiles)
+        setSandboxProfiles(sandboxProfilesBody.profiles)
+      const merged = mergeSandboxSessions(
+        (Array.isArray(list) ? (list as SessionInfo[]) : []).filter(
+          (item) =>
+            !item.parentID &&
+            !item.title?.startsWith("cron-run:") &&
+            !item.title?.startsWith("worker:"),
+        ),
+        (sandboxBody?.threads ?? []).filter(
+          (row) =>
+            !row.title?.startsWith("cron-run:") &&
+            !row.title?.startsWith("worker:"),
+        ),
+      )
       setSessions(
-        (Array.isArray(list) ? (list as SessionInfo[]) : [])
-          .filter(
-            (item) =>
-              !item.parentID &&
-              !item.title?.startsWith("cron-run:") &&
-              !item.title?.startsWith("worker:"),
-          )
-          .sort((a, b) => threadCreated(b) - threadCreated(a)),
+        merged.sessions.sort((a, b) => threadCreated(b) - threadCreated(a)),
       )
-      setSessionStatus(
-        status && typeof status === "object"
+      setSessionStatus((current) => ({
+        ...(status && typeof status === "object"
           ? (status as Record<string, SessionStatus>)
-          : {},
-      )
+          : current),
+        ...Object.fromEntries(
+          (sandboxBody?.threads ?? []).map((row) => [
+            row.sessionId,
+            { type: row.running ? "busy" : "idle" } as SessionStatus,
+          ]),
+        ),
+      }))
       if (personaBody) setPersonas(personaBody.personas ?? [])
       if (assignmentBody) {
         const assigned: Record<string, string> = {}
@@ -5071,13 +5125,33 @@ export function Workspace({
     let promptModelKey = model
     try {
       if (!id) {
-        const created = await api<{ id: string }>("/api/opencode/session", {
-          method: "POST",
-          // The blank composer's Assistant/Folder picks ride the same
-          // session-create contract the old dialog used; "assistant"/no
-          // folder send an empty body like before.
-          body: blankSessionBody(),
-        })
+        // A sandbox pick creates the thread through /api/threads (the
+        // container launch), without a message: the normal first-prompt
+        // flow below sends it through the sandbox-routed proxy.
+        const created = newSandboxProfile
+          ? await api<{ id: string }>("/api/threads", {
+              method: "POST",
+              body: JSON.stringify({
+                title:
+                  text
+                    .split("\n")
+                    .map((line) => line.trim())
+                    .find(Boolean)
+                    ?.slice(0, 80) || "Bac à sable",
+                display: true,
+                sandbox: newSandboxProfile,
+                ...(newPersonaId && newPersonaId !== "assistant"
+                  ? { persona: newPersonaId }
+                  : {}),
+              }),
+            })
+          : await api<{ id: string }>("/api/opencode/session", {
+              method: "POST",
+              // The blank composer's Assistant/Folder picks ride the same
+              // session-create contract the old dialog used; "assistant"/no
+              // folder send an empty body like before.
+              body: blankSessionBody(),
+            })
         id = created.id
         draftSessionRef.current = id
         // The blank model/effort pick rode the create body and is now the
@@ -5085,7 +5159,8 @@ export function Workspace({
         // first prompt: the server drops a pick it cannot honor (team
         // lock, unknown model) instead of blocking creation.
         const hadBlankPick = Boolean(
-          blankPickRef.current?.modelKey || blankPickRef.current?.effort,
+          !newSandboxProfile &&
+            (blankPickRef.current?.modelKey || blankPickRef.current?.effort),
         )
         blankPickRef.current = null
         modelForRef.current = id
@@ -5115,6 +5190,7 @@ export function Workspace({
         setNewPersonaId("assistant")
         setNewThreadDir("")
         setNewUnlimitedSteps(false)
+        setNewSandboxProfile("")
         setHasBlankDraft(false)
         clearBlankDraft(localStorage, me.id)
         clearComposerSeed()
@@ -6287,6 +6363,7 @@ export function Workspace({
                   mid={midWidth && !mobile}
                   open={threadsOpen}
                   personaLabel={personaLabel}
+                  sandboxBySession={sandboxBySession}
                   busyIds={busyIds}
                   unread={unread}
                   actionBusy={actionBusy}
@@ -6406,8 +6483,8 @@ export function Workspace({
                       <Select
                         name="blank-folder"
                         label=""
-                        value={newThreadDir}
-                        disabled={actionBusy}
+                        value={newSandboxProfile ? "" : newThreadDir}
+                        disabled={actionBusy || Boolean(newSandboxProfile)}
                         sx={{ width: 190 }}
                         onSelect={setNewThreadDir}
                       >
@@ -6423,9 +6500,9 @@ export function Workspace({
                         ]}
                       </Select>
                       <CheckBox
-                        checked={newUnlimitedSteps}
+                        checked={newSandboxProfile ? false : newUnlimitedSteps}
                         aria-label="Sans limite d'étapes"
-                        disabled={actionBusy}
+                        disabled={actionBusy || Boolean(newSandboxProfile)}
                         onChange={() => setNewUnlimitedSteps((value) => !value)}
                         sx={{ ml: 0.5 }}
                       />
@@ -6436,6 +6513,32 @@ export function Workspace({
                       >
                         Sans limite d'étapes
                       </Typography>
+                      <Typography
+                        variant="caption"
+                        color="textSecondary"
+                        title="Exécute ce fil dans un conteneur jetable, isolé du bureau — pour un prompt non fiable (texte collé, instructions inconnues). Profils dans Config → Bac à sable."
+                      >
+                        Bac à sable
+                      </Typography>
+                      <Select
+                        name="blank-sandbox"
+                        label=""
+                        value={newSandboxProfile}
+                        disabled={actionBusy}
+                        sx={{ width: 190 }}
+                        onSelect={setNewSandboxProfile}
+                      >
+                        {[
+                          <option key="none" value="">
+                            Aucun
+                          </option>,
+                          ...sandboxProfiles.map((entry) => (
+                            <option key={entry.id} value={entry.name}>
+                              {entry.name}
+                            </option>
+                          )),
+                        ]}
+                      </Select>
                     </Stack>
                   ) : null}
                   {stopping ? (

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { unlinkSync } from "node:fs"
 import {
   type CdpSocket,
@@ -33,7 +34,7 @@ import {
 } from "./viewport"
 
 const USAGE =
-  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] JS | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]"
+  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] [--timeout SEC] JS | storage idb ORIGIN [DB [STORE]] [--limit N] | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]"
 
 export type PageState = {
   url: string
@@ -89,9 +90,18 @@ async function resolvePage(
   session?: string,
   callTimeoutMs?: number,
 ): Promise<{ target: PageTarget; socket: CdpSocket }> {
-  const targets = await listPageTargets(port)
+  let targets = await listPageTargets(port)
+  // A just-opened tab can miss one /json/list pass while VNC already shows
+  // it (#98) — one short re-list before declaring the screen pageless.
+  if (targets.length === 0) {
+    await Bun.sleep(300)
+    targets = await listPageTargets(port)
+  }
   const target = pickPageTarget(targets, readActiveTabId(session))
-  if (!target) throw new Error("no page on this screen")
+  if (!target)
+    throw new Error(
+      "no page on this screen — the managed browser has no open tab (a standalone Chrome window is not reachable here; open one with ob-chrome navigate URL)",
+    )
   const socket = await openSocket(
     target.webSocketDebuggerUrl,
     undefined,
@@ -782,14 +792,39 @@ async function domCmd(
 export function evalRequest(
   positional: string[],
   flags: Record<string, string | boolean>,
-): { expression: string; raw: boolean } {
+): { expression: string; raw: boolean; timeoutMs: number } {
+  const timeoutMs = evalTimeoutMs(flags)
   if (flags.raw === undefined) {
-    return { expression: positional.join(" "), raw: false }
+    return { expression: positional.join(" "), raw: false, timeoutMs }
   }
   if (typeof flags.raw === "string") {
-    return { expression: [flags.raw, ...positional].join(" "), raw: true }
+    return {
+      expression: [flags.raw, ...positional].join(" "),
+      raw: true,
+      timeoutMs,
+    }
   }
-  return { expression: positional.join(" "), raw: flags.raw === true }
+  return {
+    expression: positional.join(" "),
+    raw: flags.raw === true,
+    timeoutMs,
+  }
+}
+
+// `--timeout SEC` widens (or narrows) the eval ceiling for expressions that
+// legitimately await minutes of sequential page work (#107/#112). Bounded:
+// past the max it clamps, so a typo cannot hang the CLI for an hour.
+export const EVAL_TIMEOUT_MAX_MS = 120_000
+function evalTimeoutMs(flags: Record<string, string | boolean>): number {
+  if (flags.timeout === undefined) return EVAL_TIMEOUT_MS
+  const seconds =
+    typeof flags.timeout === "string" ? Number(flags.timeout) : NaN
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(
+      `eval --timeout needs a positive number of seconds (max ${EVAL_TIMEOUT_MAX_MS / 1000})`,
+    )
+  }
+  return Math.min(Math.round(seconds * 1000), EVAL_TIMEOUT_MAX_MS)
 }
 
 // `eval JS` runs in the page: the management lever the DOM read implies —
@@ -809,15 +844,15 @@ async function evalCmd(
   positional: string[],
   flags: Record<string, string | boolean>,
 ): Promise<Record<string, unknown>> {
-  const { expression, raw } = evalRequest(positional, flags)
+  const { expression, raw, timeoutMs } = evalRequest(positional, flags)
   if (!expression.trim()) throw new Error("eval needs a JavaScript expression")
-  const { socket } = await resolvePage(port, session, EVAL_TIMEOUT_MS)
+  const { target, socket } = await resolvePage(port, session, timeoutMs)
   try {
     const value = await evaluate(socket, expression).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
       if (/cdp call timed out/i.test(message))
         throw new Error(
-          `eval timed out after ${EVAL_TIMEOUT_MS / 1000}s (the eval limit; ordinary CDP calls allow 6s). The page may be wedged, or the expression awaits too much sequential work — split it into smaller evals, or check the renderer with ob-chrome url / ob-memory, then reload the tab if it stays unresponsive.`,
+          `eval timed out after ${timeoutMs / 1000}s — the expression may still be running or may have completed in the page; its result was not collected, and this says nothing about the page's health. Do not navigate or replay it (navigation discards unsaved page state, replay can duplicate side effects): first run a short read-only eval (ob-chrome eval '1', or read your in-page status/result global) to see where things stand, then split the work into smaller evals or raise --timeout (max ${EVAL_TIMEOUT_MAX_MS / 1000}s).`,
         )
       throw error
     })
@@ -835,13 +870,187 @@ async function evalCmd(
       return { __raw: capText(serialized, EVAL_MAX).text }
     }
     const url = await evaluate(socket, "location.href").catch(() => "")
-    if (serialized.length <= EVAL_MAX) return { url, value }
+    // `target` is the page epoch: if it changes between calls, the browser
+    // or tab was replaced and in-page state from before is gone (#108) —
+    // compare it across a resumed turn before trusting unsaved work.
+    if (serialized.length <= EVAL_MAX) return { url, value, target: target.id }
     const cap = capText(serialized, EVAL_MAX)
     return {
       url,
+      target: target.id,
       value: cap.text,
       truncated: true,
       note: "result truncated — narrow the expression (slice arrays, pick fields)",
+    }
+  } finally {
+    socket.close()
+  }
+}
+
+// ---- storage (read-only IndexedDB export) ----
+//
+// `storage idb ORIGIN [DB [STORE]] [--limit N]` reads a persisted origin
+// through the CDP IndexedDB domain — no navigation, no page JS, no writes
+// (#109: recovering a save slot from an old profile used to require
+// relaunching the app on that origin). The origin must already exist in
+// this screen's browser profile; nothing here creates a database.
+
+export function storageRequest(
+  positional: string[],
+  flags: Record<string, string | boolean>,
+): { origin: string; database: string; store: string; limit: number } {
+  const [kind = "", rawOrigin = "", database = "", store = ""] = positional
+  if (kind !== "idb")
+    throw new Error("usage: storage idb ORIGIN [DB [STORE]] [--limit N]")
+  let origin = ""
+  try {
+    const parsed = new URL(rawOrigin)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+      throw new Error("scheme")
+    origin = parsed.origin
+  } catch {
+    throw new Error(
+      `storage idb needs an http(s) origin like http://127.0.0.1:4702 (got "${rawOrigin}")`,
+    )
+  }
+  const rawLimit =
+    typeof flags.limit === "string" ? Number(flags.limit) : Number.NaN
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(500, Math.max(1, Math.floor(rawLimit)))
+    : 50
+  return { origin, database, store, limit }
+}
+
+type Remoteish = {
+  type?: unknown
+  value?: unknown
+  description?: unknown
+  className?: unknown
+}
+
+function remoteValue(remote: Remoteish | undefined): unknown {
+  if (!remote || typeof remote !== "object") return undefined
+  if ("value" in remote) return remote.value
+  return undefined
+}
+
+// One IndexedDB DataEntry as a bounded provenance row: the value rides
+// along only when CDP serialized it, always with its sha256 + byte length
+// so an export can be verified without trusting the transport.
+export function shapeIdbEntry(entry: {
+  key?: Remoteish
+  primaryKey?: Remoteish
+  value?: Remoteish
+}): Record<string, unknown> {
+  const value = remoteValue(entry.value)
+  const row: Record<string, unknown> = { key: remoteValue(entry.key) }
+  const primary = remoteValue(entry.primaryKey)
+  if (primary !== undefined && primary !== row.key) row.primaryKey = primary
+  if (value === undefined) {
+    const label =
+      typeof entry.value?.description === "string"
+        ? entry.value.description
+        : typeof entry.value?.className === "string"
+          ? entry.value.className
+          : "unserializable value"
+    row.note = `value not serialized by CDP (${label}) — read it in-page on that origin`
+    row.valueSha256 = ""
+    row.valueBytes = 0
+    return row
+  }
+  const json = JSON.stringify(value) ?? ""
+  row.value = value
+  row.valueSha256 = createHash("sha256").update(json).digest("hex")
+  row.valueBytes = json.length
+  return row
+}
+
+async function storageCmd(
+  port: number,
+  session: string | undefined,
+  positional: string[],
+  flags: Record<string, string | boolean>,
+): Promise<Record<string, unknown>> {
+  const { origin, database, store, limit } = storageRequest(positional, flags)
+  const { socket } = await resolvePage(port, session)
+  try {
+    await socket.call("IndexedDB.enable")
+    const names = (await socket.call("IndexedDB.requestDatabaseNames", {
+      securityOrigin: origin,
+    })) as { databaseNames?: unknown }
+    const databaseNames = Array.isArray(names.databaseNames)
+      ? names.databaseNames.filter(
+          (name): name is string => typeof name === "string",
+        )
+      : []
+    if (!database) {
+      const databases: Record<string, unknown>[] = []
+      for (const name of databaseNames) {
+        const detail = (await socket
+          .call("IndexedDB.requestDatabase", {
+            securityOrigin: origin,
+            databaseName: name,
+          })
+          .catch(() => null)) as {
+          databaseWithObjectStores?: {
+            version?: unknown
+            objectStores?: { name?: unknown }[]
+          }
+        } | null
+        const stores = (detail?.databaseWithObjectStores?.objectStores ?? [])
+          .map((item) => (typeof item?.name === "string" ? item.name : ""))
+          .filter(Boolean)
+        databases.push({
+          name,
+          version: detail?.databaseWithObjectStores?.version ?? null,
+          stores,
+        })
+      }
+      return { origin, databases }
+    }
+    if (!databaseNames.includes(database))
+      throw new Error(
+        `no IndexedDB database "${database}" on ${origin} in this browser profile (found: ${databaseNames.join(", ") || "none"}) — nothing was created`,
+      )
+    if (!store) {
+      const detail = (await socket.call("IndexedDB.requestDatabase", {
+        securityOrigin: origin,
+        databaseName: database,
+      })) as {
+        databaseWithObjectStores?: {
+          version?: unknown
+          objectStores?: { name?: unknown }[]
+        }
+      }
+      return {
+        origin,
+        database,
+        version: detail.databaseWithObjectStores?.version ?? null,
+        stores: (detail.databaseWithObjectStores?.objectStores ?? []).map(
+          (item) => item?.name ?? null,
+        ),
+      }
+    }
+    const data = (await socket.call("IndexedDB.requestData", {
+      securityOrigin: origin,
+      databaseName: database,
+      objectStoreName: store,
+      skipCount: 0,
+      pageSize: limit,
+    })) as {
+      objectStoreDataEntries?: Record<string, Remoteish>[]
+      hasMore?: unknown
+    }
+    const entries = (data.objectStoreDataEntries ?? []).map((entry) =>
+      shapeIdbEntry(entry as Parameters<typeof shapeIdbEntry>[0]),
+    )
+    return {
+      origin,
+      database,
+      store,
+      entries,
+      hasMore: data.hasMore === true,
+      limit,
     }
   } finally {
     socket.close()
@@ -1089,6 +1298,10 @@ async function main() {
     state = await withHeal(session, () => domCmd(port, session, args, flags))
   else if (verb === "eval")
     state = await withHeal(session, () => evalCmd(port, session, args, flags))
+  else if (verb === "storage")
+    state = await withHeal(session, () =>
+      storageCmd(port, session, args, flags),
+    )
   else if (verb === "cache")
     state = await withHeal(session, () => cacheCmd(port, session, args, flags))
   // viewport parses its own argv tail: its bare flags (--landscape,
@@ -1107,6 +1320,18 @@ async function main() {
   console.log(JSON.stringify(state))
 }
 
+// The stderr line for a failed verb. A dead-renderer timeout recovers by
+// navigating (which falls back to a fresh tab) — but an eval timeout is
+// not a dead page: the expression may have completed, and navigating
+// would discard unsaved state while replaying could duplicate side
+// effects (#107/#112). Eval timeouts carry their own advice already.
+export function recoveryAdvice(message: string): string {
+  if (/^eval timed out/i.test(message)) return message
+  if (/timed out|unresponsive/i.test(message))
+    return `${message}. Recover with ob-chrome --session SESSION navigate URL`
+  return message
+}
+
 if (import.meta.main) {
   main().catch((error: unknown) => {
     const raw = error instanceof Error ? error.message : "chrome failed"
@@ -1114,11 +1339,7 @@ if (import.meta.main) {
     if (/unable to connect|econnrefused|fetch failed/i.test(raw)) {
       message = "chrome is not reachable on this screen"
     }
-    console.error(
-      /timed out|unresponsive/i.test(message)
-        ? `${message}. Recover with ob-chrome --session SESSION navigate URL`
-        : message,
-    )
+    console.error(recoveryAdvice(message))
     process.exit(1)
   })
 }

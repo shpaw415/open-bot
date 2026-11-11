@@ -185,6 +185,18 @@ async function evaluateValue(
   return result.result?.value
 }
 
+// A capture byte-identical to the previous one while the page is still
+// painting is the frozen-compositor signature (#67): one rAF-waited
+// reshoot usually lands on the fresh surface. Pure so the decision is
+// testable without a live browser.
+export function shouldReshoot(
+  previousHash: string,
+  hash: string,
+  animating: boolean,
+): boolean {
+  return animating && previousHash !== "" && previousHash === hash
+}
+
 // Two rAF ticks arriving on schedule prove the renderer is still painting;
 // a capture byte-identical to the previous one while rAF runs is the frozen
 // compositor signature (stale surface, live page).
@@ -275,11 +287,31 @@ async function main() {
         scale,
       }
     }
-    const shot = (await socket.call("Page.captureScreenshot", shotParams)) as {
-      data?: string
+    const shoot = async () => {
+      const shot = (await socket.call(
+        "Page.captureScreenshot",
+        shotParams,
+      )) as { data?: string }
+      if (!shot.data) throw new Error("empty screenshot")
+      return Buffer.from(shot.data, "base64")
     }
-    if (!shot.data) throw new Error("empty screenshot")
-    const bytes = Buffer.from(shot.data, "base64")
+    let bytes = await shoot()
+    let reshot = false
+    {
+      const firstHash = new Bun.CryptoHasher("sha256")
+        .update(bytes)
+        .digest("hex")
+      if (shouldReshoot(previousHash, firstHash, await pageAnimating(socket))) {
+        // Frozen surface, live page: wait out two fresh frames and shoot
+        // once more instead of handing back pixels known to be stale.
+        await evaluateValue(
+          socket,
+          "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(1))))",
+        ).catch(() => null)
+        bytes = await shoot()
+        reshot = true
+      }
+    }
     await Bun.write(file, bytes)
     const png = pngSize(bytes) ?? {
       width: cssWidth * scale,
@@ -316,6 +348,10 @@ async function main() {
     if (resized)
       console.error(
         "note: this capture resized the page viewport for the shot and restored it after; if you are measuring on-page FPS, capture again after waiting ~15 seconds",
+      )
+    if (reshot && previousHash && previousHash !== hash)
+      console.error(
+        "note: the first capture was byte-identical to the previous one on a live page (stale compositor frame) — retaken after two fresh frames; these pixels are current",
       )
     if (previousHash && previousHash === hash) {
       if (await pageAnimating(socket))

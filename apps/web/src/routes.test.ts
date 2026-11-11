@@ -145,7 +145,7 @@ describe("config tab helpers", () => {
       for (const entry of group.tabs) expect(isConfigTab(entry)).toBe(true)
     }
   })
-  test("the four groups are goal-oriented and cover the 18 sections once", () => {
+  test("the four groups are goal-oriented and cover the 19 sections once", () => {
     expect(CONFIG_GROUPS.map((group) => group.key)).toEqual([
       "assistant",
       "connexions",
@@ -155,7 +155,7 @@ describe("config tab helpers", () => {
     const flat = CONFIG_GROUPS.flatMap((group) =>
       group.tabs.filter((entry): entry is ConfigTab => entry !== "cron"),
     )
-    expect(new Set(flat).size).toBe(18)
+    expect(new Set(flat).size).toBe(19)
   })
   test("configPath builds canonical URLs", () => {
     expect(configPath("chat")).toBe("/config/chat")

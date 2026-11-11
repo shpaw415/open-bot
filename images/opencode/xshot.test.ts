@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { captureTransform, pngSize, shotSize } from "./xshot"
+import { captureTransform, pngSize, shouldReshoot, shotSize } from "./xshot"
 
 function pngHeader(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24)
@@ -75,5 +75,13 @@ describe("capture transform", () => {
     expect(transform.factor).toBe(2)
     expect(transform.ox).toBe(4)
     expect(transform.oy).toBe(125)
+  })
+
+  test("reshoots only an identical capture on a still-painting page (#67)", () => {
+    expect(shouldReshoot("abc", "abc", true)).toBe(true)
+    // A static page legitimately captures identical bytes — no reshoot.
+    expect(shouldReshoot("abc", "abc", false)).toBe(false)
+    expect(shouldReshoot("abc", "def", true)).toBe(false)
+    expect(shouldReshoot("", "", true)).toBe(false)
   })
 })

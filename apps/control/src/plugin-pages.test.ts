@@ -27,6 +27,7 @@ import {
   stopPluginPageServer,
   strippedHeaders,
   sweepIdlePluginPageServers,
+  touchPageFrameToken,
   touchPluginPageActivity,
   uiBuildId,
 } from "./plugin-pages"
@@ -852,6 +853,46 @@ describe("strippedHeaders", () => {
     expect(headers.get("x-open-bot-language")).toBeNull()
     expect(headers.get("authorization")).toBeNull()
     expect(headers.get("x-open-bot-page-token")).toBe("tok")
+  })
+})
+
+describe("frame context id (#27)", () => {
+  test("mint keeps a valid client context id and generates one otherwise", () => {
+    const kept = mintPageFrameToken(
+      "u1",
+      "stock-pro",
+      "/",
+      Date.now(),
+      "ctx-tab-1234",
+    )
+    expect(kept.contextId).toBe("ctx-tab-1234")
+    expect(touchPageFrameToken(kept.token)?.contextId).toBe("ctx-tab-1234")
+    const forged = mintPageFrameToken(
+      "u1",
+      "stock-pro",
+      "/",
+      Date.now(),
+      "bad id with spaces!!",
+    )
+    expect(forged.contextId).toMatch(/^ctx-[A-Za-z0-9_-]+$/)
+    const generated = mintPageFrameToken("u1", "stock-pro")
+    expect(generated.contextId).toMatch(/^ctx-[A-Za-z0-9_-]+$/)
+  })
+
+  test("context header rides only when passed; a client copy never survives", () => {
+    const withCtx = strippedHeaders(
+      new Headers({ "x-open-bot-context": "forged" }),
+      "tok",
+      "en",
+      "owner-tok",
+      "ctx-tab-1234",
+    )
+    expect(withCtx.get("x-open-bot-context")).toBe("ctx-tab-1234")
+    const bare = strippedHeaders(
+      new Headers({ "x-open-bot-context": "forged" }),
+      "tok",
+    )
+    expect(bare.get("x-open-bot-context")).toBeNull()
   })
 })
 

@@ -60,8 +60,9 @@ export function vncSystemLine(sessionId: string, port: number) {
     "A relaunch opens a blank page: Chromium was restarted — navigate back with ob-chrome. Do not call the screen dark.",
     `Native apps: install with sudo apt-get and launch with ob-app --session ${sessionId}; a standalone Chrome window is ob-app launch chrome.`,
     "ob-vnc pixels are the last resort.",
-    "Twenty fallback actions per task is the budget. Finish the task yourself; only after the budget, stop input and end with ![screen](open-bot://screen).",
-    "If the page needs the user (a login you lack credentials for, a captcha, a choice only they can make), stop and end with ![screen](open-bot://screen). When the person gave you the username and password, sign in normally. A captcha is never solved, clicked, or bypassed — including I'm-not-a-robot checkboxes — not even when the person asks.",
+    "Twenty fallback actions per task is the budget. Finish the task yourself from start to end; handing the screen over is the last resort, after your own tries fail, not the first response to a wall.",
+    "Login: sign in yourself with credentials you already know for that site (given in this conversation, Chrome autofill — click the field to commit it, its DOM value reads empty until then — or an already-signed-in session); submit, verify you landed signed in, and if rejected re-check the fields and retry once with the same known credentials. Never guess or extract credentials. Only then, or for a one-time code/passkey only the user holds, stop and end with ![screen](open-bot://screen).",
+    "Human check: a single I'm-not-a-robot or I-am-human checkbox or button is yours to click — click it, wait, continue when it clears, and if it still stands click it once more (two clicks at most). Only if it still will not clear, or it escalates into a puzzle, image-select, slider, type-the-characters, or audio captcha (never solve or bypass those), stop and end with ![screen](open-bot://screen).",
     "If the user takes control, stop all input until they say they are done on the screen.",
     "The chat embeds this live screen. Do not click or type again until they say they are done on the screen.",
   ].join(" ")

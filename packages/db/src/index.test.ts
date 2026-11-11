@@ -976,6 +976,59 @@ describe("personas", () => {
     expect(db.threadModels("a")).toHaveLength(0)
   })
 
+  test("sandbox profiles and threads roundtrip; token lookup and wipes work", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "a", email: "a@localhost", role: "user" }))
+    db.saveSandboxProfile({
+      id: "sp1",
+      userId: "a",
+      name: "locked",
+      profile: "{}",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    db.saveSandboxProfile({
+      id: "sp1",
+      userId: "a",
+      name: "locked",
+      profile: '{"network":"off"}',
+      createdAt: 1,
+      updatedAt: 2,
+    })
+    expect(db.sandboxProfiles("a")).toHaveLength(1)
+    expect(db.sandboxProfileByName("a", "locked")?.profile).toBe(
+      '{"network":"off"}',
+    )
+    expect(db.sandboxProfileByName("a", "nope")).toBeNull()
+    db.createSandboxThread({
+      id: "sb1",
+      userId: "a",
+      sessionId: null,
+      profileId: "sp1",
+      profile: "{}",
+      container: "ob-sbx-a-sb1",
+      network: "ob-sbx-sb1",
+      tokenHash: "hash1",
+      state: "starting",
+      createdAt: 1,
+      expiresAt: 100,
+      lastActiveAt: 1,
+    })
+    expect(db.sandboxByTokenHash("hash1")?.id).toBe("sb1")
+    expect(db.sandboxByTokenHash("other")).toBeNull()
+    db.updateSandboxThread("sb1", { sessionId: "ses-x", state: "running" })
+    expect(db.sandboxBySession("ses-x")?.id).toBe("sb1")
+    expect(db.liveSandboxes("a")).toHaveLength(1)
+    expect(db.liveSandboxes("b")).toHaveLength(0)
+    db.updateSandboxThread("sb1", { state: "destroyed" })
+    expect(db.liveSandboxes("a")).toHaveLength(0)
+    db.deleteUser("a")
+    expect(db.sandboxProfiles("a")).toHaveLength(0)
+    expect(db.sandboxByTokenHash("hash1")).toBeNull()
+  })
+
   test("skill allowlists roundtrip and an update keeps extras", () => {
     const db = openDatabase(
       join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),

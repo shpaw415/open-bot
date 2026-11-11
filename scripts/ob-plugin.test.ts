@@ -523,3 +523,41 @@ test("ob-plugin comments renders millisecond createdAt as a sane UTC date", asyn
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("ob-plugin owner-token prints the owner proof and --rotate posts (#119)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-plugin-owner-"))
+  try {
+    const bin = fakeCurl(
+      home,
+      JSON.stringify({
+        pluginId: "page-pro",
+        port: 4742,
+        base: "http://127.0.0.1:4742",
+        header: "x-open-bot-owner-token",
+        ownerToken: "a".repeat(64),
+      }),
+    )
+    const shown = await run(home, ["owner-token", "page-pro"], bin)
+    expect(shown.code).toBe(0)
+    expect(JSON.parse(shown.stdout)).toEqual({
+      pluginId: "page-pro",
+      port: 4742,
+      base: "http://127.0.0.1:4742",
+      header: "x-open-bot-owner-token",
+      ownerToken: "a".repeat(64),
+    })
+    const args = readFileSync(join(home, "curl.args"), "utf8")
+    expect(args).toContain("/page/owner-token")
+    const rotated = await run(
+      home,
+      ["owner-token", "page-pro", "--rotate"],
+      bin,
+    )
+    expect(rotated.code).toBe(0)
+    const rotateArgs = readFileSync(join(home, "curl.args"), "utf8")
+    expect(rotateArgs).toContain("/page/owner-token/rotate")
+    expect(rotateArgs).toContain("POST")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

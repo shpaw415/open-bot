@@ -347,3 +347,54 @@ test("pageNeedsUser recognizes verification phrasing without the word captcha", 
     }),
   ).toBe(false)
 })
+
+test("a clickable single human check is the agent's click, not needs_user", async () => {
+  const { isCaptchaSolveGoal, isSimpleHumanCheck, pageIsError, pageNeedsUser } =
+    await import("./action-space")
+  const checkbox = {
+    targetId: "7",
+    role: "checkbox",
+    label: "I'm not a robot",
+    value: "",
+    editable: false,
+    actionable: true,
+  }
+  const human = {
+    url: "https://example.test/verify",
+    title: "Verification required",
+    text: "Prove you are human. I'm not a robot",
+    canScrollDown: false,
+    canScrollUp: false,
+    elements: [checkbox],
+  }
+  expect(isSimpleHumanCheck(human)).toBe(true)
+  expect(pageNeedsUser(human)).toBe(false)
+  // Bot-wall wording on a passable check is not an error page either.
+  expect(pageIsError(human)).toBe(false)
+  expect(pageIsError({ ...human, elements: [] })).toBe(true)
+  // The same wording escalated into solving is a handover again.
+  const puzzle = {
+    ...human,
+    text: "Select all images with traffic lights, then verify",
+  }
+  expect(isSimpleHumanCheck(puzzle)).toBe(false)
+  expect(pageNeedsUser(puzzle)).toBe(true)
+  // A human check with nothing clickable cannot be tried: handover.
+  expect(pageNeedsUser({ ...human, elements: [] })).toBe(true)
+  // An "I am human" button counts the same as the robot checkbox.
+  expect(
+    isSimpleHumanCheck({
+      ...human,
+      text: "Press to continue",
+      elements: [{ ...checkbox, role: "button", label: "I am human" }],
+    }),
+  ).toBe(true)
+  expect(isCaptchaSolveGoal("Click the I'm not a robot checkbox")).toBe(false)
+  expect(isCaptchaSolveGoal("Click the captcha checkbox")).toBe(false)
+  expect(isCaptchaSolveGoal("Solve the CAPTCHA by typing the characters")).toBe(
+    true,
+  )
+  expect(isCaptchaSolveGoal("Select all images with buses")).toBe(true)
+  expect(isCaptchaSolveGoal("Bypass the recaptcha")).toBe(true)
+  expect(isCaptchaSolveGoal("Search for captcha history")).toBe(false)
+})

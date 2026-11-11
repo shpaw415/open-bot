@@ -84,7 +84,7 @@ import {
   type ThreadModelChoice,
   validateModelChoice,
 } from "./effort"
-import { cookieSecure, names, webDist } from "./env"
+import { cookieSecure, names, trustProxy, webDist } from "./env"
 import type { EventHub, EventsSocketData, Upstream } from "./events"
 import { HttpError, httpErrorResponse } from "./http-error"
 import {
@@ -133,6 +133,7 @@ import {
   model3dProviderPublic,
   model3dProviders,
 } from "./model3d-providers"
+import { effectiveProto, insecureRedirect } from "./origin-guard"
 import { hashPassword, randomToken, sha256, verifyPassword } from "./passwords"
 import { handlePersonas, personaScope, resolvePersona } from "./personas"
 import { pluginOriginForCronJob, pluginOwnership } from "./plugin-ownership"
@@ -146,7 +147,7 @@ import {
   uiBuildId,
 } from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
-import { handlePlugins } from "./plugins"
+import { handlePlugins, instancePublicOrigin } from "./plugins"
 import {
   pluginVaultKeys,
   resyncPluginsForLanguage,
@@ -177,6 +178,16 @@ import {
 } from "./reports"
 import { startReset } from "./reset"
 import { ResetApprovals } from "./reset-approvals"
+import {
+  handleSandbox,
+  handleSandboxProfiles,
+  isSandboxProfilesRequest,
+  isSandboxRequest,
+  listSandboxThreads,
+  SANDBOX_BROKER_PROVIDER,
+  sandboxDaemon,
+  touchSandbox,
+} from "./sandbox"
 import {
   ensureThreadScreen,
   resolveRootSession,
@@ -1145,6 +1156,21 @@ export function createServer(
           return await api(req, url, db, hub, () => server.timeout(req, 0))
         if (url.pathname.startsWith("/desktop/"))
           return await desktopProxy(req, url, server, db)
+        // A browser landing on the internal http origin would get a login
+        // form whose Secure session cookie can never stick (#105): send
+        // page loads to the canonical https origin before any form shows.
+        if (cookieSecure) {
+          const target = insecureRedirect(
+            {
+              method: req.method,
+              pathname: url.pathname,
+              search: url.search,
+              proto: requestProto(req, url, db),
+            },
+            instancePublicOrigin(db),
+          )
+          if (target) return Response.redirect(target, 302)
+        }
         return await staticFile(url.pathname)
       } catch (error) {
         return httpErrorResponse(error)
@@ -1342,6 +1368,17 @@ async function api(
   holdOpen?: () => void,
 ) {
   if (url.pathname === "/api/health") return json({ ok: true })
+  if (url.pathname === "/api/auth/config" && req.method === "GET") {
+    // Public pre-login facts so the login screen can refuse credential
+    // entry on an origin where the Secure session cookie cannot stick,
+    // instead of failing after submit (#105).
+    const canonicalOrigin = instancePublicOrigin(db)
+    return json({
+      cookieSecure,
+      secureOrigin: !cookieSecure || requestProto(req, url, db) === "https",
+      canonicalOrigin: canonicalOrigin || null,
+    })
+  }
   if (url.pathname === "/api/auth/login" && req.method === "POST") {
     const body = await readJson(req)
     const email = String(body.email ?? "")
@@ -1502,6 +1539,13 @@ async function api(
   const isThreadPath = isThreadRequest(url.pathname, req.method)
   const isKeysPath = isKeysRequest(url.pathname, req.method)
   const isOpencodeRead = isOpencodeReadRequest(url.pathname, req.method)
+  // The agent token may list sandbox profiles (to launch with one) and
+  // export a sandbox workspace to the desktop (the coordinator retrieving
+  // results). Creating/widening profiles stays cookie-only below.
+  const isSandboxAgentPath =
+    (isSandboxProfilesRequest(url.pathname) && req.method === "GET") ||
+    (req.method === "POST" &&
+      /^\/api\/sandbox\/[^/]+\/export-to-desktop$/.test(url.pathname))
   if (
     isCronPath ||
     isPersonaPath ||
@@ -1515,12 +1559,18 @@ async function api(
     isMedia ||
     isThreadPath ||
     isKeysPath ||
-    isOpencodeRead
+    isOpencodeRead ||
+    isSandboxAgentPath
   ) {
     const agent = userFromLlmToken(req, db)
     if (agent) {
       if (passwordChangeBlocked(agent, url.pathname)) {
         return json({ error: "password change required" }, 403)
+      }
+      if (isSandboxAgentPath) {
+        if (isSandboxProfilesRequest(url.pathname))
+          return handleSandboxProfiles(req, url, db, agent)
+        return handleSandbox(req, url, db, agent, hub)
       }
       if (isMedia) {
         const handled = await handleMedia(req, url, db, agent, hub)
@@ -1570,7 +1620,7 @@ async function api(
         return json({ error: "not found" }, 404)
       }
       if (isCronPath) return handleCron(req, url, db, agent, hub, holdOpen)
-      if (isThreadPath) return handleThreads(req, url, db, agent)
+      if (isThreadPath) return handleThreads(req, url, db, agent, hub)
       if (isOpencodeRead) return handleOpencodeRead(req, url, db, agent)
       if (isKeysPath) {
         const handled = handleKeys(url, db, agent)
@@ -1588,6 +1638,16 @@ async function api(
   if (passwordChangeBlocked(user, url.pathname)) {
     return json({ error: "password change required" }, 403)
   }
+  // Sandbox profiles are capability grants: cookie-only, never the
+  // agent's LLM token (which may launch with a profile, not widen one).
+  if (isSandboxProfilesRequest(url.pathname))
+    return handleSandboxProfiles(req, url, db, user)
+  if (url.pathname === "/api/sandbox-threads" && req.method === "GET")
+    return listSandboxThreads(db, user)
+  if (isSandboxRequest(url.pathname))
+    return handleSandbox(req, url, db, user, hub)
+  if (isThreadPath && req.method === "POST")
+    return handleThreads(req, url, db, user, hub)
   if (isMedia) {
     const handled = await handleMedia(req, url, db, user, hub)
     if (handled) return handled
@@ -1824,15 +1884,24 @@ async function api(
     if (!row || !row.enabled || !manifest?.dashboard?.pages) {
       return json({ error: "plugin page not found" }, 404)
     }
-    const minted = mintPageFrameToken(user.id, pluginId, rest)
+    const minted = mintPageFrameToken(
+      user.id,
+      pluginId,
+      rest,
+      Date.now(),
+      body.contextId,
+    )
     // The frame URL carries the host-wide language: the framed document
     // request forwards it to the plugin server (same query pass-through as
     // every proxied request) and the plugin's client JS reads it from
     // location.search — the x-open-bot-language header covers the fetches.
+    // `ob_ctx` rides the same way: the per-tab context identity (#27) for
+    // the plugin's client JS; its server twin is x-open-bot-context.
     let frameUrl = minted.frameUrl
     try {
       const parsed = new URL(frameUrl, "http://frame.local")
       parsed.searchParams.set("lang", instanceLanguage(db))
+      parsed.searchParams.set("ob_ctx", minted.contextId)
       frameUrl = frameUrl.startsWith("/")
         ? `${parsed.pathname}${parsed.search}`
         : parsed.toString()
@@ -1841,6 +1910,7 @@ async function api(
     }
     return json({
       frameUrl,
+      contextId: minted.contextId,
       expiresAt: minted.expiresAt,
       isolated: minted.isolated,
     })
@@ -2973,9 +3043,22 @@ async function api(
     const desktop = await ensure(user, db)
     const base = await endpoint(user.id, "opencode", 4096)
     const headers = basic(desktop.opencodePassword)
+    // A non-OK upstream must surface as an error, never as an empty
+    // catalog: an empty list reads as "no provider can be added" and
+    // hides a broken desktop OpenCode (same rule as connectedModels).
+    const providerJson = async (path: string) => {
+      const res = await fetch(`${base}${path}`, { headers })
+      if (!res.ok)
+        throw new HttpError(
+          502,
+          `provider list failed (${res.status})`,
+          "provider_list_failed",
+        )
+      return res.json()
+    }
     const [providers, auth] = await Promise.all([
-      fetch(`${base}/provider`, { headers }).then((res) => res.json()),
-      fetch(`${base}/provider/auth`, { headers }).then((res) => res.json()),
+      providerJson("/provider"),
+      providerJson("/provider/auth"),
     ])
     const catalog = (providers?.all ?? [])
       .filter(
@@ -3608,6 +3691,95 @@ async function api(
       if (!row) throw new Error("desktop record missing")
       const base = await endpoint(user.id, "opencode", 4096)
       return proxy(req, base, "/api/opencode", basic(row.opencodePassword))
+    }
+    // Sandbox sessions route to their own container daemon, with no
+    // desktop wake and none of the desktop prompt preparation (spec §7).
+    const sbxRef = url.pathname.match(
+      /^\/api\/opencode\/session\/([^/]+)(\/.*)?$/,
+    )
+    if (sbxRef) {
+      const sbxId = decodeURIComponent(sbxRef[1] ?? "")
+      const sbxRow = db.sandboxBySession(sbxId)
+      if (sbxRow) {
+        if (sbxRow.userId !== user.id) return json({ error: "not found" }, 404)
+        const suffix = sbxRef[2] ?? ""
+        if (suffix === "/split")
+          return json({ error: "sandbox threads cannot be split" }, 400)
+        if (suffix === "" && req.method === "DELETE") {
+          await cleanupDeletedThread(db, user.id, sbxId)
+          hub.emit(user.id, { type: "threads.changed" })
+          return json({ deleted: true })
+        }
+        const daemon = await sandboxDaemon(db, user.id, sbxId)
+        if (!daemon)
+          return json(
+            { error: "sandbox is not running", code: "sandbox_gone" },
+            410,
+          )
+        const sbxAuth = basic(daemon.password)
+        if (
+          req.method === "POST" &&
+          (suffix === "/prompt_async" || suffix === "/message")
+        ) {
+          const parsed = (await req.json().catch(() => ({}))) as Record<
+            string,
+            unknown
+          >
+          const outbound: Record<string, unknown> = {
+            ...(parsed && typeof parsed === "object" && !Array.isArray(parsed)
+              ? parsed
+              : {}),
+          }
+          const wantedModel = (
+            outbound.model as { modelID?: unknown } | undefined
+          )?.modelID
+          outbound.agent = "sandbox"
+          outbound.model = {
+            providerID: SANDBOX_BROKER_PROVIDER,
+            modelID: wantedModel === "small" ? "small" : "chat",
+          }
+          delete outbound.system
+          touchSandbox(db, sbxRow.id)
+          return proxy(
+            req,
+            daemon.base,
+            "/api/opencode",
+            sbxAuth,
+            JSON.stringify(outbound),
+          )
+        }
+        if (req.method === "GET" && suffix === "/message") {
+          const pageQuery = parseMessagePageQuery(url.searchParams)
+          const upstream = await fetch(
+            new URL(
+              `${url.pathname.replace("/api/opencode", "")}${pageQuery ? "" : url.search}`,
+              daemon.base,
+            ),
+            { headers: sbxAuth, signal: AbortSignal.timeout(30_000) },
+          ).catch(() => null)
+          if (upstream?.ok) {
+            const parsedMsg: unknown = await upstream.json().catch(() => null)
+            if (Array.isArray(parsedMsg)) {
+              if (!pageQuery) return json(trimDashboardMessages(parsedMsg))
+              const page = pageMessages(parsedMsg, pageQuery)
+              if (!page)
+                return json(
+                  {
+                    error: "unknown before cursor",
+                    code: "message_cursor_unknown",
+                  },
+                  400,
+                )
+              return json({
+                ...page,
+                messages: trimDashboardMessages(page.messages),
+              })
+            }
+          }
+          if (pageQuery) return json({ error: "message list failed" }, 502)
+        }
+        return proxy(req, daemon.base, "/api/opencode", sbxAuth)
+      }
     }
     const desktop = await ensure(user, db)
     const base = await endpoint(user.id, "opencode", 4096)
@@ -4498,22 +4670,36 @@ function publicUser(user: User) {
   }
 }
 
+// The scheme this request really arrived over (#105): x-forwarded-proto
+// counts only from explicitly trusted proxy infrastructure or on the
+// configured canonical host — a spoofed header on the internal origin
+// must not mint a session there.
+function requestProto(req: Request, url: URL, db: Db): string {
+  return effectiveProto(
+    {
+      forwardedProto: req.headers.get("x-forwarded-proto"),
+      host: req.headers.get("host"),
+      protocol: url.protocol,
+    },
+    { canonicalOrigin: instancePublicOrigin(db), trustProxy },
+  )
+}
+
 function sessionResponse(req: Request, url: URL, db: Db, user: User) {
   // With COOKIE_SECURE=1 the browser drops the session cookie on insecure
   // origins — a login there "succeeds" and then every later request 401s.
-  // Refuse at login time with the actual cause instead (https behind a TLS
-  // terminator arrives with x-forwarded-proto: https).
-  const proto = (
-    req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "")
-  )
-    .split(",")[0]
-    ?.trim()
-  if (cookieSecure && proto !== "https") {
+  // Refuse at login time with the actual cause instead. Browser page
+  // loads never get this far on a configured instance: they redirect to
+  // the canonical https origin first, and the login screen blocks
+  // credential entry pre-submit via /api/auth/config (#105).
+  if (cookieSecure && requestProto(req, url, db) !== "https") {
+    const canonicalOrigin = instancePublicOrigin(db)
     return json(
       {
         error:
           "insecure origin — this dashboard sets Secure-only session cookies, so sign-in cannot stick; open it over https",
         reason: "insecure_origin",
+        ...(canonicalOrigin ? { canonicalOrigin } : {}),
       },
       403,
     )

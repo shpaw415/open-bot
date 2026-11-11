@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 if [ "${1:-}" != "--session" ] || [ -z "${2:-}" ]; then
-  echo "usage: ob-chrome --session SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab [N] | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval JS | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]" >&2
+  echo "usage: ob-chrome --session SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab [N] | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] [--timeout SEC] JS | storage idb ORIGIN [DB [STORE]] [--limit N] | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]" >&2
   echo "SESSION is the screen id in the system instructions." >&2
   exit 1
 fi

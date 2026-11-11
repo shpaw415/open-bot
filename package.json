@@ -23,7 +23,8 @@
     "update": "bash scripts/update.sh",
     "update:dev": "bash scripts/update.sh --dev",
     "bench:browser": "bash scripts/bench-browser.sh",
-    "bench:agent": "bash scripts/bench-agent.sh"
+    "bench:agent": "bash scripts/bench-agent.sh",
+    "bench:sandbox": "bash scripts/bench-sandbox.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.4",

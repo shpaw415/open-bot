@@ -162,7 +162,7 @@ case "$cmd" in
     out=$(request GET /api/skills)
     fail_on_error "$out"
     printf '%s' "$out" | jq -r '.skills[]
-      | (if .seed then "[seed] " elif .plugin then "[plugin:" + .plugin + "] " else "" end)
+      | (if .seed then "[seed] " elif .plugin then "[plugin:" + (if (.plugin | type) == "object" then (.plugin.id // .plugin.name // "plugin") else .plugin end) + "] " else "" end)
         + .name
         + (if (.description // "") == "" then "" else " — " + .description end)
         + (if .group then "  (group: " + .group + ")" else "" end)'

@@ -25,6 +25,7 @@ export type ConfigTab =
   | "processes"
   | "reports"
   | "security"
+  | "sandbox"
 
 /** Accepted on the URL but redirected to its canonical destination. */
 export type LegacyConfigTab = "cron"
@@ -88,6 +89,7 @@ export const CONFIG_TABS: ConfigTab[] = [
   "processes",
   "reports",
   "security",
+  "sandbox",
 ]
 
 export const CONFIG_TAB_LABELS: Record<AnyConfigTab, string> = {
@@ -109,6 +111,7 @@ export const CONFIG_TAB_LABELS: Record<AnyConfigTab, string> = {
   processes: "Processus",
   reports: "Rapports",
   security: "Protection de l'agent",
+  sandbox: "Bac à sable",
   cron: "Automatisations",
 }
 
@@ -138,7 +141,15 @@ export const CONFIG_GROUPS: ConfigGroup[] = [
   {
     key: "avance",
     label: "Avancé",
-    tabs: ["cron", "backup", "hardware", "processes", "reports", "security"],
+    tabs: [
+      "sandbox",
+      "cron",
+      "backup",
+      "hardware",
+      "processes",
+      "reports",
+      "security",
+    ],
   },
 ]
 

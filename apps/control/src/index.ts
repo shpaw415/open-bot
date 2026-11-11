@@ -37,7 +37,12 @@ import { hashPassword, randomToken } from "./passwords"
 import { dispatchPermissionAsks } from "./permission-asks"
 import { dispatchPluginHooks } from "./plugin-hooks"
 import { convertGuardCrons } from "./plugins"
-import { flushPendingPluginConfigs, reapplyPluginSetup } from "./plugins-apply"
+import {
+  flushPendingPluginConfigs,
+  reapplyPluginSetup,
+  resyncVikingSkillFiles,
+} from "./plugins-apply"
+import { reconcileSandboxes, startSandboxSweeper } from "./sandbox"
 import { createServer, eventTarget } from "./server"
 import { startStatsSampler } from "./stats"
 import { startStuckWatch } from "./stuck"
@@ -122,6 +127,15 @@ onDesktopUp(async (userId) => {
     )
   })
   await flushPendingPluginConfigs(db, userId)
+  // Skill-loader mirrors: skills saved while the mirror write failed (or
+  // before it existed) become discoverable again on wake (#15/#19).
+  await resyncVikingSkillFiles(db, userId).catch((error: unknown) => {
+    console.error(
+      `viking skill file sync failed for ${userId}: ${
+        error instanceof Error ? error.message : error
+      }`,
+    )
+  })
   const resolved = resolveWatchdogConfig(db, userId)
   await syncWatchdogConfig(
     userId,
@@ -168,6 +182,8 @@ if (servers.length === 0) {
 }
 
 convertGuardCrons(db, hub)
+void reconcileSandboxes(db, hub)
+startSandboxSweeper(db, hub)
 startCronScheduler(db, hub)
 startStuckWatch(db, hub)
 startBackupScheduler(db)

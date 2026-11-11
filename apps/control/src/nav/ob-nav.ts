@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { marksFromSpace, parseDecision, withGoalUrl } from "./action-space"
+import {
+  isCaptchaSolveGoal,
+  marksFromSpace,
+  parseDecision,
+  withGoalUrl,
+} from "./action-space"
 import { connectCdp, readActiveTabId } from "./cdp"
 import { askSystem1, noteSystem1, readSystem1Config } from "./client"
 import { runNav } from "./loop"
@@ -27,15 +32,16 @@ async function main() {
   const url = arg("--url")
   const goal = withGoalUrl(arg("--goal"), url)
   const value = arg("--value")
-  // System 1 never solves captchas: a captcha-solving goal is refused before
-  // any screen interaction, whatever the page shows.
-  if (/\bcaptcha/i.test(goal)) {
+  // System 1 never solves puzzle/text captchas: a solving goal is refused
+  // before any screen interaction, whatever the page shows. Clicking a
+  // single human checkbox is not solving and runs normally.
+  if (isCaptchaSolveGoal(goal)) {
     emit(
       {
         status: "needs_user",
         steps: 0,
         detail:
-          "ob-nav never solves captchas. Bring the page to the user instead.",
+          "ob-nav never solves puzzle or text captchas. Bring the page to the user instead.",
       },
       0,
     )

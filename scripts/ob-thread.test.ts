@@ -103,6 +103,66 @@ test("start posts the title, display flag, and message", async () => {
   }
 })
 
+test("start --sandbox sends the profile, copyIn, and broker model", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, [
+      "start",
+      "--sandbox",
+      "locked",
+      "--title",
+      "Paste",
+      "--message",
+      "do it",
+      "--copy-in",
+      "/home/agent/workspace/a.txt",
+      "--copy-in",
+      "/home/agent/workspace/b.txt",
+      "--model",
+      "small",
+    ])
+    expect(result.code).toBe(0)
+    expect(await bodyOf(home)).toEqual({
+      title: "Paste",
+      display: true,
+      message: "do it",
+      model: "open-bot-sandbox/small",
+      sandbox: "locked",
+      copyIn: ["/home/agent/workspace/a.txt", "/home/agent/workspace/b.txt"],
+    })
+    const refused = await run(home, [
+      "start",
+      "--sandbox",
+      "locked",
+      "--council",
+      "team",
+    ])
+    expect(refused.code).toBe(2)
+    // A provider/model ref is brokered through the vault and passes to
+    // the control plane untouched; a bare non-slash model is refused.
+    const brokered = await run(home, [
+      "start",
+      "--sandbox",
+      "locked",
+      "--model",
+      "openai/gpt-5",
+    ])
+    expect(brokered.code).toBe(0)
+    expect((await bodyOf(home)).model).toBe("openai/gpt-5")
+    const badModel = await run(home, [
+      "start",
+      "--sandbox",
+      "locked",
+      "--model",
+      "gpt-5",
+    ])
+    expect(badModel.code).toBe(2)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test("start without --display omits the flag from the body", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
   try {
@@ -875,6 +935,53 @@ test("council close refuses while a member is still running", async () => {
     ])
     expect(forced.code).toBe(0)
     expect(forced.stdout).toContain("deleted: ses_a")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+function fakeCurlMessages(home: string, messagesJson: string) {
+  const bin = join(home, "bin")
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, "curl"),
+    `#!/bin/sh\nprintf '%s\\n' '${messagesJson}'\n`,
+  )
+  chmodSync(join(bin, "curl"), 0o755)
+}
+
+test("read reaches past tool-only tail messages instead of printing nothing (#106)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const toolOnly = (n: number) =>
+      `{"info":{"role":"assistant"},"parts":[{"type":"tool","tool":"bash","state":{"title":"step ${n}"}}]}`
+    const messages = [
+      `{"info":{"role":"user"},"parts":[{"type":"text","text":"do the job"}]}`,
+      `{"info":{"role":"assistant"},"parts":[{"type":"text","text":"starting now"}]}`,
+      ...[1, 2, 3, 4, 5, 6].map(toolOnly),
+    ]
+    fakeCurlMessages(home, `[${messages.join(",")}]`)
+    const result = await run(home, ["read", "ses_1", "2"])
+    expect(result.code).toBe(0)
+    // Last 2 raw rows are tool-only; read must fall back to the last
+    // messages that carry text instead of succeeding with empty output.
+    expect(result.stdout).toContain("starting now")
+    expect(result.stdout).toContain("do the job")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("read explains an all-tool transcript instead of empty success (#106)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurlMessages(
+      home,
+      `[{"info":{"role":"assistant"},"parts":[{"type":"tool","tool":"bash","state":{}}]}]`,
+    )
+    const result = await run(home, ["read", "ses_1", "2"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("no text messages yet")
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

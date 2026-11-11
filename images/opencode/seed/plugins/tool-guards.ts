@@ -14,7 +14,14 @@
 //   neighboring files. A file path is rewritten to its directory plus an
 //   `include` of its basename, which is the same search expressed the way
 //   the tool honors.
-import { existsSync, statSync } from "node:fs"
+//
+// ONE export only: opencode invokes every exported function as a plugin
+// factory. When bashDenial was also exported, opencode 1.19.5 ran it as a
+// "plugin", took its null return for hooks, and left Config null — every
+// /provider + /provider/auth call then 500'd, so no provider or model
+// could be listed or added. Helpers ride on the plugin export as
+// properties (tests read them there), never as their own exports.
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 
 type BeforeInput = { tool: string; sessionID: string; callID: string }
@@ -139,7 +146,8 @@ function shellTokens(command: string): Token[] {
 }
 
 // Returns a compact denial reason, or null when the command is allowed.
-export function bashDenial(command: string): string | null {
+// Not exported directly (see the single-export rule at the top).
+function bashDenial(command: string): string | null {
   let commandPosition = true
   let skipNextWord = false
   for (const token of shellTokens(command)) {
@@ -175,7 +183,7 @@ export function bashDenial(command: string): string | null {
   return null
 }
 
-export const ToolGuards = async (ctx?: { directory?: string }) => {
+const toolGuards = async (ctx?: { directory?: string }) => {
   const base = ctx?.directory ?? process.cwd()
   // Per session: path -> on-disk stamp when this session last saw the
   // contents (read, wrote, or edited — edit reads internally to match
@@ -218,6 +226,32 @@ export const ToolGuards = async (ctx?: { directory?: string }) => {
       return statSync(path).isFile()
     } catch {
       return false
+    }
+  }
+  // The built-in grep dies on huge single-line files (minified JSON): one
+  // match record past ~64 KB breaks its result parser and the whole search
+  // errors (#114). Sample the head of the file; a line past 32 KB means
+  // the caller needs a bounded search instead.
+  const hasHugeLine = (path: string): boolean => {
+    let fd: number | null = null
+    try {
+      fd = openSync(path, "r")
+      const buffer = Buffer.alloc(256 * 1024)
+      const read = readSync(fd, buffer, 0, buffer.length, 0)
+      let longest = 0
+      let current = 0
+      for (let i = 0; i < read; i++) {
+        if (buffer[i] === 10) {
+          longest = Math.max(longest, current)
+          current = 0
+        } else current += 1
+      }
+      longest = Math.max(longest, current)
+      return longest > 32 * 1024
+    } catch {
+      return false
+    } finally {
+      if (fd !== null) closeSync(fd)
     }
   }
 
@@ -267,6 +301,11 @@ export const ToolGuards = async (ctx?: { directory?: string }) => {
         if (!raw) return
         const path = resolve(base, raw)
         if (!isFile(path)) return
+        if (hasHugeLine(path)) {
+          throw new Error(
+            `huge single-line file: ${path} has lines over 32 KB, which breaks the grep tool's result parser. Search it bounded instead: rg -o --max-count 20 '<pattern>' '${path}' (only-matching, never whole lines), or extract fields with jq/python.`,
+          )
+        }
         args.path = dirname(path)
         if (typeof args.include !== "string" || !args.include)
           args.include = basename(path)
@@ -280,3 +319,7 @@ export const ToolGuards = async (ctx?: { directory?: string }) => {
     },
   }
 }
+
+// The module's only export (see the top): the plugin factory, with the
+// pure helpers attached for unit tests so they never become "plugins".
+export const ToolGuards = Object.assign(toolGuards, { bashDenial })

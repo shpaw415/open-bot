@@ -165,6 +165,39 @@ function ensureThreadModelTable(sqlite: Database) {
   `)
 }
 
+function ensureSandboxTables(sqlite: Database) {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS sandbox_profiles (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS sandbox_profiles_user_name
+      ON sandbox_profiles (user_id, name);
+    CREATE TABLE IF NOT EXISTS sandbox_threads (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT NOT NULL,
+      session_id TEXT,
+      profile_id TEXT,
+      profile TEXT NOT NULL,
+      container TEXT NOT NULL,
+      network TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      state TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      last_active_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS sandbox_threads_user
+      ON sandbox_threads (user_id, state);
+    CREATE INDEX IF NOT EXISTS sandbox_threads_session
+      ON sandbox_threads (session_id);
+  `)
+}
+
 function ensureThreadQueueTable(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS thread_queue (
@@ -448,4 +481,5 @@ export function applyMigrations(sqlite: Database, migrationsFolder: string) {
   ensureImprovementTable(sqlite)
   ensureProjectsTable(sqlite)
   ensureUserKeysTable(sqlite)
+  ensureSandboxTables(sqlite)
 }

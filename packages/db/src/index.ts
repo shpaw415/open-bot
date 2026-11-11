@@ -40,6 +40,8 @@ import {
   personas,
   pluginSettings,
   projects,
+  sandboxProfiles,
+  sandboxThreads,
   sessions,
   teamKeys,
   threadDirAssignments,
@@ -592,6 +594,34 @@ export type ThreadModel = {
   providerId: string | null
   modelId: string | null
   effort: string | null
+}
+
+export type SandboxProfileRow = {
+  id: string
+  userId: string
+  name: string
+  /** JSON capability grant, shape validated in apps/control sandbox.ts. */
+  profile: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type SandboxState = "starting" | "running" | "destroyed" | "error"
+
+export type SandboxThreadRow = {
+  id: string
+  userId: string
+  sessionId: string | null
+  profileId: string | null
+  /** Launch-time profile snapshot (JSON); the running source of truth. */
+  profile: string
+  container: string
+  network: string
+  tokenHash: string
+  state: SandboxState
+  createdAt: number
+  expiresAt: number
+  lastActiveAt: number
 }
 
 export type ThreadQueueItem = {
@@ -2146,6 +2176,101 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    sandboxProfiles(userId: string): SandboxProfileRow[] {
+      return orm
+        .select()
+        .from(sandboxProfiles)
+        .where(eq(sandboxProfiles.userId, userId))
+        .all()
+    },
+    sandboxProfileByName(userId: string, name: string) {
+      return (
+        orm
+          .select()
+          .from(sandboxProfiles)
+          .where(
+            and(
+              eq(sandboxProfiles.userId, userId),
+              eq(sandboxProfiles.name, name),
+            ),
+          )
+          .get() ?? null
+      )
+    },
+    saveSandboxProfile(row: SandboxProfileRow) {
+      orm
+        .insert(sandboxProfiles)
+        .values(row)
+        .onConflictDoUpdate({
+          target: sandboxProfiles.id,
+          set: {
+            name: row.name,
+            profile: row.profile,
+            updatedAt: row.updatedAt,
+          },
+        })
+        .run()
+    },
+    deleteSandboxProfile(userId: string, id: string) {
+      orm
+        .delete(sandboxProfiles)
+        .where(
+          and(eq(sandboxProfiles.userId, userId), eq(sandboxProfiles.id, id)),
+        )
+        .run()
+    },
+    createSandboxThread(row: SandboxThreadRow) {
+      orm.insert(sandboxThreads).values(row).run()
+    },
+    sandboxThread(userId: string, id: string) {
+      return (orm
+        .select()
+        .from(sandboxThreads)
+        .where(
+          and(eq(sandboxThreads.userId, userId), eq(sandboxThreads.id, id)),
+        )
+        .get() ?? null) as SandboxThreadRow | null
+    },
+    sandboxBySession(sessionId: string) {
+      return (orm
+        .select()
+        .from(sandboxThreads)
+        .where(eq(sandboxThreads.sessionId, sessionId))
+        .get() ?? null) as SandboxThreadRow | null
+    },
+    sandboxByTokenHash(tokenHash: string) {
+      return (orm
+        .select()
+        .from(sandboxThreads)
+        .where(eq(sandboxThreads.tokenHash, tokenHash))
+        .get() ?? null) as SandboxThreadRow | null
+    },
+    liveSandboxes(userId?: string): SandboxThreadRow[] {
+      const query = orm.select().from(sandboxThreads)
+      const rows = (
+        userId
+          ? query.where(eq(sandboxThreads.userId, userId))
+          : query.where(sql`1 = 1`)
+      ).all() as SandboxThreadRow[]
+      return rows.filter(
+        (row) => row.state === "starting" || row.state === "running",
+      )
+    },
+    updateSandboxThread(
+      id: string,
+      patch: Partial<
+        Pick<
+          SandboxThreadRow,
+          "sessionId" | "state" | "expiresAt" | "lastActiveAt"
+        >
+      >,
+    ) {
+      orm
+        .update(sandboxThreads)
+        .set(patch)
+        .where(eq(sandboxThreads.id, id))
+        .run()
+    },
     enqueueThreadMessage(row: Omit<ThreadQueueItem, "seq">) {
       const tail = orm
         .select({ seq: threadQueue.seq })
@@ -3572,6 +3697,7 @@ export function openDatabase(path: string) {
         tx.delete(cronNotices).where(eq(cronNotices.userId, userId)).run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadModels).where(eq(threadModels.userId, userId)).run()
+        tx.delete(sandboxThreads).where(eq(sandboxThreads.userId, userId)).run()
         tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
@@ -3598,6 +3724,10 @@ export function openDatabase(path: string) {
           .run()
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadModels).where(eq(threadModels.userId, userId)).run()
+        tx.delete(sandboxThreads).where(eq(sandboxThreads.userId, userId)).run()
+        tx.delete(sandboxProfiles)
+          .where(eq(sandboxProfiles.userId, userId))
+          .run()
         tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadDirAssignments)

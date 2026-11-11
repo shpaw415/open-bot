@@ -1,7 +1,22 @@
+import { createHash } from "node:crypto"
 import { type AiConfig, AiError, resolvePublicModel } from "@open-bot/ai"
 import type { Db, UsageKind } from "@open-bot/db"
+import { sandboxBrokerCall } from "./sandbox-broker"
 import { resolveQuota } from "./team"
 import { readUsage, type TokenUsage, teeUsage } from "./usage"
+
+/** Sandbox broker token → the live sandbox row, or null. A sandbox token
+ * is a credential for this broker ONLY (chat completions + model list);
+ * it must never resolve anywhere else in the control plane, and it dies
+ * the moment the sandbox leaves starting/running (destroy = revoked). */
+export function sandboxFromBrokerToken(db: Db, token: string) {
+  if (!token) return null
+  const hash = createHash("sha256").update(token).digest("hex")
+  const row = db.sandboxByTokenHash?.(hash) ?? null
+  if (!row) return null
+  if (row.state !== "running" && row.state !== "starting") return null
+  return row
+}
 
 export async function handleLlm(req: Request, url: URL, ai: AiConfig, db: Db) {
   const token = (req.headers.get("authorization") ?? "").replace(
@@ -9,13 +24,28 @@ export async function handleLlm(req: Request, url: URL, ai: AiConfig, db: Db) {
     "",
   )
   if (!token) return Response.json({ error: "unauthorized" }, { status: 401 })
-  const userId = db.userIdByLlmToken(token)
+  let userId = db.userIdByLlmToken(token)
+  let sandbox = null as ReturnType<typeof sandboxFromBrokerToken>
+  if (!userId) {
+    sandbox = sandboxFromBrokerToken(db, token)
+    if (sandbox) userId = sandbox.userId
+  }
   if (!userId) return Response.json({ error: "unauthorized" }, { status: 401 })
+  if (sandbox) {
+    const allowedPath =
+      (req.method === "GET" && url.pathname === "/llm/v1/models") ||
+      (req.method === "POST" && url.pathname === "/llm/v1/chat/completions")
+    if (!allowedPath)
+      return Response.json({ error: "sandbox_forbidden" }, { status: 403 })
+    if (Date.now() >= sandbox.expiresAt)
+      return Response.json({ error: "sandbox_expired" }, { status: 403 })
+  }
   const account = db.userById(userId)
   if (!account || account.disabled) {
     return Response.json({ error: "account disabled" }, { status: 403 })
   }
-  db.touchDesktop(userId)
+  if (sandbox) db.updateSandboxThread(sandbox.id, { lastActiveAt: Date.now() })
+  else db.touchDesktop(userId)
   const quota =
     account.role !== "admin" ? resolveQuota(db, userId, Date.now()) : null
   if (quota?.over && quota.behavior === "block") {
@@ -89,14 +119,21 @@ export async function handleLlm(req: Request, url: URL, ai: AiConfig, db: Db) {
     if (url.pathname !== "/llm/v1/chat/completions") {
       return Response.json({ error: "not found" }, { status: 404 })
     }
+    // A brokered sandbox never touches the instance api: the control
+    // plane calls the profile's provider with the vault key itself.
+    const brokered = sandbox ? sandboxBrokerCall(db, sandbox) : null
+    if (brokered && "error" in brokered)
+      return Response.json({ error: brokered.error }, { status: 502 })
     const selected =
-      which === "vlm"
+      brokered?.model ??
+      (which === "vlm"
         ? ai.models.vlm
         : which === "small"
           ? ai.models.small
-          : ai.models.chat
-    const call =
-      which === "vlm" && ai.api.vlm
+          : ai.models.chat)
+    const call = brokered
+      ? brokered.api.chat.bind(brokered.api)
+      : which === "vlm" && ai.api.vlm
         ? ai.api.vlm.bind(ai.api)
         : ai.api.chat.bind(ai.api)
     const result = await call({

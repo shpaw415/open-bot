@@ -1996,6 +1996,76 @@ describe("page server routes", () => {
       spy.mockRestore()
     }
   })
+
+  test("page owner-token: agent-only, 404/400 guards, 409 when down, token when up (#119)", async () => {
+    pageRow("plain-pro", { pages: false })
+    pageRow("page-pro")
+    const missing = route(
+      "/api/plugins/installed/unknown/page/owner-token",
+      "GET",
+    )
+    expect(
+      (await handlePlugins(missing.req, missing.url, db, user(), hub))?.status,
+    ).toBe(404)
+    const noPages = route(
+      "/api/plugins/installed/plain-pro/page/owner-token",
+      "GET",
+    )
+    expect(
+      (await handlePlugins(noPages.req, noPages.url, db, user(), hub))?.status,
+    ).toBe(400)
+
+    const down = spyOn(pluginPages, "pluginPageOwnerToken").mockResolvedValue(
+      null,
+    )
+    try {
+      const res = await handlePlugins(
+        route("/api/plugins/installed/page-pro/page/owner-token", "GET").req,
+        route("/api/plugins/installed/page-pro/page/owner-token", "GET").url,
+        db,
+        user(),
+        hub,
+        undefined,
+        true,
+      )
+      expect(res?.status).toBe(409)
+    } finally {
+      down.mockRestore()
+    }
+
+    const up = spyOn(pluginPages, "pluginPageOwnerToken").mockResolvedValue({
+      port: 4742,
+      ownerToken: "a".repeat(64),
+    })
+    try {
+      const req = route(
+        "/api/plugins/installed/page-pro/page/owner-token",
+        "GET",
+      )
+      // The agent (LLM-token) principal may read it — that is the point.
+      const res = await handlePlugins(
+        req.req,
+        req.url,
+        db,
+        user(),
+        hub,
+        undefined,
+        true,
+      )
+      expect(res?.status).toBe(200)
+      expect(await res?.json()).toMatchObject({
+        pluginId: "page-pro",
+        port: 4742,
+        ownerToken: "a".repeat(64),
+        header: "x-open-bot-owner-token",
+      })
+      // A browser session must not exfiltrate it: session principal 403s.
+      const sessionRes = await handlePlugins(req.req, req.url, db, user(), hub)
+      expect(sessionRes?.status).toBe(403)
+    } finally {
+      up.mockRestore()
+    }
+  })
 })
 
 describe("webhook endpoint routes", () => {

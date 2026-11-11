@@ -11,7 +11,7 @@ A shortcut is a named faster path in this desktop's OpenViking. It is not a sche
 
 Search this desktop before repeating a multi-step desktop or shell path:
 
-- `openviking_search` and `openviking_find` for the task
+- `openviking_find` first with a small limit (5) and no inline content; `openviking_grep` when you know an exact identifier. A high semantic score with none of your exact task identifiers in it is not a match — only follow hits whose name or text contains them, and treat "no exact match" as a valid answer
 - `openviking_read` any skill whose name starts with `shortcut-` (`viking://~/skills/<name>/SKILL.md`)
 
 If one matches, follow it.

@@ -311,6 +311,10 @@ describe("persona skill scopes", () => {
       "Only these skills load in this thread: research, media.",
     )
     expect(scoped).toContain("this personality does not include it")
+    // The injected available-skills catalog is unscoped (#8/#23): the scope
+    // line must tell the model not to call the loader for unlisted skills
+    // instead of discovering the denial (and its full ruleset dump).
+    expect(scoped).toContain("do not call the skill loader")
     expect(scoped).not.toContain("MCP servers")
     expect(personaSystem(resolvePersona(db, "u", "p2"))).not.toContain(
       "Only these skills",

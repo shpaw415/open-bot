@@ -10,6 +10,7 @@ let death: {
 } | null = null
 
 mock.module("./docker", () => ({
+  containerIp: async () => "127.0.0.1",
   desktopDeathInfo: async () => death,
   desktopExec: () => {
     throw new Error("not mocked")
@@ -1789,6 +1790,60 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
     })
   })
 
+  test("status reports stalled (not idle) when the turn died on a provider auth error (#118)", async () => {
+    installManageFetch({
+      w1: [
+        {
+          info: { role: "user", time: { created: 1 } },
+          parts: [{ type: "text", text: "go" }],
+        },
+        {
+          info: {
+            role: "assistant",
+            error: {
+              name: "ProviderAuthError",
+              data: { message: "Token refresh failed: 401" },
+            },
+            time: { created: 2, completed: 3 },
+          },
+          parts: [],
+        },
+      ],
+    })
+    statuses = {}
+    const res = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.running).toBe(false)
+    // `idle` reads as "finished" to ob-thread wait; a turn that never ran
+    // must say stalled so the coordinator does not assume queued/done.
+    expect(body.state).toBe("stalled")
+    expect(body.lastError).toContain("401")
+  })
+
+  test("a raced phase probe does not 409 when docker says the desktop runs (#101)", async () => {
+    installManageFetch()
+    statuses = { w1: { type: "idle" } }
+    phase = "sleeping"
+    death = { running: true, oomKilled: false, exitCode: null }
+    const res = await manage(
+      "/api/threads/w1/status",
+      undefined,
+      undefined,
+      "GET",
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      id: "w1",
+      running: false,
+      state: "idle",
+    })
+  })
+
   test("status reports stalled when a prompt never registered a turn", async () => {
     installManageFetch({
       w1: [
@@ -1921,7 +1976,9 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
       "GET",
     )
     const body = (await res.json()) as Record<string, unknown>
-    expect(body.state).toBe("idle")
+    // Was `idle` under #65; #118 showed idle+lastError still reads as
+    // "finished" in wait output, so the state itself now says stalled.
+    expect(body.state).toBe("stalled")
     expect(body.lastError).toContain("usage limit")
     expect(body.providerLimit).toBe(true)
     expect(body.lastActivityAt).toBe(3)

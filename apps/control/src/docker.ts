@@ -2747,6 +2747,65 @@ export async function desktopExec(
   return sh(["docker", "exec", n[role], ...args])
 }
 
+// Mirrors one OpenViking skill to ~/.config/opencode/skills/<name>/SKILL.md
+// so opencode's skill loader discovers custom/plugin skills, not only the
+// seed set the entrypoint copies (#15/#19). OpenViking stays authoritative;
+// `content: null` removes the mirror. Best-effort false when the desktop is
+// asleep — the next wake re-syncs the whole set.
+export async function writeVikingSkillFile(
+  userId: string,
+  name: string,
+  content: string | null,
+): Promise<boolean> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) return false
+  const n = names(userId)
+  if (!(await isRunning(n.opencode))) return false
+  const dir = `/home/agent/.config/opencode/skills/${name}`
+  if (content === null) {
+    const removed = await sh(
+      ["docker", "exec", "-u", "agent", n.opencode, "rm", "-rf", "--", dir],
+      undefined,
+      30_000,
+    )
+    return removed.code === 0
+  }
+  const tmpDir = mkdtempSync(join(tmpdir(), "ob-skill-"))
+  const local = join(tmpDir, "SKILL.md")
+  try {
+    writeFileSync(local, content)
+    const made = await sh(
+      ["docker", "exec", "-u", "agent", n.opencode, "mkdir", "-p", "--", dir],
+      undefined,
+      30_000,
+    )
+    if (made.code !== 0) return false
+    const copied = await sh(
+      ["docker", "cp", local, `${n.opencode}:${dir}/SKILL.md`],
+      undefined,
+      30_000,
+    )
+    if (copied.code !== 0) return false
+    const owned = await sh(
+      [
+        "docker",
+        "exec",
+        "-u",
+        "root",
+        n.opencode,
+        "chown",
+        "agent:agent",
+        "--",
+        `${dir}/SKILL.md`,
+      ],
+      undefined,
+      30_000,
+    )
+    return owned.code === 0
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true })
+  }
+}
+
 export async function writeAgentUpload(
   userId: string,
   path: string,

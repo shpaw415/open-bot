@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -174,12 +180,7 @@ test(
   "save without a body source is a usage error",
   withHome(async (home) => {
     fakeCurl(home)
-    const result = await run(home, [
-      "save",
-      "x",
-      "--description",
-      "d",
-    ])
+    const result = await run(home, ["save", "x", "--description", "d"])
     expect(result.code).toBe(2)
     expect(result.stderr).toContain("--file")
   }),
@@ -305,5 +306,20 @@ test(
     expect(result.code).toBe(1)
     expect(result.stderr).toContain("skill not found")
     expect(result.stderr).toContain("may still be indexing")
+  }),
+)
+
+test(
+  "list renders plugin-owned skills (plugin is an object, #116)",
+  withHome(async (home) => {
+    fakeCurl(home, {
+      "GET /api/skills":
+        '{"skills":[{"name":"arxiv","description":"Papers","plugin":{"id":"research-pack","name":"Research Pack"}},{"name":"mine","description":"Mine"}]}',
+    })
+    const result = await run(home, ["list"])
+    expect(result.code).toBe(0)
+    expect(result.stderr).not.toContain("cannot be added")
+    expect(result.stdout).toContain("[plugin:research-pack] arxiv")
+    expect(result.stdout).toContain("mine")
   }),
 )

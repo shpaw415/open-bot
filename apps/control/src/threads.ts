@@ -21,6 +21,8 @@ import {
   threadModelChoice,
   validateModelChoice,
 } from "./effort"
+import type { EventHub } from "./events"
+import { HttpError } from "./http-error"
 import { pageMessages, parseMessagePageQuery } from "./messages-page"
 import { trimDashboardMessages } from "./messages-trim"
 import {
@@ -33,6 +35,19 @@ import {
   personaSystem,
   resolvePersona,
 } from "./personas"
+import {
+  destroySandboxBySession,
+  launchSandbox,
+  narrowProfileWithPersona,
+  parseSandboxCopyIn,
+  parseSandboxModelRef,
+  resolveSandboxProfileRef,
+  SANDBOX_BROKER_PROVIDER,
+  sandboxDaemon,
+  sandboxModelKey,
+  touchSandbox,
+} from "./sandbox"
+import { validateSandboxModel } from "./sandbox-broker"
 import { ensureThreadScreen, stopThreadScreen } from "./screens"
 import {
   findOrCreateThreadDir,
@@ -379,13 +394,14 @@ export async function handleThreads(
   url: URL,
   db: Db,
   agent: User,
+  hub?: EventHub,
 ): Promise<Response> {
   if (url.pathname === "/api/threads" && req.method === "POST")
-    return startThread(req, db, agent)
+    return startThread(req, db, agent, hub)
   if (url.pathname === "/api/threads" && req.method === "GET")
     return listThreads(db, agent)
   if (url.pathname === "/api/threads" && req.method === "DELETE")
-    return deleteThreads(req, db, agent)
+    return deleteThreads(req, db, agent, hub)
   const managed = url.pathname.match(
     /^\/api\/threads\/([^/]+)\/(stop|post|notify-parent)$/,
   )
@@ -438,7 +454,7 @@ export async function handleOpencodeRead(
   if (!ref || req.method !== "GET") return json({ error: "not found" }, 404)
   const id = decodeURIComponent(ref[1] ?? "")
   if (!id) return json({ error: "not found" }, 404)
-  const resolved = await opencodeBase(db, agent)
+  const resolved = await opencodeBaseForSession(db, agent, id)
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
   const allowed = await manageableThread(id, base, headers, db, agent)
@@ -473,6 +489,8 @@ export async function cleanupDeletedThread(
   userId: string,
   sessionId: string,
 ): Promise<void> {
+  // A sandbox thread's delete destroys its container too (idempotent).
+  await destroySandboxBySession(db, userId, sessionId).catch(() => {})
   db.clearThreadPersona(userId, sessionId)
   db.clearThreadModel(userId, sessionId)
   db.clearThreadQueue(userId, sessionId)
@@ -487,7 +505,32 @@ export async function cleanupDeletedThread(
 
 type ResolvedOpencode =
   | { error: Response }
-  | { base: string; headers: Record<string, string> }
+  | { base: string; headers: Record<string, string>; sandboxId?: string }
+
+/** Session-aware daemon resolution: a sandbox session routes to its own
+ * container daemon, never sideways into the desktop (spec §7 — an
+ * unknown/dead sandbox fails closed instead of falling back). */
+async function opencodeBaseForSession(
+  db: Db,
+  agent: User,
+  sessionId: string,
+): Promise<ResolvedOpencode> {
+  const row = db.sandboxBySession?.(sessionId) ?? null
+  if (row) {
+    if (row.userId !== agent.id)
+      return { error: json({ error: "session not found" }, 404) }
+    const daemon = await sandboxDaemon(db, agent.id, sessionId)
+    if (!daemon)
+      return {
+        error: json(
+          { error: "sandbox is not running", code: "sandbox_gone" },
+          410,
+        ),
+      }
+    return { base: daemon.base, headers: daemon.headers, sandboxId: row.id }
+  }
+  return opencodeBase(db, agent)
+}
 
 async function opencodeBase(db: Db, agent: User): Promise<ResolvedOpencode> {
   const desktop = db.desktop(agent.id)
@@ -499,22 +542,29 @@ async function opencodeBase(db: Db, agent: User): Promise<ResolvedOpencode> {
     // container that is down. When docker gives a definite answer, say why;
     // the error string stays identical for the CLI's transient-retry match.
     const death = await desktopDeathInfo(agent.id).catch(() => null)
-    if (death && !death.running)
-      return {
-        error: json(
-          {
-            error: "desktop is not running",
-            state: "desktop_down",
-            desktop: {
-              running: false,
-              oomKilled: death.oomKilled,
-              exitCode: death.exitCode,
+    // The phase probe is one docker inspect; under load it can fail while
+    // the container plainly runs (#101 — read/post sporadically 409'd
+    // mid-work, then succeeded on immediate retry). When the death probe
+    // definitively says running, the phase answer raced: fall through to
+    // the endpoint instead of reporting a stopped desktop.
+    if (!death?.running) {
+      if (death && !death.running)
+        return {
+          error: json(
+            {
+              error: "desktop is not running",
+              state: "desktop_down",
+              desktop: {
+                running: false,
+                oomKilled: death.oomKilled,
+                exitCode: death.exitCode,
+              },
             },
-          },
-          409,
-        ),
-      }
-    return { error: json({ error: "desktop is not running" }, 409) }
+            409,
+          ),
+        }
+      return { error: json({ error: "desktop is not running" }, 409) }
+    }
   }
   try {
     return {
@@ -555,7 +605,134 @@ export async function threadPromptSystem(
     .join("\n\n")
 }
 
-async function startThread(req: Request, db: Db, agent: User) {
+async function startSandboxThread(
+  db: Db,
+  agent: User,
+  hub: EventHub | undefined,
+  args: {
+    body: Record<string, unknown>
+    title: string
+    message: string
+    visible: boolean
+    persona: PersonaMatch | null
+    modelChoice: ThreadModelChoice | null
+  },
+) {
+  const { body, title, message, visible, persona, modelChoice } = args
+  const resolvedProfile = resolveSandboxProfileRef(db, agent.id, body.sandbox)
+  if ("error" in resolvedProfile)
+    return json({ error: resolvedProfile.error }, 400)
+  const profile = narrowProfileWithPersona(
+    resolvedProfile.profile,
+    persona?.persona ?? null,
+  )
+  const copyIn = parseSandboxCopyIn(body.copyIn)
+  if ("error" in copyIn) return json({ error: copyIn.error }, 400)
+  if (modelChoice?.effort)
+    return json(
+      { error: "sandbox threads do not take a reasoning effort" },
+      400,
+    )
+  // Effective model: explicit launch pick > profile default > chat. A
+  // provider/model pick is brokered keylessly through the vault and is
+  // validated now so a missing key fails the launch, not the first turn.
+  const wantedRef = modelChoice?.modelID
+    ? modelChoice.providerID &&
+      modelChoice.providerID !== SANDBOX_BROKER_PROVIDER
+      ? `${modelChoice.providerID}/${modelChoice.modelID}`
+      : modelChoice.modelID
+    : profile.model
+  const validatedModel = validateSandboxModel(db, agent.id, wantedRef)
+  if ("error" in validatedModel)
+    return json({ error: validatedModel.error }, 400)
+  profile.model = validatedModel.model
+  const modelRef = parseSandboxModelRef(validatedModel.model) ?? {
+    kind: "instance" as const,
+    id: "chat" as const,
+  }
+  const configModelKey = sandboxModelKey(modelRef)
+  const effectiveTitle = visible ? title : hiddenThreadTitle(title)
+  let launched: Awaited<ReturnType<typeof launchSandbox>>
+  try {
+    launched = await launchSandbox(db, agent, {
+      profile,
+      profileId: resolvedProfile.profileId,
+      title: effectiveTitle,
+      copyIn: copyIn.paths,
+      hub,
+    })
+  } catch (error) {
+    if (error instanceof HttpError)
+      return json(
+        { error: error.message, ...(error.code ? { code: error.code } : {}) },
+        error.status,
+      )
+    return json(
+      {
+        error: error instanceof Error ? error.message : "sandbox launch failed",
+      },
+      502,
+    )
+  }
+  const { sessionId } = launched
+  const personaView = persona?.persona ?? null
+  if (personaView) db.setThreadPersona(agent.id, sessionId, personaView.id)
+  db.setThreadModel({
+    userId: agent.id,
+    sessionId,
+    providerId: SANDBOX_BROKER_PROVIDER,
+    modelId: configModelKey,
+    effort: null,
+  })
+  let warning: string | null = null
+  if (message) {
+    const promptBody: Record<string, unknown> = {
+      parts: [{ type: "text", text: message }],
+      agent: "sandbox",
+      model: {
+        providerID: SANDBOX_BROKER_PROVIDER,
+        modelID: configModelKey,
+      },
+    }
+    if (personaView?.instruction && profile.instruction)
+      promptBody.system = personaView.instruction
+    const posted = await fetch(
+      `${launched.base}/session/${encodeURIComponent(sessionId)}/prompt_async`,
+      {
+        method: "POST",
+        headers: launched.headers,
+        body: JSON.stringify(promptBody),
+        signal: AbortSignal.timeout(PROMPT_TIMEOUT_MS),
+      },
+    ).catch(() => null)
+    if (!posted || !posted.ok)
+      warning = "sandbox thread created but the first message failed to post"
+  }
+  hub?.emit(agent.id, { type: "threads.changed" })
+  const result: Record<string, unknown> = {
+    id: sessionId,
+    title: effectiveTitle,
+    display: visible,
+    sandbox: {
+      id: launched.row.id,
+      profile: profile.name,
+      expiresAt: launched.row.expiresAt,
+      mcp: launched.mcp.included,
+      mcpSkipped: launched.mcp.skipped,
+      skillsSkipped: launched.skillsSkipped,
+    },
+  }
+  if (personaView && persona && "matched" in persona)
+    result.persona = {
+      id: personaView.id,
+      name: personaView.name,
+      matched: persona.matched,
+    }
+  if (warning) result.warning = warning
+  return json(result, 201)
+}
+
+async function startThread(req: Request, db: Db, agent: User, hub?: EventHub) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
   const title = sanitizeThreadTitle(body.title)
   if (title === null) return json({ error: "title must be a string" }, 400)
@@ -631,6 +808,33 @@ async function startThread(req: Request, db: Db, agent: User) {
   if (body.from !== undefined && typeof body.from !== "string")
     return json({ error: "from must be a string" }, 400)
   const fromRaw = typeof body.from === "string" ? body.from.trim() : ""
+
+  // Sandbox threads run on their own ephemeral container, not the
+  // desktop: separate launch path (docs/sandbox-threads-spec.md).
+  if (body.sandbox !== undefined) {
+    if (councilName)
+      return json({ error: "sandbox cannot be combined with council" }, 400)
+    if (dirName)
+      return json({ error: "sandbox cannot be combined with dir" }, 400)
+    if (fromRaw)
+      return json(
+        { error: "sandbox threads do not take delegation wakes (from)" },
+        400,
+      )
+    if (unlimitedSteps)
+      return json(
+        { error: "the sandbox profile sets the step limit, not steps" },
+        400,
+      )
+    return startSandboxThread(db, agent, hub, {
+      body,
+      title,
+      message: typeof message === "string" ? message : "",
+      visible: effectiveVisible,
+      persona,
+      modelChoice,
+    })
+  }
 
   const resolved = await opencodeBase(db, agent)
   if ("error" in resolved) return resolved.error
@@ -887,8 +1091,34 @@ async function hiddenStartWarning(
 }
 
 async function listThreads(db: Db, agent: User) {
+  // Sandbox sessions live on their own daemons; they list even while the
+  // desktop sleeps.
+  const sandboxThreads: Record<string, unknown>[] = []
+  for (const row of db.liveSandboxes?.(agent.id) ?? []) {
+    if (!row.sessionId) continue
+    const daemon = await sandboxDaemon(db, agent.id, row.sessionId)
+    let title = row.id
+    if (daemon) {
+      const res = await fetch(
+        `${daemon.base}/session/${encodeURIComponent(row.sessionId)}`,
+        { headers: daemon.headers, signal: AbortSignal.timeout(5_000) },
+      ).catch(() => null)
+      const info = (await res?.json().catch(() => null)) as {
+        title?: unknown
+      } | null
+      if (typeof info?.title === "string") title = info.title
+    }
+    sandboxThreads.push({
+      id: row.sessionId,
+      title,
+      sandbox: { id: row.id, expiresAt: row.expiresAt },
+    })
+  }
   const resolved = await opencodeBase(db, agent)
-  if ("error" in resolved) return resolved.error
+  if ("error" in resolved) {
+    if (sandboxThreads.length > 0) return json({ threads: sandboxThreads })
+    return resolved.error
+  }
   const { base, headers } = resolved
   const res = await fetch(`${base}/session`, {
     headers,
@@ -916,14 +1146,19 @@ async function listThreads(db: Db, agent: User) {
       }
       return thread
     })
-  return json({ threads })
+  return json({ threads: [...threads, ...sandboxThreads] })
 }
 
 // Deletes hidden agent threads in bulk. Only top-level worker:-titled
 // sessions are deletable — the same set listThreads returns — so the agent
 // can never touch the user's visible threads or cron jobs. Everything else
 // comes back skipped with a reason.
-async function deleteThreads(req: Request, db: Db, agent: User) {
+async function deleteThreads(
+  req: Request,
+  db: Db,
+  agent: User,
+  hub?: EventHub,
+) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
   const raw = body.ids
   if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string"))
@@ -932,6 +1167,20 @@ async function deleteThreads(req: Request, db: Db, agent: User) {
   if (ids.length === 0) return json({ error: "ids must not be empty" }, 400)
   if (ids.length > DELETE_LIMIT)
     return json({ error: `ids is limited to ${DELETE_LIMIT} per request` }, 400)
+
+  // Sandbox ids destroy their container; they never touch the desktop.
+  const deletedEarly: string[] = []
+  const desktopIds: string[] = []
+  for (const id of ids) {
+    if (await destroySandboxBySession(db, agent.id, id, hub)) {
+      await cleanupDeletedThread(db, agent.id, id).catch(() => {})
+      deletedEarly.push(id)
+    } else {
+      desktopIds.push(id)
+    }
+  }
+  if (desktopIds.length === 0)
+    return json({ deleted: deletedEarly, skipped: [] })
 
   const resolved = await opencodeBase(db, agent)
   if ("error" in resolved) return resolved.error
@@ -957,9 +1206,9 @@ async function deleteThreads(req: Request, db: Db, agent: User) {
       .map((item) => (item as { id?: unknown }).id)
       .filter((id): id is string => typeof id === "string"),
   )
-  const deleted: string[] = []
+  const deleted: string[] = [...deletedEarly]
   const skipped: { id: string; reason: string }[] = []
-  for (const id of ids) {
+  for (const id of desktopIds) {
     if (!deletable.has(id)) {
       skipped.push({ id, reason: "not a hidden agent thread" })
       continue
@@ -1007,6 +1256,10 @@ async function manageableThread(
   if (!row || typeof row.id !== "string" || row.id !== id || row.parentID)
     return json({ error: "session not found" }, 404)
   const title = typeof row.title === "string" ? row.title : ""
+  // A sandbox session is manageable by construction: the row proves the
+  // caller owns the sandbox, and its daemon serves nothing else.
+  const sandboxRow = db.sandboxBySession?.(id) ?? null
+  if (sandboxRow?.userId === agent.id) return { session: { id } }
   if (!title.startsWith(WORKER_TITLE_PREFIX) && !db.threadPersona(agent.id, id))
     return json(
       { error: "only worker: or persona-bound threads can be managed" },
@@ -1083,6 +1336,30 @@ export function turnStateFromMessages(
 // answers a definite `desktop_down` state (with OOM info) instead of a
 // neutral error, so a silently OOM-killed council is visible in wait output.
 async function threadStatus(id: string, db: Db, agent: User) {
+  const sandboxRow = db.sandboxBySession?.(id) ?? null
+  if (sandboxRow) {
+    if (sandboxRow.userId !== agent.id)
+      return json({ error: "session not found" }, 404)
+    const resolved = await opencodeBaseForSession(db, agent, id)
+    if ("error" in resolved)
+      return json({ id, running: false, state: "sandbox_gone" })
+    const { base, headers } = resolved
+    const allowed = await manageableThread(id, base, headers, db, agent)
+    if (!("session" in allowed)) return allowed
+    const res = await fetch(`${base}/session/status`, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null)
+    if (!res || !res.ok) return json({ error: "status failed" }, 502)
+    const body = (await res.json().catch(() => null)) as Record<
+      string,
+      { type?: unknown } | undefined
+    > | null
+    const entry = body?.[id]
+    if (!entry) return json({ id, running: false, state: "idle" })
+    const state = typeof entry.type === "string" ? entry.type : "idle"
+    return json({ id, running: state !== "idle", state })
+  }
   const phase = await desktopPhase(agent.id)
   if (phase !== "running") {
     const death = await desktopDeathInfo(agent.id)
@@ -1147,6 +1424,11 @@ async function threadStatus(id: string, db: Db, agent: User) {
     // and the coordinator cannot tell finished from quota-stalled (#65).
     const end = lastTurnEnd(messages)
     if (end.state === "error" || end.state === "cut") {
+      // `idle` + lastError still reads as "finished" to a coordinator
+      // skimming wait output: a turn that died on a provider auth 401
+      // never ran at all (#118). State carries the verdict, not just the
+      // detail field — same stalled semantics as council status.
+      if (derived === "idle") body.state = "stalled"
       if (end.detail) body.lastError = end.detail
       body.providerLimit =
         /usage limit|rate.?limit|quota|too many requests|\b429\b/i.test(
@@ -1162,7 +1444,7 @@ async function threadStatus(id: string, db: Db, agent: User) {
 }
 
 async function stopThread(id: string, db: Db, agent: User) {
-  const resolved = await opencodeBase(db, agent)
+  const resolved = await opencodeBaseForSession(db, agent, id)
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
   const allowed = await manageableThread(id, base, headers, db, agent)
@@ -1192,9 +1474,41 @@ async function postThread(req: Request, id: string, db: Db, agent: User) {
   if ("error" in parsedUpdate) return json({ error: parsedUpdate.error }, 400)
   const update = parsedUpdate.update
   const hasUpdate = update.model !== undefined || update.effort !== undefined
-  const resolved = await opencodeBase(db, agent)
+  const resolved = await opencodeBaseForSession(db, agent, id)
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
+  if (resolved.sandboxId) {
+    // Sandbox follow-ups stay on the broker model and the sandbox agent;
+    // no persona/screen system line (those are desktop concepts).
+    if (hasUpdate)
+      return json(
+        { error: "sandbox threads cannot switch model or effort" },
+        400,
+      )
+    const allowed = await manageableThread(id, base, headers, db, agent)
+    if (!("session" in allowed)) return allowed
+    const stored = db.threadModel(agent.id, id)
+    const promptBody: Record<string, unknown> = {
+      parts: [{ type: "text", text: body.message }],
+      agent: "sandbox",
+      model: {
+        providerID: SANDBOX_BROKER_PROVIDER,
+        modelID: stored?.modelId ?? "chat",
+      },
+    }
+    const posted = await fetch(
+      `${base}/session/${encodeURIComponent(id)}/prompt_async`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(promptBody),
+        signal: AbortSignal.timeout(PROMPT_TIMEOUT_MS),
+      },
+    ).catch(() => null)
+    if (!posted || !posted.ok) return json({ error: "post failed" }, 502)
+    touchSandbox(db, resolved.sandboxId)
+    return json({ id, posted: true })
+  }
   const allowed = await manageableThread(id, base, headers, db, agent)
   if (!("session" in allowed)) return allowed
   // A provably wrong switch refuses the whole post before anything is sent,
@@ -1323,7 +1637,7 @@ async function notifyParent(req: Request, id: string, db: Db, agent: User) {
 
 // Reads a managed thread's current model pick (`ob-thread model ID`).
 async function getThreadModel(id: string, db: Db, agent: User) {
-  const resolved = await opencodeBase(db, agent)
+  const resolved = await opencodeBaseForSession(db, agent, id)
   if ("error" in resolved) return resolved.error
   const { base, headers } = resolved
   const allowed = await manageableThread(id, base, headers, db, agent)
@@ -1341,6 +1655,8 @@ async function setThreadModelRoute(
   db: Db,
   agent: User,
 ) {
+  if (db.sandboxBySession?.(id))
+    return json({ error: "sandbox threads cannot switch model or effort" }, 400)
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
   const parsed = parseThreadModelUpdate(body)
   if ("error" in parsed) return json({ error: parsed.error }, 400)

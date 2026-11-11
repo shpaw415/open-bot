@@ -27,6 +27,7 @@ import {
   HubIcon,
   ImageIcon,
   KeyIcon,
+  LockIcon,
   MemoryIcon,
   MicIcon,
   NavigationIcon,
@@ -48,6 +49,7 @@ import { Plugins } from "./Plugins"
 import { Processes } from "./Processes"
 import { Providers } from "./Providers"
 import { Reports } from "./Reports"
+import { SandboxProfiles } from "./SandboxProfiles"
 import { CONFIG_GROUPS, CONFIG_TAB_LABELS, type ConfigTab } from "./routes"
 import { System1 } from "./System1"
 import Stack from "./stack"
@@ -86,6 +88,7 @@ const TAB_ICONS: Record<ConfigTab, React.ReactNode> = {
   processes: <ProcessesIcon />,
   reports: <BugReportIcon />,
   security: <SecurityIcon />,
+  sandbox: <LockIcon />,
 }
 
 /** One short line per section — what it decides, not an app inventory. */
@@ -109,6 +112,8 @@ const TAB_DESCRIPTIONS: Record<ConfigTab, string> = {
   processes: "Processus de fond lancés par l’assistant — suivi et arrêt.",
   reports: "Bogues et frictions signalés par l’assistant.",
   security: "La protection qui surveille les échanges du modèle.",
+  sandbox:
+    "Profils de conteneurs jetables pour les invites non fiables — compétences, outils et réseau choisis.",
 }
 
 function DefaultModelSection({
@@ -671,6 +676,8 @@ function renderSection(
       return <Reports />
     case "security":
       return <Watchdog />
+    case "sandbox":
+      return <SandboxProfiles />
   }
 }
 

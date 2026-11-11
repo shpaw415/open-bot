@@ -129,7 +129,10 @@ function dropEmpty(body: Record<string, unknown>) {
   )
 }
 
-function openaiCompatible(api: OpenAICompatibleApi): AiApi {
+/** Build an AiApi against any OpenAI-compatible endpoint. Exported for
+ * the sandbox model broker, which resolves a per-user provider+key at
+ * request time instead of baking one into the instance config. */
+export function createOpenAiCompatibleApi(api: OpenAICompatibleApi): AiApi {
   const baseURL = requiredString(api.baseURL, "api.baseURL")
   const apiKey = requiredString(api.apiKey, "api.apiKey")
   const headers = api.headers ?? {}
@@ -226,7 +229,7 @@ export function defineAi(input: AiConfigInput): AiConfig {
   }
   if (!input.api) throw new AiError(500, "api is required")
   if (isOpenAICompatible(input.api)) {
-    return { models, api: openaiCompatible(input.api) }
+    return { models, api: createOpenAiCompatibleApi(input.api) }
   }
   if (
     typeof input.api.chat !== "function" ||

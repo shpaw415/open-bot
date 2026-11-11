@@ -27,6 +27,7 @@ import {
 } from "./media-vault"
 import { model3dProviderById, model3dProviderPublic } from "./model3d-providers"
 import { randomToken } from "./passwords"
+import { destroyUserSandboxes } from "./sandbox"
 import { DISK_CAP_KEY, desktopDiskMaxGb, MAX_DISK_CAP_GB } from "./stats"
 import { system1ProviderById, system1ProviderPublic } from "./system1"
 import {
@@ -650,6 +651,7 @@ export async function handleAdmin(
       db.enabledAdminCount(),
     )
     if (error) return json({ error }, 400)
+    await destroyUserSandboxes(db, target.id)
     await destroyDesktop(target.id)
     deleteUserMedia(db, target.id)
     deleteUserVault(db, target.id)

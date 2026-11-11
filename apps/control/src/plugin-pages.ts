@@ -232,6 +232,21 @@ type PageFrameGrant = {
   userId: string
   pluginId: string
   expiresAt: number
+  // Stable, non-secret per-tab identity (#27): the dashboard tab picks it
+  // once and re-sends it on every remint, so a plugin can tell its tabs
+  // apart (restore per-tab UI state) across frame recreations. It is an
+  // identifier only — it never authorizes anything.
+  contextId: string
+}
+
+export function validFrameContextId(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(value)
+    ? value
+    : null
+}
+
+function newFrameContextId(): string {
+  return `ctx-${Buffer.from(crypto.getRandomValues(new Uint8Array(12))).toString("base64url")}`
 }
 const pageFrameGrants = new Map<string, PageFrameGrant>()
 
@@ -714,6 +729,51 @@ export async function pluginPageRuntime(
   return { running, port, pid, desktop }
 }
 
+// The owner proof for one running page server, for the agent's own
+// verification calls (#119): the agent curls the page server on the
+// desktop loopback with `x-open-bot-owner-token: <ownerToken>` and the
+// server treats it exactly like a dashboard-proxied owner request.
+// Scoped to this user's desktop and this plugin; null when no server run
+// has minted one (never started, or stopped — an explicit stop rotates
+// both tokens, which is also the revocation story).
+export async function pluginPageOwnerToken(
+  userId: string,
+  pluginId: string,
+): Promise<{ port: number; ownerToken: string } | null> {
+  const state = pageStateFor(userId, pluginId)
+  if (state) return { port: state.port, ownerToken: state.ownerToken }
+  const n = names(userId)
+  const pidFile = pluginPagePath(pluginId)
+  const read = (suffix: string) =>
+    opencodeExecUser(n.opencode, [
+      "sh",
+      "-c",
+      `cat '${pidFile}.${suffix}' 2>/dev/null || true`,
+    ]).catch(() => ({ code: 1, stdout: "", stderr: "" }))
+  const [portOut, tokenOut] = await Promise.all([
+    read("port"),
+    read("owner-token"),
+  ])
+  const port = Number(portOut.stdout.trim())
+  const ownerToken = tokenOut.stdout.trim()
+  if (!Number.isInteger(port) || port <= 0) return null
+  if (!/^[0-9a-f]{64}$/.test(ownerToken)) return null
+  if (!(await healthy(userId, pluginId, port))) return null
+  return { port, ownerToken }
+}
+
+// Revokes the current owner token (and page token): a stop that does not
+// keep the token files, then a fresh start, which mints new ones.
+export async function rotatePluginPageOwnerToken(
+  userId: string,
+  row: InstalledPlugin,
+  hub?: PageHub,
+) {
+  await stopPluginPageServer(userId, row.pluginId, hub, false)
+  await ensurePluginPageServer(userId, row, hub)
+  return pluginPageOwnerToken(userId, row.pluginId)
+}
+
 // Restart = stop + start. Used when settings change so the server observes
 // the rewritten plugin config file on boot.
 export async function restartPluginPageServer(
@@ -851,6 +911,7 @@ export function strippedHeaders(
   token: string,
   language?: string,
   ownerToken?: string,
+  contextId?: string,
 ) {
   const out = new Headers(headers)
   out.delete("host")
@@ -862,6 +923,10 @@ export function strippedHeaders(
   // it, deleted otherwise so a client can never smuggle its own copy in.
   if (ownerToken) out.set("x-open-bot-owner-token", ownerToken)
   else out.delete("x-open-bot-owner-token")
+  // Per-tab context identity (#27): non-secret, but still proxy-owned —
+  // a client copy is replaced or dropped, never forwarded as-is.
+  if (contextId) out.set("x-open-bot-context", contextId)
+  else out.delete("x-open-bot-context")
   if (language) out.set("x-open-bot-language", language)
   out.set("cache-control", "no-cache")
   out.set("referrer-policy", "no-referrer")
@@ -1040,6 +1105,7 @@ export function mintPageFrameToken(
   pluginId: string,
   rest = "/",
   now = Date.now(),
+  requestedContextId?: unknown,
 ) {
   if (pageFrameGrants.size >= PAGE_FRAME_MAX) {
     const oldest = pageFrameGrants.keys().next().value
@@ -1048,13 +1114,17 @@ export function mintPageFrameToken(
   const token = Buffer.from(
     crypto.getRandomValues(new Uint8Array(32)),
   ).toString("base64url")
+  const contextId =
+    validFrameContextId(requestedContextId) ?? newFrameContextId()
   pageFrameGrants.set(token, {
     userId,
     pluginId,
     expiresAt: now + PAGE_FRAME_TTL_MS,
+    contextId,
   })
   return {
     token,
+    contextId,
     expiresAt: now + PAGE_FRAME_TTL_MS,
     frameUrl: pageFrameUrl(token, rest),
     isolated: Boolean(pagesOrigin()),
@@ -1199,6 +1269,7 @@ export async function proxyPluginPageFrame(
       state.token,
       instanceLanguage(db),
       state.ownerToken,
+      grant.contextId,
     ),
     body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     redirect: "manual",

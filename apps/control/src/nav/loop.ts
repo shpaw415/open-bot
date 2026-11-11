@@ -9,8 +9,12 @@ import {
   goalUrl,
   goalValues,
   type HistoryEntry,
+  HUMAN_CHECK_MAX_CLICKS,
   hostOf,
   isBlankPage,
+  isCaptchaSolveGoal,
+  isHumanCheckLabel,
+  isSimpleHumanCheck,
   MAX_STEPS,
   type NavMark,
   NEAR_MISS_MARGIN,
@@ -84,19 +88,21 @@ export async function runNav(opts: {
   }) => Promise<string>
 }): Promise<NavResult> {
   const maxSteps = opts.maxSteps ?? MAX_STEPS
-  // System 1 never solves captchas: a captcha-solving goal is refused
-  // before any navigation or screen interaction.
-  if (/\bcaptcha/i.test(opts.goal)) {
+  // System 1 never solves puzzle/text captchas: a solving goal is refused
+  // before any navigation or screen interaction. Clicking a single human
+  // checkbox is not solving and runs normally.
+  if (isCaptchaSolveGoal(opts.goal)) {
     return result(
       blankSnapshot,
       0,
       "needs_user",
-      "ob-nav never solves captchas. Bring the page to the user instead.",
+      "ob-nav never solves puzzle or text captchas. Bring the page to the user instead.",
     )
   }
   const history: HistoryEntry[] = []
   let waits = 0
   let fails = 0
+  let humanClicks = 0
   let scrolledBlocked = false
   const excluded = new Set<string>()
   const visitedY = new Set<number>()
@@ -188,6 +194,21 @@ export async function runNav(opts: {
   let step = 0
   try {
     for (step = 1; step <= maxSteps; step += 1) {
+      // Try the human check like any other click, with one retry. Only a
+      // check that still stands after that — or escalates into a puzzle,
+      // which pageNeedsUser catches — goes to the user.
+      if (
+        !isBlankPage(snapshot.url) &&
+        isSimpleHumanCheck(snapshot) &&
+        humanClicks >= HUMAN_CHECK_MAX_CLICKS
+      ) {
+        return result(
+          snapshot,
+          step,
+          "needs_user",
+          "human check did not clear after retry",
+        )
+      }
       if (!isBlankPage(snapshot.url) && pageNeedsUser(snapshot)) {
         return result(snapshot, step, "needs_user", "the page needs the user")
       }
@@ -478,6 +499,13 @@ export async function runNav(opts: {
         } else {
           fails = 0
         }
+      }
+      if (
+        decision.operation === "CLICK" &&
+        candidate &&
+        isHumanCheckLabel(candidate.label)
+      ) {
+        humanClicks += 1
       }
       history.push({
         action: candidate?.label || decision.operation,

@@ -134,9 +134,30 @@ function envelopeMessage(body: unknown) {
 }
 
 function skillBody(content: string) {
-  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(content)
-  if (!match) return content.trim()
-  return content.slice(match[0].length).trim()
+  // Normalize line endings before any comparison: OpenViking may hand the
+  // stored file back with CRLF endings, and a byte-compare against the LF
+  // input then reports a landed write as missing (#115).
+  const normalized = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n")
+  const match = /^---\n[\s\S]*?\n---\n?/.exec(normalized)
+  if (!match) return normalized.trim()
+  return normalized.slice(match[0].length).trim()
+}
+
+// The body a read-back must show for `input` to count as stored: the same
+// frontmatter-strip + line-ending normalization get() applies, so a body
+// that itself opens with a `---` block or CRLF endings still reconciles.
+function storedBody(input: SkillDetail) {
+  return skillBody(input.body)
+}
+
+// The SKILL.md materialized on the desktop disk so opencode's own skill
+// loader discovers OpenViking (custom/plugin) skills, not just seed ones
+// (#15/#19 — an authorized skill the loader cannot see reads as missing).
+// OpenViking stays the source of truth; the file is a discovery mirror.
+export function skillFileContent(input: SkillDetail): string {
+  const body = storedBody(input)
+  const description = input.description.replaceAll("\n", " ").trim()
+  return `---\nname: ${input.name}\ndescription: ${description}\n---\n\n${body}\n`
 }
 
 function isPrivateSkill(uri: string) {
@@ -306,12 +327,21 @@ export function createVikingSkills(
   // short grace — knowing whether the write landed matters more than the
   // nominal budget.
   async function bodyLanded(input: SkillDetail): Promise<boolean> {
-    try {
-      const saved = await get(input.name, Date.now() + 5_000)
-      return saved.body === input.body.trim()
-    } catch {
-      return false
+    // Poll briefly: the first read right after a timed-out POST can still
+    // 404 while indexing catches up, and a single-shot miss here is what
+    // sent a landed replace into a bogus rollback (#115).
+    const limit = Date.now() + 5_000
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await sleep(Math.min(confirmPollDelayMs, 500))
+      if (Date.now() >= limit) return false
+      try {
+        const saved = await get(input.name, limit)
+        if (saved.body === storedBody(input)) return true
+      } catch {
+        // not visible yet — poll again
+      }
     }
+    return false
   }
 
   // POST with a bounded retry for rate limits and transient server errors —
@@ -374,7 +404,7 @@ export function createVikingSkills(
     // skillBody() trims the stored body, while manifest bodies typically end
     // with a newline — compare normalized or every newline-terminated skill
     // "fails" the confirm forever (the 2026-10-15 install outage).
-    const want = input.body.trim()
+    const want = storedBody(input)
     // The read-back gets its own short budget inside the save deadline:
     // the write is already durable, so confirming must never be what makes
     // a save look hung (#92).
@@ -505,11 +535,19 @@ export function createVikingSkills(
           } catch {
             // rollback failed too — reported below
           }
+          // Never declare a loss (or order a re-save) without one last
+          // read: the new body may have landed during the rollback, or the
+          // rollback may have landed despite its error (#115 — the CLI
+          // reported a failed restore over a fully written skill).
+          if (!restored) {
+            if (await bodyLanded(input)) return { confirmed: true }
+            if (await bodyLanded(snapshot)) restored = true
+          }
           throw new HttpError(
             502,
             restored
-              ? `replace of ${input.name} failed (${reason}) — the previous content was restored, retry the save`
-              : `replace of ${input.name} failed (${reason}) and restoring the previous content failed too — re-save the skill now`,
+              ? `replace of ${input.name} failed at the write step (${reason}) — the previous content is still in place at viking://~/skills/${input.name}/SKILL.md, retry the save`
+              : `replace of ${input.name} failed at the write step (${reason}) and restoring the previous content failed too — check viking://~/skills/${input.name}/SKILL.md, then re-save the skill now`,
             "skill_replace",
           )
         }

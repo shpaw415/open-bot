@@ -22,6 +22,7 @@ import {
   syncPluginAuth,
   syncPluginConfigGuide,
   syncPluginTools,
+  writeVikingSkillFile,
 } from "./docker"
 import { HttpError } from "./http-error"
 import { keyVaultSpecById } from "./key-vault"
@@ -52,7 +53,7 @@ import {
   stopPluginPageServer,
 } from "./plugin-pages"
 import { refreshMentionClashes } from "./references"
-import { createVikingSkills } from "./viking-skills"
+import { createVikingSkills, skillFileContent } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
 const INIT_OUTPUT_LIMIT = 8 * 1024
@@ -168,6 +169,20 @@ async function vikingSkills(user: User, db: Db) {
   const desktop = await ensureAgentDesktop(user, db)
   const base = await endpoint(user.id, "viking", 1933)
   return createVikingSkills(base, vikingUserKey(desktop.vikingKey))
+}
+
+// Re-mirrors every OpenViking skill to the desktop disk on wake, so skills
+// installed before the mirror existed (or written while a mirror write
+// failed) become loader-discoverable without a reinstall (#15/#19).
+export async function resyncVikingSkillFiles(db: Db, userId: string) {
+  const user = db.userById(userId)
+  if (!user) return
+  const skills = await vikingSkills(user, db)
+  for (const summary of await skills.list()) {
+    const detail = await skills.get(summary.name).catch(() => null)
+    if (detail)
+      await writeVikingSkillFile(userId, detail.name, skillFileContent(detail))
+  }
 }
 
 export function pluginSettingsFor(
@@ -529,7 +544,20 @@ export async function applyPluginInstall(
             description: skill.description,
             body: skill.body,
           }),
-        )
+        ).catch((error) => {
+          // Name the failing step: a bare OpenViking timeout here left
+          // installs undiagnosable — which skill, which phase (#28/#113).
+          const message = error instanceof Error ? error.message : "unknown"
+          throw new Error(
+            `plugin skill ${skill.name} failed to install (OpenViking skill write): ${message}`,
+          )
+        })
+        // Mirror for the opencode skill loader (#15/#19); best-effort.
+        await writeVikingSkillFile(
+          user.id,
+          skill.name,
+          skillFileContent(skill),
+        ).catch(() => {})
         if (!applied.skills.includes(skill.name))
           applied.skills.push(skill.name)
       }
@@ -776,6 +804,7 @@ async function revertApplied(
       for (const name of applied.skills) {
         try {
           await withVikingRetries(() => skills.remove(name))
+          await writeVikingSkillFile(user.id, name, null).catch(() => {})
         } catch {
           leftoverSkills.push(name)
         }
@@ -1074,10 +1103,16 @@ export async function setPluginEnabled(
               body: skill.body,
             })
             .catch(() => {})
+          await writeVikingSkillFile(
+            user.id,
+            skill.name,
+            skillFileContent(skill),
+          ).catch(() => {})
         }
       } else {
         for (const name of row.applied.skills) {
           await skills.remove(name).catch(() => {})
+          await writeVikingSkillFile(user.id, name, null).catch(() => {})
         }
       }
     } catch (error) {

@@ -20,7 +20,7 @@ Work down a source ladder instead of guessing which site to try next. One fetch 
 - `429` — rate limited. Wait once (`sleep 20`), retry once; if still blocked, continue in the desktop browser like a `403`.
 - `404` — wrong URL shape. Try the source's search page or a category page; then move on.
 - Transport error or timeout — retry once; then move on.
-- Captcha or bot-block page in the browser — reload once (`ob-chrome --session SESSION reload`); if it persists, name the source as blocked in the final message and move down the ladder. The desktop browser must get a real try first.
+- Verification or bot-block page in the browser — if it is a single "I'm not a robot" / "I am human" checkbox, click it yourself (reload and click once more if it still stands, twice at most; the `desktop` skill has the ladder) and keep reading when it clears. If it escalates to a puzzle/image/slider/text captcha or still persists, name the source as blocked in the final message and move down the ladder. The desktop browser must get a real try first.
 - Results unrelated to the query — the source is a bad fit for the domain; move on.
 
 ## Rules

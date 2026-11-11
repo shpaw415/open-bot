@@ -4,13 +4,17 @@ import {
   capText,
   closeTab,
   devOrigin,
+  EVAL_TIMEOUT_MAX_MS,
   EVAL_TIMEOUT_MS,
   evalRequest,
   flagsFrom,
   matchTab,
   nextActiveAfterClose,
   normalizeTarget,
+  recoveryAdvice,
   schemeError,
+  shapeIdbEntry,
+  storageRequest,
   shapeState,
   tabArgError,
   tabsLine,
@@ -208,12 +212,14 @@ test("eval request separates --raw from the expression in both positions", () =>
   expect(evalRequest(["({mode:1})"], {})).toEqual({
     expression: "({mode:1})",
     raw: false,
+    timeoutMs: EVAL_TIMEOUT_MS,
   })
   // Trailing --raw parses as a bare flag.
   const trailing = flagsFrom(["eval", "({mode:1})", "--raw"])
   expect(evalRequest(trailing.positional.slice(1), trailing.flags)).toEqual({
     expression: "({mode:1})",
     raw: true,
+    timeoutMs: EVAL_TIMEOUT_MS,
   })
   // Leading --raw eats the first expression token as its "value" in the
   // generic parser; evalRequest hands it back.
@@ -221,7 +227,87 @@ test("eval request separates --raw from the expression in both positions", () =>
   expect(evalRequest(leading.positional.slice(1), leading.flags)).toEqual({
     expression: "document.title",
     raw: true,
+    timeoutMs: EVAL_TIMEOUT_MS,
   })
+})
+
+test("eval request parses a bounded --timeout in seconds (#107/#112)", () => {
+  const leading = flagsFrom(["eval", "--timeout", "90", "work()"])
+  expect(evalRequest(leading.positional.slice(1), leading.flags)).toEqual({
+    expression: "work()",
+    raw: false,
+    timeoutMs: 90_000,
+  })
+  const trailing = flagsFrom(["eval", "work()", "--timeout=5"])
+  expect(
+    evalRequest(trailing.positional.slice(1), trailing.flags).timeoutMs,
+  ).toBe(5_000)
+  // Past the documented ceiling clamps instead of hanging the CLI.
+  const over = flagsFrom(["eval", "--timeout", "9999", "work()"])
+  expect(evalRequest(over.positional.slice(1), over.flags).timeoutMs).toBe(
+    EVAL_TIMEOUT_MAX_MS,
+  )
+  expect(() => evalRequest(["work()"], { timeout: "soon" })).toThrow(
+    "--timeout",
+  )
+  expect(() => evalRequest(["work()"], { timeout: "0" })).toThrow("--timeout")
+})
+
+test("storage request parses a read-only idb export (#109)", () => {
+  expect(storageRequest(["idb", "http://127.0.0.1:4702/game"], {})).toEqual({
+    origin: "http://127.0.0.1:4702",
+    database: "",
+    store: "",
+    limit: 50,
+  })
+  expect(
+    storageRequest(["idb", "https://x.test", "saves", "slots"], {
+      limit: "9999",
+    }),
+  ).toEqual({
+    origin: "https://x.test",
+    database: "saves",
+    store: "slots",
+    limit: 500,
+  })
+  expect(() => storageRequest(["idb"], {})).toThrow("origin")
+  expect(() => storageRequest(["idb", "file:///etc"], {})).toThrow("origin")
+  expect(() => storageRequest(["local", "https://x.test"], {})).toThrow(
+    "usage:",
+  )
+})
+
+test("idb entries shape to bounded provenance rows (#109)", () => {
+  const row = shapeIdbEntry({
+    key: { type: "string", value: "slot1" },
+    primaryKey: { type: "string", value: "slot1" },
+    value: { type: "object", value: { hp: 10 } },
+  })
+  expect(row.key).toBe("slot1")
+  expect(row.value).toEqual({ hp: 10 })
+  expect(row.valueBytes).toBe(JSON.stringify({ hp: 10 }).length)
+  expect(row.valueSha256).toMatch(/^[0-9a-f]{64}$/)
+  // An unserializable remote object keeps its description, never invents data.
+  const opaque = shapeIdbEntry({
+    key: { type: "number", value: 3 },
+    value: { type: "object", className: "Blob", description: "Blob" },
+  })
+  expect(opaque.value).toBeUndefined()
+  expect(opaque.note).toContain("Blob")
+})
+
+test("an eval timeout never gets navigate-and-replay advice (#107/#112)", () => {
+  const evalTimeout =
+    "eval timed out after 30s — the expression may still be running"
+  expect(recoveryAdvice(evalTimeout)).toBe(evalTimeout)
+  expect(recoveryAdvice(evalTimeout)).not.toContain("navigate URL")
+  // A dead-renderer timeout on other verbs keeps the new-tab recovery.
+  expect(recoveryAdvice("cdp call timed out: Page.navigate")).toContain(
+    "Recover with ob-chrome --session SESSION navigate URL",
+  )
+  expect(recoveryAdvice("no element 3 on this page")).toBe(
+    "no element 3 on this page",
+  )
 })
 
 const tabTargets: PageTarget[] = [

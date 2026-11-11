@@ -1,9 +1,12 @@
+import { existsSync } from "node:fs"
+import { resolve } from "node:path"
 import type { Snapshot } from "./action-space"
 import {
   actionScript,
   connectCdpSocket,
   evaluate,
   normalize,
+  obnavFindExpr,
   PROBE,
   readActiveTabId,
 } from "./cdp"
@@ -80,7 +83,20 @@ async function view(socket: Parameters<typeof evaluate>[0]) {
 }
 
 const USAGE =
-  "usage: page.ts PORT SESSION read | scroll down|up [pages] | click ID | type ID TEXT"
+  "usage: page.ts PORT SESSION read | scroll down|up [pages] | click ID | type ID TEXT | upload ID FILE [FILE...]"
+
+// `upload ID FILE...` — set files on an <input type=file> through CDP
+// (DOM.setFileInputFiles) instead of driving the native GTK chooser with
+// keystrokes, which loses focus to the browser window and can send the
+// path into the address bar (#82). Args are the argv tail after `upload`.
+export function parseUploadArgs(tail: string[]): {
+  id: string
+  files: string[]
+} {
+  const [id, ...files] = tail
+  if (!id || files.length === 0) throw new Error(USAGE)
+  return { id, files }
+}
 
 // A wedged renderer (the OOM "Aw Snap" class) fails every evaluate with a
 // timeout; the browser itself is fine. One sweep closes the zombie targets,
@@ -99,6 +115,52 @@ async function withSweep<T>(port: number, run: () => Promise<T>): Promise<T> {
     if (!swept || swept.closed.length === 0) throw error
     return run()
   }
+}
+
+// Sets `files` on the file input stamped `id` and verifies by reading the
+// input back. CDP needs absolute paths in the browser's filesystem (the
+// same container), and DOM.setFileInputFiles fires the input/change
+// events pages listen for — no synthetic events of our own.
+async function upload(
+  socket: Parameters<typeof evaluate>[0],
+  id: string,
+  files: string[],
+) {
+  const absolute = files.map((file) => resolve(file))
+  for (const file of absolute) {
+    if (!existsSync(file)) throw new Error(`upload: no such file: ${file}`)
+  }
+  const find = obnavFindExpr(JSON.stringify(id))
+  const kind = await evaluate(
+    socket,
+    `(() => { const el = ${find}; return el ? String(el.tagName || "") + ":" + String(el.type || "") : "" })()`,
+  )
+  if (kind === "")
+    throw new Error(
+      `no element ${id} on this page — run ob-page read for fresh ids (the page reloaded or the active tab changed)`,
+    )
+  if (kind !== "INPUT:file")
+    throw new Error(
+      `element ${id} is not a file input (${String(kind).toLowerCase()}) — upload needs the <input type=file> id from ob-page read`,
+    )
+  const evaluated = (await socket.call("Runtime.evaluate", {
+    expression: find,
+    returnByValue: false,
+  })) as { result?: { objectId?: string } }
+  const objectId = evaluated.result?.objectId
+  if (!objectId) throw new Error(`upload: could not resolve element ${id}`)
+  await socket.call("DOM.enable")
+  await socket.call("DOM.setFileInputFiles", { objectId, files: absolute })
+  const names = await evaluate(
+    socket,
+    `(() => { const el = ${find}; return el && el.files ? Array.from(el.files, (f) => f.name) : [] })()`,
+  )
+  const landed = Array.isArray(names) ? names.map(String) : []
+  if (landed.length !== absolute.length)
+    throw new Error(
+      `upload set ${landed.length} of ${absolute.length} files on ${id} — the input may not accept multiple files`,
+    )
+  return { uploaded: id, files: landed }
 }
 
 async function run(session: string | undefined) {
@@ -178,6 +240,11 @@ async function run(session: string | undefined) {
               fresh.close()
             }
           }
+          return
+        }
+        if (verb === "upload") {
+          const { id, files } = parseUploadArgs(process.argv.slice(5))
+          console.log(JSON.stringify(await upload(socket, id, files)))
           return
         }
         throw new Error(USAGE)

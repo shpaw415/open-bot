@@ -1,4 +1,5 @@
 import type { Db, User } from "@open-bot/db"
+import { writeVikingSkillFile } from "./docker"
 import type { EventHub } from "./events"
 import { httpErrorResponse } from "./http-error"
 import { seedSkillDescriptions } from "./personas"
@@ -7,6 +8,7 @@ import {
   assertSkillInput,
   type createVikingSkills,
   type SkillDetail,
+  skillFileContent,
   skillNameError,
 } from "./viking-skills"
 
@@ -125,6 +127,16 @@ async function skillsRoutes(
       db.setCatalogDirItem(user.id, "skill", input.name, carriedDir)
       db.removeCatalogDirItems(user.id, "skill", [previousName])
     }
+    // Mirror to the desktop disk so opencode's skill loader discovers the
+    // skill (#15/#19). Best-effort: OpenViking is the truth, a failed
+    // mirror must not fail the save (the wake re-sync repairs it).
+    await writeVikingSkillFile(user.id, input.name, skillFileContent(input))
+      .then(() =>
+        previousName && previousName !== input.name
+          ? writeVikingSkillFile(user.id, previousName, null)
+          : undefined,
+      )
+      .catch(() => {})
     // An open Skills tab never sees agent/CLI writes otherwise — the tab
     // refreshes everything on catalog.changed, not just its directories.
     hub.emit(user.id, { type: "catalog.changed" })
@@ -132,15 +144,17 @@ async function skillsRoutes(
     // an unconfirmed save is still durable — the read-back lagged, that's
     // all. Reporting it as success-with-note stops the blind retries that
     // the 502 used to trigger.
+    const uri = `viking://~/skills/${input.name}/SKILL.md`
     if (saved?.confirmed === false) {
       return json({
         ok: true,
         status: "pending",
         confirmed: false,
+        uri,
         note: `${input.name} is written; OpenViking is still indexing it — a get may 404 for a few seconds. Do not retry the save (it already landed).`,
       })
     }
-    return json({ ok: true, status: "committed", confirmed: true })
+    return json({ ok: true, status: "committed", confirmed: true, uri })
   }
   if (req.method === "DELETE") {
     const body = (await req.json().catch(() => null)) as Record<
@@ -155,6 +169,7 @@ async function skillsRoutes(
     await skills.remove(name)
     // The skill is gone: its directory membership would dangle.
     db.removeCatalogDirItems(user.id, "skill", [name])
+    await writeVikingSkillFile(user.id, name, null).catch(() => {})
     hub.emit(user.id, { type: "catalog.changed" })
     return json({ ok: true })
   }

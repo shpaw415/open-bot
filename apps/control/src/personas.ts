@@ -497,14 +497,14 @@ export function findPersona(
 // clause names the seed default and the user's additions instead.
 function builtinScopeLine(persona: PersonaView): string {
   const scope = persona.skillsNone
-    ? " No skills load in this thread. If the request needs one, say this personality does not include skills instead of improvising."
+    ? " No skills load in this thread. The available-skills list may name skills anyway; this scope wins — do not call the skill loader in this thread. If the request needs one, say this personality does not include skills instead of improvising."
     : builtinLoadsAllSkills(persona)
       ? " All skills load in this thread, including plugin and custom skills."
       : ` Only the desktop's built-in skills${
           (persona.skillsExtra ?? []).length
             ? ` plus these added ones: ${(persona.skillsExtra ?? []).join(", ")}`
             : ""
-        } load in this thread. If the request needs a plugin or custom skill, say this personality does not include it instead of improvising.`
+        } load in this thread. The available-skills list may name other skills; this scope wins — do not call the skill loader for a skill outside it. If the request needs a plugin or custom skill, say this personality does not include it instead of improvising.`
   const mcpScope = persona.mcpNone
     ? " No MCP server loads in this thread. If the request needs one, say this personality does not include MCP instead of improvising."
     : ` Only the desktop's built-in MCP servers${
@@ -522,12 +522,18 @@ export function personaSystem(persona: PersonaView | null): string | null {
   if (persona.builtin) return builtinScopeLine(persona)
   const effective = persona.skillsEffective
   const effectiveMcp = persona.mcpEffective
+  // The available-skills catalog opencode injects is unscoped — it
+  // advertises loaders this persona denies, and each denied call dumps
+  // the whole permission ruleset (#8/#23). The scope line is the one
+  // place that can stop the call before it happens.
+  const catalogNote =
+    " The available-skills list may name other skills; this scope wins — do not call the skill loader for a skill not listed here."
   const scope =
     effective === null
       ? ""
       : effective.length > 0
-        ? ` Only these skills load in this thread: ${effective.join(", ")}. If the request needs another skill, say this personality does not include it instead of improvising.`
-        : " No skills load in this thread. If the request needs one, say this personality does not include skills instead of improvising."
+        ? ` Only these skills load in this thread: ${effective.join(", ")}.${catalogNote} If the request needs another skill, say this personality does not include it instead of improvising.`
+        : ` No skills load in this thread.${catalogNote} If the request needs one, say this personality does not include skills instead of improvising.`
   const mcpScope =
     effectiveMcp === null
       ? ""

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { normalize } from "./cdp"
-import { shapeView } from "./page"
+import { parseUploadArgs, shapeView } from "./page"
 
 const probe = {
   url: "https://example.test/",
@@ -73,4 +73,17 @@ test("a raw page-world probe keeps ids and scroll flags after normalize", () => 
   expect(view.elements[0]?.id).toBe("n3")
   expect(view.canScrollDown).toBe(true)
   expect(JSON.stringify(view)).toContain('"id":"n3"')
+})
+
+test("upload args take an element id plus at least one file (#82)", () => {
+  expect(parseUploadArgs(["n4", "/home/agent/save.json"])).toEqual({
+    id: "n4",
+    files: ["/home/agent/save.json"],
+  })
+  expect(parseUploadArgs(["n4", "a.png", "b.png"]).files).toEqual([
+    "a.png",
+    "b.png",
+  ])
+  expect(() => parseUploadArgs([])).toThrow("usage:")
+  expect(() => parseUploadArgs(["n4"])).toThrow("usage:")
 })

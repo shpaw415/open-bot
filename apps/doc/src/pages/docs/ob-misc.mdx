@@ -13,7 +13,7 @@ Quick reference for the remaining desktop CLIs. All authenticate with the deskto
 ob-nav --session SESSION --goal "Open gmail and summarize unread" [--url URL]
 ```
 
-CDP-driven agent browser on the thread screen. Refuses captcha goals (`needs_user`) and respects a user screen hold.
+CDP-driven agent browser on the thread screen. Clicks a single "I'm not a robot" / "I am human" check itself (two clicks at most, then `needs_user`); puzzle/text captcha-solving goals are refused (`needs_user`). Login walls are `needs_user` here — the main agent signs in itself with credentials it knows. Respects a user screen hold.
 
 ## ob-page — page primitives
 

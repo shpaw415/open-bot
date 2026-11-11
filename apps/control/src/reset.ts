@@ -18,6 +18,7 @@ import type { EventHub } from "./events"
 import { resolveDesktopProviders } from "./key-vault"
 import { deleteUserVault, VAULT_DIR } from "./media-vault"
 import { randomToken } from "./passwords"
+import { destroyUserSandboxes } from "./sandbox"
 import { deleteUserMedia } from "./workspace-snapshots"
 
 export type ControlOp = {
@@ -81,6 +82,7 @@ export async function resetDesktop(
     })
   }
   const wasRunning = (await desktopPhase(userId)) === "running"
+  await destroyUserSandboxes(db, userId)
   await destroyDesktop(userId)
   deleteUserMedia(db, userId)
   deleteUserVault(db, userId)

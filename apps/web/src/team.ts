@@ -161,7 +161,8 @@ export const TEAM_OVERLAY_SECTIONS: TeamOverlaySection[] = [
   {
     section: "chat",
     title: "Chat",
-    description: "Provider and model used as everyone's chat default.",
+    description:
+      "Provider and model used as everyone's chat default, picked from your desktop's OpenCode setup.",
     fields: [
       { field: "provider", label: "Provider", placeholder: "openai" },
       { field: "model", label: "Model", placeholder: "model id" },

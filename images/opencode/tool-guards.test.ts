@@ -2,7 +2,12 @@ import { expect, test } from "bun:test"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { bashDenial, ToolGuards } from "./seed/plugins/tool-guards"
+import * as pluginModule from "./seed/plugins/tool-guards"
+import { ToolGuards } from "./seed/plugins/tool-guards"
+
+// Helpers ride on the plugin export — they must not be module exports of
+// their own (opencode would run each one as a plugin factory).
+const { bashDenial } = ToolGuards
 
 type Hooks = {
   "tool.execute.before": (
@@ -22,6 +27,14 @@ async function guards(dir: string): Promise<Hooks> {
 function call(tool: string, sessionID: string, callID: string) {
   return { tool, sessionID, callID }
 }
+
+test("module carries exactly one export (opencode runs each export as a plugin)", () => {
+  // opencode 1.19.5 invoked the extra `bashDenial` export as a plugin
+  // factory, took its null return for hooks, and left Config null —
+  // /provider then 500'd and no provider could be listed or added.
+  expect(Object.keys(pluginModule)).toEqual(["ToolGuards"])
+  expect(typeof ToolGuards.bashDenial).toBe("function")
+})
 
 test("write refuses an existing file the session never read", async () => {
   const dir = mkdtempSync(join(tmpdir(), "guards-"))
@@ -129,6 +142,18 @@ test("grep with a directory path is left alone", async () => {
   const output = { args: { pattern: "x", path: dir } }
   await hooks["tool.execute.before"](call("grep", "s1", "c1"), output)
   expect(output.args).toEqual({ pattern: "x", path: dir })
+})
+
+test("grep on a huge single-line file fails with bounded-search guidance (#114)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "guards-"))
+  const file = join(dir, "manifest.json")
+  writeFileSync(file, `{"blob":"${"x".repeat(80_000)}"}`)
+  const hooks = await guards(dir)
+  await expect(
+    hooks["tool.execute.before"](call("grep", "s1", "c1"), {
+      args: { pattern: "blob", path: file },
+    }),
+  ).rejects.toThrow("rg -o")
 })
 
 // Field #5/#10/#55/#68/#69: the old glob deny map matched checksums and

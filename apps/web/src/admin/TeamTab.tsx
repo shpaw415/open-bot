@@ -52,6 +52,7 @@ import {
   TEAM_OVERLAY_SECTIONS,
   teamKeysPayload,
 } from "../team"
+import { TeamChatFields } from "./TeamChatFields"
 import { TeamProviderFields } from "./TeamProviderFields"
 import { TeamVoiceFields } from "./TeamVoiceFields"
 
@@ -588,10 +589,6 @@ export function TeamTab({
     setKeyValues((prev) => ({ ...prev, [`${slug}:${field}`]: value }))
   }
 
-  function overlayValue(section: string, field: string) {
-    return overlay[section]?.[field] ?? ""
-  }
-
   function setOverlayValue(section: string, field: string, value: string) {
     setOverlay((prev) => ({
       ...prev,
@@ -623,12 +620,6 @@ export function TeamTab({
 
   const voiceProviders = data?.voiceProviders ?? []
   const providerCatalogs = data?.providerCatalogs ?? {}
-  const chatOptions = catalog.filter((entry) => entry.chatProvider)
-  const chatProvider = overlayValue("chat", "provider")
-  const chatChoices =
-    chatProvider && !chatOptions.some((entry) => entry.id === chatProvider)
-      ? [{ id: chatProvider, label: chatProvider }, ...chatOptions]
-      : chatOptions
 
   return (
     <>
@@ -863,11 +854,6 @@ export function TeamTab({
         <Stack spacing={2} sx={{ mt: 1 }}>
           {TEAM_OVERLAY_SECTIONS.map((section) => {
             const markers = data?.secrets?.[section.section]
-            const secretStored = (field: string) =>
-              markers?.fields?.[field] ??
-              (field === "gatewayToken"
-                ? Boolean(markers?.hasGatewayToken)
-                : Boolean(markers?.hasKey))
             return (
               <Box key={section.section}>
                 <Stack
@@ -891,7 +877,14 @@ export function TeamTab({
                 <Typography variant="caption" color="textSecondary">
                   {section.description}
                 </Typography>
-                {section.section === "voice" ? (
+                {section.section === "chat" ? (
+                  <TeamChatFields
+                    values={overlay.chat ?? {}}
+                    onChange={(field, value) =>
+                      setOverlayValue("chat", field, value)
+                    }
+                  />
+                ) : section.section === "voice" ? (
                   <TeamVoiceFields
                     providers={voiceProviders}
                     values={overlay.voice ?? {}}
@@ -900,7 +893,7 @@ export function TeamTab({
                       setOverlayValue("voice", field, value)
                     }
                   />
-                ) : section.section !== "chat" ? (
+                ) : (
                   <TeamProviderFields
                     section={section.section}
                     providers={providerCatalogs[section.section] ?? []}
@@ -910,69 +903,6 @@ export function TeamTab({
                       setOverlayValue(section.section, field, value)
                     }
                   />
-                ) : (
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    flexWrap="wrap"
-                    sx={{ mt: 0.5, rowGap: 1 }}
-                  >
-                    {section.section === "chat" ? (
-                      <Select
-                        name="team-chat-provider"
-                        label="Provider"
-                        value={chatProvider}
-                        sx={{ width: 240 }}
-                        onSelect={(value: string) =>
-                          setOverlayValue("chat", "provider", value)
-                        }
-                      >
-                        {[
-                          <option key="none" value="">
-                            Not set
-                          </option>,
-                          ...chatChoices.map((entry) => (
-                            <option key={entry.id} value={entry.id}>
-                              {entry.label}
-                            </option>
-                          )),
-                        ]}
-                      </Select>
-                    ) : null}
-                    {section.fields
-                      .filter(
-                        (field) =>
-                          !(
-                            section.section === "chat" &&
-                            field.field === "provider"
-                          ),
-                      )
-                      .map((field) => (
-                        <TextField
-                          key={field.field}
-                          label={field.label}
-                          type={
-                            isTeamSecretField(field.field) ? "password" : "text"
-                          }
-                          value={overlayValue(section.section, field.field)}
-                          placeholder={
-                            isTeamSecretField(field.field)
-                              ? secretStored(field.field)
-                                ? "(stored — leave blank to keep)"
-                                : "(not set)"
-                              : field.placeholder
-                          }
-                          sx={{ width: 240 }}
-                          onChange={(event) =>
-                            setOverlayValue(
-                              section.section,
-                              field.field,
-                              event.currentTarget.value,
-                            )
-                          }
-                        />
-                      ))}
-                  </Stack>
                 )}
               </Box>
             )

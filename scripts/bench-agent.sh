@@ -2,7 +2,7 @@
 # Agent-level browser benchmark: real threads, real model, graded scenarios.
 #
 # usage: bash scripts/bench-agent.sh [SCENARIO...]
-# scenarios: search-click-scroll, captcha-stop, login-stop (default: all)
+# scenarios: search-click-scroll, human-check, captcha-stop, login-fill, login-stop (default: all)
 #
 # Deploys scripts/bench-agent.ts into the control container and runs it there
 # (it needs the control DB, the API, and docker access to stage local test

@@ -668,10 +668,33 @@ function AppTab({ tab }: { tab: PluginTab }) {
   useEffect(() => {
     let alive = true
     let current = ""
+    // Stable per-tab context identity (#27): minted once per dashboard
+    // session + app tab, re-sent on every remint so the plugin can tell
+    // its tabs apart across frame recreations. Identity only, no auth.
+    const contextKey = `ob-ctx-${tab.pluginId}-${tab.path ?? "/"}`
+    let contextId = ""
+    try {
+      contextId = sessionStorage.getItem(contextKey) ?? ""
+    } catch {
+      contextId = ""
+    }
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(contextId)) {
+      contextId = `ctx-${crypto.randomUUID()}`
+      try {
+        sessionStorage.setItem(contextKey, contextId)
+      } catch {
+        // Private-mode storage refusal: the in-memory id still survives
+        // this mount's remints.
+      }
+    }
     const mint = () =>
       api<{ frameUrl: string; isolated?: boolean }>("/api/pages/frame", {
         method: "POST",
-        body: JSON.stringify({ pluginId: tab.pluginId, path: tab.path ?? "/" }),
+        body: JSON.stringify({
+          pluginId: tab.pluginId,
+          path: tab.path ?? "/",
+          contextId,
+        }),
       }).then((body) => {
         if (!alive) return
         current = body.frameUrl

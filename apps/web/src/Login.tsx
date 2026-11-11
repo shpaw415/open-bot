@@ -5,7 +5,7 @@ import Paper from "@shpaw415/mui-lite/Paper"
 import Tabs, { Tab } from "@shpaw415/mui-lite/Tabs"
 import TextField from "@shpaw415/mui-lite/TextField"
 import Typography from "@shpaw415/mui-lite/Typography"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { api, type Me } from "./api"
 import { DarkModeIcon, LightModeIcon, LoginIcon, PersonAddIcon } from "./icons"
 import Stack from "./stack"
@@ -150,6 +150,32 @@ export function Login({ onLogin }: { onLogin: (me: Me) => void }) {
   const [code, setCode] = useState("")
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+  // On an origin where the Secure session cookie cannot stick, credential
+  // entry is a dead end — block it before submit instead of after (#105).
+  const [insecure, setInsecure] = useState<{
+    canonicalOrigin: string | null
+  } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/auth/config")
+      .then((res) => (res.ok ? res.json() : null))
+      .then(
+        (
+          config: {
+            secureOrigin?: boolean
+            canonicalOrigin?: string | null
+          } | null,
+        ) => {
+          if (!cancelled && config && config.secureOrigin === false)
+            setInsecure({ canonicalOrigin: config.canonicalOrigin ?? null })
+        },
+      )
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function submit() {
     setError("")
@@ -225,12 +251,31 @@ export function Login({ onLogin }: { onLogin: (me: Me) => void }) {
               {error}
             </Alert>
           ) : null}
+          {insecure ? (
+            <Alert severity="error" role="alert">
+              Origine non sécurisée — ce tableau de bord utilise des cookies de
+              session « Secure », donc la connexion ne peut pas tenir ici.
+              {insecure.canonicalOrigin ? (
+                <>
+                  {" "}
+                  Ouvrez-le plutôt à{" "}
+                  <a href={insecure.canonicalOrigin}>
+                    {insecure.canonicalOrigin}
+                  </a>
+                  .
+                </>
+              ) : (
+                " Ouvrez-le en https."
+              )}
+            </Alert>
+          ) : null}
           <TextField
             label="Courriel"
             value={email}
             type="email"
             name="email"
             autoComplete="email"
+            disabled={insecure !== null}
             onChange={(event) => setEmail(event.currentTarget.value)}
           />
           <TextField
@@ -241,6 +286,7 @@ export function Login({ onLogin }: { onLogin: (me: Me) => void }) {
             autoComplete={
               mode === "login" ? "current-password" : "new-password"
             }
+            disabled={insecure !== null}
             onChange={(event) => setPassword(event.currentTarget.value)}
           />
           {mode === "register" ? (
@@ -254,7 +300,7 @@ export function Login({ onLogin }: { onLogin: (me: Me) => void }) {
           <Button
             variant="contained"
             type="submit"
-            disabled={busy || !email || !password}
+            disabled={busy || insecure !== null || !email || !password}
           >
             {busy
               ? "Un instant…"

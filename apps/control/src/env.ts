@@ -25,7 +25,16 @@ export const computerImage =
   process.env.COMPUTER_IMAGE ?? "open-bot-computer:local"
 export const vikingImage =
   process.env.VIKING_IMAGE ?? "ghcr.io/volcengine/openviking:latest"
+export const sandboxImage =
+  process.env.SANDBOX_IMAGE ?? "open-bot-sandbox:local"
+export const maxSandboxesPerUser = Number(
+  process.env.MAX_SANDBOXES_PER_USER ?? 3,
+)
+export const maxSandboxesInstance = Number(process.env.MAX_SANDBOXES ?? 8)
 export const cookieSecure = process.env.COOKIE_SECURE === "1"
+// Set to "1" only when a trusted reverse proxy terminates TLS in front of
+// the control plane; x-forwarded-proto is honored then (see origin-guard).
+export const trustProxy = process.env.OPEN_BOT_TRUST_PROXY === "1"
 export const marketplaceUrl = (
   process.env.OPEN_BOT_MARKETPLACE_URL ?? ""
 ).replace(/\/$/, "")

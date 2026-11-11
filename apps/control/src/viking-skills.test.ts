@@ -3,6 +3,7 @@ import { HttpError } from "./http-error"
 import {
   assertSkillInput,
   createVikingSkills,
+  skillFileContent,
   unwrapVikingResult,
   vikingSkillList,
 } from "./viking-skills"
@@ -461,7 +462,7 @@ describe("viking skills", () => {
       confirmPollDelayMs: 1,
     })
     await expect(skills.save(skill)).rejects.toThrow(
-      "previous content was restored",
+      "previous content is still in place",
     )
     // 3 replace attempts + 1 successful rollback; the last POST carries the
     // snapshotted previous body.
@@ -470,6 +471,9 @@ describe("viking skills", () => {
   })
 
   test("a failed replace whose rollback also fails names the loss", async () => {
+    // The delete lands (the skill is really gone afterwards) and every
+    // POST fails — the one world where "re-save now" is the truth.
+    let deleted = false
     const { fetchImpl } = mockFetch((url, init) => {
       const method = init?.method ?? "GET"
       if (url.endsWith("/validate"))
@@ -479,16 +483,21 @@ describe("viking skills", () => {
           { status: "error", error: { message: "server error" } },
           { status: 500 },
         )
-      if (method === "DELETE")
-        return Response.json(
-          { status: "error", error: { message: "not found" } },
-          { status: 404 },
-        )
-      if (method === "GET" && url.includes("/api/v1/skills/search-web"))
+      if (method === "DELETE") {
+        deleted = true
+        return { status: "ok", result: {} }
+      }
+      if (method === "GET" && url.includes("/api/v1/skills/search-web")) {
+        if (deleted)
+          return Response.json(
+            { status: "error", error: { message: "not found" } },
+            { status: 404 },
+          )
         return {
           status: "ok",
           result: { name: "search-web", content: "# previous body" },
         }
+      }
       return { status: "ok", result: {} }
     })
     const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
@@ -563,6 +572,60 @@ describe("viking skills", () => {
     })
     await expect(skills.save(skill)).resolves.toEqual({ confirmed: true })
     // Exactly one POST: no duplicate write, no rollback over the new body.
+    expect(posts).toBe(1)
+  })
+
+  test("a timed-out POST that landed behind frontmatter/CRLF is still reconciled (#115)", async () => {
+    let posts = 0
+    let landed = false
+    let reconcileGets = 0
+    const { fetchImpl } = mockFetch((url, init) => {
+      const method = init?.method ?? "GET"
+      if (url.endsWith("/validate"))
+        return { status: "ok", result: { valid: true } }
+      if (method === "POST" && url.endsWith("/skills")) {
+        posts += 1
+        landed = true
+        const timeout = new Error("The operation timed out.")
+        timeout.name = "TimeoutError"
+        throw timeout
+      }
+      if (method === "DELETE")
+        return Response.json(
+          { status: "error", error: { message: "not found" } },
+          { status: 404 },
+        )
+      if (method === "GET" && url.includes("/api/v1/skills/search-web")) {
+        if (!landed)
+          return {
+            status: "ok",
+            result: { name: "search-web", content: "# previous body" },
+          }
+        // First reconcile read still 404s (indexing), then the stored file
+        // shows up wrapped in regenerated frontmatter with CRLF endings —
+        // byte-different from the input, semantically the same body.
+        reconcileGets += 1
+        if (reconcileGets === 1)
+          return Response.json(
+            { status: "error", error: { message: "not found" } },
+            { status: 404 },
+          )
+        return {
+          status: "ok",
+          result: {
+            name: "search-web",
+            content: `---\r\nname: search-web\r\n---\r\n${skill.body.replaceAll("\n", "\r\n")}\r\n`,
+          },
+        }
+      }
+      return { status: "ok", result: {} }
+    })
+    const skills = createVikingSkills("http://viking:1933", "k", fetchImpl, {
+      postRetryDelayMs: 1,
+      confirmPollDelayMs: 1,
+    })
+    await expect(skills.save(skill)).resolves.toEqual({ confirmed: true })
+    // No rollback POST over the landed body, no "re-save now" error.
     expect(posts).toBe(1)
   })
 
@@ -652,6 +715,29 @@ describe("viking skills", () => {
       "skill body is required",
     )
   })
+})
+
+test("skillFileContent renders a loader-discoverable SKILL.md (#15/#19)", () => {
+  const content = skillFileContent({
+    name: "reverse-engineer-anything",
+    description: "Reverse engineer binaries: triage, then deep dive",
+    body: "# REA\n\nSteps.",
+  })
+  expect(content.startsWith("---\nname: reverse-engineer-anything\n")).toBe(
+    true,
+  )
+  expect(content).toContain(
+    "description: Reverse engineer binaries: triage, then deep dive\n---\n",
+  )
+  expect(content.endsWith("# REA\n\nSteps.\n")).toBe(true)
+  // A body that already carries frontmatter is not double-wrapped.
+  const wrapped = skillFileContent({
+    name: "rea",
+    description: "d",
+    body: "---\nname: rea\n---\n\nBody",
+  })
+  expect(wrapped.match(/^---$/gm)?.length).toBe(2)
+  expect(wrapped).toContain("Body")
 })
 
 describe("viking response shapes", () => {

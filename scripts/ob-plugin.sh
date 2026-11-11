@@ -36,6 +36,8 @@ Usage:
   ob-plugin setup ID                 re-run a plugin's root setup commands (retry after a failure)
   ob-plugin page ID                  page-server status: port, health, pid (loopback 4740-4759 in this container)
   ob-plugin restart ID               restart a plugin's page server (the edit loop for dashboard pages)
+  ob-plugin owner-token ID           owner proof for owner-only page routes: {port, base, ownerToken} — send as x-open-bot-owner-token on loopback calls
+  ob-plugin owner-token ID --rotate  revoke the current owner token and mint a fresh one (restarts the page server)
   ob-plugin endpoint ID              public endpoint status: url, secured state, secret (raw)
   ob-plugin endpoint ID url          print the endpoint URL (shareable public origin when the instance sets one)
   ob-plugin endpoint ID secret       print the raw secret (empty stdout + exit 1 when unset)
@@ -1212,6 +1214,18 @@ EOF
         echo "page server for $1 restarted on port $port (marketplace install serves the frozen copy — restart lands edits)"
         ;;
     esac
+    ;;
+  owner-token)
+    [ $# -ge 1 ] && [ $# -le 2 ] || { usage; exit 2; }
+    if [ "${2:-}" = "--rotate" ]; then
+      out=$(request POST "/api/plugins/installed/$(urlencode "$1")/page/owner-token/rotate")
+    elif [ $# -eq 1 ]; then
+      out=$(request GET "/api/plugins/installed/$(urlencode "$1")/page/owner-token")
+    else
+      usage; exit 2
+    fi
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{pluginId, port, base, header, ownerToken}'
     ;;
   endpoint)
     [ $# -ge 1 ] || { usage; exit 2; }

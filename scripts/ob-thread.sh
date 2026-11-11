@@ -11,7 +11,9 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-thread start [--title TEXT] [--persona NAME] [--model PROVIDER/MODEL] [--effort LEVEL] [--display] [--hidden] [--dir NAME] [--council NAME] [--role TEXT] [--from SESSION_ID] [--steps unlimited] [--message TEXT]
+  ob-thread start [--title TEXT] [--persona NAME] [--model PROVIDER/MODEL] [--effort LEVEL] [--display] [--hidden] [--dir NAME] [--council NAME] [--role TEXT] [--from SESSION_ID] [--steps unlimited] [--message TEXT] [--sandbox PROFILE] [--copy-in PATH]...
+  ob-thread sandbox-profiles
+  ob-thread sandbox-export SANDBOX_ID
   ob-thread models
   ob-thread list
   ob-thread read ID [N]
@@ -31,6 +33,23 @@ start creates a thread. Without --display the thread is hidden for background
 jobs: it does not appear on the dashboard and the media vault skips it.
 --display makes it a normal visible thread. --message TEXT posts an initial
 prompt into the thread right after creating it.
+
+--sandbox PROFILE runs the thread in a disposable sandbox container for
+UNTRUSTED prompts (text pasted from the web, a stranger's instructions, an
+unvetted document): only the profile's skills/MCP servers/tools exist there,
+it starts from an empty /workspace, and it cannot reach this desktop, its
+files, keys, memory, or other threads. Built-in profiles: locked (no bash,
+no network) and code (bash, no network); `ob-thread sandbox-profiles` lists
+the user's custom ones. Sandbox threads are visible by default and expire
+after the profile's TTL — deleting the thread destroys the container.
+--copy-in PATH (repeatable) copies a desktop file/folder into the sandbox
+workspace first; results come back only through `ob-thread read` or an
+explicit `ob-thread sandbox-export SANDBOX_ID` (lands in
+~/workspace/sandbox-<id>/). --sandbox refuses --council/--dir/--from/
+--steps/--effort, and --model takes chat/small (instance models) or
+PROVIDER/MODEL (openai, xai, openrouter, google — brokered with the
+user's vault key, which never enters the container).
+A sandbox thread gets no delegation wake: use `ob-thread wait` + `read`.
 
 --dir NAME (or --topic NAME) files the new visible thread into a dashboard
 folder, creating the folder if it does not exist. Folders only exist on the
@@ -145,6 +164,7 @@ or reaches the hard part — switch it to a deep reasoner mid-task, or back
 down when the remaining work is mechanical.
 
 Examples:
+  ob-thread start --sandbox locked --title "Untrusted paste" --message "Summarize the pasted text that follows"
   ob-thread start --title "Nightly sync" --display
   ob-thread start --title "Scrape prices" --message "Scrape prices and save to /home/agent/workspace/prices.json"
   ob-thread start --persona "Software manager" --title "Add export" --message "Implement CSV export in ~/project/report-app"
@@ -276,6 +296,8 @@ case "$cmd" in
     from=""
     display=""
     steps=""
+    sandbox=""
+    copyin=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --title)
@@ -308,6 +330,13 @@ case "$cmd" in
         --steps)
           [ $# -ge 2 ] || { usage; exit 2; }
           steps="$2"; shift 2 ;;
+        --sandbox)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          sandbox="$2"; shift 2 ;;
+        --copy-in)
+          [ $# -ge 2 ] || { usage; exit 2; }
+          copyin="$copyin$2
+"; shift 2 ;;
         --display)
           display=1; shift ;;
         --hidden)
@@ -316,6 +345,11 @@ case "$cmd" in
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
     done
+    if [ -n "$sandbox" ]; then
+      case "$model" in
+        chat|small) model="open-bot-sandbox/$model" ;;
+      esac
+    fi
     if [ -n "$steps" ] && [ "$steps" != "unlimited" ]; then
       echo "ob-thread: --steps only accepts unlimited" >&2
       exit 2
@@ -340,6 +374,25 @@ case "$cmd" in
       echo "ob-thread: --council members are hidden and cannot be combined with --display" >&2
       exit 2
     fi
+    if [ -n "$sandbox" ]; then
+      if [ -n "$council" ] || [ -n "$dir" ] || [ -n "$from" ] || [ -n "$steps" ] || [ -n "$effort" ]; then
+        echo "ob-thread: --sandbox cannot be combined with --council/--dir/--from/--steps/--effort" >&2
+        exit 2
+      fi
+      # chat/small ride the instance models; a provider/model ref is
+      # brokered keylessly through the user's vault (validated at launch
+      # by the control plane, which names the fix when the key is gone).
+      case "$model" in
+        ""|chat|small|open-bot-sandbox/chat|open-bot-sandbox/small) ;;
+        ?*/?*) ;;
+        *)
+          echo "ob-thread: --model must be chat, small, or provider/model (openai/xai/openrouter/google, vault-brokered)" >&2
+          exit 2 ;;
+      esac
+    elif [ -n "$copyin" ]; then
+      echo "ob-thread: --copy-in only applies to --sandbox" >&2
+      exit 2
+    fi
     body="{}"
     if [ -n "$title" ]; then
       body=$(printf '%s' "$body" | jq --arg title "$title" '. + {title: $title}')
@@ -348,7 +401,7 @@ case "$cmd" in
     if [ -z "$visible" ]; then
       if [ -n "$council" ]; then
         visible=0
-      elif [ -n "$persona" ] || [ -n "$dir" ]; then visible=1; else visible=0; fi
+      elif [ -n "$persona" ] || [ -n "$dir" ] || [ -n "$sandbox" ]; then visible=1; else visible=0; fi
     fi
     if [ "$visible" -eq 1 ]; then
       body=$(printf '%s' "$body" | jq '. + {display: true}')
@@ -380,13 +433,31 @@ case "$cmd" in
     if [ -n "$steps" ]; then
       body=$(printf '%s' "$body" | jq '. + {steps: "unlimited"}')
     fi
+    if [ -n "$sandbox" ]; then
+      body=$(printf '%s' "$body" | jq --arg sandbox "$sandbox" '. + {sandbox: $sandbox}')
+    fi
+    if [ -n "$copyin" ]; then
+      copyin_json=$(printf '%s' "$copyin" | jq -Rsc 'split("\n") | map(select(length > 0))')
+      body=$(printf '%s' "$body" | jq --argjson copyIn "$copyin_json" '. + {copyIn: $copyIn}')
+    fi
     out=$(request_retry_transient POST /api/threads "$body")
     fail_on_error "$out"
     warning=$(printf '%s' "$out" | jq -r '.warning // empty' 2>/dev/null) || warning=""
     if [ -n "$warning" ]; then
       echo "ob-thread: $warning" >&2
     fi
-    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end) + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .dir then {dir: .dir} else {} end) + (if .council then {council: .council} else {} end) + (if .wake then {wake: .wake} else {} end)'
+    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end) + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .dir then {dir: .dir} else {} end) + (if .council then {council: .council} else {} end) + (if .wake then {wake: .wake} else {} end) + (if .sandbox then {sandbox: .sandbox} else {} end)'
+    ;;
+  sandbox-profiles)
+    out=$(request GET /api/sandbox-profiles)
+    fail_on_error "$out"
+    printf '%s' "$out" | jq -r '.profiles[] | "\(.name)\(if .builtin then " (built-in)" else "" end) skills=\(.profile.skills | length) mcp=\(.profile.mcp | length) bash=\(.profile.tools.bash) network=\(.profile.network)"'
+    ;;
+  sandbox-export)
+    [ $# -ge 1 ] || { usage; exit 2; }
+    out=$(request POST "/api/sandbox/$(urlencode "$1")/export-to-desktop" "{}")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{path}'
     ;;
   models)
     out=$(request GET /api/cron/models)
@@ -403,16 +474,22 @@ case "$cmd" in
         echo "ob-thread: message count must be a whole number" >&2
         exit 2 ;;
     esac
-    out=$(request GET "/api/opencode/session/$(urlencode "$id")/message")
+    out=$(request_retry_transient GET "/api/opencode/session/$(urlencode "$id")/message")
     fail_on_error "$out"
+    # Filter to text-bearing messages BEFORE slicing: the last N raw rows
+    # are often all tool calls, and slice-then-filter printed a successful
+    # empty line for a busy thread (#106).
     printf '%s' "$out" | jq -r --argjson n "$count" '
       if type != "array" then "(no messages)"
       else
-        (.[-$n:] | map(
+        (map(
           . as $m |
           ([ $m.parts[]? | select(.type == "text") | .text ] | join("\n")) |
           if length == 0 then empty else "[\($m.info.role)] \(.)" end
-        ) | join("\n\n"))
+        ) | .[-$n:] |
+        if length == 0 then
+          "(no text messages yet — recent activity is tool calls only; the thread may still be working, check ob-thread wait)"
+        else join("\n\n") end)
       end'
     ;;
   councils)

@@ -1000,8 +1000,70 @@ test("captcha-solving goals are refused before any interaction", async () => {
     },
   })
   expect(result.status).toBe("needs_user")
-  expect(result.detail).toContain("never solves captchas")
+  expect(result.detail).toContain("never solves puzzle or text captchas")
   expect(asked).toBe(0)
   expect(acts).toEqual([])
   expect(navigated).toBe(0)
+})
+
+const humanPage: Snapshot = {
+  url: "https://example.test/verify",
+  title: "Verification required",
+  text: "Prove you are human. I'm not a robot",
+  canScrollDown: false,
+  canScrollUp: false,
+  elements: [
+    {
+      targetId: "5",
+      role: "checkbox",
+      label: "I'm not a robot",
+      value: "",
+      editable: false,
+      actionable: true,
+    },
+  ],
+}
+
+test("a single human checkbox is clicked, then the run continues", async () => {
+  const acts: Act[] = []
+  let current: Snapshot = humanPage
+  let asked = 0
+  const result = await runNav({
+    goal: "Click the I'm not a robot checkbox and continue",
+    ask: async () => {
+      asked += 1
+      if (asked === 1) return decision({ operation: "CLICK", target: "1" })
+      return decision({ operation: "DONE" })
+    },
+    driver: {
+      async probe() {
+        return current
+      },
+      async act(action: Act) {
+        acts.push(action)
+        current = page
+      },
+    },
+  })
+  expect(acts).toEqual([{ kind: "click", targetId: "5" }])
+  expect(result.status).toBe("done")
+})
+
+test("a human check still standing after two clicks goes to the user", async () => {
+  const acts: Act[] = []
+  const result = await runNav({
+    goal: "Click the I'm not a robot checkbox and continue",
+    ask: async () => decision({ operation: "CLICK", target: "1" }),
+    driver: {
+      async probe() {
+        return humanPage
+      },
+      async act(action: Act) {
+        acts.push(action)
+      },
+    },
+  })
+  expect(acts).toHaveLength(2)
+  expect(result.status).toBe("needs_user")
+  expect(result.detail).toContain("did not clear after retry")
 })

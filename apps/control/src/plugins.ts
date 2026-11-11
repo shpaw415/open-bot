@@ -24,8 +24,10 @@ import {
 } from "./plugin-local"
 import {
   type PluginPageStartStatus,
+  pluginPageOwnerToken,
   pluginPageRuntime,
   restartPluginPageServer,
+  rotatePluginPageOwnerToken,
   schedulePluginPageRestart,
   wakeDesktopForPage,
 } from "./plugin-pages"
@@ -1423,6 +1425,82 @@ export function handlePlugins(
           {
             error:
               error instanceof Error ? error.message : "page restart failed",
+          },
+          502,
+        ),
+      )
+  }
+
+  // Owner proof for the agent's own page-server verification calls
+  // (#119): `ob-plugin owner-token <id>` prints the running server's
+  // x-open-bot-owner-token so the developer agent can exercise owner-only
+  // routes (auth, uploads, sockets) on the desktop loopback without the
+  // user's browser. Agent-token only — like ob-api-key, the LLM token is
+  // the trusted principal; a browser session never sees the raw token.
+  // Scoped to the caller's own install; POST .../rotate revokes it.
+  const ownerTokenRoute = path.match(
+    /^\/api\/plugins\/installed\/([^/]+)\/page\/owner-token$/,
+  )
+  if (ownerTokenRoute && req.method === "GET") {
+    const pluginId = decodeURIComponent(ownerTokenRoute[1] ?? "")
+    const row = db.installedPlugin(user.id, pluginId)
+    if (!row) return json({ error: "not found" }, 404)
+    if (!(row.manifest as PluginManifest).dashboard?.pages) {
+      return json({ error: "this plugin has no page server" }, 400)
+    }
+    if (!agent) return json({ error: "agent token required" }, 403)
+    return pluginPageOwnerToken(user.id, pluginId).then((found) =>
+      found
+        ? json({
+            pluginId,
+            port: found.port,
+            ownerToken: found.ownerToken,
+            header: "x-open-bot-owner-token",
+            base: `http://127.0.0.1:${found.port}`,
+            note: "owner-equivalent on this desktop's page server only; revoke with ob-plugin owner-token <id> --rotate (or by disabling the plugin)",
+          })
+        : json(
+            {
+              error: `page server is not running — start it with ob-plugin restart ${pluginId}`,
+            },
+            409,
+          ),
+    )
+  }
+  const ownerTokenRotate = path.match(
+    /^\/api\/plugins\/installed\/([^/]+)\/page\/owner-token\/rotate$/,
+  )
+  if (ownerTokenRotate && req.method === "POST") {
+    keepAlive()
+    const pluginId = decodeURIComponent(ownerTokenRotate[1] ?? "")
+    const row = db.installedPlugin(user.id, pluginId)
+    if (!row) return json({ error: "not found" }, 404)
+    if (!(row.manifest as PluginManifest).dashboard?.pages) {
+      return json({ error: "this plugin has no page server" }, 400)
+    }
+    if (!agent) return json({ error: "agent token required" }, 403)
+    if (!row.enabled) return json({ error: "plugin is disabled" }, 400)
+    return wakeDesktopForPage(db, user.id)
+      .then(() => rotatePluginPageOwnerToken(user.id, row, hub))
+      .then((found) =>
+        found
+          ? json({
+              ok: true,
+              pluginId,
+              port: found.port,
+              ownerToken: found.ownerToken,
+              header: "x-open-bot-owner-token",
+              base: `http://127.0.0.1:${found.port}`,
+            })
+          : json({ error: "page server did not come back up" }, 502),
+      )
+      .catch((error: unknown) =>
+        json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "owner token rotate failed",
           },
           502,
         ),
