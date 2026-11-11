@@ -1296,8 +1296,16 @@ export async function proxyPluginPageFrame(
       : pageFrameCors(req, new Response("upgrade failed", { status: 400 }))
   }
   const dest = pluginUpstreamUrl(base, parsed.rest, url.search)
+  // The shell's app-tab keep-alive probes this path with HEAD, but plugin
+  // page servers route by method and commonly implement GET only — Web
+  // Blueprint 404s a bare HEAD, which the shell misread as a dead frame and
+  // "fixed" with a remint that reloaded the running app every 4 minutes.
+  // Answer HEAD from the GET route and hand back headers only: a HEAD client
+  // gets no body anyway, and skipping the rewrite avoids re-buffering an
+  // 8 MB UI bundle on every keep-alive.
+  const head = req.method === "HEAD"
   const upstream = await fetch(dest, {
-    method: req.method,
+    method: head ? "GET" : req.method,
     headers: strippedHeaders(
       req.headers,
       state.token,
@@ -1305,10 +1313,22 @@ export async function proxyPluginPageFrame(
       state.ownerToken,
       grant.contextId,
     ),
-    body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+    body: head || req.method === "GET" ? undefined : req.body,
     redirect: "manual",
     duplex: "half",
   } as RequestInit)
+  if (head) {
+    const headers = new Headers(upstream.headers)
+    headers.delete("x-frame-options")
+    return pageFrameCors(
+      req,
+      new Response(null, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers,
+      }),
+    )
+  }
   const rewritten = await rewritePageBody(
     upstream,
     `/api/pages/_frame/${parsed.token}`,

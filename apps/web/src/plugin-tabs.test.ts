@@ -3,6 +3,7 @@ import {
   appTabFrameProps,
   appTabSandbox,
   filterTabs,
+  frameProbeNeedsRemint,
   pluginTabs,
 } from "./plugin-tabs"
 import type { InstalledPluginInfo } from "./plugin-ui"
@@ -130,5 +131,27 @@ describe("filterTabs", () => {
       expect(props.allow).not.toContain("*")
     }
     expect(appTabFrameProps(false).sandbox).toBe(appTabSandbox(false))
+  })
+})
+
+describe("frameProbeNeedsRemint — keep-alive probe verdict", () => {
+  test("only a dead frame token (401) justifies a remint", () => {
+    expect(frameProbeNeedsRemint(401)).toBe(true)
+  })
+
+  test("a healthy probe never remints", () => {
+    expect(frameProbeNeedsRemint(200)).toBe(false)
+    expect(frameProbeNeedsRemint(204)).toBe(false)
+  })
+
+  test("plugin-server probe failures leave a working frame alone", () => {
+    // Web Blueprint 404'd the shell's HEAD before the proxy answered HEAD
+    // from the GET route; reminting reloaded the running app every 4 min.
+    expect(frameProbeNeedsRemint(404)).toBe(false)
+    expect(frameProbeNeedsRemint(405)).toBe(false)
+    expect(frameProbeNeedsRemint(500)).toBe(false)
+    // Asleep desktop / down page server: reminting cannot help either.
+    expect(frameProbeNeedsRemint(502)).toBe(false)
+    expect(frameProbeNeedsRemint(503)).toBe(false)
   })
 })

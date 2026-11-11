@@ -582,6 +582,68 @@ describe("plugin pages", () => {
     }
   })
 
+  test("frame keep-alive HEAD is answered from the GET route, not the plugin's HEAD", async () => {
+    clearPluginPageState()
+    const upstreamMethods: string[] = []
+    const originalFetch = globalThis.fetch
+    // Mirrors Web Blueprint's router: GET / serves the UI, any other method
+    // falls through to its 404 "Endpoint not found" fallback — the shape that
+    // used to reload the running app every keep-alive.
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input)
+      if (url.endsWith("/healthz")) return new Response("ok")
+      const method = String(init?.method ?? "GET")
+      upstreamMethods.push(method)
+      if (method !== "GET")
+        return new Response("Endpoint not found", { status: 404 })
+      return new Response(
+        `<!doctype html><html><head><title>S</title></head>` +
+          `<body><h1>S</h1></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      )
+    }) as unknown as typeof fetch
+    try {
+      const row = {
+        pluginId: "stock-pro",
+        enabled: true,
+        manifest: { dashboard: { pages: { entry: "server.ts" } } },
+      } as unknown as InstalledPlugin
+      const db = {
+        installedPlugin: (_userId: string, pluginId: string) =>
+          pluginId === "stock-pro" ? row : null,
+        getSetting: () => null,
+      } as never
+      const hub = { emit() {} } as never
+      const server = { upgrade: () => false } as never
+      const token = mintPageFrameToken("u1", "stock-pro").token
+
+      const probed = await proxyPluginPageFrame(
+        new Request(`http://x/api/pages/_frame/${token}/`, {
+          method: "HEAD",
+          headers: { origin: "null" },
+        }),
+        new URL(`http://x/api/pages/_frame/${token}/`),
+        db,
+        hub,
+        server,
+      )
+      // The upstream saw GET — a HEAD would have 404'd — and the probe still
+      // slides the token and stamps the build id for the shell.
+      expect(upstreamMethods).toEqual(["GET"])
+      expect(probed?.status).toBe(200)
+      expect(probed?.headers.get("x-open-bot-build")).toBe(uiBuildId())
+      expect(probed?.headers.get("access-control-allow-origin")).toBe("null")
+      // HEAD answers carry no body.
+      expect(await probed?.text()).toBe("")
+    } finally {
+      globalThis.fetch = originalFetch
+      clearPluginPageState()
+    }
+  })
+
   test("start stops a stale server before spawning so the pidfile stays truthful", async () => {
     clearPluginPageState()
     shCalls.length = 0

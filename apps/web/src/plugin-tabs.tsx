@@ -308,12 +308,22 @@ function iceComplete(pc: RTCPeerConnection): Promise<void> {
 // Frame tokens live 10 minutes, sliding only on requests, and die with every
 // control restart (in-memory grants). A tab parked open — or across a deploy —
 // would otherwise show the frame's plain "unauthorized" body forever. While
-// the view is mounted, a periodic HEAD slides the token; a 401 remints and
-// reloads the frame. 502 (desktop asleep / server down) is skipped so a cold
-// desktop does not loop remints. Hidden tabs (background browser tab) skip
+// the view is mounted, a periodic HEAD slides the token; a 401 (dead token)
+// remints and reloads the frame — the only status that does, since a remint
+// destroys the running app. Hidden tabs (background browser tab) skip
 // the HEAD so the plugin's page server can idle out; coming back to the tab
 // fires an immediate HEAD that revives the frame (and the server) at once.
 const APP_TAB_KEEPALIVE_MS = 4 * 60 * 1000
+
+// A keep-alive probe result only justifies a remint (new frame URL = iframe
+// reload = the running app destroyed) when the frame token itself is dead:
+// 401 means the grant expired or the control plane restarted. Any other
+// status — a plugin server 404/500 on the probe, 502 asleep desktop — leaves
+// a working frame alone. Web Blueprint lost its page every 4 minutes to a
+// HEAD its server 404'd; reminting on that was pure collateral damage.
+export function frameProbeNeedsRemint(status: number): boolean {
+  return status === 401
+}
 
 // sessionStorage key holding the shell build this tab is running (from the
 // x-open-bot-build frame header). A drift means a newer web deploy landed —
@@ -751,7 +761,7 @@ function AppTab({ tab }: { tab: PluginTab }) {
               }
             }
           }
-          if (res.ok || res.status === 502) return
+          if (!frameProbeNeedsRemint(res.status)) return
           void run(true)
         })
         .catch(() => {})
