@@ -183,6 +183,25 @@ function bashDenial(command: string): string | null {
   return null
 }
 
+// #78: upstream apply_patch (opencode's built-in) applies each file section
+// against the ORIGINAL file content, so two sections for one path silently
+// keep only the last. Until upstream composes sections, reject repeated
+// paths up front with the one-section-per-file workaround named.
+function patchRepeatDenial(patchText: string): string | null {
+  if (!patchText) return null
+  const seen = new Set<string>()
+  for (const line of patchText.split("\n")) {
+    const m = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line.trim())
+    if (!m) continue
+    const path = m[1].trim()
+    if (seen.has(path)) {
+      return `apply_patch: ${path} appears in more than one section — sections for the same file are applied against the original content, so only the last would survive and earlier edits are silently lost. Merge them into one section per file (or split into separate apply_patch calls).`
+    }
+    seen.add(path)
+  }
+  return null
+}
+
 const toolGuards = async (ctx?: { directory?: string }) => {
   const base = ctx?.directory ?? process.cwd()
   // Per session: path -> on-disk stamp when this session last saw the
@@ -259,6 +278,12 @@ const toolGuards = async (ctx?: { directory?: string }) => {
     "tool.execute.before": async (input: BeforeInput, output: BeforeOutput) => {
       const args = output?.args
       if (!args || typeof args !== "object") return
+      if (input.tool === "apply_patch") {
+        const text = typeof args.patchText === "string" ? args.patchText : ""
+        const denial = text ? patchRepeatDenial(text) : null
+        if (denial) throw new Error(denial)
+        return
+      }
       if (input.tool === "bash") {
         const command = typeof args.command === "string" ? args.command : ""
         const denial = command ? bashDenial(command) : null
@@ -322,4 +347,7 @@ const toolGuards = async (ctx?: { directory?: string }) => {
 
 // The module's only export (see the top): the plugin factory, with the
 // pure helpers attached for unit tests so they never become "plugins".
-export const ToolGuards = Object.assign(toolGuards, { bashDenial })
+export const ToolGuards = Object.assign(toolGuards, {
+  bashDenial,
+  patchRepeatDenial,
+})

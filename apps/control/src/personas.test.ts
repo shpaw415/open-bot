@@ -40,6 +40,7 @@ const {
   personaScope,
   personaSystem,
   resolvePersona,
+  rulesetAlreadyApplied,
   skillRuleset,
   skillsEffective,
 } = await import("./personas")
@@ -177,6 +178,22 @@ describe("persona skill scopes", () => {
     rejects([42])
     rejects("weather")
     rejects(Array.from({ length: 65 }, (_, i) => `s-${i}`))
+  })
+
+  test("rulesetAlreadyApplied treats duplicated persisted rules as not applied (#8)", () => {
+    const desired = [
+      { permission: "skill", pattern: "*", action: "deny" as const },
+      { permission: "skill", pattern: "research", action: "allow" as const },
+    ]
+    expect(rulesetAlreadyApplied(desired, desired)).toBe(true)
+    expect(rulesetAlreadyApplied([...desired].reverse(), desired)).toBe(true)
+    // The live failure mode: N prompts stored N copies of the same set.
+    expect(
+      rulesetAlreadyApplied([...desired, ...desired, ...desired], desired),
+    ).toBe(false)
+    expect(rulesetAlreadyApplied([], desired)).toBe(false)
+    expect(rulesetAlreadyApplied(undefined, desired)).toBe(false)
+    expect(rulesetAlreadyApplied(null, desired)).toBe(false)
   })
 
   test("skill allowlists dedupe so denials never repeat the matrix (#8)", () => {

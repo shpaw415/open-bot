@@ -263,13 +263,36 @@ export async function runningCount() {
   return out.split("\n").filter(Boolean).length
 }
 
+// A docker inspect answer is only meaningful when definite: exit 0 with a
+// true/false body, or a missing-container error. A daemon hiccup (CLI
+// failure, empty body, timeout) is unknown — reading it as "stopped" made
+// live desktops report "desktop is not running" intermittently (#101),
+// with the identical command succeeding on immediate retry.
+export function runningVerdict(result: {
+  code: number
+  stdout: string
+  stderr?: string
+}): boolean | null {
+  const out = result.stdout.trim()
+  if (result.code === 0 && out === "true") return true
+  if (result.code === 0 && out === "false") return false
+  if (/no such (object|container)/i.test(result.stderr ?? "")) return false
+  return null
+}
+
 export async function isRunning(name: string) {
-  const result = await sh(
-    ["docker", "inspect", "-f", "{{.State.Running}}", name],
-    undefined,
-    30_000,
-  )
-  return result.code === 0 && result.stdout.trim() === "true"
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await Bun.sleep(250)
+    const verdict = await sh(
+      ["docker", "inspect", "-f", "{{.State.Running}}", name],
+      undefined,
+      30_000,
+    )
+      .then((result) => runningVerdict(result))
+      .catch(() => null)
+    if (verdict !== null) return verdict
+  }
+  return false
 }
 
 export async function containerIp(name: string, network: string) {

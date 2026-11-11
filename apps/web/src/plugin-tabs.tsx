@@ -381,6 +381,7 @@ function AppTab({ tab }: { tab: PluginTab }) {
     retry: boolean
   } | null>(null)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+  const tabContextIdRef = useRef<string>("")
   const [mediaAsk, setMediaAsk] = useState<MediaAsk | null>(null)
   const askRef = useRef<MediaAsk | null>(null)
   const askQueue = useRef<MediaAsk[]>([])
@@ -668,24 +669,14 @@ function AppTab({ tab }: { tab: PluginTab }) {
   useEffect(() => {
     let alive = true
     let current = ""
-    // Stable per-tab context identity (#27): minted once per dashboard
-    // session + app tab, re-sent on every remint so the plugin can tell
-    // its tabs apart across frame recreations. Identity only, no auth.
-    const contextKey = `ob-ctx-${tab.pluginId}-${tab.path ?? "/"}`
-    let contextId = ""
-    try {
-      contextId = sessionStorage.getItem(contextKey) ?? ""
-    } catch {
-      contextId = ""
-    }
-    if (!/^[A-Za-z0-9_-]{8,64}$/.test(contextId)) {
-      contextId = `ctx-${crypto.randomUUID()}`
-      try {
-        sessionStorage.setItem(contextKey, contextId)
-      } catch {
-        // Private-mode storage refusal: the in-memory id still survives
-        // this mount's remints.
-      }
+    // #27: one stable, non-secret id per mounted tab, sent on every mint
+    // (first, keep-alive remint, retry) so the framed page can tell a
+    // remounted self from a different tab. Never an auth credential.
+    if (!tabContextIdRef.current) {
+      tabContextIdRef.current =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
     }
     const mint = () =>
       api<{ frameUrl: string; isolated?: boolean }>("/api/pages/frame", {
@@ -693,7 +684,7 @@ function AppTab({ tab }: { tab: PluginTab }) {
         body: JSON.stringify({
           pluginId: tab.pluginId,
           path: tab.path ?? "/",
-          contextId,
+          tabContextId: tabContextIdRef.current,
         }),
       }).then((body) => {
         if (!alive) return

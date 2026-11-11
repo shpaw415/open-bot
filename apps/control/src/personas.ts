@@ -550,7 +550,8 @@ export function mergeSystem(existing: unknown, line: string): string {
 }
 
 // Applies a persona's scope (skills + MCP servers) to one opencode session:
-// PATCHes the session permission ruleset (array replaces, null clears).
+// PATCHes the session permission ruleset (null clears; arrays APPEND
+// opencode-side, so application is compare-then-clear-then-set below).
 // Rules persist in opencode.db, so this survives restarts; the per-prompt
 // re-apply on persona-bound threads covers edits and binding moves anyway.
 // An empty ruleset normally sends nothing — except for the Assistant, whose
@@ -558,6 +559,34 @@ export function mergeSystem(existing: unknown, line: string): string {
 // session from before the base widened (PATCH null, or the MCP-only array
 // when there are MCP denies to keep). Fire-and-forget: a failure degrades
 // to unrestricted, never blocks the prompt.
+function ruleKey(rule: ScopeRule): string {
+  return `${rule.permission}\0${rule.pattern}\0${rule.action}`
+}
+
+// The persisted ruleset already equals the desired one (same distinct
+// rules, no duplicates) — exported for tests.
+export function rulesetAlreadyApplied(
+  current: unknown,
+  desired: ScopeRule[],
+): boolean {
+  if (!Array.isArray(current)) return false
+  const seen = new Set<string>()
+  for (const row of current) {
+    if (!row || typeof row !== "object") return false
+    const rule = row as ScopeRule
+    if (
+      typeof rule.permission !== "string" ||
+      typeof rule.pattern !== "string" ||
+      typeof rule.action !== "string"
+    )
+      return false
+    seen.add(ruleKey(rule))
+  }
+  if (seen.size !== current.length) return false
+  if (seen.size !== desired.length) return false
+  return desired.every((rule) => seen.has(ruleKey(rule)))
+}
+
 export async function applyPersonaScope(
   db: Db,
   userId: string,
@@ -571,20 +600,48 @@ export async function applyPersonaScope(
   const clearStale =
     persona !== null && builtinLoadsAllSkills(persona) && !persona.skillsNone
   if (permission === null && !clearStale) return
-  try {
-    const res = await fetch(
-      `${base}/session/${encodeURIComponent(sessionId)}`,
-      {
-        method: "PATCH",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ permission }),
-        signal: AbortSignal.timeout(10_000),
-      },
-    )
+  const sessionUrl = `${base}/session/${encodeURIComponent(sessionId)}`
+  const patch = async (value: ScopeRule[] | null) => {
+    const res = await fetch(sessionUrl, {
+      method: "PATCH",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ permission: value }),
+      signal: AbortSignal.timeout(10_000),
+    })
     if (!res.ok)
       console.error(
         `persona scope failed (${res.status}) for session ${sessionId}`,
       )
+    return res.ok
+  }
+  try {
+    // opencode APPENDS a PATCHed permission array instead of replacing it
+    // (live proof: 35 prompts stored 35 copies of a 35-rule set, 1225 rows,
+    // and every denial printed the whole thing — #8). Re-applying per
+    // prompt must therefore be a no-op when the persisted set already
+    // matches, and a clear-then-set when it does not — which also repairs
+    // sessions already bloated by the old behavior on their next prompt.
+    const current = await fetch(sessionUrl, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    })
+      .then((res) => (res.ok ? res.json().catch(() => null) : null))
+      .catch(() => null)
+    const currentPermission =
+      current && typeof current === "object" && "permission" in current
+        ? (current as { permission?: unknown }).permission
+        : undefined
+    if (permission === null) {
+      if (currentPermission === null) return
+      if (Array.isArray(currentPermission) && currentPermission.length === 0)
+        return
+      await patch(null)
+      return
+    }
+    if (rulesetAlreadyApplied(currentPermission, permission)) return
+    if (Array.isArray(currentPermission) && currentPermission.length > 0)
+      await patch(null)
+    await patch(permission)
   } catch (error) {
     console.error(`persona scope failed for session ${sessionId}:`, error)
   }

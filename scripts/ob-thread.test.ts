@@ -998,3 +998,47 @@ test("council close proceeds when every member is idle", async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("read filters tool-only messages before taking the last N (#106)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    const messages = JSON.stringify([
+      { info: { role: "user" }, parts: [{ type: "text", text: "start" }] },
+      { info: { role: "assistant" }, parts: [{ type: "text", text: "first" }] },
+      { info: { role: "assistant" }, parts: [{ type: "tool", tool: "bash" }] },
+      { info: { role: "assistant" }, parts: [{ type: "tool", tool: "read" }] },
+      { info: { role: "assistant" }, parts: [{ type: "tool", tool: "bash" }] },
+    ])
+    writeFileSync(join(bin, "curl"), `#!/bin/sh\nprintf '%s' '${messages}'\n`)
+    chmodSync(join(bin, "curl"), 0o755)
+    const older = await run(home, ["read", "w1", "1"])
+    expect(older.code).toBe(0)
+    expect(older.stdout).toContain("[assistant] first")
+    expect(older.stdout).toContain("tool-only entries hidden")
+    const allTool = await run(home, ["read", "w1", "0"])
+    expect(allTool.stdout).toContain("start")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("read explains an all-tool tail instead of printing nothing (#106)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    const bin = join(home, "bin")
+    mkdirSync(bin)
+    const messages = JSON.stringify([
+      { info: { role: "assistant" }, parts: [{ type: "tool", tool: "bash" }] },
+      { info: { role: "assistant" }, parts: [{ type: "tool", tool: "read" }] },
+    ])
+    writeFileSync(join(bin, "curl"), `#!/bin/sh\nprintf '%s' '${messages}'\n`)
+    chmodSync(join(bin, "curl"), 0o755)
+    const result = await run(home, ["read", "w1", "2"])
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain("no text messages yet")
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

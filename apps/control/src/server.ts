@@ -143,8 +143,10 @@ import {
   proxyPluginPage,
   proxyPluginPageFrame,
   sanitizePluginRest,
+  sanitizeTabContextId,
   schedulePluginPageRestart,
   uiBuildId,
+  withFrameQuery,
 } from "./plugin-pages"
 import { handlePluginWebhook } from "./plugin-webhooks"
 import { handlePlugins, instancePublicOrigin } from "./plugins"
@@ -1884,30 +1886,18 @@ async function api(
     if (!row || !row.enabled || !manifest?.dashboard?.pages) {
       return json({ error: "plugin page not found" }, 404)
     }
-    const minted = mintPageFrameToken(
-      user.id,
-      pluginId,
-      rest,
-      Date.now(),
-      body.contextId,
+    const minted = mintPageFrameToken(user.id, pluginId, rest)
+    // The frame URL carries the host-wide language (and, when the shell
+    // sends one, the stable per-tab `obtab` context id — #27): the framed
+    // document request forwards them to the plugin server (same query
+    // pass-through as every proxied request) and the plugin's client JS
+    // reads them from location.search — the x-open-bot-language header
+    // covers the fetches. Never fail the mint over URL shaping.
+    const frameUrl = withFrameQuery(
+      minted.frameUrl,
+      instanceLanguage(db),
+      sanitizeTabContextId(body.tabContextId),
     )
-    // The frame URL carries the host-wide language: the framed document
-    // request forwards it to the plugin server (same query pass-through as
-    // every proxied request) and the plugin's client JS reads it from
-    // location.search — the x-open-bot-language header covers the fetches.
-    // `ob_ctx` rides the same way: the per-tab context identity (#27) for
-    // the plugin's client JS; its server twin is x-open-bot-context.
-    let frameUrl = minted.frameUrl
-    try {
-      const parsed = new URL(frameUrl, "http://frame.local")
-      parsed.searchParams.set("lang", instanceLanguage(db))
-      parsed.searchParams.set("ob_ctx", minted.contextId)
-      frameUrl = frameUrl.startsWith("/")
-        ? `${parsed.pathname}${parsed.search}`
-        : parsed.toString()
-    } catch {
-      // Never fail the mint over URL shaping.
-    }
     return json({
       frameUrl,
       contextId: minted.contextId,

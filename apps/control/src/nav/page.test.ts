@@ -87,3 +87,17 @@ test("upload args take an element id plus at least one file (#82)", () => {
   expect(() => parseUploadArgs([])).toThrow("usage:")
   expect(() => parseUploadArgs(["n4"])).toThrow("usage:")
 })
+
+test("upload paths must be absolute files under the desktop home (#82)", async () => {
+  const { uploadPathsError } = (await import("./page")) as {
+    uploadPathsError: (paths: string[]) => string | null
+  }
+  expect(uploadPathsError(["/home/agent/workspace/a.png"])).toBeNull()
+  expect(
+    uploadPathsError(["/home/agent/a.png", "/home/agent/b.pdf"]),
+  ).toBeNull()
+  expect(uploadPathsError([])).not.toBeNull()
+  expect(uploadPathsError(["relative.png"])).not.toBeNull()
+  expect(uploadPathsError(["/etc/passwd"])).not.toBeNull()
+  expect(uploadPathsError(["/home/agent/../etc/passwd"])).not.toBeNull()
+})

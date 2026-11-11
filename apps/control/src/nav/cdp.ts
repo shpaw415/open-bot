@@ -74,6 +74,58 @@ export function writeActiveTabId(session: string | undefined, id: string) {
   } catch {}
 }
 
+// Browser epoch: the CDP browser GUID changes whenever Chromium relaunches.
+// Recording it per screen lets a resumed turn tell "same live page" apart
+// from "browser restarted while you were away" instead of silently landing
+// on about:blank with the in-memory state gone (#108).
+export function browserEpochFile(session?: string) {
+  return join(homeDir(), ".open-bot/cdp", `${session}.epoch`)
+}
+
+export function browserEpochFromVersion(value: unknown): string {
+  const url =
+    value && typeof value === "object"
+      ? (value as { webSocketDebuggerUrl?: unknown }).webSocketDebuggerUrl
+      : null
+  if (typeof url !== "string") return ""
+  const match = /\/devtools\/browser\/([^/]+)/.exec(url)
+  return match ? (match[1] as string).slice(0, 8) : ""
+}
+
+export function readBrowserEpoch(session?: string): string {
+  if (!session) return ""
+  try {
+    return readFileSync(browserEpochFile(session), "utf8").trim()
+  } catch {
+    return ""
+  }
+}
+
+export function recordBrowserEpoch(
+  session: string | undefined,
+  epoch: string,
+): "new" | "same" | "changed" {
+  if (!session || !epoch) return "same"
+  const previous = readBrowserEpoch(session)
+  if (previous === epoch) return "same"
+  try {
+    mkdirSync(join(homeDir(), ".open-bot/cdp"), { recursive: true })
+    writeFileSync(browserEpochFile(session), epoch)
+  } catch {}
+  return previous ? "changed" : "new"
+}
+
+export async function fetchBrowserEpoch(port: number): Promise<string> {
+  try {
+    const version = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: AbortSignal.timeout(LIST_TIMEOUT),
+    }).then((response) => response.json())
+    return browserEpochFromVersion(version)
+  } catch {
+    return ""
+  }
+}
+
 export function clearActiveTabId(session?: string) {
   if (!session) return
   try {
@@ -103,8 +155,14 @@ export async function connectCdpSocket(
   port: number,
   activeId?: string,
 ): Promise<CdpSocket> {
-  const page = pickPageTarget(await listPageTargets(port), activeId)
-  if (!page) throw new Error("no page on this screen")
+  const targets = await listPageTargets(port)
+  const page = pickPageTarget(targets, activeId)
+  if (!page) {
+    const epoch = await fetchBrowserEpoch(port)
+    throw new Error(
+      `no page on this screen (cdp port ${port}: ${targets.length} page target(s)${epoch ? `, browser epoch ${epoch}` : ", browser version unreachable"})`,
+    )
+  }
   return openSocket(page.webSocketDebuggerUrl)
 }
 
@@ -112,8 +170,14 @@ export async function connectCdp(
   port: number,
   activeId?: string,
 ): Promise<CdpDriver> {
-  const page = pickPageTarget(await listPageTargets(port), activeId)
-  if (!page) throw new Error("no page on this screen")
+  const targets = await listPageTargets(port)
+  const page = pickPageTarget(targets, activeId)
+  if (!page) {
+    const epoch = await fetchBrowserEpoch(port)
+    throw new Error(
+      `no page on this screen (cdp port ${port}: ${targets.length} page target(s)${epoch ? `, browser epoch ${epoch}` : ", browser version unreachable"})`,
+    )
+  }
   const socket = await openSocket(page.webSocketDebuggerUrl)
   return {
     async probe() {
@@ -349,6 +413,26 @@ export async function evaluate(
     )
   }
   return result.result?.value
+}
+
+// Evaluate for the remote object handle instead of a value — the handle
+// other protocol domains (file input assignment) address elements by.
+export async function evaluateObjectId(
+  socket: CdpSocket,
+  expression: string,
+): Promise<string | null> {
+  const result = (await socket.call("Runtime.evaluate", {
+    expression,
+    returnByValue: false,
+    awaitPromise: true,
+  })) as {
+    result?: { objectId?: unknown; subtype?: unknown }
+    exceptionDetails?: unknown
+  }
+  if (result.exceptionDetails) return null
+  return typeof result.result?.objectId === "string"
+    ? result.result.objectId
+    : null
 }
 
 function singleLine(value: string) {

@@ -477,3 +477,12 @@ test("closing a tab keeps the previously active survivor active (#24)", () => {
 test("eval gets a documented longer budget than ordinary CDP calls (#67)", () => {
   expect(EVAL_TIMEOUT_MS).toBe(30_000)
 })
+
+test("eval timeout flag is bounded and defaults to the eval ceiling (#107)", async () => {
+  const { parseEvalTimeoutMs, EVAL_TIMEOUT_MS } = await import("./chrome")
+  expect(parseEvalTimeoutMs({})).toBe(EVAL_TIMEOUT_MS)
+  expect(parseEvalTimeoutMs({ timeout: "45" })).toBe(45_000)
+  expect(parseEvalTimeoutMs({ timeout: "9999" })).toBe(180_000)
+  expect(parseEvalTimeoutMs({ timeout: "0" })).toBe(1_000)
+  expect(parseEvalTimeoutMs({ timeout: "junk" })).toBe(EVAL_TIMEOUT_MS)
+})

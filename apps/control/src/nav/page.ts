@@ -5,6 +5,7 @@ import {
   actionScript,
   connectCdpSocket,
   evaluate,
+  evaluateObjectId,
   normalize,
   obnavFindExpr,
   PROBE,
@@ -82,10 +83,19 @@ async function view(socket: Parameters<typeof evaluate>[0]) {
   return shapeView(normalize(raw), metricsFromProbe(raw))
 }
 
-const USAGE =
-  "usage: page.ts PORT SESSION read | scroll down|up [pages] | click ID | type ID TEXT | upload ID FILE [FILE...]"
+export function uploadPathsError(paths: string[]): string | null {
+  if (paths.length === 0) return "upload needs at least one file path"
+  for (const path of paths) {
+    if (!path.startsWith("/home/agent/") || path.split("/").includes(".."))
+      return `upload path must be a file under /home/agent: ${path}`
+  }
+  return null
+}
 
-// `upload ID FILE...` — set files on an <input type=file> through CDP
+const USAGE =
+  "usage: page.ts PORT SESSION read | scroll down|up [pages] | click ID | type ID TEXT | upload ID PATH [PATH...]"
+
+// `upload ID PATH...` — set files on an <input type=file> through CDP
 // (DOM.setFileInputFiles) instead of driving the native GTK chooser with
 // keystrokes, which loses focus to the browser window and can send the
 // path into the address bar (#82). Args are the argv tail after `upload`.
@@ -197,6 +207,38 @@ async function run(session: string | undefined) {
               canScrollUp: viewAfter.canScrollUp,
             }),
           )
+          return
+        }
+        if (verb === "upload") {
+          // DOM-level file assignment (#82): typing a path into the GTK
+          // chooser can land in the browser address bar when the chooser
+          // loses focus; assigning files to the input by protocol never
+          // touches native windows at all.
+          const id = process.argv[5] ?? ""
+          const paths = process.argv.slice(6)
+          if (!id) throw new Error(USAGE)
+          const bad = uploadPathsError(paths)
+          if (bad) throw new Error(bad)
+          const objectId = await evaluateObjectId(
+            socket,
+            obnavFindExpr(JSON.stringify(id)),
+          )
+          if (!objectId)
+            throw new Error(
+              `no element ${id} on this page — run ob-page read for fresh ids (the page reloaded or the active tab changed)`,
+            )
+          const isFile = await evaluate(
+            socket,
+            `(() => { const el = ${obnavFindExpr(JSON.stringify(id))}; return !!el && el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'file' })()`,
+          ).catch(() => false)
+          if (!isFile) throw new Error(`${id} is not a file input on this page`)
+          await socket.call("DOM.enable").catch(() => undefined)
+          await socket.call("DOM.setFileInputFiles", {
+            files: paths,
+            objectId,
+          })
+          await Bun.sleep(200)
+          console.log(JSON.stringify(await view(socket)))
           return
         }
         if (verb === "click" || verb === "type") {

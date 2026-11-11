@@ -70,6 +70,7 @@ body {
 - `window.confirm`/`prompt`/`alert` return `false`/`null` **silently** — a confirm-gated delete just does nothing. Build in-page dialogs (inline form or small overlay).
 - Microphone/camera/screen (`navigator.mediaDevices`), `geolocation`, MIDI, and `clipboard.writeText` go through the dashboard consent bridge: call the standard APIs, feature-check first, and always render a fallback notice on rejection. `enumerateDevices` returns `[]` and clipboard *reads* are unavailable in same-host frames — never assume them.
 - **Language follows the dashboard** — never ship your own selector. Read it three ways: `language` in `plugin-<id>.json`, `x-open-bot-language` on every proxied request (live switch, no restart), `?lang=` in `location.search` client-side.
+- **Per-tab identity (`obtab`)** — the framed document URL also carries `?obtab=<id>`: a stable, NON-SECRET id the shell generates once per mounted dashboard tab and re-sends on every frame mint (first load, keep-alive remint, retry). Read it from `location.search` client-side; it is also forwarded to your server with the document request. Use it to key per-tab client state (e.g. reset a draft when the iframe remounts in the same tab vs. a different tab opening). It is NEVER an auth credential — never authorize anything by it; a dashboard reload mints a fresh id.
 - Frame tokens slide and are reminted by the dashboard on 401 — never hardcode, persist, or share a frame URL.
 
 ## Public endpoints and @mentions (only when asked)

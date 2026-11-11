@@ -197,9 +197,11 @@ export function shouldReshoot(
   return animating && previousHash !== "" && previousHash === hash
 }
 
-// Two rAF ticks arriving on schedule prove the renderer is still painting;
-// a capture byte-identical to the previous one while rAF runs is the frozen
-// compositor signature (stale surface, live page).
+// Two animation frames: awaiting this forces the compositor to present a
+// fresh frame, which un-sticks the stale scaled surface behind #67.
+export const FRAME_SETTLE_EXPRESSION =
+  "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))"
+
 async function pageAnimating(socket: Socket): Promise<boolean> {
   const elapsed = await evaluateValue(
     socket,
@@ -287,7 +289,7 @@ async function main() {
         scale,
       }
     }
-    const shoot = async () => {
+    const takeShot = async (): Promise<Buffer> => {
       const shot = (await socket.call(
         "Page.captureScreenshot",
         shotParams,
@@ -295,21 +297,22 @@ async function main() {
       if (!shot.data) throw new Error("empty screenshot")
       return Buffer.from(shot.data, "base64")
     }
-    let bytes = await shoot()
-    let reshot = false
-    {
-      const firstHash = new Bun.CryptoHasher("sha256")
-        .update(bytes)
+    let bytes = await takeShot()
+    let hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+    let recovered = false
+    // A byte-identical frame while the page animates is the frozen scaled
+    // surface (#67): settle two animation frames and retake ONCE instead
+    // of handing back pixels already known to be stale.
+    if (shouldReshoot(previousHash, hash, await pageAnimating(socket))) {
+      await evaluateValue(socket, FRAME_SETTLE_EXPRESSION).catch(() => null)
+      const retry = await takeShot()
+      const retryHash = new Bun.CryptoHasher("sha256")
+        .update(retry)
         .digest("hex")
-      if (shouldReshoot(previousHash, firstHash, await pageAnimating(socket))) {
-        // Frozen surface, live page: wait out two fresh frames and shoot
-        // once more instead of handing back pixels known to be stale.
-        await evaluateValue(
-          socket,
-          "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(1))))",
-        ).catch(() => null)
-        bytes = await shoot()
-        reshot = true
+      if (retryHash !== hash) {
+        bytes = retry
+        hash = retryHash
+        recovered = true
       }
     }
     await Bun.write(file, bytes)
@@ -326,7 +329,6 @@ async function main() {
       oxCss,
       oyCss,
     })
-    const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
     await Bun.write(
       statePath,
       `${JSON.stringify({ ...transform, ts: Date.now(), origin, hash })}\n`,
@@ -349,11 +351,11 @@ async function main() {
       console.error(
         "note: this capture resized the page viewport for the shot and restored it after; if you are measuring on-page FPS, capture again after waiting ~15 seconds",
       )
-    if (reshot && previousHash && previousHash !== hash)
+    if (recovered)
       console.error(
-        "note: the first capture was byte-identical to the previous one on a live page (stale compositor frame) — retaken after two fresh frames; these pixels are current",
+        "note: the first frame was stale (byte-identical while animating); retaken after an animation-frame settle — trust this second frame",
       )
-    if (previousHash && previousHash === hash) {
+    else if (previousHash && previousHash === hash) {
       if (await pageAnimating(socket))
         console.error(
           "warning: this capture is byte-identical to the previous one while the page is still animating (requestAnimationFrame is alive) — the screen compositor may be showing a stale frame. Do not trust these pixels: cross-check with ob-chrome eval / ob-page read, and if captures stay identical reload the tab (ob-chrome reload) or open a new tab.",

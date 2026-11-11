@@ -191,6 +191,12 @@ export function createVikingSkills(
       deadline === undefined || !Number.isFinite(deadline)
         ? callTimeoutMs
         : Math.max(1, Math.min(callTimeoutMs, deadline - Date.now()))
+    // Every failure names the probe that failed and how long it ran: an
+    // aggregate "timed out" after minutes left installs un-diagnosable
+    // (which of validate/GET/DELETE/POST/confirm hung?) — field #28.
+    const started = Date.now()
+    const phase = () =>
+      `${init?.method ?? "GET"} ${path.split("?")[0]} after ${Date.now() - started}ms`
     let response: Response
     try {
       response = await fetchImpl(`${root}${path}`, {
@@ -207,14 +213,14 @@ export function createVikingSkills(
       if (name === "TimeoutError" || name === "AbortError") {
         throw new HttpError(
           504,
-          "desktop OpenViking timed out — the request may still have landed; read back before retrying",
+          `desktop OpenViking timed out (${phase()}) — the request may still have landed; read back before retrying`,
           "viking_timeout",
         )
       }
       const message = error instanceof Error ? error.message : "request failed"
       throw new HttpError(
         502,
-        `desktop OpenViking is not reachable: ${message}`,
+        `desktop OpenViking is not reachable (${phase()}): ${message}`,
         "viking_skills",
       )
     }
@@ -230,9 +236,7 @@ export function createVikingSkills(
     if (!response.ok || (isRecord(body) && body.status === "error")) {
       throw new HttpError(
         response.ok ? 502 : response.status,
-        envelopeMessage(body) ||
-          text.slice(0, 300) ||
-          "OpenViking skills request failed",
+        `${envelopeMessage(body) || text.slice(0, 300) || "OpenViking skills request failed"} (${phase()})`,
         "viking_skills",
       )
     }
