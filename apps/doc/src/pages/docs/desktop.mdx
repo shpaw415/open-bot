@@ -13,7 +13,9 @@ Each user gets one desktop container (image `open-bot-opencode:local`). It is a 
 | --- | --- |
 | OpenCode server | The agent runtime, port **4096**, Basic auth (`opencode:<password>`). The control plane proxies it at `/api/opencode/*`. |
 | Thread screen | Xvfb + openbox, displays **2–9**. VNC on `5900 + display`, Chrome DevTools on `9222 + display`. Max concurrent screens: `MAX_THREAD_SCREENS` (default 3). |
-| Agent CLIs | `ob-nav`, `ob-page`, `ob-app`, `ob-plugin`, `ob-thread`, `ob-project`, `ob-media`, `ob-report`, `ob-preview`, `ob-cron`, `ob-persona`, `ob-backup`, `ob-system1` — in `/usr/local/bin`, authenticated with the desktop's LLM token. |
+| Agent CLIs | `ob-chrome` (browser), `ob-page`, `ob-nav`, `ob-vnc`, `ob-app` (native apps), `ob-plugin`, `ob-thread`, `ob-cron`, `ob-project`, `ob-media`, `ob-report`, `ob-preview`, `ob-persona`, `ob-skill`, `ob-group`, `ob-process` (background jobs), `ob-record` (screen recording), `ob-sandbox` (offline code execution), `ob-backup`, `ob-system1`, `ob-api-key` — in `/usr/local/bin`, authenticated with the desktop's LLM token. Quick reference: [Other CLIs](/docs/ob-misc). |
+| CLI bridge | Claude Code and Muse subscriptions exposed as the chat providers `claude-code` / `muse-code` on `127.0.0.1:4760` — one headless CLI run per chat request. |
+| Security | The model-exchange [watchdog](/docs/watchdog) daemon beside OpenCode. |
 | Seed skills | Copied into OpenCode's skill dir at start (apps, media, plugin, preview, project, report, system1, thread, persona...). |
 | AGENTS.md | The standing instructions for the bot persona, merged with persona system lines. |
 | Browser | A managed per-thread Chrome (CDP-driven by `ob-nav`/`ob-page`) plus optional standalone Chrome via `ob-app launch chrome`. |

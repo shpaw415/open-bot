@@ -40,6 +40,8 @@ ob-plugin vault ID SLUG=value [--account A] [--url U]   # fill/clear a vaultCrea
 ob-plugin guard status|off ID         # daily guard cron from publishing
 ob-plugin issue ID TITLE [BODY]       # file a GitHub issue on the plugin repo
 ob-plugin notify ID TITLE [BODY]      # dashboard toast (needs permission)
+ob-plugin page ID                     # page-server state: {enabled, running, port, desktop, note?}
+ob-plugin restart ID                  # bounce the page server (wakes a sleeping desktop)
 ```
 
 When a task needs a capability you lack, `ob-plugin search` first and install a fit — only scaffold with `ob-plugin new` when nothing suitable exists.

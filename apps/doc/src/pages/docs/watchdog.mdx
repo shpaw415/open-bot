@@ -1,0 +1,44 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Watchdog
+
+A security monitor runs inside each desktop container and triages **every model exchange** — user prompts, assistant responses, tool inputs and tool outputs — in all sessions, including hidden `worker:` and `cron-run:` background jobs.
+
+## What it detects
+
+Detection is hybrid:
+
+- **Local rules** first — injection phrasing, secret key material, piped-to-shell constructs, `docker.sock` / `.ssh` writes, credential egress, and watchdog-tampering attempts. Snippets are redacted before storage or reporting.
+- **Optional LLM verdict** — medium+ findings get a second opinion from a provider you configure (Workers AI / OpenAI / xAI / custom OpenAI-compatible; key falls back to the vault like Voice). A benign verdict downgrades a finding to low.
+
+Findings from the human's own prompt words are capped at medium — your own text never stops a turn.
+
+## What happens on a finding
+
+- **Every finding alerts**: a `security.notice` toast + native notification on the dashboard, persisted in the findings list (kept to 200 per user, deduplicated for 10 minutes).
+- **High severity + stop-on-high aborts the session** and injects a wrap-up prompt so the turn ends cleanly.
+- The desktop also appends redacted JSONL to `~/.open-bot/watchdog.log` on disk.
+
+The agent itself is taught never to retry or evade a stopped turn — tampering attempts are themselves high-severity findings.
+
+## Configuration
+
+**Config → Watchdog**:
+
+| Setting | Meaning |
+| --- | --- |
+| Enabled | Master switch; the daemon drops its event stream when off. |
+| Stop on high | High-severity findings abort the running session. |
+| Verdict provider | The LLM second-opinion provider (fields come from the shared provider catalog; the key is never returned to the browser). |
+| Findings | Severity-filterable list with redacted snippets (reveal on click), reviewed/dismiss states. |
+
+The config reaches the daemon as `~/.config/open-bot/watchdog.json` — pushed on every change, on key-vault rotations, and on every desktop start. The daemon hot-reloads it within 30 s.
+
+<Callout type="warning">
+Known limit: image-borne content (screenshots) is not scanned in v1.
+</Callout>
+
+</DocsShell>

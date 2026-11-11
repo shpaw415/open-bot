@@ -9,6 +9,10 @@ A thread can run in a **disposable container** for prompts you do not trust: tex
 
 A persona's skill scope only curates what a thread is *shown*; a sandbox is the actual boundary.
 
+<Callout type="note">
+Sandbox threads are **not** the same feature as `ob-sandbox` — the offline box the agent uses to *execute* untrusted code on the desktop itself. That one is documented in [Other CLIs](/docs/ob-misc#ob-sandbox--offline-code-execution).
+</Callout>
+
 Spec: `docs/sandbox-threads-spec.md` in the repository. Control plane: `apps/control/src/sandbox.ts`, `apps/control/src/sandbox-broker.ts`.
 
 ## Launching

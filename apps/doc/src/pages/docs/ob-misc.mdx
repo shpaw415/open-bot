@@ -7,15 +7,28 @@ import { DocsShell } from "../../components/DocsShell";
 
 Quick reference for the remaining desktop CLIs. All authenticate with the desktop's LLM token against the control plane unless noted.
 
-## ob-nav — autonomous browsing
+## Browser ladder — ob-chrome → ob-page → ob-nav → ob-vnc
+
+The managed per-thread browser is driven through a ladder, cheapest first: `ob-chrome navigate` (plain navigation), then `ob-page` (DOM primitives), then `ob-nav` (opt-in, real multi-step page goals via System 1), then `ob-vnc` (raw pixels).
+
+### ob-chrome — direct browser control
 
 ```sh
-ob-nav --session SESSION --goal "Open gmail and summarize unread" [--url URL]
+ob-chrome navigate URL            # also --url; scheme optional; recovers a hung renderer
+ob-chrome url | back | forward | reload [--fresh]
+ob-chrome tab [list|new [URL]|close [N]|switch N]
+ob-chrome console                 # console messages, uncaught errors, failed loads
+ob-chrome network N [--body]      # request log: statuses, sizes, timings, headers, opt-in bodies
+ob-chrome metrics                 # live performance: JS heap, DOM nodes, layout counts
+ob-chrome dom [--text | --selector SEL]
+ob-chrome eval "JS" [--raw]       # the sanctioned mutate path
+ob-chrome cache clear [--origin URL] [--cookies] [--reload]
+ob-chrome viewport mobile [iphone-14|pixel-7|…] | WxH | list | rotate | off | status
 ```
 
-CDP-driven agent browser on the thread screen. Clicks a single "I'm not a robot" / "I am human" check itself (two clicks at most, then `needs_user`); puzzle/text captcha-solving goals are refused (`needs_user`). Login walls are `needs_user` here — the main agent signs in itself with credentials it knows. Respects a user screen hold.
+Every verb prints one `{url, title}` JSON line. `console`/`network`/`metrics` read the screen's DevTools recorder, so events stay readable after the fact (small textual response bodies are snapshotted on demand with `--body`). `viewport` is the DevTools device toolbar — mobile presets with real size/DPR/user-agent, custom `WxH`, or `--desktop`; the mode persists across navigations until `viewport off` and is seen by `ob-page`, `eval`, and scaled captures. A hung or crashed renderer is a fast error; `navigate` then recovers over plain HTTP and reports `via: "new-tab"`.
 
-## ob-page — page primitives
+### ob-page — page primitives
 
 ```sh
 ob-page --session SESSION read
@@ -24,11 +37,76 @@ ob-page --session SESSION click ID
 ob-page --session SESSION type ID TEXT
 ```
 
-CDP port must match `922[4-9]|923[01]` (display + 9222).
+CDP port must match `922[4-9]|923[01]` (display + 9222). Element ids survive live DOM re-renders: a replaced node is re-resolved instead of answering "no element N".
 
-## ob-vnc — raw screen ops
+### ob-nav — autonomous browsing
+
+```sh
+ob-nav --session SESSION --goal "Open gmail and summarize unread" [--url URL]
+```
+
+CDP-driven agent browser on the thread screen. Clicks a single "I'm not a robot" / "I am human" check itself (two clicks at most, then `needs_user`); puzzle/text captcha-solving goals are refused (`needs_user`). Login walls are `needs_user` here — the main agent signs in itself with credentials it knows. Respects a user screen hold.
+
+### ob-vnc — raw screen ops
 
 Screenshot/click/type via the VNC/CDP pair (VNC `5900+display`, CDP `9222+display`). Fallback when CDP-only tooling is not enough.
+
+## ob-sandbox — offline code execution
+
+```sh
+ob-sandbox check      # prove egress/DNS failure + write directions on this machine
+ob-sandbox run -- CMD # execute untrusted/review code in the offline box
+```
+
+The supported way to **execute** untrusted code on the desktop: util-linux namespaces (fresh net/IPC/mount/PID namespaces — no interfaces up, so no DNS or TCP egress), the source tree bind-mounted read-only, a size-capped tmpfs scratch as HOME, wall timeout + ulimits, children killed with the parent. Not the same feature as [sandbox threads](/docs/sandbox) — those are disposable agent containers; this is a jail for running code on the desktop itself.
+
+## ob-record — screen recording
+
+```sh
+ob-record start [--fps N] [--duration SEC] [--output FILE] | stop | status | list
+```
+
+Records the whole thread screen (browser + native apps) to video for debugging — mp4 by default (webm by extension), 15 fps, 600 s auto-stop cap. Files live under `~/.open-bot/recordings/<session>/`; an existing output file is never overwritten, one recording per screen. Ask the agent to record while reproducing a bug.
+
+## ob-process — background processes
+
+```sh
+ob-process start --name NAME [--session SESSION] -- CMD...
+ob-process list [--json]          # verifies liveness against /proc, prunes dead rows
+ob-process log ID [--tail N]
+ob-process kill ID                # TERM then KILL the whole process group
+```
+
+Long-running jobs (servers, watchers, crawls) run detached under `setsid` with captured logs and a pid-reuse-guarded registry under `~/.open-bot/processes/`. Only registry ids are accepted — never raw pids — and agent infrastructure (opencode, Xvfb, x11vnc, websockify, ttyd) is refused. The dashboard mirrors it: Config → Avancé → **Processus** shows live CPU/RAM and a two-click kill.
+
+## ob-api-key — provider keys for API calls
+
+```sh
+ob-api-key xai            # print the raw key (exit 1 when unset)
+ob-api-key xai --json     # + accountId/baseUrl/gateway fields
+ob-api-key list           # set/unset per slug, no secrets
+```
+
+Agent sessions read the dashboard Keys-tab provider keys for custom API calls. The list also carries every plugin-declared vault slug — keys are per-user, so plugins sharing a slug share one key.
+
+## ob-skill — skill authoring
+
+```sh
+ob-skill list | get NAME
+ob-skill save NAME --description "…" (--file FILE | --body TEXT) [--group LABEL]
+ob-skill rename OLD NEW | delete NAME
+ob-skill group NAME --label LABEL | --none
+```
+
+The agent creates and edits its own custom skills against the same OpenViking-backed store the Skills tab edits — writes appear live in an open tab. `--group` find-or-creates the directory and assigns in one call.
+
+## ob-group — skill/MCP directories
+
+```sh
+ob-group list | add | rename | delete | assign | unassign --kind skill|mcp
+```
+
+Organizes the Skills and MCP tabs into labeled collapsible sections (max 32 per kind). Plugin-contributed items sit in locked "From \<plugin\>" sections; grouping is organization only — persona enforcement stays flat name lists.
 
 ## ob-project — project registration
 
@@ -42,7 +120,7 @@ Registers an **existing** folder (must exist under `/home/agent`) for the Projec
 
 ## ob-media — media vault
 
-See [Media vault](/docs/media-vault): `albums`, `album NAME`, `push --album NAME --path PATH [--title TITLE]`, `remove`, `remove-album`.
+See [Media vault](/docs/media-vault): `albums`, `album NAME`, `push --album NAME --path PATH [--title TITLE]`, `remove [--source]`, `remove-album [--source]`.
 
 ## ob-report — plugin reports
 
@@ -52,8 +130,8 @@ See [Plugin reports](/docs/plugin-reports): `add`, `list`, `show`, `done|wontfix
 
 ```sh
 ob-cron add --name NAME (--message TEXT | --script TEXT | both)
-          (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601)
-          [--model PROVIDER/MODEL] [--persona ID]
+           (--every SECONDS | --cron "M H DOM MON DOW" | --at ISO8601)
+           [--model PROVIDER/MODEL] [--persona ID]
 ob-cron list | models | set ID [...|--clear-script|--clear-model|--clear-persona] | run ID | remove ID
 ```
 
@@ -62,11 +140,13 @@ ob-cron list | models | set ID [...|--clear-script|--clear-model|--clear-persona
 ```sh
 ob-persona list
 ob-persona add --name NAME --instruction TEXT
-ob-persona update ID [--name ...] [--instruction ...]
+ob-persona update ID [--name ...] [--instruction ...] [--skills "a,b" | --skills none | --skills-clear]
+                   [--skills-append NAME | --skills-remove NAME]
+                   [--mcp "a,b" | --mcp none | --mcp-clear | --mcp-append NAME | --mcp-remove NAME]
 ob-persona remove ID
 ```
 
-Built-ins (`assistant`, `plugin-creator`) cannot be edited; name ≤ 48 chars, instruction ≤ 2000.
+Built-ins (`assistant`, `plugin-creator`) cannot be renamed or edited in their base fields; their scopes extend with `--skills-append`/`--mcp-append` (the Assistant loads every skill already). See [Persona scopes](/docs/agent#persona-scopes).
 
 ## ob-backup — backups
 
@@ -86,7 +166,7 @@ See [Product reports](/docs/product-reports).
 
 ## ob-thread — agent threads
 
-See [Agent threads](/docs/agent-threads): `start [--title TEXT] [--display] [--message TEXT]`, `list`.
+See [Agent threads](/docs/agent-threads) and [Councils](/docs/councils): `start`, `list`, `wait`, `read`, `post`, `stop`, `delete`, `model`, `councils`, `council status|close`.
 
 <Callout type="tip">
 Every CLI prints `--help`. Seed skills for each live in `images/opencode/seed/skills/`.

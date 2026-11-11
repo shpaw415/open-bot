@@ -19,8 +19,8 @@ The agent (or you, on the desktop) files other allowlisted files, or into a name
 ob-media albums                 # list albums
 ob-media album "Screenshots"    # show one album
 ob-media push --album Vacation --path ./beach.jpg --title "Beach day"
-ob-media remove ITEM_ID
-ob-media remove-album ALBUM_ID
+ob-media remove ITEM_ID [--source]
+ob-media remove-album ALBUM_ID [--source]
 ```
 
 Routes live under `/api/media/*` (cookie or LLM token) and emit `media.changed` so the tab refreshes live.
@@ -28,6 +28,7 @@ Routes live under `/api/media/*` (cookie or LLM token) and emit `media.changed` 
 ## Semantics
 
 - **Immutable copies** — the vault keeps its own copy; deleting the thread or the original file does not delete the album.
+- **Deletion takes the source too, by default** — removing an item or album removes the vault copy **and** the desktop source file (`?source=1` on the API; the dashboard asks with a confirm checkbox; `ob-media remove --source` opts in explicitly). The desktop must be running, and protected paths (`.ssh`, `.config/open-bot`, auth files) are refused.
 - **Cap** — `app_settings.media_vault_cap_mb` (default **3072 MB**, max 102400). Setting `0` clears the cap. Managed on the Admin page.
 - Chat media snapshots have a separate cap: `media_snapshot_cap_mb` (default 3072).
 

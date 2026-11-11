@@ -1,0 +1,57 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Application modes
+
+The host runs in one of two modes — a whole-host toggle the admin owns on **Admin → Team** (stored in `app_settings.team_config`).
+
+## Personal (default)
+
+Every user configures their own provider keys ([Configuration](/docs/configuration), Keys tab). Nothing is shared.
+
+## Team
+
+The admin sets one **shared keyset** plus a **provider overlay** (`chat`, `image`, `video`, `model3d`, `system1`, `voice`, `watchdog`) that overlays every desktop's own rows. Overlay fields win where set; personal keys are ignored, not deleted — flipping back to personal restores them.
+
+- **Shared OpenCode logins** — a snapshot of the admin desktop's `auth.json` (API + OAuth entries) is captured after every admin provider login/logout (or via the **Synchronize** button) and merged into every desktop on start/wake. Subscription logins (Claude Code, Muse) stay per-desktop and never fan out.
+- **Forced model picker** — optional `lockModelPicker` makes the team chat `{provider, model}` the forced selection for non-admins; unlocked, a personal pick wins once set.
+- **Non-admin write locks** — shared surfaces (image/video/model3d, watchdog config, chat provider logins) answer `403 team_locked`; per-user fields (TTS voice, language, watchdog toggles) stay writable.
+
+Still per-user even in team mode: `ttsVoice`/`voiceLanguage`, watchdog `enabled`/`stopOnHigh` (unless locked), and plugin-declared vault keys (the Keys tab keeps plugin slugs writable by their owner).
+
+## Quotas (both modes)
+
+Admin-role users are exempt.
+
+| Setting | Meaning |
+| --- | --- |
+| `weeklyTokens` per user, or `quotaDefaultTokens` | Weekly chat-token budget; windows are UTC Monday 00:00; `0` = unlimited. |
+| Behavior `block` / `warn` | `block` answers `429 {error: "weekly quota reached"}`; `warn` adds an `x-open-bot-quota: warn` header while the turn continues. |
+
+## Per-user desktop resources
+
+The Admin Team tab's **Per-user limits** table also sets real container caps:
+
+| Field | Range | Effect |
+| --- | --- | --- |
+| `memoryMb` | 512 MB – 64 GB | Real cgroup memory cap on the desktop container (NULL = 4 GB default). Applied live via `docker update` — lowering below current usage can OOM-kill the desktop, which the crash-restart sweep recovers. |
+| `cpuCores` | 0.5 – host cores | Real CPU allotment (`docker update --cpus`, NULL = 2-core default). Setting it to the host core count takes every core the host has. |
+| `diskGb` | — | **Display-only** cap for the [Hardware](/docs/dashboard) view, overriding the host-wide `desktop_disk_max_gb`; nothing is pruned or enforced. |
+
+## Admin routes
+
+| Route | What |
+| --- | --- |
+| `GET /api/admin/team` | Redacted config + secrets map + catalogs |
+| `PUT /api/admin/team` | Save config (providers merge per field; blank secret inputs never wipe a stored key) |
+| `PUT /api/admin/team/keys` | Shared key writes (blank fields keep stored values) |
+| `POST /api/admin/team/import` | Copy the admin's personal keys into the shared config and flip to team mode |
+| `GET/PUT /api/admin/team/quotas` | Quota + resource-cap rows (`hostCores` included) |
+
+<Callout type="note">
+Overlay secrets never leave the server: responses redact every key field and carry a per-section `secrets: {hasKey: …}` map instead.
+</Callout>
+
+</DocsShell>

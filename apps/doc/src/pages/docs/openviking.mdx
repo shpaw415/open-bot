@@ -49,6 +49,10 @@ The Admin form sends no extra fields, so it cannot set:
 
 Avoid `@cf/meta/llama-3.3-70b-instruct-fp8-fast` as the VLM: Workers AI caps it at a 24k-token context window, and OpenViking sends whole documents for abstracting, so large adds fail with HTTP 413.
 
+## Health card
+
+The Config memory tab leads with an **OpenViking health** section (auto-check on mount, « Check again » button): a status chip (healthy/unhealthy/up/down/asleep/starting), per-component health counts, error list, and — for the parseable components — echarts (vikingdb collection sizes, queue throughput) plus the raw status tables. OpenViking is a desktop sidecar, down by design while the desktop sleeps: an asleep or starting desktop answers without waking anything.
+
 ## Verify
 
 ```sh

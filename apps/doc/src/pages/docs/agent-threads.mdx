@@ -12,16 +12,41 @@ The desktop agent can start its own threads — background jobs and visible side
 ```sh
 ob-thread start [--title TEXT] [--persona NAME] [--model PROVIDER/MODEL] [--effort LEVEL]
                 [--display] [--hidden] [--dir NAME] [--message TEXT]
+                [--steps unlimited] [--from SESSION_ID] [--council NAME]
                 [--sandbox PROFILE] [--copy-in PATH]
-ob-thread list | wait ID | read ID | post ID | stop ID | delete ID
+ob-thread list | wait ID [--timeout MIN] | read ID [N] | post ID TEXT | stop ID | delete ID
+ob-thread model ID [--model PROVIDER/MODEL | --effort LEVEL]
+ob-thread dirs | councils | council status NAME | council close NAME
 ```
 
 - `start` creates the OpenCode session directly (reusing cron's `createSession`).
 - `--message TEXT` posts the text via `prompt_async` as the first prompt.
 - **Without `--display`** the title gets the reserved `worker:` prefix: the dashboard thread list and the media vault skip it — a hidden background-job thread.
-- `list` returns the hidden threads (`GET /api/threads`); `wait`, `read`, `post`, `stop` and `delete` manage a running thread.
+- `--dir NAME` (alias `--topic`) files the new thread into a dashboard folder, creating the folder when the name is new; it implies a visible thread.
+- `--model` / `--effort` validate against the desktop's connected models at start; `ob-thread models` lists what is available.
+- `--steps unlimited` opts the thread out of the per-turn step cap (see below).
+- `list` returns the hidden threads (`GET /api/threads`); `wait` blocks until the thread's current turn finishes; `read ID [N]` returns the last N messages; `post`, `stop` and `delete` manage a running thread.
 
 For prompts you do not trust, `--sandbox PROFILE` runs the thread in a disposable container instead of the desktop — see [Sandbox threads](/docs/sandbox).
+
+## Delegation wake-ups
+
+`--from SESSION_ID` (the coordinator's own session id) records a **delegation watch**: when the new thread finishes its turn, the coordinator is re-prompted with a `[teammate]` message so delegated work never strands the caller. A busy coordinator defers until its own turn ends; follow-up posts to the subject re-arm the watch. Omitted, the control plane infers the one busy top-level chat.
+
+For multi-agent teams, `--council NAME` turns the thread into a council member — see [Councils](/docs/councils) for the roster, viewer, per-member models, and stall reporting.
+
+## Model and effort per thread
+
+Every thread carries its own model/effort pick, separate from the desktop default:
+
+- `ob-thread model ID` reads the effective pick.
+- `ob-thread model ID --model X --effort Y` hot-switches it — applied from the next turn, no restart, a running turn keeps its model. `--model default` clears back to the desktop default.
+- `ob-thread post ID --model X --effort Y -- TEXT` switches and sends in one call.
+- Delegated members with no explicit pick inherit the coordinator's stored model.
+
+## Step caps
+
+Each turn runs under a per-user step guard (default 512, set in Config → Chat « Limite d'étapes par tour », empty = default). A capped turn is forced into a text-only reply and cannot resume. The caller opts out per session: `ob-thread start --steps unlimited`, or the blank composer's « Sans limite d'étapes » checkbox on the dashboard.
 
 ## Title rules
 
@@ -42,6 +67,8 @@ ob-cron list | set ID ... | run ID | remove ID
 ```
 
 `--every` minimum is 60 seconds; prompts cap at 4000 chars.
+
+On the dashboard's Automations page, every job card and result dialog carries **« Ouvrir le fil »** — the full result, its files and screen are reachable in the delivery thread, and follow-up prompts can continue there. The per-plugin guard jobs created by publishing group under one collapsed **« Garde des plugins »** section instead of one card per plugin.
 
 <Callout type="tip">
 Hidden threads are perfect for multi-step work you do not want cluttering the dashboard — the agent uses them for plugin hooks and long jobs.

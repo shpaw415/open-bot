@@ -126,6 +126,8 @@ export const docsNav: {
       { label: "Thread preview", href: "/docs/thread-preview" },
       { label: "Product reports", href: "/docs/product-reports" },
       { label: "Plugin reports", href: "/docs/plugin-reports" },
+      { label: "Watchdog", href: "/docs/watchdog" },
+      { label: "Application modes", href: "/docs/team" },
     ],
   },
   {
@@ -134,6 +136,7 @@ export const docsNav: {
       { label: "Overview", href: "/docs/agent" },
       { label: "Native apps", href: "/docs/native-apps" },
       { label: "Agent threads", href: "/docs/agent-threads" },
+      { label: "Councils", href: "/docs/councils" },
       { label: "Sandbox threads", href: "/docs/sandbox" },
     ],
   },

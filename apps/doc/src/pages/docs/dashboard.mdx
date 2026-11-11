@@ -9,9 +9,26 @@ The dashboard (`apps/web`) is a React SPA served by the control plane. It talks 
 
 ## Chat
 
-- **Composer** — markdown, file attachments, `@projects/<slug>` and `@reports/<plugin>` mentions that resolve like file references, persona picker, model selector, stop button.
-- **Transcript** — streaming replies, collapsible tool-call rows, plugin cards, embedded [previews](/docs/thread-preview), image/video/3D results.
-- **Personas** — choose a personality per new thread; persona is locked at thread create and injected as a system line on every prompt. Built-ins: Assistant, Open-bot Plugin Creator. Manage your own on the Config page ([Other CLIs](/docs/ob-misc) covers `ob-persona`).
+- **Composer** — markdown, file attachments, `@projects/<slug>`, `@reports/<plugin>` and plugin `@<section>/<name>` mentions that resolve like file references, persona picker, per-thread model/effort selector, stop button, hold-to-speak voice, « Sans limite d'étapes » opt-out for the first send.
+- **Transcript** — streaming replies, collapsible tool-call rows, plugin cards, embedded [previews](/docs/thread-preview), image/video/3D results. Each assistant turn carries a « A travaillé X min · N étapes » work row, expandable to the step list; live turns pulse.
+- **Waiting list** — messages sent while a turn is running land in a dashed dock (server-persisted, survives reloads) with full text, image thumbnails, in-place edit/remove, and « Envoyer maintenant » to interrupt. The dock flushes automatically when the turn finishes; it holds behind an errored turn until you force it.
+- **File links** — any desktop path the agent references (`/home/agent/…`, `file://…`, `path:line`, backticked paths) becomes a clickable link. In the thread workspace a click opens a split **file previewer** beside the chat — rendered markdown, code, images/video/audio, PDF, `.glb` — instead of leaving the page. Protected paths (`.ssh`, `.open-bot`, key files) are refused.
+- **Branch** — every bubble's meta row has a fork action (« Nouvelle conversation jusqu’à ce message »): one click creates a new thread ending at that message (older messages copied, nothing after, source untouched) and opens it. The branch inherits persona, model pick and folder.
+- **Model picker is per-thread** — the composer's model/effort choice writes only the open thread's pick, never the desktop default; the Config page's selectors remain the desktop-wide editor.
+- **Reading mode** — scrolling well up into history shrinks the bottom chrome to a slim composer pill; the full toolbar returns when you focus the field or a draft exists.
+- **Lazy history** — threads open on the newest page and pull older messages as you scroll up, so very long threads load fast.
+
+## Personas
+
+Choose a personality per new thread; persona is locked at thread create and injected as a system line on every prompt. Built-ins: Assistant, Open-bot Plugin Creator. Personas can carry skill and MCP scopes — see [Desktop agent](/docs/agent#persona-scopes). Manage your own on the Config page ([Other CLIs](/docs/ob-misc) covers `ob-persona`).
+
+## Councils
+
+Delegated agent teams appear in the chat as an **Open council** button (one per team) and a floating **Councils (N)** pill, opening the live viewer — member dots, per-member transcripts, stop button. See [Councils](/docs/councils).
+
+## Screen handoff
+
+When the agent needs your hands, it posts a screen marker that renders a **guided handoff card** — « L'agent a besoin de vous » with three steps (Prenez le contrôle → Faites l'action → Rendez la main) above the live view-only frame. Taking control happens in place inside the card (send-keys row, paste, keyboard); « C'est fait, à toi » releases and re-prompts the agent, « Rendre sans message » releases silently, and postponing leaves a floating pill until you resume. The Desktop tab and the `?screen=1` stage share one frame with a floating dock (control toggle, applications popover, fit control, reload, fullscreen, pop-out while held).
 
 ## Workspace views (Views drawer)
 
@@ -24,31 +41,42 @@ The dashboard (`apps/web`) is a React SPA served by the control plane. It talks 
 
 ## Main navigation tabs
 
-- **Apps** — one entry per enabled [plugin dashboard page](/docs/plugins): pick a plugin's tab and interact with its live UI or polled cards (mobile renders a phone-style home screen).
+- **Apps** — a launcher grid of every enabled [plugin dashboard page](/docs/plugins): search (Enter opens the first match), **Favoris**, **Récents**, then one « Toutes les applications » grid; picking a tile opens the app full-bleed with a back button and star toggle. Mobile keeps the same grid as a home screen.
+
+## Split screen
+
+The header toggle puts **any two pages side by side** — chat beside projects, settings beside media, the same page twice. The divider drags (25–75%) or takes arrow keys; each pane keeps its own history, so Back/Forward walk the focused pane and reload/share restore both. Phones get a two-button switcher instead.
+
+Every dialog, drawer, sheet and screen is also a history entry — the system/browser Back button always dismisses the topmost thing instead of leaving the page, and Forward/reload restore the exact screen.
 
 ## Config pages
 
-- **Providers** — chat model auth (`opencode auth login` state) with an inline login terminal; merged into Config as the first tab.
-- **Keys** — per-user vault secrets.
-- **Chat** — default chat model and thinking effort.
+- **Providers** — chat model auth (`opencode auth login` state) with an inline login terminal, plus **CLI subscription** cards that log into Claude Code and Muse subscriptions; each desktop runs a bridge exposing them as the chat providers `claude-code` / `muse-code` (one headless CLI run per chat request, same HOME/PATH so `ob-*` CLIs stay reachable; OpenViking memory and user MCP servers ride along).
+- **Keys** — per-user vault secrets, merged with plugin-declared vault keys so one tab holds every key ([Plugins](/docs/plugins#vault)).
+- **Chat** — default chat model, thinking effort, and the per-turn step cap (« Limite d'étapes par tour », empty = the 512 default).
+- **MCP** — the desktop's MCP servers with live connected/failed status: add local (command) or remote (URL) servers, enable/disable, delete (max 16). Plugin-injected entries are badge-flagged and managed by the plugin lifecycle. Changes restart opencode (draining busy threads first); plugin MCP hot-connects without a restart.
 - **System1 provider** — decision-model endpoint (Laya / Clef / Jev) for desktop navigation.
 - **Media** — image/video/3D model selection.
 - **Voice** — STT/TTS provider, key, model, voice, language ([Voice](/docs/voice)).
+- **Watchdog** — the model-exchange security monitor: enabled, stop-on-high, verdict provider, findings list ([Watchdog](/docs/watchdog)).
+- **OpenViking** — embedding + VLM config and the **OpenViking health** card ([OpenViking setup](/docs/openviking)).
+- **Personas** — CRUD for your personas, skill/MCP scope pickers included.
+- **Cron** — scheduled jobs moved here from the workspace Views drawer: add/edit/pause/run jobs and read their results; « Ouvrir le fil » jumps to the delivery thread ([Agent threads](/docs/agent-threads)).
+- **Plugins** — marketplace browser, installed plugins, version picker with dev badges, re-install/update/remove, policy row ([Plugins](/docs/plugins)).
+- **Endpoints** — every plugin public endpoint: URL with copy, running/desktop state, test request, secret management.
+- **Langue** — the host-wide UI language (`en`/`fr`); plugin dashboards follow it through config, a per-request header, and `?lang=` on app frames.
+- **Avancé** — **Processus** (live background jobs with CPU/RAM and kill), **Bac à sable** ([sandbox thread profiles](/docs/sandbox)), and other advanced controls.
+- **Backup** — local/cloud backups, restore, factory reset.
+- **Admin** (role admin) — app settings (media caps, disk max), users, usage, invites, backups, purchases/refunds, and the **Team** tab: [application modes](/docs/team), shared keys + provider overlay, per-user quotas and desktop resource caps, OpenCode-auth sync, and the improvement-issue review queue.
 
 Every provider form (Keys, System1, Media, Voice, Watchdog — and the admin Team tab's shared provider settings) renders from the server-side provider catalog: pick a provider and only the credential fields and models it takes are shown (a Cloudflare Account ID only where Cloudflare needs one, a model select with a Custom escape hatch where new model ids must stay typeable). Saves are validated against the same catalog server-side, including the team overlay.
-- **OpenViking** — embedding + VLM config ([OpenViking setup](/docs/openviking)).
-- **Personas** — CRUD for your personas.
-- **Cron** — scheduled jobs moved here from the workspace Views drawer: add/edit/pause/run jobs and read their results ([Agent threads](/docs/agent-threads)).
-- **Backup** — local/cloud backups, restore, factory reset.
-- **Plugins** — marketplace browser, installed plugins, version picker with dev badges, re-install/update/remove, policy row ([Plugins](/docs/plugins)).
-- **Admin** (role admin) — app settings (media caps, disk max), users, usage, invites, backups.
 
 ## Desktop tab
 
 Start/stop the desktop, watch the live screen, take over (with hold), and launch any installed catalog app on the current thread's screen ([Native apps](/docs/native-apps)).
 
 <Callout type="tip">
-The thread list hides any session titled with the reserved `worker:` or `cron-run:` prefixes — those are background jobs, not conversations.
+The thread list hides any session titled with the reserved `worker:` or `cron-run:` prefixes — those are background jobs, not conversations. Council members live in the [council viewer](/docs/councils) instead.
 </Callout>
 
 </DocsShell>

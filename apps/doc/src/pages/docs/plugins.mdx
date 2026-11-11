@@ -23,6 +23,7 @@ Key fields:
 | `configs[]` | Typed settings: `string` (default), `bool`, `number`, `enum` + `options[]`, `secret`. Validated/coerced by `validateConfigValue`; unknown keys rejected; upgrades prune dropped keys. Secrets land in `~/.config/open-bot/plugin-<id>.json`. |
 | `hooks[]` | Max 8 `{event: "session.idle"\|"thread.created", message}` prompts run in hidden `worker: plugin-<id> <event>` sessions. Loop-guarded: worker/cron sessions never re-trigger; **20 runs/day per plugin**; **2 concurrent per event**. |
 | `permissions.notifications` | `true` unlocks `ob-plugin notify` → `POST /api/plugins/notice` (30/hour) → dashboard toast + native notification. |
+| `pricing` | `{model: "one-time", amount: <USD cents>}` ($0.99–$500) makes it a premium listing — see [Marketplace](/docs/marketplace#paid-plugins). |
 | `version` | Semver `X.Y.Z[-prerelease]` or dev tag (`beta-1`). |
 
 ## Config guide (CONFIG.md)
@@ -45,6 +46,23 @@ A plugin can ship a live dashboard — the **Apps** tab in the main navigation b
 
 The proxy strips cookies/auth toward the plugin and injects `x-open-bot-page-token` (both surfaces) plus `x-open-bot-owner-token` (dashboard surfaces only); the user's dashboard session never reaches the page server. Frame tokens slide for 10 minutes per request and the dashboard remints them on a 401. Ports come from a dedicated deterministic range (4740–4759). Upgrades and settings changes restart the server so it observes new config; disable/uninstall stop it. Every lifecycle change to the page-server runtime must update this page in the same PR.
 
+## Composer @mentions
+
+A plugin with a page server can add dynamic entries to the chat composer's `@` menu. `dashboard.mentions[]` (max 4, requires `dashboard.pages`) declares `{section, label?, path?}` — users type `@<section>/<name>` (e.g. `@stock/Widget`). The page server answers `GET <path>` (default `/mentions`) with `{items: [...]}` (max 100; ≤ 5 aliases each). The composer lists the section when the menu opens; send-time resolution injects the same "Message references:" line as the built-in sections, and a down server degrades to a graceful "list is unavailable". Sections must not shadow the built-in ones (`personas`, `cron`, `skills`, `projects`, `reports`, `plugins`); the first enabled plugin to claim a slug wins and losers are flagged on the Plugins tab.
+
+## Device and media access in app tabs
+
+App-tab frames run in capability-token sandboxes (opaque origin), so a page's native `getUserMedia` never works directly. The frame shim bridges it: `getUserMedia`/`getDisplayMedia` posts a media request to the Apps tab, the user confirms in an in-dashboard consent bar, and the shell relays the live tracks over an in-page WebRTC loopback — the page gets a real `MediaStream` with no second origin. The same bridge carries geolocation, `clipboard.writeText`, and Web MIDI (consent-gated). An instance may set `OPEN_BOT_PAGES_ORIGIN` (an https host reaching the same control plane) to give frames real origins with the browser's native permission flow instead. Pages must guard `localStorage` reads, avoid `window.confirm`/`prompt`/`alert` (silently blocked), and call their API with relative paths.
+
+## Page-server dev loop
+
+```sh
+ob-plugin page PLUGIN_ID        # {enabled, running, port, pid, desktop, note?}
+ob-plugin restart PLUGIN_ID     # bounce the server (wakes a sleeping desktop)
+```
+
+The spawn writes its port to `~/.open-bot/pages/<pluginId>.port`. Click-testing goes through the managed browser on loopback (`ob-chrome navigate http://127.0.0.1:<port>/`); local installs run the checkout entry with `bun --hot`, so edits apply live. Do not pin the server to `127.0.0.1` in `Bun.serve` — the health probe runs from the control container against the desktop's container IP.
+
 ## Install surfaces
 
 - Tools land in `/usr/local/bin/ob-plugin-<id>-*`; `apply-plugin-auth.sh` writes the vault config.
@@ -56,6 +74,8 @@ The proxy strips cookies/auth toward the plugin and injects `x-open-bot-page-tok
 ## Vault
 
 `permissions.vaultCreate` declares key slugs the plugin owns (created empty at install); `permissions.vaultRead` consumes shared user keys. The config file's `vault` branch is generated from the key vault, so treat it as read-only — local edits are overwritten on enable/reinstall/settings changes. The durable write path is `POST /api/plugins/installed/:id/vault` (agent token, write-only — values are never returned) for slugs in that plugin's `vaultCreate`, or from the desktop: `ob-plugin vault ID SLUG=value`. The user can also fill any slug on the Config Keys page.
+
+Plugin-declared vault keys that no shared provider owns are **merged into the Config Keys tab** — one place for every key. Deduped across plugins, each row shows its `create`/`read` access (disabled plugins get a hint chip); both surfaces write the same `user_keys` rows. From the desktop, agent sessions read them with `ob-api-key <slug>`. In [team mode](/docs/team) plugin keys stay per-user by design.
 
 ## Persistence across desktop recreates
 

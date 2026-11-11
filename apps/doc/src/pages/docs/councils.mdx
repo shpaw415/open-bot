@@ -1,0 +1,60 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Councils
+
+A council is an **agent team**: the coordinating agent delegates work to several teammates as hidden background threads, then reports back with a live viewer where you can watch every member work. Built on [agent threads](/docs/agent-threads) (`ob-thread start --council NAME`, seed skill `council`).
+
+## Forming a council
+
+```sh
+ob-thread start --council researchers --role "Find primary sources" \
+  --model xai/grok-4.5 --effort high --persona analyst \
+  --title "Source hunt" --message "…" --from ses_my_session
+```
+
+- `--council NAME` find-or-creates the council (names normalize to lowercase kebab) and forces the member to a hidden `worker:` thread — council members never clutter the thread list.
+- `--role TEXT` records the member's role in the roster.
+- `--model PROVIDER/MODEL`, `--effort LEVEL`, `--persona NAME` configure each member individually — a cheap researcher beside a deep reviewer at high effort, each with its own persona. Members with no explicit `--model` inherit the coordinator's stored pick.
+- `--from SESSION_ID` registers the delegation watch that wakes the coordinator when the team finishes (see below).
+- Plain teammates work the same way without `--council` — one delegated thread with a wake.
+
+The coordinating agent ends its reply with a marker like `![council: researchers](open-bot://council/researchers)`. In the chat bubble that marker becomes an **Open council** button.
+
+## The council viewer
+
+Clicking it opens a split pane beside the chat (overlay on phones, fullscreen on wide screens):
+
+- **Member rail** — every member with a live running/idle dot, its persona, model and effort as a secondary line.
+- **Per-member transcripts** — read-only, rendered exactly like the main chat log: the same bubbles, markdown, images, and one « A travaillé… » work row per turn so every tool call a member makes is visible. Task-tool subagents spawned inside a member appear under a **Subagents** group with the same dots and transcripts.
+- **Council switching** — a thread can run several councils at once (distinct names under the same `--from`). Each reply marker gets its own Open button; before any is opened, a floating **Councils (N)** pill at the bottom-right of the log lists them with running counts (green dot while any member works).
+- **Stop council** — the header carries a red stop button (shown with ≥1 running member) that aborts every member's turn in place; sessions, transcripts and the council itself survive.
+
+## Reading results
+
+```sh
+ob-thread councils                     # list councils
+ob-thread council status researchers   # per-member idle/busy + last-reply tail
+ob-thread read ses_member_id 6         # last N messages of one member
+ob-thread post ses_member_id "…"       # follow-up to a member
+ob-thread council close researchers    # delete every member session
+```
+
+`council status` classifies each member's newest turn (`done` / `error` / `cut` / `empty`) and prints a **STALLED** line for idle members whose turn ended badly — a member that hit an error or was cut mid-work.
+
+## Delegation wake-ups
+
+Councils and teammates no longer strand the coordinator:
+
+- When **every** member of a council is idle (or a plain teammate finishes), the coordinator thread is re-prompted with a `[council: name]` / `[teammate]` message. A busy coordinator defers until its own turn ends.
+- The wake names possibly-stalled members, so the coordinator verifies deliverables and can relaunch with `ob-thread post` instead of assuming success. There is no blind auto-resume.
+- Any follow-up posted to a member re-arms its watch, so iterative delegation keeps waking the coordinator.
+- `ob-thread wait ID [--timeout MIN]` blocks until a managed thread finishes its current turn — useful for the agent to synchronize on one teammate.
+
+<Callout type="tip">
+The dashboard thread list hides `worker:` member threads by design — the council viewer is where you follow them. Deleting a member from the list (or closing the council) keeps the rest of the council consistent.
+</Callout>
+
+</DocsShell>

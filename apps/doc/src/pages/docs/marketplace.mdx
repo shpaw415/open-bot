@@ -31,6 +31,15 @@ A newer `enqueuedAt` wins; every publish re-reviews; loopback publishes review i
 - The account page creates keys (`obm_…`, sha256-hashed in D1, shown once).
 - Paste the key on the dashboard Config page's Plugins tab (admin) → `app_settings.marketplace_api_key`; `marketplace()` prefers it over the `OPEN_BOT_MARKETPLACE_TOKEN` env fallback. `POST /api/publish` accepts either.
 
+## Paid plugins
+
+A manifest can declare `pricing: {model: "one-time", amount: <USD cents>}` ($0.99–$500), making the listing premium:
+
+- **Buying** goes through Stripe Checkout on the marketplace (destination charge to the author's Connect Express account; the platform fee is snapshotted per purchase). A purchase is a **lifetime license** for the plugin including updates.
+- **Instances** paste the per-user marketplace key (`obm_…`) on the dashboard Plugins tab; paid installs ride it — the instance token alone can never fetch the artifact. `ob-plugin install` on a paid plugin without a license stops with the buy URL; buying is always a human step, never automated.
+- **Authors** onboard payouts on the account page (Connect Express) and track earnings/purchases there.
+- **Refunds** are admin-only (admin page → Purchases); a refunded license blocks reinstall and updates, but installed copies keep running.
+
 ## Storage and bindings
 
 | Binding | Role |

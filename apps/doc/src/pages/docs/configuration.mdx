@@ -38,12 +38,15 @@ Read by `apps/control/src/env.ts` (host-side or container defaults):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `language` | `fr` | Host-wide UI language (`en` \| `fr`); delivered to plugins via config, header, and `?lang=` |
 | `media_snapshot_cap_mb` | `3072` | Chat media snapshot cap; `0` = off |
 | `media_vault_cap_mb` | `3072` | Media vault cap; `0` clears |
 | `desktop_disk_max_gb` | unset | Display-only Hardware disk max; `0` = full disk |
 | `plugin_install_policy` | `manual` | `manual` \| `auto` (also pending-review plugins) |
 | `plugin_auto_update` | `off` | `off` \| `stable` |
 | `marketplace_api_key` | — | `obm_…` key preferred over env token |
+| `team_config` | `personal` | [Application mode](/docs/team): shared keys, provider overlay, locks |
+| `agent_step_cap` (per user, `desktops.agent_step_cap`) | `512` | Per-turn step guard; empty/null = 512; opting out is per thread |
 | `backup_config` / `backup_status` / `backup_next_run_at` | — | Backup scheduler state |
 
 ## Ports
@@ -58,10 +61,12 @@ Read by `apps/control/src/env.ts` (host-side or container defaults):
 | 5902–5909 | Thread screen VNC (display + 5900) |
 | 9224–9231 | Thread screen CDP (display + 9222) |
 | 4700–4719 | Thread preview allowlist |
+| 4740–4759 | Plugin page servers (deterministic per plugin) |
+| 4760 | CLI bridge (Claude Code / Muse) inside each desktop |
 
 ## Route index
 
-Grouped under `/api` — see [Control plane](/docs/control-plane) for the full list and auth rules. Highlights: `/auth/*`, `/me`, `/desktop*`, `/threads`, `/cron*`, `/personas*`, `/projects*`, `/plugins*`, `/media/*`, `/reports*`, `/voice`, `/stt`, `/tts`, `/keys`, `/providers*`, `/model`, `/models`, `/image`, `/video`, `/model3d`, `/system1`, `/viking`, `/skills`, `/backup*`, `/admin/*`, `/opencode/*`, `WS /events`, `/preview/frame/<token>/`.
+Grouped under `/api` — see [Control plane](/docs/control-plane) for the full list and auth rules. Highlights: `/auth/*`, `/me`, `/desktop*`, `/threads*` (agent-started threads), `/councils*`, `/cron*`, `/sandbox*` (profiles + live sandboxes), `/personas*`, `/projects*`, `/plugins*` (+ `/pages/*` frame proxy, `/hooks/*` public endpoints), `/media/*`, `/reports*`, `/voice`, `/stt`, `/tts`, `/keys`, `/providers*`, `/model`, `/models`, `/image`, `/video`, `/model3d`, `/system1`, `/viking*` (config + health), `/watchdog`, `/mcp*`, `/skills`, `/catalog/dirs*`, `/agent-cap`, `/language`, `/backup*`, `/admin/*` (+ `/admin/team*`), `/opencode/*`, `WS /events`, `/preview/frame/<token>/`.
 
 ## Migrations
 
