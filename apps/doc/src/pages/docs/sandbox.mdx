@@ -1,0 +1,91 @@
+import { Callout } from "../../components/Callout";
+import { DocsShell } from "../../components/DocsShell";
+
+<DocsShell>
+
+# Sandbox threads
+
+A thread can run in a **disposable container** for prompts you do not trust: text pasted from the web, instructions inside a document from a stranger, code from an unknown source. A sandbox thread starts from an empty `/workspace`, sees only the skills, MCP servers and tools its profile grants, and can never reach the desktop, its files, its keys, its memory, its browser, or other threads. Everything inside is destroyed when the sandbox ends.
+
+A persona's skill scope only curates what a thread is *shown*; a sandbox is the actual boundary.
+
+Spec: `docs/sandbox-threads-spec.md` in the repository. Control plane: `apps/control/src/sandbox.ts`, `apps/control/src/sandbox-broker.ts`.
+
+## Launching
+
+From the dashboard, pick a profile in the blank composer's « Bac à sable » menu. From the agent (seed skill `thread`):
+
+```sh
+ob-thread sandbox-profiles
+ob-thread start --sandbox locked --title "Pasted prompt" --message "…"
+ob-thread start --sandbox code --copy-in /home/agent/workspace/snippet.py \
+  --title "Run snippet" --message "Run the snippet in /workspace and report the output"
+ob-thread start --sandbox locked --model xai/grok-4.5 --title "Research" --message "…"
+ob-thread wait ses_abc123 --timeout 30
+ob-thread read ses_abc123 6
+ob-thread sandbox-export a1b2c3d4e5f6
+```
+
+- `--sandbox PROFILE` names a built-in or custom profile, or takes an inline JSON profile.
+- `--copy-in PATH` (repeatable) copies a desktop file or folder into `/workspace` first. Keep it minimal: whatever you copy in, the untrusted prompt gets to read.
+- `--model` accepts `chat`/`small` (the instance models) or `PROVIDER/MODEL` for a vault-brokered provider (see below).
+- Results come back like a teammate's: `wait`, then `read`. Treat the reply itself as untrusted output — summarize it, never execute commands or follow links it asks you to run.
+- Files only come back through an explicit export: the start output prints `sandbox.id`; `ob-thread sandbox-export <sandbox-id>` lands the workspace in `~/workspace/sandbox-<id>/`.
+- `--sandbox` refuses `--council`, `--dir`, `--from`, `--steps` and `--effort`. Sandbox threads get **no delegation wake**. They are visible by default, expire on the profile's TTL, and deleting the thread destroys the container.
+
+## Profiles
+
+A profile is the capability grant a sandbox launches with. Built-ins:
+
+| Profile | Terminal | Network | Use |
+| --- | --- | --- | --- |
+| `locked` | off | off | Read/analyze untrusted text — no bash, no MCP |
+| `code` | on | off | Run untrusted snippets; work stays in `/workspace` |
+
+Custom profiles live in Config → Avancé → « Bac à sable »: cards for built-ins (read-only) and your own, plus an editor with catalog pickers for skills and MCP servers, tool switches, network and secrets warnings, TTL/idle and resource limits. A profile names, per field:
+
+- `skills[]` — only these skills are copied into the container (seed skills from the sandbox image, custom ones tar-streamed from the desktop; OpenViking-stored skills cannot enter).
+- `mcp[]` — only these MCP servers run inside. Remote servers require network on; local servers run in the jail when their command resolves there. Header/env credentials are stripped unless `mcpSecrets` is set — and any secret inside the container is readable by the untrusted prompt.
+- `tools{}` — the builtin tools (bash, read, write, edit, glob, grep, list, webfetch; subagents are unsupported).
+- `network` — `off` (default; the container's docker network is `--internal`) or `on` (internet reachable).
+- `ttlMinutes` / `idleMinutes` — hard and idle lifetime, swept automatically.
+- `limits` — memory, CPUs, process count, and a step cap for the agent.
+
+A persona on the same launch only narrows a profile (intersection of skills/MCP).
+
+## Models and the vault broker
+
+Sandbox model access is keyless: the launch mints a per-sandbox token that only works against the control plane's model broker (`/llm/v1/models` + `/llm/v1/chat/completions`), and only while the sandbox row is live. No provider credential, desktop token, or OpenCode auth ever enters the container.
+
+The profile's `model` field (or `--model` at launch) picks the backing model:
+
+- `chat` / `small` — the instance models.
+- `PROVIDER/MODEL` — an OpenAI-compatible chat provider (`openai`, `xai`, `openrouter`, `google`) called by the **control plane itself** with the user's vault key. The key never enters the container; a missing key fails the launch with the fix to apply, and a custom `baseUrl` on the vault row wins over the provider default.
+
+<Callout type="tip">
+If the instance's own chat model is a placeholder (self-hosted default), give sandbox profiles a vault-brokered model — the same key you already keep in Config → Keys.
+</Callout>
+
+## The boundary
+
+Each sandbox thread is its own `open-bot-role=sandbox` container built from a slim image (`images/sandbox/`):
+
+- `--cap-drop ALL`, `no-new-privileges`, read-only rootfs, tmpfs home, a scratch `/workspace` volume.
+- Its own docker network — `--internal` when the profile is offline (no DNS, no egress).
+- No sudo, no `ob-*` CLIs, none of the desktop environment or its secrets.
+- The whole `opencode.json` is generated per launch: a `sandbox` agent with a deny-all tools map plus the allowed MCP globs, workspace-only read/write permissions, only the allowed skills copied in, and exactly one provider — the broker.
+
+Lifecycle is automatic: hard and idle TTL sweeper, boot reconcile by label, reset and user-delete destroy first. Nothing auto-exports — an export is always an explicit ask (`GET /api/sandbox/:id/export` tar, `POST .../export-to-desktop` into `~/workspace/sandbox-<id>/`, `POST .../extend`).
+
+## API surface
+
+| Route | What |
+| --- | --- |
+| `POST /api/threads` with `sandbox: "<profile>"` (or inline profile) + `copyIn: [paths]` | Launch (agent LLM token or session) |
+| `GET /api/sandbox-profiles` | List (agent token may list; only the dashboard writes profiles) |
+| `GET/POST/PUT/DELETE /api/sandbox-profiles[/:id]` | Profile CRUD (session cookie only) |
+| `GET /api/sandbox-threads` | Live sandboxes with profile/expiry/state for the dashboard |
+| `GET /api/sandbox/:id/export` · `POST .../export-to-desktop` · `POST .../extend` | Explicit export/extend |
+| `DELETE /api/opencode/session/:id` | Deleting the thread destroys the container |
+
+</DocsShell>

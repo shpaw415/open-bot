@@ -134,6 +134,7 @@ export const docsNav: {
       { label: "Overview", href: "/docs/agent" },
       { label: "Native apps", href: "/docs/native-apps" },
       { label: "Agent threads", href: "/docs/agent-threads" },
+      { label: "Sandbox threads", href: "/docs/sandbox" },
     ],
   },
   {

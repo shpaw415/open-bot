@@ -10,14 +10,18 @@ The desktop agent can start its own threads — background jobs and visible side
 ## Usage
 
 ```sh
-ob-thread start [--title TEXT] [--display] [--message TEXT]
-ob-thread list
+ob-thread start [--title TEXT] [--persona NAME] [--model PROVIDER/MODEL] [--effort LEVEL]
+                [--display] [--hidden] [--dir NAME] [--message TEXT]
+                [--sandbox PROFILE] [--copy-in PATH]
+ob-thread list | wait ID | read ID | post ID | stop ID | delete ID
 ```
 
 - `start` creates the OpenCode session directly (reusing cron's `createSession`).
 - `--message TEXT` posts the text via `prompt_async` as the first prompt.
 - **Without `--display`** the title gets the reserved `worker:` prefix: the dashboard thread list and the media vault skip it — a hidden background-job thread.
-- `list` returns the hidden threads (`GET /api/threads`).
+- `list` returns the hidden threads (`GET /api/threads`); `wait`, `read`, `post`, `stop` and `delete` manage a running thread.
+
+For prompts you do not trust, `--sandbox PROFILE` runs the thread in a disposable container instead of the desktop — see [Sandbox threads](/docs/sandbox).
 
 ## Title rules
 
