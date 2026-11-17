@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { captureTransform, pngSize, shouldReshoot, shotSize } from "./xshot"
+import {
+  captureTransform,
+  clipShifted,
+  pngSize,
+  scaledClip,
+  shotSize,
+  shouldReshoot,
+  visualViewport,
+} from "./xshot"
 
 function pngHeader(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24)
@@ -83,6 +91,144 @@ describe("capture transform", () => {
     expect(shouldReshoot("abc", "abc", false)).toBe(false)
     expect(shouldReshoot("abc", "def", true)).toBe(false)
     expect(shouldReshoot("", "", true)).toBe(false)
+  })
+})
+
+describe("scaled clip (#126)", () => {
+  // Page.captureScreenshot clip x/y are DOCUMENT coordinates: at
+  // scrollY 2400 a (0,0) clip captured blank surface, while anchoring
+  // at the visual viewport's page offset captured the visible page.
+  const scrolled = {
+    layoutViewport: {
+      pageX: 12,
+      pageY: 2400,
+      clientWidth: 980,
+      clientHeight: 2144,
+    },
+    cssLayoutViewport: {
+      pageX: 0,
+      pageY: 2400,
+      clientWidth: 980,
+      clientHeight: 2144,
+    },
+    cssVisualViewport: {
+      pageX: 12,
+      pageY: 2400,
+      clientWidth: 320,
+      clientHeight: 700,
+    },
+  }
+
+  test("visualViewport prefers the css visual viewport over layout", () => {
+    expect(visualViewport(scrolled)).toEqual({
+      x: 12,
+      y: 2400,
+      width: 320,
+      height: 700,
+    })
+  })
+
+  test("visualViewport falls back to layout, then throws on junk", () => {
+    expect(
+      visualViewport({
+        cssLayoutViewport: {
+          pageX: 0,
+          pageY: 50,
+          clientWidth: 800,
+          clientHeight: 600,
+        },
+      }),
+    ).toEqual({ x: 0, y: 50, width: 800, height: 600 })
+    expect(() => visualViewport({})).toThrow("no page size")
+  })
+
+  test("scaledClip anchors at the visual page offset with the scale", () => {
+    expect(scaledClip(scrolled, 2)).toEqual({
+      x: 12,
+      y: 2400,
+      width: 320,
+      height: 700,
+      scale: 2,
+    })
+  })
+
+  test("scaledClip converts CSS to DIP document space under browser zoom", () => {
+    // Live zoom-200 metrics: css visual 948x537 at pageY 2400, DIP
+    // layout 1896x1074. The CSS-space clip captured blank; the
+    // DIP-scaled rect captured the visible page.
+    const zoomed = {
+      layoutViewport: {
+        pageX: 0,
+        pageY: 4800,
+        clientWidth: 1896,
+        clientHeight: 1074,
+      },
+      cssLayoutViewport: {
+        pageX: 0,
+        pageY: 2400,
+        clientWidth: 948,
+        clientHeight: 537,
+      },
+      cssVisualViewport: {
+        pageX: 0,
+        pageY: 2400,
+        clientWidth: 948,
+        clientHeight: 537,
+      },
+    }
+    expect(scaledClip(zoomed, 2)).toEqual({
+      x: 0,
+      y: 4800,
+      width: 1896,
+      height: 1074,
+      scale: 2,
+    })
+    // The CSS view (transform denominators) stays in CSS pixels.
+    expect(visualViewport(zoomed)).toEqual({
+      x: 0,
+      y: 2400,
+      width: 948,
+      height: 537,
+    })
+  })
+
+  test("clipShifted spots the zoom+emulation DIP flip after a shot", () => {
+    // First read in that state reports DIP==CSS; after one capture the
+    // layout origin flips to real DIP (2400 -> 4800). The stale clip
+    // must read as shifted; a stable clip must not.
+    const stale = {
+      layoutViewport: {
+        pageX: 0,
+        pageY: 2400,
+        clientWidth: 320,
+        clientHeight: 700,
+      },
+      cssLayoutViewport: {
+        pageX: 0,
+        pageY: 2400,
+        clientWidth: 320,
+        clientHeight: 700,
+      },
+      cssVisualViewport: {
+        pageX: 0,
+        pageY: 2400,
+        clientWidth: 320,
+        clientHeight: 700,
+      },
+    }
+    const fresh = {
+      ...stale,
+      layoutViewport: {
+        pageX: 0,
+        pageY: 4800,
+        clientWidth: 320,
+        clientHeight: 700,
+      },
+    }
+    expect(scaledClip(stale, 2).y).toBe(2400)
+    expect(scaledClip(fresh, 2).y).toBe(4800)
+    expect(clipShifted(scaledClip(stale, 2), scaledClip(fresh, 2))).toBe(true)
+    expect(clipShifted(scaledClip(fresh, 2), scaledClip(fresh, 2))).toBe(false)
   })
 })
 
