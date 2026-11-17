@@ -18,6 +18,7 @@ import {
   pickPageTarget,
   probeSnapshot,
   readActiveTabId,
+  SENSITIVE_MASK,
   writeActiveTabId,
 } from "./cdp"
 
@@ -302,6 +303,65 @@ test("normalize carries scroll position through the snapshot", () => {
   expect(normalize({}).scrollY).toBeUndefined()
   expect(normalize({ scroll_y: "junk" }).scrollY).toBeUndefined()
   expect(PROBE).toContain("scroll_y: Math.round(window.scrollY)")
+})
+
+test("normalize masks sensitive field values and keeps filled state (#123)", () => {
+  const snap = normalize({
+    elements: [
+      {
+        target_id: "n1",
+        role: "input",
+        label: "Password",
+        value: "hunter2secret",
+        editable: true,
+        sensitive: true,
+      },
+      {
+        target_id: "n2",
+        role: "input",
+        label: "Mot de passe",
+        value: "",
+        editable: true,
+        sensitive: true,
+      },
+      {
+        target_id: "n3",
+        role: "input",
+        label: "Email",
+        value: "a@example.test",
+        editable: true,
+      },
+    ],
+  })
+  expect(snap.elements[0]?.value).toBe(SENSITIVE_MASK)
+  expect(snap.elements[0]?.value).not.toContain("hunter2")
+  expect(snap.elements[0]?.sensitive).toBe(true)
+  // Empty stays empty so autofill-not-landed reads as not filled.
+  expect(snap.elements[1]?.value).toBe("")
+  expect(snap.elements[2]?.value).toBe("a@example.test")
+  expect(snap.elements[2]?.sensitive).toBe(false)
+})
+
+test("normalize fail-closes on a password-labelled editable without the flag (#123)", () => {
+  const snap = normalize({
+    elements: [
+      {
+        target_id: "n1",
+        role: "input",
+        label: "Current password",
+        value: "leaked-value",
+        editable: true,
+      },
+    ],
+  })
+  expect(snap.elements[0]?.value).toBe(SENSITIVE_MASK)
+})
+
+test("probe classifies password fields in-page and never serializes their value (#123)", () => {
+  expect(PROBE).toContain("__obSensitive")
+  expect(PROBE).toContain(SENSITIVE_MASK)
+  expect(PROBE).toContain('"password"')
+  expect(PROBE).toContain("one-time-code")
 })
 
 test("target pick skips blank tabs but keeps the first page as a fallback", () => {
