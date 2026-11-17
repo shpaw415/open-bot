@@ -28,10 +28,12 @@ import {
   writeDesiredViewport,
 } from "./devtools"
 import {
+  expectedCssSize,
   orientationOf,
   parseViewportRequest,
   VIEWPORT_PRESETS,
   type ViewportSpec,
+  viewportMatches,
   viewportSignature,
 } from "./viewport"
 
@@ -1160,6 +1162,11 @@ function viewportLine(live: LiveViewport, desired: ViewportSpec | null) {
       width: live.width,
       height: live.height,
       dpr: live.dpr,
+      // The physical spec behind the live CSS size: under browser zoom
+      // the two differ (#125), and the caller asked in spec terms.
+      requested: desired
+        ? { width: desired.width, height: desired.height, dpr: desired.dpr }
+        : null,
       orientation: orientationOf(live),
       touch: live.touchPoints > 0,
       userAgent: live.userAgent,
@@ -1180,28 +1187,39 @@ async function waitViewportApplied(
 ): Promise<LiveViewport> {
   const expected = viewportSignature(desired)
   const deadline = Date.now() + 8000
+  let lastLive: LiveViewport | null = null
   for (;;) {
     const live = await liveViewport(port, session).catch(() => null)
+    if (live) lastLive = live
     if (live && readAppliedSignature(dir) === expected) {
       if (desired) {
+        // Zoom-adjusted comparison (#125): at 200% browser zoom a
+        // 640 CSS spec measures innerWidth 320 — applied, not failed.
         if (
-          live.width === desired.width &&
-          live.height === desired.height &&
+          viewportMatches(live, desired) &&
           (desired.userAgent === "" || live.userAgent === desired.userAgent)
         )
           return live
       } else if (!cleared) return live
       else if (
-        live.width !== cleared.width ||
-        live.height !== cleared.height ||
+        !viewportMatches(live, cleared) ||
         (cleared.userAgent !== "" && live.userAgent !== cleared.userAgent)
       )
         return live
     }
-    if (Date.now() > deadline)
+    if (Date.now() > deadline) {
+      const want = desired
+        ? lastLive
+          ? (() => {
+              const css = expectedCssSize(lastLive.dpr, desired)
+              return `expected ${css.width}x${css.height} CSS at live dpr ${lastLive.dpr} (spec ${desired.width}x${desired.height} dpr ${desired.dpr}), got ${lastLive.width}x${lastLive.height}`
+            })()
+          : `expected ${desired.width}x${desired.height}, page unreachable`
+        : "expected the cleared size to change"
       throw new Error(
-        "viewport did not apply — the screen's devtools recorder did not pick it up; retry once",
+        `viewport did not apply — ${want}; the screen's devtools recorder may not have picked it up, retry once`,
       )
+    }
     await Bun.sleep(250)
   }
 }
