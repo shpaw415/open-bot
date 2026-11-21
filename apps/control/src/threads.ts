@@ -748,6 +748,14 @@ async function startThread(req: Request, db: Db, agent: User, hub?: EventHub) {
   if (dirName && body.display === false)
     return json({ error: "dir requires a visible thread" }, 400)
   const visible = display || Boolean(dirName)
+  // Council-first policy: agent-started work runs as council members so the
+  // dashboard thread list stays the user's own conversations and every
+  // delegation is watchable (and closable) as one team. `standalone: true`
+  // is the explicit bypass, reserved for a separate thread the user asked
+  // for; the check itself runs below, after the sandbox dispatch.
+  if (body.standalone !== undefined && typeof body.standalone !== "boolean")
+    return json({ error: "standalone must be a boolean" }, 400)
+  const standalone = body.standalone === true
   // Council members are always hidden worker: threads — the council viewer is
   // their dashboard surface, so the main thread list stays clean.
   if (body.council !== undefined && typeof body.council !== "string")
@@ -765,6 +773,8 @@ async function startThread(req: Request, db: Db, agent: User, hub?: EventHub) {
     )
   if (councilName && dirName)
     return json({ error: "dir cannot be combined with council" }, 400)
+  if (standalone && councilName)
+    return json({ error: "standalone cannot be combined with council" }, 400)
   if (body.role !== undefined && typeof body.role !== "string")
     return json({ error: "role must be a string" }, 400)
   const role = typeof body.role === "string" ? sanitizeRole(body.role) : ""
@@ -814,6 +824,8 @@ async function startThread(req: Request, db: Db, agent: User, hub?: EventHub) {
   if (body.sandbox !== undefined) {
     if (councilName)
       return json({ error: "sandbox cannot be combined with council" }, 400)
+    if (standalone)
+      return json({ error: "standalone cannot be combined with sandbox" }, 400)
     if (dirName)
       return json({ error: "sandbox cannot be combined with dir" }, 400)
     if (fromRaw)
@@ -835,6 +847,15 @@ async function startThread(req: Request, db: Db, agent: User, hub?: EventHub) {
       modelChoice,
     })
   }
+
+  if (!councilName && !standalone)
+    return json(
+      {
+        error:
+          "agent-started work must run in a council: pass council (ob-thread start --council <name>; a one-member council is fine), or standalone: true only when the user explicitly asked for a separate thread",
+      },
+      400,
+    )
 
   const resolved = await opencodeBase(db, agent)
   if ("error" in resolved) return resolved.error
@@ -1013,6 +1034,7 @@ async function startThread(req: Request, db: Db, agent: User, hub?: EventHub) {
   }
   if (dir) result.dir = dir
   if (council) result.council = council
+  if (standalone) result.standalone = true
   if (effectiveChoice?.providerID && effectiveChoice.modelID)
     result.model = `${effectiveChoice.providerID}/${effectiveChoice.modelID}`
   if (effectiveChoice?.effort) result.effort = effectiveChoice.effort

@@ -219,6 +219,76 @@ describe("handleThreadQueue", () => {
     })
     expect(empty?.status).toBe(400)
   })
+
+  test("deleting an already-flushed message is idempotent; other gone-item calls 404 with a code", async () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser({
+      id: "u1",
+      email: "u1@localhost",
+      passwordHash: "x",
+      role: "user",
+      createdAt: 1,
+      mustChangePassword: false,
+      disabled: false,
+    })
+    const user = db.userById("u1") as User
+    const hub = { emit: () => {} } as unknown as EventHub
+    const call = (method: string, path: string, body?: unknown) =>
+      handleThreadQueue(
+        new Request(`http://test${path}`, {
+          method,
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+        new URL(`http://test${path}`),
+        db,
+        user,
+        hub,
+      )
+
+    const created = await call("POST", "/api/thread-queue/s1", {
+      text: "déjà parti",
+      files: [],
+    })
+    const id = ((await created?.json()) as { item: { id: string } }).item.id
+
+    // The flush already sent it while the client's screen was off: the
+    // row is gone, but the stale dock still offers remove/send/edit.
+    db.deleteThreadQueueItem("u1", id)
+
+    // Remove: the goal state (not queued) already holds — 200, no error.
+    const removed = await call("DELETE", `/api/thread-queue/s1/${id}`)
+    expect(removed?.status).toBe(200)
+    expect(await removed?.json()).toEqual({ ok: true, alreadyGone: true })
+
+    // Send-now / edit cannot be faked: 404, but machine-readable so the
+    // client resyncs silently instead of surfacing a raw banner.
+    const sendNow = await call("POST", `/api/thread-queue/s1/${id}/send-now`)
+    expect(sendNow?.status).toBe(404)
+    expect(((await sendNow?.json()) as { code?: string }).code).toBe(
+      "queue_item_gone",
+    )
+    const edited = await call("PATCH", `/api/thread-queue/s1/${id}`, {
+      text: "trop tard",
+      files: [],
+    })
+    expect(edited?.status).toBe(404)
+    expect(((await edited?.json()) as { code?: string }).code).toBe(
+      "queue_item_gone",
+    )
+
+    // A live item named under the wrong session stays a real 404 and is
+    // never deleted through the foreign session's URL.
+    const other = await call("POST", "/api/thread-queue/s1", {
+      text: "toujours là",
+      files: [],
+    })
+    const otherId = ((await other?.json()) as { item: { id: string } }).item.id
+    const foreign = await call("DELETE", `/api/thread-queue/s2/${otherId}`)
+    expect(foreign?.status).toBe(404)
+    expect(db.threadQueue("u1", "s1")).toHaveLength(1)
+  })
 })
 
 describe("drainThreadQueues", () => {

@@ -64,8 +64,9 @@ Rules:
 - Use this when the user wants a lasting voice, not a one-off tone for this reply.
 - Creating or editing a personality does not change the current thread.
 - Tell the user to start a new thread and pick it.
-- To hand a task to a personality right away, start a thread for it with
-  `ob-thread start --persona "Name" --message "task"` — see the `thread` skill.
+- To hand a task to a personality right away, delegate it as a council
+  member with `ob-thread start --council <job-slug> --persona "Name" --from
+  <your session id> --message "task"` — see the `council` skill.
 - The instruction is how to behave, not a secret and not a tool recipe.
 - A skill scope curates what the personality is shown; it is not a security
   boundary. If a thread cannot use a skill, check whether its personality

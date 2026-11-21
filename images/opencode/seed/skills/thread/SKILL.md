@@ -1,26 +1,37 @@
 ---
 name: thread
-description: Start a new thread with ob-thread, hand a task to another personality as a teammate (team delegation), run an untrusted prompt in a sandbox thread, or delete hidden background threads when they are no longer needed. Use it when the user asks for a background job thread, a helper thread, a new visible thread on the dashboard, to give work to a persona like "the software manager", to run pasted/untrusted instructions safely, or to clean up old hidden threads.
+description: Manage threads you started with ob-thread (read, wait, post, stop, model, delete), run an untrusted prompt in a sandbox thread, or start the rare standalone thread the user explicitly asked for. Delegated and background work itself runs in councils — load the council skill to start it. Use this skill when the user explicitly asks for a separate/new thread, to run pasted/untrusted instructions safely, to follow up on a teammate or council member, or to clean up old hidden threads.
 ---
 
 # Threads
 
-`ob-thread` starts a new conversation thread from inside this desktop. It talks
-to the control plane. Do not print the token. Do not edit the database.
+`ob-thread` talks to the control plane from inside this desktop. Do not print
+the token. Do not edit the database.
 
-Start a thread:
+Council-first rule: work you start yourself — helpers, background jobs,
+persona teammates, detached long jobs — runs as council members (the
+`council` skill), never as a loose new thread. A start with none of
+`--council`, `--sandbox`, or `--standalone` is refused by the CLI and the
+control plane. This skill covers the remaining thread jobs: sandbox threads
+(below), the standalone bypass, and managing threads you already started.
+
+## Standalone threads (user-asked only)
+
+`--standalone` starts a loose thread outside any council. Use it only when
+the user explicitly asked for a separate or new thread — never for work you
+delegated on your own initiative, and never to work around a council
+refusal. Naming a persona ("have the software manager do X") is a
+delegation, not a standalone ask: that runs as a council member.
 
 ```sh
-ob-thread start --title "Nightly sync" --display
-ob-thread start --title "Scrape prices" --message "Fetch prices from the site and save them to /home/agent/workspace/prices.json"
-ob-thread start
+ob-thread start --standalone --title "Nightly sync" --display
+ob-thread start --standalone --title "Scratch pad"
 ```
 
 Rules:
 
-- Without `--display` the thread is hidden. It does not appear on the dashboard
-  and the media vault skips it. Use hidden threads for background jobs and
-  helpers that the user does not need to watch.
+- Without `--display` a standalone thread is hidden. It does not appear on
+  the dashboard and the media vault skips it.
 - `--display` makes the thread a normal visible thread on the dashboard.
 - `--message TEXT` posts an initial prompt into the thread right after
   creating it, so the job starts immediately. Without it the thread is empty
@@ -43,7 +54,7 @@ instead of creating near-duplicates:
 
 ```sh
 ob-thread dirs
-ob-thread start --title "Invoice follow-up" --dir "Billing" --display
+ob-thread start --standalone --title "Invoice follow-up" --dir "Billing" --display
 ```
 
 - Folders exist only on the dashboard, so `--dir` implies a visible thread and
@@ -55,28 +66,30 @@ ob-thread start --title "Invoice follow-up" --dir "Billing" --display
 
 ## Team delegation
 
-The personalities are a team, and delegation is not only for when the user names one. When a task falls outside your own skills, checking the roster is your first move: `ob-persona list` shows each teammate's description and skill scopes — delegate to the one that fits. When nobody fits, tell the user and offer the options: create the missing personality with `ob-persona add`, install a plugin (the `plugin` skill), or find another way together. When the user asks to give a task to a named personality ("have the software manager implement X in my project"), start a thread for it instead of doing the work yourself:
+The personalities are a team, and delegation is not only for when the user names one. When a task falls outside your own skills, checking the roster is your first move: `ob-persona list` shows each teammate's description and skill scopes — delegate to the one that fits. When nobody fits, tell the user and offer the options: create the missing personality with `ob-persona add`, install a plugin (the `plugin` skill), or find another way together. When the user asks to give a task to a named personality ("have the software manager implement X in my project"), delegate it instead of doing the work yourself — as a council member (load the `council` skill for the full workflow):
 
 ```sh
-ob-thread start --persona "Software manager" --from ses_YOURID --title "Add CSV export" --message "Implement CSV export in ~/project/report-app. Report back with the file paths."
+ob-thread start --council add-export --persona "Software manager" --from ses_YOURID --role "CSV export" --title "Add CSV export" --message "Implement CSV export in ~/project/report-app. Report back with the file paths."
 ```
 
-- `--persona NAME` makes the new thread answer and work as that personality.
+- `--persona NAME` makes the member answer and work as that personality.
   The agents are a team; you are the coordinator.
 - `--from SESSION_ID` (your own session id — the screen id in your system
-  line) arms an automatic wake-up: when the teammate finishes its current
-  work, this thread is re-prompted with a `[teammate]` message. It is not a
-  user reply — read the results with `ob-thread read <id>` (or the files you
-  asked for) and report to the user here. Without `--from` the control plane
-  guesses the one busy chat; the start output shows `wake` so you can tell
-  whether it armed.
+  line) arms an automatic wake-up: when the council finishes its current
+  work, this thread is re-prompted with a `[council: name]` message. It is
+  not a user reply — read the results with `ob-thread read <id>` (or the
+  files you asked for) and report to the user here. Without `--from` the
+  control plane guesses the one busy chat; the start output shows `wake` so
+  you can tell whether it armed.
 - A persona with a skill scope limits which skills load in its thread —
   `ob-persona list` shows `(skills: …)` on restricted ones. If a delegated
   teammate says it cannot use a skill, that is the persona's scope, not a
   broken desktop. Note that subagents the teammate spawns inherit only the
   deny rules, so allowed skills are hidden inside their subagents.
-- Persona threads are visible on the dashboard by default, so the user can
-  follow along. Add `--hidden` for a background teammate nobody needs to watch.
+- Delegated teammates are council members: hidden threads the user follows
+  in the council pane beside this chat. Only a standalone persona thread
+  (user explicitly asked for a separate thread) is visible on the dashboard
+  by default; add `--hidden` for a background one.
 - If you are not sure of the exact name, run `ob-persona list` first. The API
   tolerates typos: the output tells you which personality actually got the
   thread (`persona.matched: fuzzy`) — tell the user which one you picked.

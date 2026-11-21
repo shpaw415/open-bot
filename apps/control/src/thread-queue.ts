@@ -339,6 +339,19 @@ function emitQueueChanged(hub: EventHub, userId: string, sessionId: string) {
   hub.emit(userId, { type: "queue.changed", properties: { sessionId } })
 }
 
+// A queued item can leave the queue without the open dashboard ever
+// hearing about it — flushed (sent) while the phone screen was off and
+// the event socket down, or removed from another tab. The dock then
+// still offers remove/send/edit on a ghost row. Those calls answer
+// with this code so the client resyncs silently instead of surfacing
+// a raw "queued message not found" banner.
+function queueItemGone() {
+  return json(
+    { error: "queued message not found", code: "queue_item_gone" },
+    404,
+  )
+}
+
 export async function handleThreadQueue(
   req: Request,
   url: URL,
@@ -404,15 +417,14 @@ export async function handleThreadQueue(
     const sessionId = decodeURIComponent(itemMatch[1] ?? "")
     const itemId = decodeURIComponent(itemMatch[2] ?? "")
     const item = db.threadQueueItem(user.id, itemId)
-    if (!item || item.sessionId !== sessionId)
-      return json({ error: "queued message not found" }, 404)
+    if (!item || item.sessionId !== sessionId) return queueItemGone()
     const parsed = parseQueueSubmission(await req.json().catch(() => null))
     if ("error" in parsed) return json({ error: parsed.error }, 400)
     const updated = db.updateThreadQueueItem(user.id, itemId, {
       text: parsed.text,
       files: JSON.stringify(parsed.files),
     })
-    if (!updated) return json({ error: "queued message not found" }, 404)
+    if (!updated) return queueItemGone()
     emitQueueChanged(hub, user.id, sessionId)
     return json({ item: queueView(updated) })
   }
@@ -421,8 +433,15 @@ export async function handleThreadQueue(
     const sessionId = decodeURIComponent(itemMatch[1] ?? "")
     const itemId = decodeURIComponent(itemMatch[2] ?? "")
     const item = db.threadQueueItem(user.id, itemId)
-    if (!item || item.sessionId !== sessionId)
-      return json({ error: "queued message not found" }, 404)
+    // Idempotent remove: an item that already left the queue (flushed
+    // while the client was away, or removed elsewhere) is already in
+    // the state the caller asked for — not an error. The emit lets
+    // any other stale dock of this user heal too.
+    if (!item) {
+      emitQueueChanged(hub, user.id, sessionId)
+      return json({ ok: true, alreadyGone: true })
+    }
+    if (item.sessionId !== sessionId) return queueItemGone()
     db.deleteThreadQueueItem(user.id, itemId)
     emitQueueChanged(hub, user.id, sessionId)
     return json({ ok: true })
@@ -432,8 +451,7 @@ export async function handleThreadQueue(
     const sessionId = decodeURIComponent(sendNowMatch[1] ?? "")
     const itemId = decodeURIComponent(sendNowMatch[2] ?? "")
     const item = db.threadQueueItem(user.id, itemId)
-    if (!item || item.sessionId !== sessionId)
-      return json({ error: "queued message not found" }, 404)
+    if (!item || item.sessionId !== sessionId) return queueItemGone()
     db.promoteThreadQueueItem(user.id, itemId)
     emitQueueChanged(hub, user.id, sessionId)
     const ctx = await opencodeContext(db, user.id)

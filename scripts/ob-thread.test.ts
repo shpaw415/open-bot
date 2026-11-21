@@ -82,6 +82,7 @@ test("start posts the title, display flag, and message", async () => {
       "--message",
       "go fetch",
       "--display",
+      "--standalone",
     ])
     expect(result.code).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual({
@@ -97,6 +98,7 @@ test("start posts the title, display flag, and message", async () => {
       title: "Scrape prices",
       display: true,
       message: "go fetch",
+      standalone: true,
     })
   } finally {
     rmSync(home, { recursive: true, force: true })
@@ -167,9 +169,9 @@ test("start without --display omits the flag from the body", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
   try {
     fakeCurl(home)
-    const result = await run(home, ["start", "--title", "Job"])
+    const result = await run(home, ["start", "--title", "Job", "--standalone"])
     expect(result.code).toBe(0)
-    expect(await bodyOf(home)).toEqual({ title: "Job" })
+    expect(await bodyOf(home)).toEqual({ title: "Job", standalone: true })
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -187,6 +189,7 @@ test("--persona defaults to visible and sends the persona", async () => {
       "Software manager",
       "--message",
       "do it",
+      "--standalone",
     ])
     expect(result.code).toBe(0)
     expect(await bodyOf(home)).toEqual({
@@ -194,6 +197,7 @@ test("--persona defaults to visible and sends the persona", async () => {
       display: true,
       persona: "Software manager",
       message: "do it",
+      standalone: true,
     })
   } finally {
     rmSync(home, { recursive: true, force: true })
@@ -211,11 +215,13 @@ test("--hidden overrides the persona visibility default", async () => {
       "--persona",
       "Software manager",
       "--hidden",
+      "--standalone",
     ])
     expect(result.code).toBe(0)
     expect(await bodyOf(home)).toEqual({
       title: "bg",
       persona: "Software manager",
+      standalone: true,
     })
   } finally {
     rmSync(home, { recursive: true, force: true })
@@ -239,6 +245,7 @@ printf '%s\\n' '{"id":"ses_2","title":"worker:Add export","display":false,"perso
       "--persona",
       "softwre managr",
       "--hidden",
+      "--standalone",
     ])
     expect(result.code).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual({
@@ -264,7 +271,12 @@ printf '%s\\n' '{"error":"unknown persona \\"zzz\\"","suggestions":["Software ma
 `,
     )
     chmodSync(join(bin, "curl"), 0o755)
-    const result = await run(home, ["start", "--persona", "zzz"])
+    const result = await run(home, [
+      "start",
+      "--persona",
+      "zzz",
+      "--standalone",
+    ])
     expect(result.code).toBe(1)
     expect(result.stderr).toContain("unknown persona")
     expect(result.stderr).toContain("did you mean: Software manager, Chef")
@@ -273,13 +285,62 @@ printf '%s\\n' '{"error":"unknown persona \\"zzz\\"","suggestions":["Software ma
   }
 })
 
-test("bare start sends an empty body", async () => {
+test("bare start is refused council-first before calling curl", async () => {
   const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
   try {
     fakeCurl(home)
     const result = await run(home, ["start"])
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("--council")
+    expect(result.stderr).toContain("--standalone")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("a loose helper start is refused; --standalone sends the bypass", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const loose = await run(home, [
+      "start",
+      "--title",
+      "Job",
+      "--message",
+      "go",
+    ])
+    expect(loose.code).toBe(2)
+    expect(loose.stderr).toContain("user explicitly asked")
+    const result = await run(home, ["start", "--standalone"])
     expect(result.code).toBe(0)
-    expect(await bodyOf(home)).toEqual({})
+    expect(await bodyOf(home)).toEqual({ standalone: true })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("--standalone cannot combine with --council or --sandbox", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const withCouncil = await run(home, [
+      "start",
+      "--council",
+      "team",
+      "--standalone",
+    ])
+    expect(withCouncil.code).toBe(2)
+    expect(withCouncil.stderr).toContain("cannot be combined with --council")
+    const withSandbox = await run(home, [
+      "start",
+      "--sandbox",
+      "locked",
+      "--standalone",
+    ])
+    expect(withSandbox.code).toBe(2)
+    expect(withSandbox.stderr).toContain("cannot be combined with --sandbox")
+    expect(await Bun.file(join(home, "curl.args")).exists()).toBe(false)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -386,7 +447,12 @@ printf '%s\\n' '{"error":"title cannot start with the reserved worker: prefix"}'
 `,
     )
     chmodSync(join(bin, "curl"), 0o755)
-    const result = await run(home, ["start", "--title", "worker:x"])
+    const result = await run(home, [
+      "start",
+      "--title",
+      "worker:x",
+      "--standalone",
+    ])
     expect(result.code).toBe(1)
     expect(result.stderr).toContain("reserved worker: prefix")
   } finally {
@@ -855,9 +921,13 @@ fi
 `,
     )
     chmodSync(join(bin, "curl"), 0o755)
-    const result = await run(home, ["start", "--title", "Job"], {
-      FAKE_COUNT: join(home, "count"),
-    })
+    const result = await run(
+      home,
+      ["start", "--title", "Job", "--standalone"],
+      {
+        FAKE_COUNT: join(home, "count"),
+      },
+    )
     expect(result.code).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual({
       id: "ses_1",
@@ -882,7 +952,7 @@ printf '%s\\n' '{"error":"desktop is not running"}'
 `,
     )
     chmodSync(join(bin, "curl"), 0o755)
-    const result = await run(home, ["start", "--title", "Job"])
+    const result = await run(home, ["start", "--title", "Job", "--standalone"])
     expect(result.code).toBe(1)
     expect(result.stderr).toContain("desktop is not running")
   } finally {

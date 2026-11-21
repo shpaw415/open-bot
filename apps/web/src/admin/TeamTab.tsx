@@ -800,10 +800,12 @@ export function TeamTab({
       <Paper variant="outlined" sx={{ p: 1.5 }}>
         <Typography variant="subtitle1">OpenCode providers</Typography>
         <Typography variant="caption" color="textSecondary">
-          Shared with every desktop in team mode: the provider logins from your
-          own Providers page (API keys and OAuth). Merged per provider — user
-          logins for other providers stay. Synchronize re-reads your desktop and
-          fans the snapshot out; every admin login/logout also refreshes it
+          Shared with every desktop in team mode: the API-key providers from
+          your own Providers page. OAuth logins (ChatGPT/OpenAI, Copilot, …)
+          stay per-desktop — their refresh tokens rotate, so shared copies go
+          stale and get revoked. Merged per provider — user logins for other
+          providers stay. Synchronize re-reads your desktop and fans the
+          snapshot out; every admin login/logout also refreshes it
           automatically.
         </Typography>
         <Stack spacing={1.5} sx={{ mt: 1 }}>

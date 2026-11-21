@@ -1,6 +1,6 @@
 ---
 name: council
-description: Form an agent team (council) the user can watch live in the dashboard, with ob-thread --council. Use it when a job benefits from several members working in parallel — research plus review, a second opinion, divide-and-summarize — or when the user asks for a team, a council, or a panel. Members are hidden threads; the last one to finish wakes this thread automatically so you can read the results and report.
+description: Run delegated work as a council — the one path for every subagent job you start with ob-thread, from a single helper or persona teammate (a one-member council) to a parallel team the user watches live in the dashboard. Use it whenever work leaves this thread: background jobs, long jobs, research plus review, a second opinion, team delegation. Members are hidden threads; the last one to finish wakes this thread automatically so you can read the results and report.
 ---
 
 # Councils
@@ -9,6 +9,15 @@ A council is a named team of hidden threads. The user watches every member
 live in a split pane beside the chat — member list, running dots, and each
 member's transcript. `ob-thread` starts the members; the council marker in
 your final reply opens the viewer.
+
+Councils are not just for big teams: they are the only way to start work
+outside this thread. A single helper, a persona teammate, a background job,
+or a detached long job is a council of one — the control plane refuses
+`ob-thread start` without `--council` (sandbox threads excepted), so the
+dashboard thread list stays the user's own conversations. `--standalone`
+exists only for a separate thread the user explicitly asked for; never use
+it for work you delegated yourself. Quick fan-out that finishes inside this
+turn can still use the built-in task tool.
 
 Start a council (run one command per member, same name every time; pass
 `--from` with your own session id — the screen id in your system line — so
@@ -52,7 +61,10 @@ Rules:
   status reads `STALLED` in `ob-thread council status` stopped mid-work:
   verify its deliverables exist and relaunch it with `ob-thread post`
   instead of redoing its job yourself.
-- Two to five members is a good council; more rarely helps.
+- One member is a valid council — the shape for a single helper or one
+  persona teammate. Two to five members suit parallel work; more rarely
+  helps. A one-member council you wait on inline still closes the same way:
+  `ob-thread wait`, read, report, `ob-thread council close`.
 - Mind the desktop's RAM: every member is a full session, and a Chromium tab
   or native build per member adds up fast. Budget roughly 1.5-2 GiB per
   active member (check the real cap with `ob-memory`); on an 8 GiB desktop,
@@ -90,8 +102,9 @@ Rules:
   A cut turn cannot resume itself, so decide when you start, not after.
 - Subagents you spawn inside a member with the built-in task tool show up
   under "Subagents" in the viewer automatically, transcripts included.
-  Plain `ob-thread start --hidden` helpers do not — use `--council` when
-  the user should watch them.
+  There is no plain `ob-thread start --hidden` helper anymore — loose
+  starts are refused, so anything you would once have hidden is a member
+  here instead.
 - You do not need to poll. When the last member finishes, this thread is
   woken automatically with a `[council: name]` message — the start output
   shows `wake` ("armed"); passing `--from <your session id>` (the screen id

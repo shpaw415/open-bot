@@ -111,6 +111,35 @@ describe("team opencode auth snapshot storage", () => {
     })
   })
 
+  test("keeps only api entries: oauth never rides the snapshot", () => {
+    const db = settingsDb()
+    const snapshot = setTeamOpencodeAuth(db, {
+      zai: { type: "api", key: "secret" },
+      openai: { type: "oauth", refresh: "rt.1.x", access: "a", expires: 1 },
+      xai: { type: "oauth", refresh: "r2" },
+      // No `type` but carries a refresh token — fail closed, never share.
+      mystery: { refresh: "r3" },
+      wellknownish: { type: "wellknown", token: "t" },
+    })
+    expect(Object.keys(snapshot.entries)).toEqual(["zai"])
+    expect(teamOpencodeAuthPublic(snapshot).providers).toEqual(["zai"])
+  })
+
+  test("filters oauth entries out of a legacy stored snapshot on read", () => {
+    const db = settingsDb({
+      team_opencode_auth: JSON.stringify({
+        entries: {
+          openai: { type: "oauth", refresh: "rt.1.dead", expires: 1 },
+          zai: { type: "api", key: "k" },
+        },
+        capturedAt: 5,
+      }),
+    })
+    const stored = getTeamOpencodeAuth(db)
+    expect(stored?.entries).toEqual({ zai: { type: "api", key: "k" } })
+    expect(teamOpencodeAuthPublic(stored).providers).toEqual(["zai"])
+  })
+
   test("tolerates corrupt settings", () => {
     expect(
       getTeamOpencodeAuth(settingsDb({ team_opencode_auth: "{nope" })),
@@ -139,6 +168,19 @@ describe("pushTeamOpencodeAuth", () => {
       await pushTeamOpencodeAuth(teamConfigDb("personal"), "u1"),
     ).toBeNull()
     expect(await pushTeamOpencodeAuth(teamConfigDb("team"), "u1")).toBeNull()
+  })
+
+  test("pushes nothing when a legacy snapshot holds only oauth entries", async () => {
+    syncChanged = ["openai"]
+    const db = teamConfigDb("team", {
+      team_opencode_auth: JSON.stringify({
+        entries: { openai: { type: "oauth", refresh: "rt.1.dead" } },
+        capturedAt: 5,
+      }),
+    })
+    const restartsBefore = restartCalls
+    expect(await pushTeamOpencodeAuth(db, "u1")).toBeNull()
+    expect(restartCalls).toBe(restartsBefore)
   })
 })
 
@@ -221,19 +263,22 @@ describe("apply-opencode-auth.sh", () => {
         colibri: { type: "api", key: "local" },
         same: { type: "api", key: "keep" },
         copilot: { type: "oauth", refresh: "tok" },
+        // A stale snapshot must never stomp a live (rotated) oauth entry.
+        personal: { type: "oauth", refresh: "stale-snapshot" },
       },
     })
     expect(proc.exitCode).toBe(0)
     // jq's keys[] sorts alphabetically — the changed order follows it.
+    // Oauth payload entries are skipped entirely: not applied, not changed.
     expect(JSON.parse(proc.stdout.toString())).toEqual({
-      changed: ["colibri", "copilot", "zai"],
+      changed: ["colibri", "zai"],
     })
     const auth = JSON.parse(readFileSync(authPath(), "utf8"))
     expect(auth.personal).toEqual({ type: "oauth", refresh: "r" })
     expect(auth.zai).toEqual({ type: "api", key: "new" })
     expect(auth.colibri).toEqual({ type: "api", key: "local" })
     expect(auth.same).toEqual({ type: "api", key: "keep" })
-    expect(auth.copilot).toEqual({ type: "oauth", refresh: "tok" })
+    expect(auth.copilot).toBeUndefined()
   })
 
   test("rejects an invalid payload and creates the file when missing", () => {

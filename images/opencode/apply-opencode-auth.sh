@@ -1,6 +1,8 @@
 #!/bin/sh
 # Team-mode shared OpenCode provider auth: merges the admin's auth.json
-# snapshot (each entry may be `api` or `oauth`) into this desktop's auth.json.
+# snapshot into this desktop's auth.json. Only `api` entries are applied;
+# `oauth` entries are skipped — their refresh tokens rotate, so a snapshot
+# copy goes stale and replays as token reuse (provider revokes the grant).
 # Shared entries overwrite same-provider ids; everything else is preserved.
 # stdin: {"entries": {"<providerId>": {...auth entry...}}}
 # stdout: {"changed": ["<providerId>", ...]}
@@ -22,7 +24,7 @@ for provider in $providers; do
   shared_type=$(printf '%s' "$payload" | jq -r --arg p "$provider" '(.entries[$p].type // "")')
   shared_blob=$(printf '%s' "$payload" | jq -c --arg p "$provider" '(.entries[$p])')
   [ -n "$shared_blob" ] || continue
-  [ "$shared_type" = "api" ] || [ "$shared_type" = "oauth" ] || continue
+  [ "$shared_type" = "api" ] || continue
   if [ "$(jq -c --arg p "$provider" '.[$p] // null' "$auth_file")" = "$shared_blob" ]; then
     continue
   fi

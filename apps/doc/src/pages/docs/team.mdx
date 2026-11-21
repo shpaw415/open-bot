@@ -15,7 +15,7 @@ Every user configures their own provider keys ([Configuration](/docs/configurati
 
 The admin sets one **shared keyset** plus a **provider overlay** (`chat`, `image`, `video`, `model3d`, `system1`, `voice`, `watchdog`) that overlays every desktop's own rows. Overlay fields win where set; personal keys are ignored, not deleted — flipping back to personal restores them.
 
-- **Shared OpenCode logins** — a snapshot of the admin desktop's `auth.json` (API + OAuth entries) is captured after every admin provider login/logout (or via the **Synchronize** button) and merged into every desktop on start/wake. Subscription logins (Claude Code, Muse) stay per-desktop and never fan out.
+- **Shared OpenCode logins** — a snapshot of the admin desktop's `auth.json` API-key entries is captured after every admin provider login/logout (or via the **Synchronize** button) and merged into every desktop on start/wake. OAuth logins (ChatGPT/OpenAI, Copilot) and subscription logins (Claude Code, Muse) stay per-desktop and never fan out — OAuth refresh tokens rotate on every use, so a shared copy goes stale and the provider revokes the grant.
 - **Forced model picker** — optional `lockModelPicker` makes the team chat `{provider, model}` the forced selection for non-admins; unlocked, a personal pick wins once set.
 - **Non-admin write locks** — shared surfaces (image/video/model3d, watchdog config, chat provider logins) answer `403 team_locked`; per-user fields (TTS voice, language, watchdog toggles) stay writable.
 

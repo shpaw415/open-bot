@@ -2210,6 +2210,79 @@ body.ob-preview-dragging iframe {
   }
 }
 
+/* Blank-thread picks (Assistant / Dossier / Sans limite d'étapes / Bac à
+   sable). Desktop: one wrapping row of label+control pairs — a label can
+   never orphan from its select on wrap. Mobile: the picks render as an
+   inset settings sheet — full-width 44px touch rows, hairline dividers,
+   right-aligned values. */
+.ob-blank-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ob-blank-pick-label {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ob-text-2);
+}
+
+.ob-blank-picks {
+  background: var(--ob-surface);
+  border: 1px solid var(--ob-border);
+  border-radius: 12px;
+  padding: 2px 0;
+}
+
+.ob-blank-picks .ob-blank-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 12px;
+}
+
+.ob-blank-picks .ob-blank-pick + .ob-blank-pick {
+  border-top: 1px solid var(--ob-border);
+}
+
+/* The select fields lose their underline inside the sheet: the row is the
+   chrome, the value reads like a settings-row value (right-aligned). */
+.ob-blank-picks .MUI_TextField_Wrapper {
+  border-bottom: 0;
+}
+
+.ob-blank-picks .MUI_TextField_AnimationWrapper {
+  display: none;
+}
+
+.ob-blank-picks .MUI_TextField_Input {
+  font-size: 13px;
+  padding: 4px 2px 4px 0;
+  text-align: right;
+  color: var(--ob-text);
+}
+
+/* The step-cap row is one tappable label: the native label/checkbox
+   association makes the whole row toggle. */
+.ob-blank-pick-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ob-blank-pick-toggle input {
+  cursor: pointer;
+}
+
+.ob-blank-pick-toggle:has(input:disabled) {
+  cursor: default;
+}
+
+.ob-blank-pick-on .ob-blank-pick-label {
+  color: var(--ob-accent);
+}
+
 /* Composer attachments: images are preview tiles large enough to verify
    a pasted screenshot before sending (uncropped, tap opens the lightbox);
    other files stay compact named pills. Remove is always a real button. */

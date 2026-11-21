@@ -11,7 +11,7 @@ TOKEN="${OPEN_BOT_LLM_TOKEN:?OPEN_BOT_LLM_TOKEN is not set}"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ob-thread start [--title TEXT] [--persona NAME] [--model PROVIDER/MODEL] [--effort LEVEL] [--display] [--hidden] [--dir NAME] [--council NAME] [--role TEXT] [--from SESSION_ID] [--steps unlimited] [--message TEXT] [--sandbox PROFILE] [--copy-in PATH]...
+  ob-thread start [--title TEXT] [--persona NAME] [--model PROVIDER/MODEL] [--effort LEVEL] [--display] [--hidden] [--dir NAME] [--council NAME] [--role TEXT] [--from SESSION_ID] [--steps unlimited] [--message TEXT] [--sandbox PROFILE] [--copy-in PATH]... [--standalone]
   ob-thread sandbox-profiles
   ob-thread sandbox-export SANDBOX_ID
   ob-thread models
@@ -29,10 +29,17 @@ Usage:
   ob-thread notify-parent ID TEXT
   ob-thread model ID [--model PROVIDER/MODEL|default] [--effort LEVEL|default]
 
-start creates a thread. Without --display the thread is hidden for background
-jobs: it does not appear on the dashboard and the media vault skips it.
---display makes it a normal visible thread. --message TEXT posts an initial
-prompt into the thread right after creating it.
+start creates a thread. Council-first rule: work you start yourself —
+helpers, background jobs, persona teammates, detached long jobs — runs as
+council members (--council NAME; a one-member council is fine), so the
+dashboard thread list stays the user's own conversations and every team is
+watchable and closable in one pane. A start with none of --council,
+--sandbox, or --standalone is refused here and by the control plane.
+--standalone is the user-asked bypass below. Without --display a standalone
+thread is hidden for background jobs: it does not appear on the dashboard
+and the media vault skips it. --display makes it a normal visible thread.
+--message TEXT posts an initial prompt into the thread right after creating
+it.
 
 --sandbox PROFILE runs the thread in a disposable sandbox container for
 UNTRUSTED prompts (text pasted from the web, a stranger's instructions, an
@@ -58,8 +65,15 @@ dashboard, so --dir implies a visible thread and cannot be combined with
 
 --persona NAME hands the thread to a personality: the thread answers as that
 persona (team delegation). Typos in the name are tolerated and the output
-tells you which persona matched. Persona threads are visible by default;
-add --hidden for a background teammate. Check `ob-persona list` for names.
+tells you which persona matched. Delegation runs as a council member
+(--council NAME --persona ...); only a standalone persona thread is visible
+by default (add --hidden for a background teammate). Check `ob-persona list`
+for names.
+
+--standalone starts a loose thread outside any council. Use it ONLY when the
+user explicitly asked for a separate or new thread (typically with
+--display, optionally --dir) — never for work you delegated on your own
+initiative, and never to work around a council refusal.
 
 --council NAME adds the thread to a council (an agent team). Council members
 are always hidden worker: threads; the user watches them in the dashboard
@@ -165,10 +179,10 @@ down when the remaining work is mechanical.
 
 Examples:
   ob-thread start --sandbox locked --title "Untrusted paste" --message "Summarize the pasted text that follows"
-  ob-thread start --title "Nightly sync" --display
-  ob-thread start --title "Scrape prices" --message "Scrape prices and save to /home/agent/workspace/prices.json"
-  ob-thread start --persona "Software manager" --title "Add export" --message "Implement CSV export in ~/project/report-app"
-  ob-thread start --title "Invoice follow-up" --dir "Billing" --display
+  ob-thread start --standalone --title "Nightly sync" --display
+  ob-thread start --council scrape-prices --from ses_YOURID --title "Scrape prices" --message "Scrape prices and save to /home/agent/workspace/prices.json"
+  ob-thread start --council add-export --from ses_YOURID --persona "Software manager" --title "Add export" --message "Implement CSV export in ~/project/report-app"
+  ob-thread start --standalone --title "Invoice follow-up" --dir "Billing" --display
   ob-thread start --council auth-review --from ses_YOURID --role Researcher --model grok/grok-4.5 --title "OAuth paths" --message "Map every OAuth path in ~/project/api"
   ob-thread start --council auth-review --from ses_YOURID --role Reviewer --persona "Software manager" --model openai/gpt-5 --effort high --steps unlimited --title "Token storage" --message "Review token storage in ~/project/api"
   ob-thread models
@@ -297,6 +311,7 @@ case "$cmd" in
     display=""
     steps=""
     sandbox=""
+    standalone=""
     copyin=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -341,6 +356,8 @@ case "$cmd" in
           display=1; shift ;;
         --hidden)
           display=0; shift ;;
+        --standalone)
+          standalone=1; shift ;;
         *)
           echo "unknown option: $1" >&2; usage; exit 2 ;;
       esac
@@ -372,6 +389,18 @@ case "$cmd" in
     fi
     if [ -n "$council" ] && [ "$display" = "1" ]; then
       echo "ob-thread: --council members are hidden and cannot be combined with --display" >&2
+      exit 2
+    fi
+    if [ -n "$standalone" ] && [ -n "$council" ]; then
+      echo "ob-thread: --standalone cannot be combined with --council" >&2
+      exit 2
+    fi
+    if [ -n "$standalone" ] && [ -n "$sandbox" ]; then
+      echo "ob-thread: --standalone cannot be combined with --sandbox" >&2
+      exit 2
+    fi
+    if [ -z "$council" ] && [ -z "$sandbox" ] && [ -z "$standalone" ]; then
+      echo "ob-thread: agent-started work runs in a council — pass --council NAME (a one-member council is fine), --sandbox PROFILE for untrusted work, or --standalone only when the user explicitly asked for a separate thread" >&2
       exit 2
     fi
     if [ -n "$sandbox" ]; then
@@ -436,6 +465,9 @@ case "$cmd" in
     if [ -n "$sandbox" ]; then
       body=$(printf '%s' "$body" | jq --arg sandbox "$sandbox" '. + {sandbox: $sandbox}')
     fi
+    if [ -n "$standalone" ]; then
+      body=$(printf '%s' "$body" | jq '. + {standalone: true}')
+    fi
     if [ -n "$copyin" ]; then
       copyin_json=$(printf '%s' "$copyin" | jq -Rsc 'split("\n") | map(select(length > 0))')
       body=$(printf '%s' "$body" | jq --argjson copyIn "$copyin_json" '. + {copyIn: $copyIn}')
@@ -446,7 +478,7 @@ case "$cmd" in
     if [ -n "$warning" ]; then
       echo "ob-thread: $warning" >&2
     fi
-    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end) + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .dir then {dir: .dir} else {} end) + (if .council then {council: .council} else {} end) + (if .wake then {wake: .wake} else {} end) + (if .sandbox then {sandbox: .sandbox} else {} end)'
+    printf '%s' "$out" | jq '{id, title, display} + (if .persona then {persona: .persona} else {} end) + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .dir then {dir: .dir} else {} end) + (if .council then {council: .council} else {} end) + (if .standalone then {standalone: .standalone} else {} end) + (if .wake then {wake: .wake} else {} end) + (if .sandbox then {sandbox: .sandbox} else {} end)'
     ;;
   sandbox-profiles)
     out=$(request GET /api/sandbox-profiles)

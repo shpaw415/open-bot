@@ -2030,6 +2030,7 @@ export function spawnCliLogin(
  * Read the full OpenCode provider auth (api + oauth entries) from a desktop.
  * Returns null when the container is down or the file is absent/invalid —
  * callers treat that as "nothing to share", never as an empty snapshot.
+ * setTeamOpencodeAuth keeps only shareable (api) entries from this capture.
  */
 export async function captureOpencodeAuth(
   userId: string,
@@ -2065,7 +2066,7 @@ export async function captureOpencodeAuth(
 
 /**
  * Team fan-out half: merge the shared auth snapshot into a desktop via
- * apply-opencode-auth.sh (any entry type; same-provider ids overwritten,
+ * apply-opencode-auth.sh (api entries only; same-provider ids overwritten,
  * other providers preserved). Returns the provider ids that changed.
  */
 export async function syncOpencodeAuth(

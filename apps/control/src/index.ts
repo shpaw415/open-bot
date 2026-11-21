@@ -33,6 +33,7 @@ import {
 import { EventHub } from "./events"
 import { setFileWatchSink } from "./file-watch"
 import { resolveDesktopProviders } from "./key-vault"
+import { startModelCatalogRefresh } from "./model-refresh"
 import { hashPassword, randomToken } from "./passwords"
 import { dispatchPermissionAsks } from "./permission-asks"
 import { dispatchPluginHooks } from "./plugin-hooks"
@@ -186,6 +187,7 @@ void reconcileSandboxes(db, hub)
 startSandboxSweeper(db, hub)
 startCronScheduler(db, hub)
 startStuckWatch(db, hub)
+startModelCatalogRefresh(db, hub)
 startBackupScheduler(db)
 startStatsSampler(db, hub)
 void reconnectDesktopNetworks()

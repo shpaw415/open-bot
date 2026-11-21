@@ -401,13 +401,35 @@ export function teamWriteLocked(db: Db, role: Role): boolean {
 }
 
 // Team-mode shared OpenCode provider auth: a snapshot of the admin desktop's
-// auth.json (api and oauth entries) merged into every desktop. Stored in
+// auth.json api-key entries merged into every desktop. Stored in
 // app_settings like every other shared secret; never returned to a browser.
+// OAuth entries are never shared: their refresh tokens rotate on every use,
+// so a snapshot copy is stale the moment any desktop refreshes, and replaying
+// it trips the provider's reuse detection and revokes the whole grant
+// (OpenAI/ChatGPT "Token refresh failed: 401" on every reply). Each desktop
+// keeps its own OAuth login, like the CLI subscription logins.
 const OPENCODE_AUTH_KEY = "team_opencode_auth"
 
 export type TeamOpencodeAuth = {
   entries: Record<string, unknown>
   capturedAt: number
+}
+
+// Only static api-key entries may ride the shared snapshot. Anything else —
+// oauth entries, entries with no/other type that may carry a refresh token —
+// fails closed and stays on its own desktop. The CLI subscription providers'
+// dummy bridge-key entries are also per-desktop (they would mark other
+// desktops connected without a CLI login there).
+function shareableOpencodeEntries(
+  entries: Record<string, unknown>,
+): Record<string, unknown> {
+  const shared: Record<string, unknown> = {}
+  for (const [id, entry] of Object.entries(entries)) {
+    if (id === "claude-code" || id === "muse-code") continue
+    if (!isObject(entry) || entry.type !== "api") continue
+    shared[id] = entry
+  }
+  return shared
 }
 
 export function getTeamOpencodeAuth(db: Db): TeamOpencodeAuth | null {
@@ -417,7 +439,9 @@ export function getTeamOpencodeAuth(db: Db): TeamOpencodeAuth | null {
     const parsed: unknown = JSON.parse(raw)
     if (!isObject(parsed) || !isObject(parsed.entries)) return null
     return {
-      entries: parsed.entries,
+      // Filter on read too, so a legacy snapshot stored before oauth entries
+      // were excluded stops fanning them out with no migration needed.
+      entries: shareableOpencodeEntries(parsed.entries),
       capturedAt:
         typeof parsed.capturedAt === "number" && parsed.capturedAt > 0
           ? parsed.capturedAt
@@ -432,11 +456,10 @@ export function setTeamOpencodeAuth(
   db: Db,
   entries: Record<string, unknown>,
 ): TeamOpencodeAuth {
-  // CLI subscription providers are per-desktop logins; their dummy
-  // bridge-key auth entries must never ride the shared snapshot (they
-  // would mark other desktops connected without a CLI login there).
-  const { "claude-code": _cc, "muse-code": _mc, ...shared } = entries
-  const snapshot: TeamOpencodeAuth = { entries: shared, capturedAt: Date.now() }
+  const snapshot: TeamOpencodeAuth = {
+    entries: shareableOpencodeEntries(entries),
+    capturedAt: Date.now(),
+  }
   db.setSetting(OPENCODE_AUTH_KEY, JSON.stringify(snapshot))
   return snapshot
 }

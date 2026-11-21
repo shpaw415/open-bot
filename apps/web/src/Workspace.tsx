@@ -242,6 +242,7 @@ import Stack from "./stack"
 import { Tip } from "./Tip"
 import { STATES, THREAD, THREADS_UI } from "./texts"
 import { expandFolder, parseCollapsedFolders } from "./thread-folders"
+import { dropQueueItem, isQueueItemGone } from "./thread-queue"
 import {
   QueueDock,
   type ThreadQueueFileView,
@@ -3665,7 +3666,9 @@ export function Workspace({
   // to); the dock only mirrors it. Loaded per thread and refreshed on
   // every queue.changed for the open thread (see the stream effect).
   const queueSessionRef = useRef("")
+  const queueGuard = useRef(createLatestGuard())
   const loadQueue = useCallback(async (id: string) => {
+    const seq = queueGuard.current.begin()
     if (!id) {
       setQueueItems([])
       return
@@ -3674,18 +3677,41 @@ export function Workspace({
       const data = await api<{ items?: ThreadQueueItemView[] }>(
         `/api/thread-queue/${encodeURIComponent(id)}`,
       )
-      if (queueSessionRef.current === id)
+      // Latest load wins: overlapping refreshes (queue.changed, a
+      // reconnect, a visibility resync) must not let a slower older
+      // response repaint items a newer one already dropped.
+      if (queueGuard.current.isCurrent(seq) && queueSessionRef.current === id)
         setQueueItems(Array.isArray(data.items) ? data.items : [])
     } catch {
       // A failed queue read shows an empty dock, never a broken thread;
       // the next queue.changed or thread switch retries.
     }
   }, [])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: live re-runs the load after a reconnect
   useEffect(() => {
-    queueSessionRef.current = sessionId
-    setQueueItems([])
+    // Only a thread switch clears the dock; a reconnect refresh keeps
+    // the painted rows until the authoritative list lands. The reload
+    // on live matters: while a phone screen is off the socket drops,
+    // queue.changed events for messages flushed (sent) meanwhile are
+    // lost, and without this the dock keeps offering ghost rows.
+    if (queueSessionRef.current !== sessionId) {
+      queueSessionRef.current = sessionId
+      setQueueItems([])
+    }
     void loadQueue(sessionId)
-  }, [sessionId, loadQueue])
+  }, [sessionId, loadQueue, live])
+  // Screen back on: the page may have been frozen with the socket
+  // still nominally open, so no reconnect (no live toggle) ever
+  // signals the missed queue.changed events. Resync the dock on
+  // becoming visible again.
+  useEffect(() => {
+    const resync = () => {
+      if (document.hidden || !queueSessionRef.current) return
+      void loadQueue(queueSessionRef.current)
+    }
+    document.addEventListener("visibilitychange", resync)
+    return () => document.removeEventListener("visibilitychange", resync)
+  }, [loadQueue])
   // Derived timeline rows: bubbles interleaved with one work-summary
   // row per assistant turn (see timeline.ts).
   const timeline = useMemo(
@@ -4198,6 +4224,14 @@ export function Workspace({
     const timer = setInterval(() => void loadModels(), 5000)
     return () => clearInterval(timer)
   }, [running, models.length, modelsLoading, loadModels])
+
+  // the control plane restarts OpenCode when its model catalog goes stale
+  // (new model releases); refetch so they appear without a dashboard reload
+  useEffect(() => {
+    return subscribe((event) => {
+      if (event.type === "models.changed") void loadModels()
+    })
+  }, [subscribe, loadModels])
 
   // event-driven refresh: the socket announces changes, we refetch lazily.
   // A cached transcript paints instantly; messagesLoading stays set until the
@@ -5771,7 +5805,10 @@ export function Workspace({
         { method: "POST" },
       )
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "send-now failed")
+      // Gone server-side (already sent while this client was away):
+      // the finally resync drops the ghost row; no banner for it.
+      if (!isQueueItemGone(caught))
+        setError(caught instanceof Error ? caught.message : "send-now failed")
     } finally {
       setQueueBusyId("")
       void loadQueue(sessionId)
@@ -5786,11 +5823,19 @@ export function Workspace({
         `/api/thread-queue/${encodeURIComponent(sessionId)}/${encodeURIComponent(itemId)}`,
         { method: "DELETE" },
       )
-      setQueueItems((prev) => prev.filter((item) => item.id !== itemId))
+      setQueueItems((prev) => dropQueueItem(prev, itemId))
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "remove failed")
+      // Already gone (flushed/sent while this client was away, older
+      // server still 404ing the DELETE): removing it is the goal —
+      // drop the ghost row instead of erroring and keeping it.
+      if (isQueueItemGone(caught)) {
+        setQueueItems((prev) => dropQueueItem(prev, itemId))
+      } else {
+        setError(caught instanceof Error ? caught.message : "remove failed")
+      }
     } finally {
       setQueueBusyId("")
+      void loadQueue(sessionId)
     }
   }
 
@@ -5814,10 +5859,18 @@ export function Workspace({
         )
       return true
     } catch (caught) {
+      // Gone server-side (already sent while this client was away):
+      // close the editor and resync instead of keeping a ghost row
+      // behind a "not found" banner.
+      if (isQueueItemGone(caught)) {
+        setQueueItems((prev) => dropQueueItem(prev, item.id))
+        return true
+      }
       setError(caught instanceof Error ? caught.message : "edit failed")
       return false
     } finally {
       setQueueBusyId("")
+      void loadQueue(sessionId)
     }
   }
 
@@ -5941,9 +5994,10 @@ export function Workspace({
       void tick()
       void loadThreads()
       void loadCron()
+      void loadQueue(sessionId)
     }, 30_000)
     return () => clearInterval(timer)
-  }, [running, live, tick, loadThreads, loadCron])
+  }, [running, live, tick, loadThreads, loadCron, loadQueue, sessionId])
 
   function onPreviewDrag(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault()
@@ -6439,107 +6493,120 @@ export function Workspace({
                     assistant/folder choice the old new-thread dialog owned.
                     They apply when the first send creates the session. */}
                   {!sessionId && running ? (
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      sx={{
-                        px: mobile ? 1 : 1.5,
-                        pt: 0.75,
-                        flexWrap: "wrap",
-                        rowGap: 0.5,
-                      }}
+                    <Box
+                      className={mobile ? "ob-blank-picks" : undefined}
+                      sx={
+                        mobile
+                          ? { mx: "8px", mt: "6px", mb: "2px" }
+                          : {
+                              px: "12px",
+                              pt: "6px",
+                              display: "flex",
+                              alignItems: "center",
+                              flexWrap: "wrap",
+                              columnGap: "8px",
+                              rowGap: "4px",
+                            }
+                      }
                     >
-                      <Typography variant="caption" color="textSecondary">
-                        Assistant
-                      </Typography>
-                      <Select
-                        name="blank-persona"
-                        label=""
-                        value={newPersonaId}
-                        disabled={actionBusy}
-                        sx={{ width: 190 }}
-                        onSelect={setNewPersonaId}
-                      >
-                        {(personas.length
-                          ? personas
-                          : [
-                              {
-                                id: "assistant",
-                                name: "Assistant",
-                                instruction: "",
-                                builtin: true,
-                              },
-                            ]
-                        ).map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </Select>
-                      <Typography variant="caption" color="textSecondary">
-                        Dossier
-                      </Typography>
-                      <Select
-                        name="blank-folder"
-                        label=""
-                        value={newSandboxProfile ? "" : newThreadDir}
-                        disabled={actionBusy || Boolean(newSandboxProfile)}
-                        sx={{ width: 190 }}
-                        onSelect={setNewThreadDir}
-                      >
-                        {[
-                          <option key="none" value="">
-                            Aucun dossier
-                          </option>,
-                          ...dirs.map((dir) => (
-                            <option key={dir.id} value={dir.id}>
-                              {dir.name}
+                      <div className="ob-blank-pick">
+                        <span className="ob-blank-pick-label">Assistant</span>
+                        <Select
+                          name="blank-persona"
+                          label=""
+                          value={newPersonaId}
+                          disabled={actionBusy}
+                          sx={mobile ? { flex: 1, minWidth: 0 } : { width: 190 }}
+                          onSelect={setNewPersonaId}
+                        >
+                          {(personas.length
+                            ? personas
+                            : [
+                                {
+                                  id: "assistant",
+                                  name: "Assistant",
+                                  instruction: "",
+                                  builtin: true,
+                                },
+                              ]
+                          ).map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
                             </option>
-                          )),
-                        ]}
-                      </Select>
-                      <CheckBox
-                        checked={newSandboxProfile ? false : newUnlimitedSteps}
-                        aria-label="Sans limite d'étapes"
-                        disabled={actionBusy || Boolean(newSandboxProfile)}
-                        onChange={() => setNewUnlimitedSteps((value) => !value)}
-                        sx={{ ml: 0.5 }}
-                      />
-                      <Typography
-                        variant="caption"
-                        color="textSecondary"
-                        title="Sans la limite d'étapes par tour (512 par défaut, réglable dans Config → Chat) — pour les longues tâches (conseils, gros builds)"
+                          ))}
+                        </Select>
+                      </div>
+                      <div className="ob-blank-pick">
+                        <span className="ob-blank-pick-label">Dossier</span>
+                        <Select
+                          name="blank-folder"
+                          label=""
+                          value={newSandboxProfile ? "" : newThreadDir}
+                          disabled={actionBusy || Boolean(newSandboxProfile)}
+                          sx={mobile ? { flex: 1, minWidth: 0 } : { width: 190 }}
+                          onSelect={setNewThreadDir}
+                        >
+                          {[
+                            <option key="none" value="">
+                              Aucun dossier
+                            </option>,
+                            ...dirs.map((dir) => (
+                              <option key={dir.id} value={dir.id}>
+                                {dir.name}
+                              </option>
+                            )),
+                          ]}
+                        </Select>
+                      </div>
+                      <label
+                        className={`ob-blank-pick ob-blank-pick-toggle${
+                          newUnlimitedSteps && !newSandboxProfile
+                            ? " ob-blank-pick-on"
+                            : ""
+                        }`}
                       >
-                        Sans limite d'étapes
-                      </Typography>
-                      <Typography
-                        variant="caption"
-                        color="textSecondary"
-                        title="Exécute ce fil dans un conteneur jetable, isolé du bureau — pour un prompt non fiable (texte collé, instructions inconnues). Profils dans Config → Bac à sable."
-                      >
-                        Bac à sable
-                      </Typography>
-                      <Select
-                        name="blank-sandbox"
-                        label=""
-                        value={newSandboxProfile}
-                        disabled={actionBusy}
-                        sx={{ width: 190 }}
-                        onSelect={setNewSandboxProfile}
-                      >
-                        {[
-                          <option key="none" value="">
-                            Aucun
-                          </option>,
-                          ...sandboxProfiles.map((entry) => (
-                            <option key={entry.id} value={entry.name}>
-                              {entry.name}
-                            </option>
-                          )),
-                        ]}
-                      </Select>
-                    </Stack>
+                        <CheckBox
+                          checked={newSandboxProfile ? false : newUnlimitedSteps}
+                          aria-label="Sans limite d'étapes"
+                          disabled={actionBusy || Boolean(newSandboxProfile)}
+                          onChange={() => setNewUnlimitedSteps((value) => !value)}
+                          sx={mobile ? { flexShrink: 0 } : undefined}
+                        />
+                        <span
+                          className="ob-blank-pick-label"
+                          title="Sans la limite d'étapes par tour (512 par défaut, réglable dans Config → Chat) — pour les longues tâches (conseils, gros builds)"
+                        >
+                          Sans limite d'étapes
+                        </span>
+                      </label>
+                      <div className="ob-blank-pick">
+                        <span
+                          className="ob-blank-pick-label"
+                          title="Exécute ce fil dans un conteneur jetable, isolé du bureau — pour un prompt non fiable (texte collé, instructions inconnues). Profils dans Config → Bac à sable."
+                        >
+                          Bac à sable
+                        </span>
+                        <Select
+                          name="blank-sandbox"
+                          label=""
+                          value={newSandboxProfile}
+                          disabled={actionBusy}
+                          sx={mobile ? { flex: 1, minWidth: 0 } : { width: 190 }}
+                          onSelect={setNewSandboxProfile}
+                        >
+                          {[
+                            <option key="none" value="">
+                              Aucun
+                            </option>,
+                            ...sandboxProfiles.map((entry) => (
+                              <option key={entry.id} value={entry.name}>
+                                {entry.name}
+                              </option>
+                            )),
+                          ]}
+                        </Select>
+                      </div>
+                    </Box>
                   ) : null}
                   {stopping ? (
                     <Stack

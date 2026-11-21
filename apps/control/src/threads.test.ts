@@ -271,19 +271,21 @@ describe("hiddenThreadTitle", () => {
 })
 
 describe("POST /api/threads", () => {
-  test("creates a hidden thread by default with the worker: prefix", async () => {
+  test("creates a hidden standalone thread with the worker: prefix", async () => {
     installFetch()
-    const res = await post({ title: "Scrape prices" })
+    const res = await post({ title: "Scrape prices", standalone: true })
     expect(res.status).toBe(201)
     const body = (await res.json()) as {
       id: string
       title: string
       display: boolean
+      standalone?: boolean
     }
     expect(body).toEqual({
       id: "ses_1",
       title: "worker:Scrape prices",
       display: false,
+      standalone: true,
     })
     const create = calls.find(
       (call) => call.url.endsWith("/session") && call.init?.method === "POST",
@@ -298,7 +300,7 @@ describe("POST /api/threads", () => {
   test("warns when a same-titled worker is already running a turn", async () => {
     installFetch()
     phaseStatuses = { s1: "busy" }
-    const res = await post({ title: "job" })
+    const res = await post({ title: "job", standalone: true })
     expect(res.status).toBe(201)
     const body = (await res.json()) as { warning?: string }
     expect(body.warning).toMatch(
@@ -309,7 +311,7 @@ describe("POST /api/threads", () => {
   test("warns a hidden start while other workers run on the shared filesystem", async () => {
     installFetch()
     phaseStatuses = { s1: "busy" }
-    const res = await post({ title: "other job" })
+    const res = await post({ title: "other job", standalone: true })
     expect(res.status).toBe(201)
     const body = (await res.json()) as { warning?: string }
     expect(body.warning).toMatch(
@@ -321,7 +323,7 @@ describe("POST /api/threads", () => {
   test("a same-titled idle worker does not warn", async () => {
     installFetch()
     phaseStatuses = { s1: "idle" }
-    const res = await post({ title: "job" })
+    const res = await post({ title: "job", standalone: true })
     expect(res.status).toBe(201)
     const body = (await res.json()) as { warning?: string }
     expect(body.warning).toBeUndefined()
@@ -329,7 +331,11 @@ describe("POST /api/threads", () => {
 
   test("display threads keep the given title", async () => {
     installFetch()
-    const res = await post({ title: "Nightly sync", display: true })
+    const res = await post({
+      title: "Nightly sync",
+      display: true,
+      standalone: true,
+    })
     expect(res.status).toBe(201)
     const body = (await res.json()) as { title: string; display: boolean }
     expect(body.title).toBe("Nightly sync")
@@ -342,6 +348,7 @@ describe("POST /api/threads", () => {
       title: "Deep build",
       steps: "unlimited",
       message: "go",
+      standalone: true,
     })
     expect(res.status).toBe(201)
     const create = calls.find(
@@ -365,6 +372,7 @@ describe("POST /api/threads", () => {
     const res = await post({
       title: "Scrape prices",
       message: "Fetch prices now",
+      standalone: true,
     })
     expect(res.status).toBe(201)
     const prompt = calls.find((call) => call.url.endsWith("/prompt_async"))
@@ -386,7 +394,11 @@ describe("POST /api/threads", () => {
       new Request("http://control/api/threads", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "Deep dive", message: "Go deep" }),
+        body: JSON.stringify({
+          title: "Deep dive",
+          message: "Go deep",
+          standalone: true,
+        }),
       }),
       new URL("http://control/api/threads"),
       effortDb,
@@ -404,7 +416,7 @@ describe("POST /api/threads", () => {
   test("still returns the thread when the first message fails to post", async () => {
     installFetch()
     promptFails = true
-    const res = await post({ title: "Job", message: "go" })
+    const res = await post({ title: "Job", message: "go", standalone: true })
     expect(res.status).toBe(201)
     const body = (await res.json()) as { warning?: string }
     expect(body.warning).toMatch(/first message failed/)
@@ -430,6 +442,7 @@ describe("POST /api/threads", () => {
         title: "Add export",
         message: "Implement CSV export",
         persona: "software manager",
+        standalone: true,
       },
       personaDb(bound),
     )
@@ -460,6 +473,7 @@ describe("POST /api/threads", () => {
         title: "Research run",
         message: "Check prices",
         persona: "software manager",
+        standalone: true,
       },
       personaDb(bound, true),
     )
@@ -486,7 +500,7 @@ describe("POST /api/threads", () => {
   test("an unrestricted persona sends no permission key", async () => {
     installFetch()
     const res = await post(
-      { title: "Job", persona: "software manager" },
+      { title: "Job", persona: "software manager", standalone: true },
       personaDb([]),
     )
     expect(res.status).toBe(201)
@@ -596,7 +610,12 @@ describe("POST /api/threads", () => {
     installFetch()
     const bound: string[][] = []
     const res = await post(
-      { title: "Helper", message: "Help me", persona: "assistant" },
+      {
+        title: "Helper",
+        message: "Help me",
+        persona: "assistant",
+        standalone: true,
+      },
       personaDb(bound),
     )
     expect(res.status).toBe(201)
@@ -625,7 +644,7 @@ describe("POST /api/threads", () => {
   test("tolerates a typo in the persona name and reports the match", async () => {
     installFetch()
     const res = await post(
-      { title: "Add export", persona: "softwre managr" },
+      { title: "Add export", persona: "softwre managr", standalone: true },
       personaDb([]),
     )
     expect(res.status).toBe(201)
@@ -651,7 +670,10 @@ describe("POST /api/threads", () => {
 
   test("a blank persona is ignored", async () => {
     installFetch()
-    const res = await post({ title: "Job", persona: "   " }, personaDb([]))
+    const res = await post(
+      { title: "Job", persona: "   ", standalone: true },
+      personaDb([]),
+    )
     expect(res.status).toBe(201)
     const body = (await res.json()) as { persona?: unknown }
     expect(body.persona).toBeUndefined()
@@ -693,7 +715,10 @@ describe("POST /api/threads", () => {
         dirLog.push([userId, sessionId, dirId])
       },
     } as unknown as Db
-    const created = await post({ title: "Follow up", dir: "Billing" }, dirDb)
+    const created = await post(
+      { title: "Follow up", dir: "Billing", standalone: true },
+      dirDb,
+    )
     expect(created.status).toBe(201)
     const body = (await created.json()) as {
       display: boolean
@@ -703,7 +728,10 @@ describe("POST /api/threads", () => {
     expect(body.dir?.name).toBe("Billing")
     expect(dirLog).toEqual([["user-1", "ses_1", expect.any(String)]])
     // second run reuses the folder case-insensitively
-    const again = await post({ title: "Again", dir: "billing" }, dirDb)
+    const again = await post(
+      { title: "Again", dir: "billing", standalone: true },
+      dirDb,
+    )
     expect(again.status).toBe(201)
     const againBody = (await again.json()) as { dir?: { name: string } }
     expect(againBody.dir?.name).toBe("Billing")
@@ -722,7 +750,7 @@ describe("POST /api/threads", () => {
   test("reports a sleeping desktop and never reaches opencode", async () => {
     installFetch()
     phase = "sleeping"
-    const res = await post({ title: "Job" })
+    const res = await post({ title: "Job", standalone: true })
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: string }
     expect(body.error).toMatch(/not running/)
@@ -732,17 +760,89 @@ describe("POST /api/threads", () => {
   test("reports an unreachable desktop", async () => {
     installFetch()
     failEndpoint = true
-    const res = await post({ title: "Job" })
+    const res = await post({ title: "Job", standalone: true })
     expect(res.status).toBe(502)
   })
 
   test("surfaces session create failures", async () => {
     globalThis.fetch = (async () =>
       new Response("boom", { status: 500 })) as unknown as typeof fetch
-    const res = await post({ title: "Job" })
+    const res = await post({ title: "Job", standalone: true })
     expect(res.status).toBe(502)
     const body = (await res.json()) as { error: string }
     expect(body.error).toMatch(/session create failed/)
+  })
+})
+
+describe("POST /api/threads council-first policy", () => {
+  test("a loose agent start is refused before any session exists", async () => {
+    installFetch()
+    const res = await post({ title: "Scrape prices", message: "go" })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toMatch(/must run in a council/)
+    expect(body.error).toMatch(/--council/)
+    expect(body.error).toMatch(/standalone/)
+    expect(
+      calls.some(
+        (call) => call.url.endsWith("/session") && call.init?.method === "POST",
+      ),
+    ).toBeFalse()
+  })
+
+  test("visible and folder starts are refused without the bypass too", async () => {
+    installFetch()
+    expect((await post({ title: "Nightly sync", display: true })).status).toBe(
+      400,
+    )
+    expect((await post({ title: "Follow up", dir: "Billing" })).status).toBe(
+      400,
+    )
+  })
+
+  test("standalone: false does not bypass, standalone: true does", async () => {
+    installFetch()
+    expect((await post({ title: "Job", standalone: false })).status).toBe(400)
+    const res = await post({
+      title: "Nightly sync",
+      display: true,
+      standalone: true,
+    })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      display: boolean
+      standalone?: boolean
+    }
+    expect(body.display).toBe(true)
+    expect(body.standalone).toBe(true)
+  })
+
+  test("standalone cannot combine with council or sandbox", async () => {
+    installFetch()
+    const withCouncil = await post({
+      title: "Job",
+      council: "review",
+      standalone: true,
+    })
+    expect(withCouncil.status).toBe(400)
+    expect(((await withCouncil.json()) as { error: string }).error).toMatch(
+      /standalone cannot be combined with council/,
+    )
+    const withSandbox = await post({
+      title: "Job",
+      sandbox: "locked",
+      standalone: true,
+    })
+    expect(withSandbox.status).toBe(400)
+    expect(((await withSandbox.json()) as { error: string }).error).toMatch(
+      /standalone cannot be combined with sandbox/,
+    )
+  })
+
+  test("a non-boolean standalone is a 400", async () => {
+    installFetch()
+    expect((await post({ title: "Job", standalone: "yes" })).status).toBe(400)
+    expect(calls).toHaveLength(0)
   })
 })
 
@@ -1032,7 +1132,12 @@ describe("POST /api/threads model and effort picks", () => {
     installFetch()
     const { mock } = pickDb()
     const res = await post(
-      { title: "Job", model: "prov/reasoner", effort: "xhigh" },
+      {
+        title: "Job",
+        model: "prov/reasoner",
+        effort: "xhigh",
+        standalone: true,
+      },
       mock,
     )
     expect(res.status).toBe(400)
@@ -1060,7 +1165,7 @@ describe("POST /api/threads model and effort picks", () => {
     installFetch()
     const { mock, picks } = pickDb()
     const res = await post(
-      { title: "Quick scan", effort: "low", message: "scan" },
+      { title: "Quick scan", effort: "low", message: "scan", standalone: true },
       mock,
     )
     expect(res.status).toBe(201)
@@ -1340,6 +1445,7 @@ describe("POST /api/threads delegation watches", () => {
         persona: "software manager",
         from: "chat1",
         message: "Implement CSV export",
+        standalone: true,
       },
       mock,
     )
@@ -1359,7 +1465,13 @@ describe("POST /api/threads delegation watches", () => {
     })
     const { mock, watches } = watchDb()
     const res = await post(
-      { title: "Helper", persona: "assistant", from: "chat1", message: "Help" },
+      {
+        title: "Helper",
+        persona: "assistant",
+        from: "chat1",
+        message: "Help",
+        standalone: true,
+      },
       mock,
     )
     expect(res.status).toBe(201)
@@ -1388,10 +1500,10 @@ describe("POST /api/threads delegation watches", () => {
     expect(watches[0]).toMatchObject({ creatorSessionId: "w1" })
   })
 
-  test("plain hidden threads record nothing and report no wake", async () => {
+  test("plain hidden standalone threads record nothing and report no wake", async () => {
     installDelegationFetch()
     const { mock, watches } = watchDb()
-    const res = await post({ title: "Scrape prices" }, mock)
+    const res = await post({ title: "Scrape prices", standalone: true }, mock)
     expect(res.status).toBe(201)
     const body = (await res.json()) as { wake?: unknown }
     expect(body.wake).toBeUndefined()
