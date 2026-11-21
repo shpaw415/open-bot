@@ -451,6 +451,13 @@ export async function probeSnapshot(socket: CdpSocket): Promise<Snapshot> {
   }
 }
 
+// Fixed-length mask for credential values: filled reads as filled
+// (autofill landed, submit checks keep working) without leaking the
+// secret or its length to the model (#123).
+export const SENSITIVE_MASK = "••••••••"
+
+const SENSITIVE_LABEL = /password|mot de passe|one[- ]time code/i
+
 export function normalize(value: unknown): Snapshot {
   const raw = (value ?? {}) as Record<string, unknown>
   const elements = Array.isArray(raw.elements) ? raw.elements : []
@@ -471,13 +478,22 @@ export function normalize(value: unknown): Snapshot {
             label: String((option as { label?: unknown }).label ?? ""),
           }))
         : undefined
+      const label = String(row.label ?? "")
+      const editable = Boolean(row.editable)
+      const rawValue = String(row.value ?? "")
+      // The probe already masks; this is the fail-closed second line so
+      // no producer of a snapshot row can leak a credential value,
+      // including a password-labelled editable missing the flag.
+      const sensitive =
+        row.sensitive === true || (editable && SENSITIVE_LABEL.test(label))
       return {
         targetId: String(row.target_id ?? ""),
         role: String(row.role ?? ""),
-        label: String(row.label ?? ""),
-        value: String(row.value ?? ""),
-        editable: Boolean(row.editable),
+        label,
+        value: sensitive ? (rawValue ? SENSITIVE_MASK : "") : rawValue,
+        editable,
         actionable: row.actionable !== false,
+        sensitive,
         options,
       }
     }),
@@ -566,6 +582,13 @@ const __obLabelledBy = (el) => {
       return node ? (node.textContent || "") : ""
     }).join(" ").replace(/\\s+/g, " ").trim()
   } catch (e) { return "" }
+}
+const __obSensitive = (el) => {
+  try {
+    if (String(el.type || "").toLowerCase() === "password") return true
+    const ac = String(el.getAttribute("autocomplete") || "").toLowerCase()
+    return ac.split(/\\s+/).some((token) => token.includes("password") || token === "one-time-code")
+  } catch (e) { return false }
 }
 const __obFp = (el) => {
   const stable = el.getAttribute("aria-label") || __obLabelledBy(el) || __obLabelFor(el) || el.id || el.getAttribute("name") || el.getAttribute("placeholder") || ""
@@ -909,13 +932,19 @@ export const PROBE = `(() => {
       // An explicit <label for="id"> is the input's accessible name; prefer
       // its text over innerText/placeholder/name (aria-label still wins).
       const label = (el.getAttribute("aria-label") || __obLabelledBy(el) || __obLabelFor(el) || el.innerText || el.getAttribute("placeholder") || el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 80)
+      // Credential values never leave the page (#123): autofill made
+      // ob-page read print a real password. The mask keeps "filled"
+      // observable without the secret or its length.
+      const sensitive = __obSensitive(el)
+      const rawValue = "value" in el ? String(el.value || "") : ""
       const item = {
         target_id: id,
         role: el.getAttribute("role") || el.tagName.toLowerCase(),
         label,
-        value: "value" in el ? String(el.value || "").slice(0, 80) : "",
+        value: sensitive ? (rawValue ? "••••••••" : "") : rawValue.slice(0, 80),
         editable: el.matches('input, textarea, [contenteditable="true"]') && !el.disabled && !el.readOnly,
         actionable: true,
+        sensitive,
       }
       const center = el.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
       item.actionable = !center || el === center || el.contains(center)

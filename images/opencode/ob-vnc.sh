@@ -65,6 +65,13 @@ xkey() {
     down) printf 'Down' ;;
     left) printf 'Left' ;;
     right) printf 'Right' ;;
+    # xdotool speaks X keysym names and '+' chords, where vncdo takes
+    # '-' chords and single chars: translate the zoom chord both ways
+    # the fallback can receive it (#124).
+    = | plus) printf 'equal' ;;
+    *-plus) printf '%s+equal' "${1%-plus}" ;;
+    *-=) printf '%s+equal' "${1%-=}" ;;
+    *-*) printf '%s' "$1" | tr '-' '+' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -298,10 +305,12 @@ if printf '%s\n' "$@" | grep -qx -e key -e keyup; then
         pageup) arg=pgup ;;
         pagedown) arg=pgdn ;;
         insert) arg=ins ;;
-        # Browser zoom-in (#11/#58): vncdotool has no "plus" keysym alias
-        # and crashes on it; Ctrl+equal is the same zoom chord.
-        plus) arg=equal ;;
-        *-plus) arg="${lowered%-plus}-equal" ;;
+        # Browser zoom-in (#11/#58, #124): vncdotool's KEYMAP has neither
+        # "plus" nor "equal" — an unmapped multi-char token falls back to
+        # ord(token) and crashes. The single char "=" is the same zoom
+        # chord and resolves through ord().
+        plus) arg== ;;
+        *-plus) arg="${lowered%-plus}-=" ;;
         *) arg=$lowered ;;
       esac
     fi

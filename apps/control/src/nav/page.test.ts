@@ -40,6 +40,7 @@ test("read shapes probe plus viewport into one json line", () => {
     label: "Go",
     value: "",
     editable: false,
+    sensitive: false,
     options: undefined,
   })
   expect(JSON.parse(JSON.stringify(view))).toEqual(view)
@@ -73,6 +74,27 @@ test("a raw page-world probe keeps ids and scroll flags after normalize", () => 
   expect(view.elements[0]?.id).toBe("n3")
   expect(view.canScrollDown).toBe(true)
   expect(JSON.stringify(view)).toContain('"id":"n3"')
+})
+
+test("read view carries the mask, never the password value (#123)", () => {
+  const view = shapeView(
+    normalize({
+      elements: [
+        {
+          target_id: "n9",
+          role: "input",
+          label: "Password",
+          value: "autofilled-secret",
+          editable: true,
+          sensitive: true,
+        },
+      ],
+    }),
+    { width: 800, height: 600, scrollY: 0, scrollHeight: 600 },
+  )
+  expect(JSON.stringify(view)).not.toContain("autofilled-secret")
+  expect(view.elements[0]?.value).toBe("••••••••")
+  expect(view.elements[0]?.sensitive).toBe(true)
 })
 
 test("upload args take an element id plus at least one file (#82)", () => {

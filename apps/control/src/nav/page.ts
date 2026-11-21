@@ -37,6 +37,7 @@ export type PageView = {
     label: string
     value: string
     editable: boolean
+    sensitive?: boolean
     options?: string[]
   }[]
 }
@@ -60,6 +61,7 @@ export function shapeView(probe: Snapshot, metrics: Metrics): PageView {
       label: item.label,
       value: item.value,
       editable: item.editable,
+      sensitive: item.sensitive === true,
       options: item.options?.map((option) => option.label),
     })),
   }
