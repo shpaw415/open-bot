@@ -18,6 +18,9 @@ export type ProbeElement = {
   value: string
   editable: boolean
   actionable: boolean
+  // Credential field (password / one-time code): value is always the
+  // fixed mask when filled, never the secret itself (#123).
+  sensitive?: boolean
   options?: { label: string }[]
 }
 

@@ -59,3 +59,7 @@ Notes:
   `refine` skill's workflow; it uses `ob-skill save` too.
 - Never store secrets in a skill body. Do not write a local SKILL.md —
   custom skills live in OpenViking, not on disk.
+- A custom skill is a single file: the saved body is the whole skill.
+  Never link companion files (`[format](review-format.md)`) — they are
+  not saved with the skill and the save is rejected. Inline everything
+  the skill needs into the body itself.

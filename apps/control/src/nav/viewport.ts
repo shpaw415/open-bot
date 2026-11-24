@@ -173,6 +173,33 @@ export function viewportSignature(spec: ViewportSpec | null): string {
   ].join("|")
 }
 
+// The CSS size a spec measures at when the page's live dpr differs
+// from the spec's: browser zoom multiplies devicePixelRatio on top of
+// emulation, so a 640 CSS spec at 200% zoom reads innerWidth 320 at
+// dpr 2 (#125). Comparing the raw spec size reports a false failure for
+// a resize that did apply.
+export function expectedCssSize(
+  liveDpr: number,
+  spec: ViewportSpec,
+): { width: number; height: number } {
+  const dpr = liveDpr > 0 && Number.isFinite(liveDpr) ? liveDpr : spec.dpr
+  return {
+    width: Math.round((spec.width * spec.dpr) / dpr),
+    height: Math.round((spec.height * spec.dpr) / dpr),
+  }
+}
+
+export function viewportMatches(
+  live: { width: number; height: number; dpr: number },
+  spec: ViewportSpec,
+): boolean {
+  const expected = expectedCssSize(live.dpr, spec)
+  return (
+    Math.abs(live.width - expected.width) <= 2 &&
+    Math.abs(live.height - expected.height) <= 2
+  )
+}
+
 export function emulationAction(
   appliedSignature: string,
   desired: ViewportSpec | null,

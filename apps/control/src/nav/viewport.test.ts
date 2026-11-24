@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test"
 import {
   emulationAction,
+  expectedCssSize,
   findPreset,
   metricsOverride,
   parseViewportRequest,
   shapeSpec,
   userAgentOverride,
   VIEWPORT_PRESETS,
+  viewportMatches,
   viewportSignature,
 } from "./viewport"
 
@@ -159,6 +161,27 @@ test("emulationAction applies, clears, or leaves the override alone", () => {
   expect(emulationAction(sig, null)).toBe("clear")
   expect(emulationAction("off", null)).toBe("none")
   expect(emulationAction("stale", spec)).toBe("apply")
+})
+
+test("viewportMatches accepts a desktop resize under 200% browser zoom (#125)", () => {
+  const spec = setOf(["640x900", "--desktop"])
+  expect(spec.dpr).toBe(1)
+  // Field case: zoom 200 made innerWidth 320 at dpr 2 for a 640 spec.
+  expect(viewportMatches({ width: 320, height: 450, dpr: 2 }, spec)).toBe(true)
+  expect(expectedCssSize(2, spec)).toEqual({ width: 320, height: 450 })
+  // Same spec at zoom 100 measures at face value.
+  expect(viewportMatches({ width: 640, height: 900, dpr: 1 }, spec)).toBe(true)
+  // A size that is neither the spec nor its zoom-adjusted form fails.
+  expect(viewportMatches({ width: 500, height: 450, dpr: 2 }, spec)).toBe(false)
+  expect(viewportMatches({ width: 320, height: 900, dpr: 2 }, spec)).toBe(false)
+})
+
+test("viewportMatches keeps preset behavior at the emulated dpr (#125)", () => {
+  const spec = setOf(["iphone-14"]) // 390x844, dpr 3
+  expect(viewportMatches({ width: 390, height: 844, dpr: 3 }, spec)).toBe(true)
+  // Rounding at fractional dpr stays within tolerance.
+  expect(viewportMatches({ width: 391, height: 843, dpr: 3 }, spec)).toBe(true)
+  expect(viewportMatches({ width: 375, height: 844, dpr: 3 }, spec)).toBe(false)
 })
 
 test("CDP params carry orientation and a plain UA override", () => {

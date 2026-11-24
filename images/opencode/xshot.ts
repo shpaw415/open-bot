@@ -159,14 +159,106 @@ async function pageSocket(port: number) {
   return openSocket(page.webSocketDebuggerUrl)
 }
 
-function layout(metrics: unknown) {
+export type VisualViewport = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+// The visual viewport in CSS pixels, with its DOCUMENT offset. A
+// screenshot clip's x/y are document coordinates, not viewport
+// coordinates: anchored at (0,0), a scaled capture of a scrolled page
+// reads outside the composited surface and comes back blank, and a
+// layout-viewport width (980 on mobile emulation) crops the 320-wide
+// visual viewport (#126, verified live). The visual viewport is what
+// the capture must frame in both origin and size — scaled into the
+// clip's DIP space by scaledClip below.
+export function visualViewport(metrics: unknown): VisualViewport {
   const row = metrics as {
-    cssLayoutViewport?: { clientWidth?: number; clientHeight?: number }
+    cssVisualViewport?: {
+      pageX?: number
+      pageY?: number
+      clientWidth?: number
+      clientHeight?: number
+    }
+    cssLayoutViewport?: {
+      pageX?: number
+      pageY?: number
+      clientWidth?: number
+      clientHeight?: number
+    }
   }
-  const width = row.cssLayoutViewport?.clientWidth
-  const height = row.cssLayoutViewport?.clientHeight
+  const view = row.cssVisualViewport?.clientWidth
+    ? row.cssVisualViewport
+    : row.cssLayoutViewport
+  const width = view?.clientWidth
+  const height = view?.clientHeight
   if (!width || !height) throw new Error("no page size")
-  return { width: Math.round(width), height: Math.round(height) }
+  return {
+    x: Math.round(view?.pageX ?? 0),
+    y: Math.round(view?.pageY ?? 0),
+    width: Math.round(width),
+    height: Math.round(height),
+  }
+}
+
+// Clip coordinates live in DIP document space, which equals CSS space
+// at zoom 1 and under DSF emulation, but not under browser zoom: at
+// 200% zoom the CSS-space clip captured blank while the DIP rect
+// captured the visible page (#126, verified live at zoom 2 and 5,
+// plain scroll, and mobile emulation). The DIP origin is the layout
+// viewport's page offset — visualViewport.pageY is NOT DIP-scaled by
+// Chromium — plus the visual offset inside it (pinch), with the
+// visual size scaled by the layout pair's DIP-per-CSS ratio.
+export type ScaledClip = {
+  x: number
+  y: number
+  width: number
+  height: number
+  scale: number
+}
+
+export function scaledClip(metrics: unknown, scale: number): ScaledClip {
+  const css = visualViewport(metrics)
+  const row = metrics as {
+    layoutViewport?: {
+      pageX?: number
+      pageY?: number
+      clientWidth?: number
+      clientHeight?: number
+    }
+    cssLayoutViewport?: { clientWidth?: number; clientHeight?: number }
+    cssVisualViewport?: { offsetX?: number; offsetY?: number }
+  }
+  const layout = row.layoutViewport
+  const ratio = (dip?: number, cssPx?: number) =>
+    dip && cssPx && dip > 0 && cssPx > 0 ? dip / cssPx : 1
+  const rx = ratio(layout?.clientWidth, row.cssLayoutViewport?.clientWidth)
+  const ry = ratio(layout?.clientHeight, row.cssLayoutViewport?.clientHeight)
+  const ox = row.cssVisualViewport?.offsetX ?? 0
+  const oy = row.cssVisualViewport?.offsetY ?? 0
+  return {
+    x: Math.round((layout?.pageX ?? css.x * rx) + ox * rx),
+    y: Math.round((layout?.pageY ?? css.y * ry) + oy * ry),
+    width: Math.round(css.width * rx),
+    height: Math.round(css.height * ry),
+    scale,
+  }
+}
+
+// Under browser-zoom-then-emulation, Chromium reports DIP==CSS
+// metrics until the first capture flips them to the real DIP space
+// (layout pageY 2400 -> 4800), so a clip computed from the first read
+// frames blank surface (#126). A moved clip means the space shifted
+// under the shot just taken: retake once with the fresh clip.
+export function clipShifted(a: ScaledClip, b: ScaledClip): boolean {
+  return (
+    Math.abs(a.x - b.x) > 2 ||
+    Math.abs(a.y - b.y) > 2 ||
+    Math.abs(a.width - b.width) > 2 ||
+    Math.abs(a.height - b.height) > 2
+  )
 }
 
 function ratioText(value: number): string {
@@ -260,7 +352,8 @@ async function main() {
   let overrideLive = false
   try {
     await socket.call("Page.enable")
-    const current = layout(await socket.call("Page.getLayoutMetrics"))
+    const metrics = await socket.call("Page.getLayoutMetrics")
+    const current = visualViewport(metrics)
     const scale = spec.scale
     if (scale < 1 || scale > SCALE_MAX)
       throw new Error(`capture scale must be 1..${SCALE_MAX} (got ${scale})`)
@@ -281,13 +374,10 @@ async function main() {
       fromSurface: true,
     }
     if (!resized) {
-      shotParams.clip = {
-        x: 0,
-        y: 0,
-        width: cssWidth,
-        height: cssHeight,
-        scale,
-      }
+      // Document-anchored clip (#126): (0,0) captured blank surface on
+      // a scrolled page; the visual viewport's page offset + size is
+      // the visible frame at any scroll and zoom.
+      shotParams.clip = scaledClip(metrics, scale)
     }
     const takeShot = async (): Promise<Buffer> => {
       const shot = (await socket.call(
@@ -300,6 +390,23 @@ async function main() {
     let bytes = await takeShot()
     let hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
     let recovered = false
+    let reanchored = false
+    // The first capture can flip Chromium's reported DIP space under
+    // zoom+emulation (#126): if the clip computed from fresh metrics
+    // moved, the shot just taken framed the old space — retake once.
+    if (!resized) {
+      const fresh = scaledClip(
+        await socket.call("Page.getLayoutMetrics").catch(() => metrics),
+        scale,
+      )
+      const used = shotParams.clip as ScaledClip
+      if (clipShifted(used, fresh)) {
+        shotParams.clip = fresh
+        bytes = await takeShot()
+        hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+        reanchored = true
+      }
+    }
     // A byte-identical frame while the page animates is the frozen scaled
     // surface (#67): settle two animation frames and retake ONCE instead
     // of handing back pixels already known to be stale.
@@ -350,6 +457,10 @@ async function main() {
     if (resized)
       console.error(
         "note: this capture resized the page viewport for the shot and restored it after; if you are measuring on-page FPS, capture again after waiting ~15 seconds",
+      )
+    if (reanchored)
+      console.error(
+        "note: the capture clip re-anchored after the first shot (the browser reported a shifted viewport space under zoom/emulation); this second frame is the correctly framed one",
       )
     if (recovered)
       console.error(

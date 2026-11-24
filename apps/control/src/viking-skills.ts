@@ -101,6 +101,31 @@ export function skillNameError(name: string) {
   return ""
 }
 
+// Relative file links a single-file skill can never satisfy (#127): a
+// saved skill is one SKILL.md body in OpenViking, mirrored to one file
+// on disk, so a body that sends the reader to review-format.md strands
+// it on a missing file. Web/scheme links, anchors, absolute desktop
+// paths, and SKILL.md itself are fine; code spans and fences discuss
+// link syntax without being links to load.
+export function danglingSkillRefs(body: string): string[] {
+  const prose = body
+    .replace(/```[\s\S]*?(?:```|$)/g, "")
+    .replace(/`[^`\n]*`/g, "")
+  const refs: string[] = []
+  for (const match of prose.matchAll(
+    /!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+  )) {
+    const raw = (match[1] ?? "").replace(/^<|>$/g, "")
+    const target = raw.split("#")[0]?.split("?")[0] ?? ""
+    if (!target) continue
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue
+    if (target.startsWith("//") || target.startsWith("/")) continue
+    if (target === "SKILL.md" || target === "./SKILL.md") continue
+    if (!refs.includes(raw)) refs.push(raw)
+  }
+  return refs
+}
+
 export function assertSkillInput(input: SkillDetail) {
   const nameError = skillNameError(input.name)
   if (nameError) throw new HttpError(400, nameError, "skill_name")
@@ -122,6 +147,16 @@ export function assertSkillInput(input: SkillDetail) {
   }
   if (input.body.length > maxBody) {
     throw new HttpError(400, "skill body is too long", "skill_body")
+  }
+  const dangling = danglingSkillRefs(input.body)
+  if (dangling.length > 0) {
+    const named = dangling.slice(0, 5).join(", ")
+    const extra = dangling.length > 5 ? ` (+${dangling.length - 5} more)` : ""
+    throw new HttpError(
+      400,
+      `skill body links files that cannot ship with a single-file skill: ${named}${extra} — inline their content into the skill body`,
+      "skill_body",
+    )
   }
 }
 

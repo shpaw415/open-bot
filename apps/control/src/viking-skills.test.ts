@@ -715,6 +715,42 @@ describe("viking skills", () => {
       "skill body is required",
     )
   })
+
+  test("rejects bodies linking companion files a single-file skill cannot ship (#127)", async () => {
+    const { danglingSkillRefs } = await import("./viking-skills")
+    expect(
+      danglingSkillRefs("Format: [review-format.md](review-format.md)"),
+    ).toEqual(["review-format.md"])
+    expect(
+      danglingSkillRefs(
+        "[a](./refs/a.md) [b](../shared/b.md) [c](scripts/run.sh)",
+      ),
+    ).toEqual(["./refs/a.md", "../shared/b.md", "scripts/run.sh"])
+    // Not dangling: web, anchors, app schemes, absolute desktop paths, self.
+    expect(
+      danglingSkillRefs(
+        "[w](https://example.test/x.md) [a](#section) [o](open-bot://screen) [p](/home/agent/x.md) [s](SKILL.md) [v](viking://resources/x)",
+      ),
+    ).toEqual([])
+    // Code fences and inline code discuss paths; they are not links to load.
+    expect(
+      danglingSkillRefs(
+        "```md\n[x](example.md)\n```\nUse `[y](also-example.md)` syntax",
+      ),
+    ).toEqual([])
+    expect(() =>
+      assertSkillInput({
+        ...skill,
+        body: "The format lives in [review-format.md](review-format.md).",
+      }),
+    ).toThrow("review-format.md")
+    expect(() =>
+      assertSkillInput({
+        ...skill,
+        body: "All inline. See [docs](https://example.test).",
+      }),
+    ).not.toThrow()
+  })
 })
 
 test("skillFileContent renders a loader-discoverable SKILL.md (#15/#19)", () => {
