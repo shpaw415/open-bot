@@ -37,6 +37,7 @@ import {
   invites,
   mediaAlbums,
   mediaItems,
+  pendingSkills,
   personas,
   pluginSettings,
   projects,
@@ -594,6 +595,18 @@ export type ThreadModel = {
   providerId: string | null
   modelId: string | null
   effort: string | null
+}
+
+export type PendingSkillRow = {
+  userId: string
+  name: string
+  previousName: string
+  description: string
+  body: string
+  attempts: number
+  lastError: string
+  createdAt: number
+  updatedAt: number
 }
 
 export type SandboxProfileRow = {
@@ -2176,6 +2189,47 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    pendingSkills(userId: string): PendingSkillRow[] {
+      return orm
+        .select()
+        .from(pendingSkills)
+        .where(eq(pendingSkills.userId, userId))
+        .all() as PendingSkillRow[]
+    },
+    pendingSkill(userId: string, name: string): PendingSkillRow | null {
+      return (orm
+        .select()
+        .from(pendingSkills)
+        .where(
+          and(eq(pendingSkills.userId, userId), eq(pendingSkills.name, name)),
+        )
+        .get() ?? null) as PendingSkillRow | null
+    },
+    setPendingSkill(row: PendingSkillRow) {
+      orm
+        .insert(pendingSkills)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [pendingSkills.userId, pendingSkills.name],
+          set: {
+            previousName: row.previousName,
+            description: row.description,
+            body: row.body,
+            attempts: row.attempts,
+            lastError: row.lastError,
+            updatedAt: row.updatedAt,
+          },
+        })
+        .run()
+    },
+    deletePendingSkill(userId: string, name: string) {
+      orm
+        .delete(pendingSkills)
+        .where(
+          and(eq(pendingSkills.userId, userId), eq(pendingSkills.name, name)),
+        )
+        .run()
+    },
     sandboxProfiles(userId: string): SandboxProfileRow[] {
       return orm
         .select()
@@ -3698,6 +3752,7 @@ export function openDatabase(path: string) {
         tx.delete(threadPersonas).where(eq(threadPersonas.userId, userId)).run()
         tx.delete(threadModels).where(eq(threadModels.userId, userId)).run()
         tx.delete(sandboxThreads).where(eq(sandboxThreads.userId, userId)).run()
+        tx.delete(pendingSkills).where(eq(pendingSkills.userId, userId)).run()
         tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
@@ -3728,6 +3783,7 @@ export function openDatabase(path: string) {
         tx.delete(sandboxProfiles)
           .where(eq(sandboxProfiles.userId, userId))
           .run()
+        tx.delete(pendingSkills).where(eq(pendingSkills.userId, userId)).run()
         tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadDirAssignments)

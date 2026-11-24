@@ -296,6 +296,30 @@ export const sandboxThreads = sqliteTable(
   ],
 )
 
+// Authored custom skills accepted durably while OpenViking could not take
+// the write (model quota 429 during its indexing calls, timeouts — #135
+// cluster). The control plane serves read-back from this row and retries
+// the upstream save on wake and on the next read, so an authored skill is
+// never lost to an optional indexing step. Deleted once the save lands.
+export const pendingSkills = sqliteTable(
+  "pending_skills",
+  {
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    previousName: text("previous_name").notNull().default(""),
+    description: text("description").notNull(),
+    body: text("body").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error").notNull().default(""),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.name] }),
+    index("pending_skills_user").on(table.userId, table.createdAt),
+  ],
+)
+
 // Dashboard messages queued behind a running turn, persisted so the
 // waiting list survives a reload or a closed browser (it used to live in
 // dashboard state only). The control plane flushes the head of a

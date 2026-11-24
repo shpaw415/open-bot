@@ -53,6 +53,7 @@ import {
   stopPluginPageServer,
 } from "./plugin-pages"
 import { refreshMentionClashes } from "./references"
+import { flushPendingSkills } from "./skills-routes"
 import { createVikingSkills, skillFileContent } from "./viking-skills"
 import { vikingUserKey } from "./viking-user"
 
@@ -169,6 +170,14 @@ async function vikingSkills(user: User, db: Db) {
   const desktop = await ensureAgentDesktop(user, db)
   const base = await endpoint(user.id, "viking", 1933)
   return createVikingSkills(base, vikingUserKey(desktop.vikingKey))
+}
+
+// Pending skill saves (accepted while OpenViking was quota-blocked, #135)
+// sync upstream on wake — before the mirror resync below reads the list.
+export async function flushPendingVikingSkills(db: Db, userId: string) {
+  const user = db.userById(userId)
+  if (!user) return
+  await flushPendingSkills(db, user, () => vikingSkills(user, db))
 }
 
 // Re-mirrors every OpenViking skill to the desktop disk on wake, so skills

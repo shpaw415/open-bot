@@ -3,8 +3,8 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { openDatabase } from "@open-bot/db"
-import { HttpError } from "./http-error"
 import type { EventHub } from "./events"
+import { HttpError } from "./http-error"
 import { handleSkills, type VikingSkills } from "./skills-routes"
 import type { SkillDetail } from "./viking-skills"
 
@@ -77,146 +77,210 @@ function req(url: string, method: string, body?: unknown): Request {
 }
 
 describe("handleSkills", () => {
-  test(
-    "save stores the skill and emits catalog.changed; get reads it back",
-    async () => {
-      const db = open()
-      seedUser(db)
-      const user = userOf(db)
-      const fake = fakeClient()
-      const call = (url: string, method: string, body?: unknown) =>
-        handleSkills(
-          req(url, method, body),
-          new URL(`http://control${url}`),
-          db,
-          user,
-          hub,
-          async () => fake.client,
-        )
-
-      const saved = await call("/api/skills", "PUT", {
-        name: "logo-cutout",
-        description: "Cut a logo out",
-        body: "# Logo cutout\n\nsteps",
-      })
-      expect(saved.status).toBe(200)
-      expect(hubEvents.at(-1)).toEqual({
-        userId: "u",
-        type: "catalog.changed",
-      })
-
-      const detail = await call("/api/skills?name=logo-cutout", "GET")
-      expect(await detail.json()).toEqual({
-        name: "logo-cutout",
-        description: "Cut a logo out",
-        body: "# Logo cutout\n\nsteps",
-      })
-
-      const list = await call("/api/skills", "GET")
-      const listed = (await list.json()).skills as {
-        name: string
-        seed: boolean
-        group: string | null
-      }[]
-      const hit = listed.find((skill) => skill.name === "logo-cutout")
-      expect(hit?.seed).toBe(false)
-      expect(hit?.group).toBeNull()
-    },
-  )
-
-  test(
-    "rename carries directory membership; delete drops it",
-    async () => {
-      const db = open()
-      seedUser(db)
-      const user = userOf(db)
-      const fake = fakeClient()
-      fake.store.set("old-name", {
-        name: "old-name",
-        description: "d",
-        body: "b",
-      })
-      db.createCatalogDir({
-        id: "dir_1",
-        userId: "u",
-        kind: "skill",
-        label: "Research",
-        position: 0,
-        createdAt: 1,
-      })
-      db.setCatalogDirItem("u", "skill", "old-name", "dir_1")
-      const call = (url: string, method: string, body?: unknown) =>
-        handleSkills(
-          req(url, method, body),
-          new URL(`http://control${url}`),
-          db,
-          user,
-          hub,
-          async () => fake.client,
-        )
-
-      const renamed = await call("/api/skills", "PUT", {
-        name: "new-name",
-        description: "d",
-        body: "b",
-        previousName: "old-name",
-      })
-      expect(renamed.status).toBe(200)
-      expect(fake.store.has("old-name")).toBe(false)
-      expect(fake.store.has("new-name")).toBe(true)
-      expect(
-        db.catalogDirItems("u", "skill").find((row) => row.name === "new-name")
-          ?.dirId,
-      ).toBe("dir_1")
-      expect(db.catalogDirItems("u", "skill").length).toBe(1)
-
-      await call("/api/skills", "DELETE", { name: "new-name" })
-      expect(db.catalogDirItems("u", "skill").length).toBe(0)
-      expect(hubEvents.at(-1)).toEqual({
-        userId: "u",
-        type: "catalog.changed",
-      })
-    },
-  )
-
-  test(
-    "invalid names and bodies are rejected without touching OpenViking",
-    async () => {
-      const db = open()
-      seedUser(db)
-      const user = userOf(db)
-      const fake = fakeClient()
-
-      const reserved = await handleSkills(
-        req("/api/skills", "PUT", {
-          name: "cron",
-          description: "d",
-          body: "b",
-        }),
-        new URL("http://control/api/skills"),
+  test("save stores the skill and emits catalog.changed; get reads it back", async () => {
+    const db = open()
+    seedUser(db)
+    const user = userOf(db)
+    const fake = fakeClient()
+    const call = (url: string, method: string, body?: unknown) =>
+      handleSkills(
+        req(url, method, body),
+        new URL(`http://control${url}`),
         db,
         user,
         hub,
         async () => fake.client,
       )
-      expect(reserved.status).toBe(400)
 
-      const missingDescription = await handleSkills(
-        req("/api/skills", "PUT", {
-          name: "okay-name",
-          description: "",
-          body: "b",
-        }),
-        new URL("http://control/api/skills"),
+    const saved = await call("/api/skills", "PUT", {
+      name: "logo-cutout",
+      description: "Cut a logo out",
+      body: "# Logo cutout\n\nsteps",
+    })
+    expect(saved.status).toBe(200)
+    expect(hubEvents.at(-1)).toEqual({
+      userId: "u",
+      type: "catalog.changed",
+    })
+
+    const detail = await call("/api/skills?name=logo-cutout", "GET")
+    expect(await detail.json()).toEqual({
+      name: "logo-cutout",
+      description: "Cut a logo out",
+      body: "# Logo cutout\n\nsteps",
+    })
+
+    const list = await call("/api/skills", "GET")
+    const listed = (await list.json()).skills as {
+      name: string
+      seed: boolean
+      group: string | null
+    }[]
+    const hit = listed.find((skill) => skill.name === "logo-cutout")
+    expect(hit?.seed).toBe(false)
+    expect(hit?.group).toBeNull()
+  })
+
+  test("rename carries directory membership; delete drops it", async () => {
+    const db = open()
+    seedUser(db)
+    const user = userOf(db)
+    const fake = fakeClient()
+    fake.store.set("old-name", {
+      name: "old-name",
+      description: "d",
+      body: "b",
+    })
+    db.createCatalogDir({
+      id: "dir_1",
+      userId: "u",
+      kind: "skill",
+      label: "Research",
+      position: 0,
+      createdAt: 1,
+    })
+    db.setCatalogDirItem("u", "skill", "old-name", "dir_1")
+    const call = (url: string, method: string, body?: unknown) =>
+      handleSkills(
+        req(url, method, body),
+        new URL(`http://control${url}`),
         db,
         user,
         hub,
-        async () => {
-          throw new Error("must not be called")
-        },
+        async () => fake.client,
       )
-      expect(missingDescription.status).toBe(400)
-      expect(fake.store.size).toBe(0)
-    },
-  )
+
+    const renamed = await call("/api/skills", "PUT", {
+      name: "new-name",
+      description: "d",
+      body: "b",
+      previousName: "old-name",
+    })
+    expect(renamed.status).toBe(200)
+    expect(fake.store.has("old-name")).toBe(false)
+    expect(fake.store.has("new-name")).toBe(true)
+    expect(
+      db.catalogDirItems("u", "skill").find((row) => row.name === "new-name")
+        ?.dirId,
+    ).toBe("dir_1")
+    expect(db.catalogDirItems("u", "skill").length).toBe(1)
+
+    await call("/api/skills", "DELETE", { name: "new-name" })
+    expect(db.catalogDirItems("u", "skill").length).toBe(0)
+    expect(hubEvents.at(-1)).toEqual({
+      userId: "u",
+      type: "catalog.changed",
+    })
+  })
+
+  test("a quota-blocked save is stored pending, reads back, and syncs on later get (#135)", async () => {
+    const db = open()
+    seedUser(db)
+    const user = userOf(db)
+    const fake = fakeClient()
+    let quotaBlocked = true
+    const flaky = {
+      ...fake.client,
+      async save(input: SkillDetail, previousName = "") {
+        if (quotaBlocked)
+          throw new HttpError(429, "model quota exceeded", "viking_skills")
+        return fake.client.save(input, previousName)
+      },
+    } as VikingSkills
+    const call = (url: string, method: string, body?: unknown) =>
+      handleSkills(
+        req(url, method, body),
+        new URL(`http://control${url}`),
+        db,
+        user,
+        hub,
+        async () => flaky,
+      )
+
+    const saved = await call("/api/skills", "PUT", {
+      name: "quota-skill",
+      description: "Saved under quota",
+      body: "# Quota\n\nsteps",
+    })
+    expect(saved.status).toBe(200)
+    const receipt = (await saved.json()) as Record<string, unknown>
+    expect(receipt.status).toBe("pending")
+    expect(receipt.pending).toBe(true)
+    expect(fake.store.has("quota-skill")).toBe(false)
+    expect(db.pendingSkill("u", "quota-skill")?.body).toContain("steps")
+
+    // Read-back serves the durable pending copy while OpenViking still 429s.
+    const pendingRead = await call("/api/skills?name=quota-skill", "GET")
+    expect(pendingRead.status).toBe(200)
+    const pendingDetail = (await pendingRead.json()) as Record<string, unknown>
+    expect(pendingDetail.body).toContain("steps")
+    expect(pendingDetail.pending).toBe(true)
+
+    // Once quota clears, the next get flushes the pending save upstream.
+    quotaBlocked = false
+    const synced = await call("/api/skills?name=quota-skill", "GET")
+    expect(synced.status).toBe(200)
+    expect(fake.store.get("quota-skill")?.body).toContain("steps")
+    expect(db.pendingSkill("u", "quota-skill")).toBeNull()
+
+    // A non-retryable rejection stores nothing pending.
+    const bad = {
+      ...fake.client,
+      async save() {
+        throw new HttpError(400, "skill is invalid", "skill_invalid")
+      },
+    } as VikingSkills
+    const rejected = await handleSkills(
+      req("/api/skills", "PUT", {
+        name: "bad-skill",
+        description: "d",
+        body: "b",
+      }),
+      new URL("http://control/api/skills"),
+      db,
+      user,
+      hub,
+      async () => bad,
+    )
+    expect(rejected.status).toBe(400)
+    expect(db.pendingSkill("u", "bad-skill")).toBeNull()
+  })
+
+  test("invalid names and bodies are rejected without touching OpenViking", async () => {
+    const db = open()
+    seedUser(db)
+    const user = userOf(db)
+    const fake = fakeClient()
+
+    const reserved = await handleSkills(
+      req("/api/skills", "PUT", {
+        name: "cron",
+        description: "d",
+        body: "b",
+      }),
+      new URL("http://control/api/skills"),
+      db,
+      user,
+      hub,
+      async () => fake.client,
+    )
+    expect(reserved.status).toBe(400)
+
+    const missingDescription = await handleSkills(
+      req("/api/skills", "PUT", {
+        name: "okay-name",
+        description: "",
+        body: "b",
+      }),
+      new URL("http://control/api/skills"),
+      db,
+      user,
+      hub,
+      async () => {
+        throw new Error("must not be called")
+      },
+    )
+    expect(missingDescription.status).toBe(400)
+    expect(fake.store.size).toBe(0)
+  })
 })
