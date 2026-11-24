@@ -547,8 +547,9 @@ case "$cmd" in
             "\n" + "revive the desktop, then rerun the council"
           elif (.members | length) == 0 then "(no members)"
           else
+            (.statusVerified != false) as $verified |
             .members[] |
-            "- [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(.status)\(if .title != "" then " — " + .title else "" end))" +
+            "- [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(if .status == "unknown" and $verified == false then "unknown — could not verify" else .status end)\(if .title != "" then " — " + .title else "" end))" +
             (if ([(.persona // ""), (.model // ""), (.effort // "")] | map(select(. != "")) | length) > 0 then " [" + ([(.persona // ""), (.model // ""), (.effort // "")] | map(select(. != "")) | join(" · ")) + "]" else "" end) +
             (if .stalled then "\n    STALLED: last turn did not end cleanly (\(.endDetail // .endState)) — verify deliverables, relaunch with ob-thread post" else "" end) +
             (if .lastReply != "" then "\n    " + (.lastReply | gsub("\n"; "\n    ") | .[0:280]) else "" end)
@@ -567,10 +568,17 @@ case "$cmd" in
         # Closing deletes every member thread — refuse while one is still
         # working so unfinished work is not silently lost.
         status_out=$(request GET "/api/councils/$(urlencode "$name")/status" 2>/dev/null) || status_out=""
-        busy=$(printf '%s' "$status_out" | jq -r '[.members[]? | select(.status != "idle")] | length' 2>/dev/null) || busy=""
+        # `unknown` is "could not verify" (#139), never confirmed running
+        # work. Only a verified non-idle, non-unknown state is busy.
+        busy=$(printf '%s' "$status_out" | jq -r '[.members[]? | select(.status != "idle" and .status != "unknown")] | length' 2>/dev/null) || busy=""
+        unverified=$(printf '%s' "$status_out" | jq -r 'if .statusVerified == false then ([.members[]? | select(.status == "unknown")] | length) else 0 end' 2>/dev/null) || unverified=""
         if [ -z "$force" ] && [ -n "$busy" ] && [ "$busy" -gt 0 ]; then
           echo "ob-thread: $busy member(s) of $name are still running — check \`ob-thread council status $name\`, wait for them to finish, or pass --force to close anyway" >&2
-          printf '%s' "$status_out" | jq -r '.members[]? | select(.status != "idle") | "  - [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(.status))"' >&2
+          printf '%s' "$status_out" | jq -r '.members[]? | select(.status != "idle" and .status != "unknown") | "  - [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(.status))"' >&2
+          exit 1
+        fi
+        if [ -z "$force" ] && [ -n "$unverified" ] && [ "$unverified" -gt 0 ]; then
+          echo "ob-thread: could not verify $unverified member(s) of $name (status unknown) — that is not confirmed running work; retry \`ob-thread council status $name\` in a moment, or pass --force to close anyway" >&2
           exit 1
         fi
         out=$(request DELETE "/api/councils/$(urlencode "$name")")

@@ -172,6 +172,28 @@ export function handleCouncils(
   return null
 }
 
+// One /session/status read, retried once: a single transient failure used to
+// paint every member `unknown` (#139/#144/#149) even while /session and
+// message reads on the same desktop worked. Only a 2xx JSON object counts as
+// a verified status map — a 5xx body must never read as "everyone idle".
+async function fetchSessionStatusMap(
+  base: string,
+  headers: Record<string, string> | undefined,
+): Promise<Record<string, { type?: string }> | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 250))
+    const res = await fetch(`${base}/session/status`, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null)
+    if (!res?.ok) continue
+    const body = await res.json().catch(() => null)
+    if (body && typeof body === "object" && !Array.isArray(body))
+      return body as Record<string, { type?: string }>
+  }
+  return null
+}
+
 // Per-member live status for the coordinating agent (and the dashboard): one
 // call that pairs each member's idle/busy state with the tail of its last
 // assistant reply, so a wake-up can read results without N transcript fetches.
@@ -222,6 +244,10 @@ async function councilStatus(
   // kill used to leave every member reading neutral `unknown`/`idle` while
   // nothing ran at all.
   let desktop: Record<string, unknown> | null = null
+  // False when member states could not be verified (desktop sleeping, or the
+  // status endpoint failed). `unknown` then means "unverified" — callers must
+  // never present it as running work (#139).
+  let statusVerified = false
   try {
     const phase = await desktopPhase(user.id)
     if (phase !== "running") {
@@ -233,6 +259,7 @@ async function councilStatus(
           exitCode: death.exitCode,
         }
         for (const member of members) member.status = "desktop_down"
+        statusVerified = true
       }
     }
     if (!desktop && phase === "running" && rows.length > 0) {
@@ -243,20 +270,14 @@ async function councilStatus(
             authorization: `Basic ${Buffer.from(`opencode:${desktop.opencodePassword}`).toString("base64")}`,
           }
         : undefined
-      const [statusRes, sessionsRes] = await Promise.all([
-        fetch(`${base}/session/status`, {
-          headers,
-          signal: AbortSignal.timeout(10_000),
-        }).catch(() => null),
+      const [statusMap, sessionsRes] = await Promise.all([
+        fetchSessionStatusMap(base, headers),
         fetch(`${base}/session`, {
           headers,
           signal: AbortSignal.timeout(10_000),
         }).catch(() => null),
       ])
-      const statusMap = (await statusRes?.json().catch(() => null)) as Record<
-        string,
-        { type?: string }
-      > | null
+      statusVerified = statusMap !== null
       const sessions = (await sessionsRes?.json().catch(() => null)) as
         | { id?: unknown; title?: unknown }[]
         | null
@@ -293,7 +314,12 @@ async function councilStatus(
   } catch {
     // keep the degraded rows; status is a convenience view
   }
-  return json({ name: council.name, members, ...(desktop ? { desktop } : {}) })
+  return json({
+    name: council.name,
+    statusVerified,
+    members,
+    ...(desktop ? { desktop } : {}),
+  })
 }
 
 // One call for the viewer pane: membership from the control plane plus the
