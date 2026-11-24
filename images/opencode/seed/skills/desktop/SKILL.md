@@ -83,9 +83,12 @@ ob-page --session SESSION read
 ob-page --session SESSION scroll down 3
 ob-page --session SESSION click 7
 ob-page --session SESSION type 3 "some text"
+producer-of-code | ob-page --session SESSION type-secret 4 --origin https://accounts.example
 ```
 
 `read` prints one JSON line: url, title, viewport, scroll position, and visible controls with stable ids. Text-entry targets (composers, search boxes, form fields) are always included even when content controls flood the window. Use those ids for `click` and `type`. `read` again after the page moves; ids die with a navigation. Clicks are occlusion-checked; a covered target says `target covered`.
+
+For a password or one-time code the user authorized for this sign-in, use `type-secret`, never `type`: pipe the exact value on stdin from the command/tool that produces it so it never becomes a command argument. The expected `--origin` is mandatory and checked exactly before and at focus; the target must be a credential field, the page must be HTTPS (HTTP only on loopback), and the receipt contains no page text or secret. Do not spell the secret in a heredoc, echo/printf literal, `ob-page type`, an `ob-nav` goal, or your reply.
 
 ## Login and human checks — finish them yourself
 

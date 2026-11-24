@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test"
 import { normalize } from "./cdp"
-import { parseUploadArgs, shapeView } from "./page"
+import {
+  parseTypeSecretArgs,
+  parseUploadArgs,
+  readSecretInput,
+  secretOriginError,
+  shapeView,
+} from "./page"
 
 const probe = {
   url: "https://example.test/",
@@ -95,6 +101,60 @@ test("read view carries the mask, never the password value (#123)", () => {
   expect(JSON.stringify(view)).not.toContain("autofilled-secret")
   expect(view.elements[0]?.value).toBe("••••••••")
   expect(view.elements[0]?.sensitive).toBe(true)
+})
+
+test("type-secret takes only an element id and exact expected origin (#148)", () => {
+  expect(
+    parseTypeSecretArgs(["n3", "--origin", "https://accounts.example.test"]),
+  ).toEqual({ id: "n3", origin: "https://accounts.example.test" })
+  expect(() => parseTypeSecretArgs(["n3"])).toThrow("usage:")
+  expect(() =>
+    parseTypeSecretArgs(["n3", "--origin", "https://x.test", "123456"]),
+  ).toThrow("usage:")
+  expect(() => parseTypeSecretArgs(["n3", "--text", "123456"])).toThrow(
+    "usage:",
+  )
+})
+
+test("secret origin check is exact and secure by default (#148)", () => {
+  expect(
+    secretOriginError(
+      "https://accounts.example.test/login",
+      "https://accounts.example.test/verify?next=1",
+    ),
+  ).toBeNull()
+  expect(
+    secretOriginError(
+      "accounts.example.test",
+      "https://accounts.example.test/",
+    ),
+  ).toBeNull()
+  expect(
+    secretOriginError("https://example.test", "https://evil.example.test/"),
+  ).toContain("origin mismatch")
+  expect(
+    secretOriginError("http://example.test", "http://example.test/"),
+  ).toContain("https")
+  expect(
+    secretOriginError("http://127.0.0.1:8131", "http://127.0.0.1:8131/login"),
+  ).toBeNull()
+  expect(secretOriginError("file:///tmp/a", "file:///tmp/a")).not.toBeNull()
+})
+
+test("secret stdin is bounded and errors never echo it (#148)", async () => {
+  async function* chunks(...parts: string[]) {
+    for (const part of parts) yield new TextEncoder().encode(part)
+  }
+  expect(await readSecretInput(chunks("123", "456\n"))).toBe("123456")
+  expect(await readSecretInput(chunks(" pass phrase \n"))).toBe(" pass phrase ")
+  await expect(readSecretInput(chunks(""))).rejects.toThrow("no secret")
+  const secret = "SYNTHETIC-SECRET-148"
+  await expect(
+    readSecretInput(chunks(`${secret}\u0000tail`)),
+  ).rejects.not.toThrow(secret)
+  await expect(readSecretInput(chunks("x".repeat(2048)))).rejects.toThrow(
+    "too long",
+  )
 })
 
 test("upload args take an element id plus at least one file (#82)", () => {
