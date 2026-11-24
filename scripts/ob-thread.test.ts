@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import {
   chmodSync,
   mkdirSync,
@@ -69,6 +70,10 @@ async function argsOf(home: string) {
 
 async function bodyOf(home: string) {
   return JSON.parse(await Bun.file(join(home, "curl.body")).text())
+}
+
+function dedupeId(target: string, text: string) {
+  return createHash("sha256").update(`${target}\n${text}`).digest("hex")
 }
 
 test("start posts the title, display flag, and message", async () => {
@@ -600,6 +605,31 @@ test("post sends the message body to the thread post route", async () => {
     expect(args.join(" ")).toContain("/api/threads/t1/post")
     expect(await bodyOf(home)).toEqual({
       message: "Stop editing and report",
+      dedupeId: dedupeId("t1", "Stop editing and report"),
+    })
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("relay sends the handle and text to the scoped relay route (#134)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ob-thread-"))
+  try {
+    fakeCurl(home)
+    const result = await run(home, [
+      "relay",
+      "obr_synthetic",
+      "Voice transcript",
+      "is ready",
+    ])
+    expect(result.code).toBe(0)
+    const args = await argsOf(home)
+    expect(args.join(" ")).toContain("/api/thread-relay")
+    expect(args.join(" ")).not.toContain("/api/threads/")
+    expect(await bodyOf(home)).toEqual({
+      token: "obr_synthetic",
+      message: "Voice transcript is ready",
+      dedupeId: dedupeId("obr_synthetic", "Voice transcript is ready"),
     })
   } finally {
     rmSync(home, { recursive: true, force: true })
@@ -748,6 +778,7 @@ test("post --model/--effort switch rides the message body", async () => {
       message: "Now the hard part",
       model: "prov/reasoner",
       effort: "high",
+      dedupeId: dedupeId("t1", "Now the hard part"),
     })
   } finally {
     rmSync(home, { recursive: true, force: true })
@@ -760,10 +791,16 @@ test("post keeps flag-like words inside the text, and -- starts the text", async
     fakeCurlWithModel(home)
     const mid = await run(home, ["post", "t1", "explain --model flags"])
     expect(mid.code).toBe(0)
-    expect(await bodyOf(home)).toEqual({ message: "explain --model flags" })
+    expect(await bodyOf(home)).toEqual({
+      message: "explain --model flags",
+      dedupeId: dedupeId("t1", "explain --model flags"),
+    })
     const headed = await run(home, ["post", "t1", "--", "--model is a flag"])
     expect(headed.code).toBe(0)
-    expect(await bodyOf(home)).toEqual({ message: "--model is a flag" })
+    expect(await bodyOf(home)).toEqual({
+      message: "--model is a flag",
+      dedupeId: dedupeId("t1", "--model is a flag"),
+    })
     const unknown = await run(home, ["post", "t1", "--stealth", "hi"])
     expect(unknown.code).toBe(2)
   } finally {

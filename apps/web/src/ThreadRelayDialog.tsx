@@ -196,7 +196,9 @@ export function ThreadRelayDialog({
               variant="contained"
               onClick={() => void create()}
               disabled={creating}
-              startIcon={creating ? <CircularProgress size={18} /> : undefined}
+              startIcon={
+                creating ? <CircularProgress size="18px" /> : undefined
+              }
             >
               {creating
                 ? THREADS_UI.voiceRelayCreating
@@ -237,7 +239,7 @@ export function ThreadRelayDialog({
               {THREADS_UI.voiceRelayActive}
             </Typography>
             {loading ? (
-              <CircularProgress size={22} sx={{ mt: 1 }} />
+              <CircularProgress size="22px" sx={{ mt: 1 }} />
             ) : grants.length === 0 ? (
               <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
                 {THREADS_UI.voiceRelayNone}
