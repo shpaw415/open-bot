@@ -91,12 +91,6 @@ import {
   visibleText,
 } from "./chat-view"
 import { Chip } from "./chip"
-import {
-  mergeSandboxSessions,
-  type SandboxProfileEntry,
-  sandboxExpiryLabel,
-  type SandboxThreadInfo,
-} from "./sandbox"
 import { ComposerPickers } from "./composer-controls"
 import {
   clearComposerSeed,
@@ -238,7 +232,14 @@ import {
   ScreenPane,
   ScreenStage,
 } from "./ScreenView"
+import {
+  mergeSandboxSessions,
+  type SandboxProfileEntry,
+  type SandboxThreadInfo,
+  sandboxExpiryLabel,
+} from "./sandbox"
 import Stack from "./stack"
+import { ThreadRelayDialog } from "./ThreadRelayDialog"
 import { Tip } from "./Tip"
 import { STATES, THREAD, THREADS_UI } from "./texts"
 import { expandFolder, parseCollapsedFolders } from "./thread-folders"
@@ -2960,12 +2961,13 @@ export function Workspace({
   const [sandboxBySession, setSandboxBySession] = useState<
     Map<string, SandboxThreadInfo>
   >(() => new Map())
-  const [sandboxProfiles, setSandboxProfiles] = useState<
-    SandboxProfileEntry[]
-  >([])
+  const [sandboxProfiles, setSandboxProfiles] = useState<SandboxProfileEntry[]>(
+    [],
+  )
   const [newSandboxProfile, setNewSandboxProfile] = useState("")
   const [sandboxNotice, setSandboxNotice] = useState("")
   const [renameTarget, setRenameTarget] = useState<SessionInfo | null>(null)
+  const [relayTarget, setRelayTarget] = useState<SessionInfo | null>(null)
   const [renameTitle, setRenameTitle] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<SessionInfo | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
@@ -6516,7 +6518,9 @@ export function Workspace({
                           label=""
                           value={newPersonaId}
                           disabled={actionBusy}
-                          sx={mobile ? { flex: 1, minWidth: 0 } : { width: 190 }}
+                          sx={
+                            mobile ? { flex: 1, minWidth: 0 } : { width: 190 }
+                          }
                           onSelect={setNewPersonaId}
                         >
                           {(personas.length
@@ -6543,7 +6547,9 @@ export function Workspace({
                           label=""
                           value={newSandboxProfile ? "" : newThreadDir}
                           disabled={actionBusy || Boolean(newSandboxProfile)}
-                          sx={mobile ? { flex: 1, minWidth: 0 } : { width: 190 }}
+                          sx={
+                            mobile ? { flex: 1, minWidth: 0 } : { width: 190 }
+                          }
                           onSelect={setNewThreadDir}
                         >
                           {[
@@ -6566,10 +6572,14 @@ export function Workspace({
                         }`}
                       >
                         <CheckBox
-                          checked={newSandboxProfile ? false : newUnlimitedSteps}
+                          checked={
+                            newSandboxProfile ? false : newUnlimitedSteps
+                          }
                           aria-label="Sans limite d'étapes"
                           disabled={actionBusy || Boolean(newSandboxProfile)}
-                          onChange={() => setNewUnlimitedSteps((value) => !value)}
+                          onChange={() =>
+                            setNewUnlimitedSteps((value) => !value)
+                          }
                           sx={mobile ? { flexShrink: 0 } : undefined}
                         />
                         <span
@@ -6591,7 +6601,9 @@ export function Workspace({
                           label=""
                           value={newSandboxProfile}
                           disabled={actionBusy}
-                          sx={mobile ? { flex: 1, minWidth: 0 } : { width: 190 }}
+                          sx={
+                            mobile ? { flex: 1, minWidth: 0 } : { width: 190 }
+                          }
                           onSelect={setNewSandboxProfile}
                         >
                           {[
@@ -7390,6 +7402,19 @@ export function Workspace({
                   <FolderIcon />
                   <ListItemText primary={THREADS_UI.moveToFolder} />
                 </ListItemButton>
+                {!menuThread.parentID &&
+                !sandboxBySession.has(menuThread.id) ? (
+                  <ListItemButton
+                    disabled={phase !== "running"}
+                    onClick={() => {
+                      setRelayTarget(menuThread)
+                      setMenuThread(null)
+                    }}
+                  >
+                    <MicIcon />
+                    <ListItemText primary={THREADS_UI.voiceRelay} />
+                  </ListItemButton>
+                ) : null}
                 {threadBusy(menuThread.id) ? (
                   <ListItemButton
                     onClick={() => void abortThread(menuThread.id)}
@@ -7489,6 +7514,15 @@ export function Workspace({
               </>
             ) : null}
           </Menu>
+
+          <ThreadRelayDialog
+            target={
+              relayTarget
+                ? { id: relayTarget.id, title: threadTitle(relayTarget) }
+                : null
+            }
+            onClose={() => setRelayTarget(null)}
+          />
 
           {renameTarget ? (
             <AccessibleDialog
