@@ -12,10 +12,11 @@ import {
   nextActiveAfterClose,
   normalizeTarget,
   recoveryAdvice,
+  STATE_SCRIPT,
   schemeError,
   shapeIdbEntry,
-  storageRequest,
   shapeState,
+  storageRequest,
   tabArgError,
   tabsLine,
   verbFrom,
@@ -136,6 +137,33 @@ test("page state shapes to a flat json line", () => {
     heading: "",
     text: "",
   })
+})
+
+test("state script reports the first rendered h1, not a hidden one (#136)", () => {
+  const el = (text: string, visible: boolean) => ({
+    textContent: text,
+    checkVisibility: () => visible,
+    getClientRects: () => (visible ? [{}] : []),
+  })
+  const run = new Function(
+    "document",
+    "location",
+    `return ${STATE_SCRIPT}`,
+  ) as (doc: unknown, loc: unknown) => { heading: string }
+  const doc = (h1s: ReturnType<typeof el>[]) => ({
+    title: "T",
+    body: { innerText: "body" },
+    querySelector: (s: string) => (s === "h1" ? (h1s[0] ?? null) : null),
+    querySelectorAll: (s: string) => (s === "h1" ? h1s : []),
+  })
+  expect(
+    run(doc([el("Hidden route", false), el("Active route", true)]), {
+      href: "https://x.test/",
+    }).heading,
+  ).toBe("Active route")
+  expect(
+    run(doc([el("Hidden only", false)]), { href: "https://x.test/" }).heading,
+  ).toBe("")
 })
 
 test("usage names every verb", () => {
