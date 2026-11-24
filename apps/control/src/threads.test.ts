@@ -38,9 +38,13 @@ mock.module("./docker", () => ({
 const {
   WORKER_TITLE_PREFIX,
   handleOpencodeRead,
+  handleThreadRelay,
+  handleThreadRelayGrants,
   handleThreads,
   hiddenThreadTitle,
   isOpencodeReadRequest,
+  isThreadRelayGrantRequest,
+  isThreadRelayRequest,
   isThreadRequest,
   mergeThreadModelUpdate,
   parseThreadModelUpdate,
@@ -2204,6 +2208,203 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
     expect(
       calls.filter((call) => call.url.endsWith("/session/p1/prompt_async")),
     ).toHaveLength(2)
+  })
+
+  test("relay handle delivers once to its exact ordinary chat and nowhere else (#134)", async () => {
+    installManageFetch()
+    type GrantRow = {
+      id: string
+      userId: string
+      targetSessionId: string
+      tokenHash: string
+      remainingUses: number
+      createdAt: number
+      expiresAt: number
+      revokedAt: number | null
+      lastUsedAt: number | null
+    }
+    const grants = new Map<string, GrantRow>()
+    const relayDb = Object.assign(managedDb(["p1"]), {
+      createThreadRelayGrant(row: GrantRow) {
+        grants.set(row.id, { ...row })
+      },
+      threadRelayGrants(userId: string, targetSessionId?: string) {
+        return [...grants.values()].filter(
+          (row) =>
+            row.userId === userId &&
+            (!targetSessionId || row.targetSessionId === targetSessionId),
+        )
+      },
+      threadRelayGrantById(userId: string, id: string) {
+        const row = grants.get(id)
+        return row?.userId === userId ? { ...row } : null
+      },
+      threadRelayGrantByHash(userId: string, tokenHash: string) {
+        const row = [...grants.values()].find(
+          (item) => item.userId === userId && item.tokenHash === tokenHash,
+        )
+        return row ? { ...row } : null
+      },
+      claimThreadRelayGrant(userId: string, id: string, now: number) {
+        const row = grants.get(id)
+        if (
+          !row ||
+          row.userId !== userId ||
+          row.revokedAt !== null ||
+          row.expiresAt <= now ||
+          row.remainingUses <= 0
+        )
+          return null
+        row.remainingUses -= 1
+        row.lastUsedAt = now
+        return { ...row }
+      },
+      releaseThreadRelayGrant(userId: string, id: string) {
+        const row = grants.get(id)
+        if (row?.userId === userId) row.remainingUses += 1
+      },
+      revokeThreadRelayGrant(userId: string, id: string, now: number) {
+        const row = grants.get(id)
+        if (!row || row.userId !== userId || row.revokedAt !== null)
+          return false
+        row.revokedAt = now
+        return true
+      },
+    }) as unknown as Db
+    const grantReq = (
+      path: string,
+      method: "GET" | "POST" | "DELETE",
+      body?: unknown,
+    ) =>
+      handleThreadRelayGrants(
+        new Request(`http://control${path}`, {
+          method,
+          headers: { "content-type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+        new URL(`http://control${path}`),
+        relayDb,
+        agent,
+      )
+    const relayReq = (body: unknown) =>
+      handleThreadRelay(
+        new Request("http://control/api/thread-relay", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        new URL("http://control/api/thread-relay"),
+        relayDb,
+        agent,
+      )
+
+    expect(
+      isThreadRelayGrantRequest("/api/threads/u1/relay-grants", "POST"),
+    ).toBe(true)
+    expect(
+      isThreadRelayGrantRequest("/api/thread-relay-grants/g1", "DELETE"),
+    ).toBe(true)
+    expect(isThreadRelayGrantRequest("/api/thread-relay", "POST")).toBe(false)
+    expect(isThreadRelayRequest("/api/thread-relay", "POST")).toBe(true)
+    expect(isThreadRelayRequest("/api/thread-relay", "GET")).toBe(false)
+
+    expect(
+      (await grantReq("/api/threads/w1/relay-grants", "POST", {})).status,
+    ).toBe(400)
+    expect(
+      (
+        await grantReq("/api/threads/u1/relay-grants", "POST", {
+          ttlMinutes: 0,
+        })
+      ).status,
+    ).toBe(400)
+    expect(
+      (await grantReq("/api/threads/u1/relay-grants", "POST", { maxUses: 21 }))
+        .status,
+    ).toBe(400)
+
+    const minted = await grantReq("/api/threads/u1/relay-grants", "POST", {
+      ttlMinutes: 30,
+      maxUses: 1,
+    })
+    expect(minted.status).toBe(201)
+    const grant = (await minted.json()) as {
+      id: string
+      targetSessionId: string
+      token: string
+      remainingUses: number
+    }
+    expect(grant.targetSessionId).toBe("u1")
+    expect(grant.token.startsWith("obr_")).toBe(true)
+    const stored = grants.get(grant.id)
+    expect(stored?.tokenHash).not.toBe(grant.token)
+    expect(stored?.tokenHash).toHaveLength(64)
+
+    const list = await grantReq("/api/threads/u1/relay-grants", "GET")
+    expect(list.status).toBe(200)
+    const listBody = JSON.stringify(await list.json())
+    expect(listBody).not.toContain(grant.token)
+    expect(listBody).not.toContain(stored?.tokenHash ?? "missing-hash")
+
+    const delivered = await relayReq({
+      token: grant.token,
+      message: "Voice transcript is ready",
+      dedupeId: "relay-delivery-134",
+    })
+    expect(delivered.status).toBe(200)
+    expect(await delivered.json()).toEqual({
+      targetSessionId: "u1",
+      delivered: true,
+      remainingUses: 0,
+    })
+    const prompts = calls.filter((call) => call.url.includes("/prompt_async"))
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]?.url.endsWith("/session/u1/prompt_async")).toBe(true)
+    expect(String(prompts[0]?.init?.body)).toContain("[voice relay]")
+    expect(String(prompts[0]?.init?.body)).toContain(
+      "Voice transcript is ready",
+    )
+
+    const deduped = await relayReq({
+      token: grant.token,
+      message: "Voice transcript is ready",
+      dedupeId: "relay-delivery-134",
+    })
+    expect(deduped.status).toBe(200)
+    expect(await deduped.json()).toMatchObject({ deduplicated: true })
+    expect(
+      calls.filter((call) => call.url.includes("/prompt_async")),
+    ).toHaveLength(1)
+
+    expect(
+      (
+        await relayReq({
+          token: grant.token,
+          message: "second delivery",
+          dedupeId: "relay-delivery-other",
+        })
+      ).status,
+    ).toBe(403)
+    expect(
+      (await relayReq({ token: "obr_not-real", message: "no" })).status,
+    ).toBe(403)
+
+    const minted2 = await grantReq("/api/threads/u1/relay-grants", "POST", {
+      ttlMinutes: 30,
+      maxUses: 2,
+    })
+    const grant2 = (await minted2.json()) as { id: string; token: string }
+    expect(
+      (
+        await grantReq(
+          `/api/thread-relay-grants/${encodeURIComponent(grant2.id)}`,
+          "DELETE",
+        )
+      ).status,
+    ).toBe(200)
+    expect(
+      (await relayReq({ token: grant2.token, message: "revoked" })).status,
+    ).toBe(403)
   })
 
   test("stop aborts a worker thread", async () => {

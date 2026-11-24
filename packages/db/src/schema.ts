@@ -478,6 +478,32 @@ export const delegationWatches = sqliteTable(
   ],
 )
 
+// Permission-scoped delivery into one existing ordinary chat (#134).
+// The dashboard owner mints a one-use, expiring handle for that exact
+// target session; only its SHA-256 hash is stored. Presenting the handle
+// can prompt that one session — never read it or reach any other chat.
+export const threadRelayGrants = sqliteTable(
+  "thread_relay_grants",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    targetSessionId: text("target_session_id").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    remainingUses: integer("remaining_uses").notNull(),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    revokedAt: integer("revoked_at"),
+    lastUsedAt: integer("last_used_at"),
+  },
+  (table) => [
+    index("thread_relay_grants_user_target").on(
+      table.userId,
+      table.targetSessionId,
+      table.createdAt,
+    ),
+  ],
+)
+
 export const cronJobs = sqliteTable(
   "cron_jobs",
   {

@@ -221,8 +221,12 @@ import { splitThread } from "./thread-split"
 import {
   cleanupDeletedThread,
   handleOpencodeRead,
+  handleThreadRelay,
+  handleThreadRelayGrants,
   handleThreads,
   isOpencodeReadRequest,
+  isThreadRelayGrantRequest,
+  isThreadRelayRequest,
   isThreadRequest,
   type RecentThreadSummary,
   recentRowFromSession,
@@ -1539,6 +1543,11 @@ async function api(
   const isProjectManage = isProjectManageRequest(url.pathname, req.method)
   const isMedia = isMediaRequest(url.pathname, req.method)
   const isThreadPath = isThreadRequest(url.pathname, req.method)
+  const isThreadRelayPath = isThreadRelayRequest(url.pathname, req.method)
+  const isThreadRelayGrantPath = isThreadRelayGrantRequest(
+    url.pathname,
+    req.method,
+  )
   const isKeysPath = isKeysRequest(url.pathname, req.method)
   const isOpencodeRead = isOpencodeReadRequest(url.pathname, req.method)
   // The agent token may list sandbox profiles (to launch with one) and
@@ -1560,6 +1569,7 @@ async function api(
     isProjectManage ||
     isMedia ||
     isThreadPath ||
+    isThreadRelayPath ||
     isKeysPath ||
     isOpencodeRead ||
     isSandboxAgentPath
@@ -1622,6 +1632,7 @@ async function api(
         return json({ error: "not found" }, 404)
       }
       if (isCronPath) return handleCron(req, url, db, agent, hub, holdOpen)
+      if (isThreadRelayPath) return handleThreadRelay(req, url, db, agent)
       if (isThreadPath) return handleThreads(req, url, db, agent, hub)
       if (isOpencodeRead) return handleOpencodeRead(req, url, db, agent)
       if (isKeysPath) {
@@ -1648,6 +1659,9 @@ async function api(
     return listSandboxThreads(db, user)
   if (isSandboxRequest(url.pathname))
     return handleSandbox(req, url, db, user, hub)
+  // Relay handles are user-minted capabilities: cookie session only,
+  // never the desktop LLM token that consumes them.
+  if (isThreadRelayGrantPath) return handleThreadRelayGrants(req, url, db, user)
   if (isThreadPath && req.method === "POST")
     return handleThreads(req, url, db, user, hub)
   if (isMedia) {
