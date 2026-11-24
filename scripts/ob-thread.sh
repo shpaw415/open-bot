@@ -207,11 +207,44 @@ request() {
   method="$1"
   path="$2"
   body="${3:-}"
-  if [ -n "$body" ]; then
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" \
-      -H "content-type: application/json" -d "$body" "$BASE$path"
+  # REQ_MAX_TIME bounds the call (#141): delivery verbs set it past the
+  # control plane's own 30s prompt timeout, so the caller always gets a
+  # receipt — its 502, or the explicit unconfirmed error below — instead of
+  # hanging until the outer tool timeout kills it with no output at all.
+  req_rc=0
+  if [ -n "${REQ_MAX_TIME:-}" ]; then
+    set -- --connect-timeout 5 --max-time "$REQ_MAX_TIME"
   else
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path"
+    set --
+  fi
+  if [ -n "$body" ]; then
+    req_out=$(curl -sS "$@" -X "$method" -H "Authorization: Bearer $TOKEN" \
+      -H "content-type: application/json" -d "$body" "$BASE$path") || req_rc=$?
+  else
+    req_out=$(curl -sS "$@" -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path") || req_rc=$?
+  fi
+  if [ "$req_rc" -ne 0 ]; then
+    printf '{"error":"request to control plane failed or timed out (curl %s) — result NOT confirmed; verify with ob-thread read/status before retrying (a retry of post/notify-parent with the same text is deduplicated)"}' "$req_rc"
+    return 0
+  fi
+  printf '%s' "$req_out"
+}
+
+# Deterministic per-delivery id (#141): the same target+text hashes to the
+# same id, so a retry after an unconfirmed timeout is a no-op receipt on the
+# control plane instead of a duplicated prompt. Empty when sha256sum is
+# unavailable — dedupe is best effort, delivery itself never depends on it.
+dedupe_id() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n%s' "$1" "$2" | sha256sum | cut -d' ' -f1
+  fi
+}
+
+jq_dedupe() {
+  if [ -n "$1" ]; then
+    jq --arg dedupeId "$1" '. + {dedupeId: $dedupeId}'
+  else
+    cat
   fi
 }
 
@@ -742,10 +775,10 @@ $1"; fi
     id="$1"
     shift
     text="$*"
-    body=$(jq -n --arg message "$text" '{message: $message}')
-    out=$(request POST "/api/threads/$(urlencode "$id")/notify-parent" "$body")
+    body=$(jq -n --arg message "$text" '{message: $message}' | jq_dedupe "$(dedupe_id "$id" "$text")")
+    out=$(REQ_MAX_TIME=45 request_retry_transient POST "/api/threads/$(urlencode "$id")/notify-parent" "$body")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id, parent, notified}'
+    printf '%s' "$out" | jq '{id, parent, notified} + (if .deduplicated then {deduplicated: .deduplicated} else {} end)'
     ;;
   post)
     [ $# -ge 2 ] || { usage; exit 2; }
@@ -776,11 +809,11 @@ $1"; fi
       check_model_flag "$model"
     fi
     text="$*"
-    body=$(jq -n --arg message "$text" '{message: $message}' | jq_model_half model "$model" | jq_model_half effort "$effort")
-    out=$(request_retry_transient POST "/api/threads/$(urlencode "$id")/post" "$body")
+    body=$(jq -n --arg message "$text" '{message: $message}' | jq_model_half model "$model" | jq_model_half effort "$effort" | jq_dedupe "$(dedupe_id "$id" "$text")")
+    out=$(REQ_MAX_TIME=45 request_retry_transient POST "/api/threads/$(urlencode "$id")/post" "$body")
     fail_on_error "$out"
     warn_effort_dropped "$out"
-    printf '%s' "$out" | jq '{id, posted} + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .effortDropped then {effortDropped: .effortDropped} else {} end)'
+    printf '%s' "$out" | jq '{id, posted} + (if .deduplicated then {deduplicated: .deduplicated} else {} end) + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .effortDropped then {effortDropped: .effortDropped} else {} end)'
     ;;
   model)
     [ $# -ge 1 ] || { usage; exit 2; }

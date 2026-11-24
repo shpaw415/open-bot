@@ -2119,6 +2119,38 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
     expect(String(prompt?.init?.body)).toContain("POST /api/export")
   })
 
+  test("post/notify-parent dedupeId makes a retry a no-op receipt (#141)", async () => {
+    installManageFetch()
+    const first = await manage("/api/threads/p1/post", {
+      message: "Status: half done",
+      dedupeId: "dedupe-hash-141",
+    })
+    expect(first.status).toBe(200)
+    expect(await first.json()).toEqual({ id: "p1", posted: true })
+    const retry = await manage("/api/threads/p1/post", {
+      message: "Status: half done",
+      dedupeId: "dedupe-hash-141",
+    })
+    expect(retry.status).toBe(200)
+    expect(await retry.json()).toEqual({
+      id: "p1",
+      posted: true,
+      deduplicated: true,
+    })
+    expect(
+      calls.filter((call) => call.url.endsWith("/session/p1/prompt_async")),
+    ).toHaveLength(1)
+    // A different dedupeId is a real second delivery.
+    const other = await manage("/api/threads/p1/post", {
+      message: "Status: half done",
+      dedupeId: "dedupe-hash-other",
+    })
+    expect(other.status).toBe(200)
+    expect(
+      calls.filter((call) => call.url.endsWith("/session/p1/prompt_async")),
+    ).toHaveLength(2)
+  })
+
   test("stop aborts a worker thread", async () => {
     installManageFetch()
     const res = await manage("/api/threads/w1/stop")
