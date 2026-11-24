@@ -27,6 +27,7 @@ Usage:
   ob-thread post ID [--model PROVIDER/MODEL|default] [--effort LEVEL|default] TEXT
   ob-thread parent ID
   ob-thread notify-parent ID TEXT
+  ob-thread relay HANDLE TEXT
   ob-thread model ID [--model PROVIDER/MODEL|default] [--effort LEVEL|default]
 
 start creates a thread. Council-first rule: work you start yourself —
@@ -156,6 +157,13 @@ stop) — a correction, extra context, or a wrap-up instruction. The teammate
 sees it as a new prompt. The model flags go before the text (use `--` when
 the text itself starts with a flag).
 
+relay delivers TEXT to the one ordinary dashboard chat named by an expiring
+relay HANDLE. The user mints that handle from the target chat's dashboard
+menu; it can prompt only that chat, cannot read it or reach any other chat,
+and is consumed by successful delivery. Use a handle only for the exact
+voice/user-authorized delivery it was handed to you for. A retry with the
+same handle and same text is deduplicated.
+
 A thread's model can be hot-switched at any time — the model is picked per
 turn, so the change applies from the thread's next turn and a turn already
 running finishes on its own model. History and context are preserved; never
@@ -197,6 +205,7 @@ Examples:
   ob-thread delete --all
   ob-thread stop ses_abc123
   ob-thread post ses_abc123 "Stop editing; report what you changed so far"
+  ob-thread relay obr_HANDLE "Voice transcript is ready"
   ob-thread post ses_abc123 --model openai/gpt-5 --effort high "Now the hard part: redesign the token cache"
   ob-thread model ses_abc123
   ob-thread model ses_abc123 --model default --effort default
@@ -224,7 +233,7 @@ request() {
     req_out=$(curl -sS "$@" -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path") || req_rc=$?
   fi
   if [ "$req_rc" -ne 0 ]; then
-    printf '{"error":"request to control plane failed or timed out (curl %s) — result NOT confirmed; verify with ob-thread read/status before retrying (a retry of post/notify-parent with the same text is deduplicated)"}' "$req_rc"
+    printf '{"error":"request to control plane failed or timed out (curl %s) — result NOT confirmed; verify with ob-thread read/status before retrying (a retry of post/notify-parent/relay with the same text is deduplicated)"}' "$req_rc"
     return 0
   fi
   printf '%s' "$req_out"
@@ -779,6 +788,16 @@ $1"; fi
     out=$(REQ_MAX_TIME=45 request_retry_transient POST "/api/threads/$(urlencode "$id")/notify-parent" "$body")
     fail_on_error "$out"
     printf '%s' "$out" | jq '{id, parent, notified} + (if .deduplicated then {deduplicated: .deduplicated} else {} end)'
+    ;;
+  relay)
+    [ $# -ge 2 ] || { usage; exit 2; }
+    handle="$1"
+    shift
+    text="$*"
+    body=$(jq -n --arg token "$handle" --arg message "$text" '{token: $token, message: $message}' | jq_dedupe "$(dedupe_id "$handle" "$text")")
+    out=$(REQ_MAX_TIME=45 request_retry_transient POST "/api/thread-relay" "$body")
+    fail_on_error "$out"
+    printf '%s' "$out" | jq '{targetSessionId, delivered, remainingUses} + (if .deduplicated then {deduplicated: .deduplicated} else {} end)'
     ;;
   post)
     [ $# -ge 2 ] || { usage; exit 2; }
