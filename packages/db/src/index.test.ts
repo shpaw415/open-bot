@@ -1509,6 +1509,50 @@ describe("thread message queue", () => {
   })
 })
 
+describe("thread relay grants", () => {
+  test("claims each use once, owner-scoped, with release and revoke (#134)", () => {
+    const db = openDatabase(
+      join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite"),
+    )
+    db.createUser(user({ id: "u1", email: "u1@localhost", role: "user" }))
+    const row = {
+      id: "g1",
+      userId: "u1",
+      targetSessionId: "s1",
+      tokenHash: "h".repeat(64),
+      remainingUses: 2,
+      createdAt: 100,
+      expiresAt: 10_000,
+      revokedAt: null,
+      lastUsedAt: null,
+    }
+    db.createThreadRelayGrant(row)
+    expect(db.threadRelayGrantByHash("u1", row.tokenHash)?.id).toBe("g1")
+    expect(db.threadRelayGrantByHash("u2", row.tokenHash)).toBeNull()
+    expect(db.threadRelayGrants("u1", "s1").map((grant) => grant.id)).toEqual([
+      "g1",
+    ])
+    expect(db.claimThreadRelayGrant("u2", "g1", 200)).toBeNull()
+    expect(db.claimThreadRelayGrant("u1", "g1", 200)?.remainingUses).toBe(1)
+    db.releaseThreadRelayGrant("u1", "g1")
+    expect(db.threadRelayGrantById("u1", "g1")?.remainingUses).toBe(2)
+    expect(db.claimThreadRelayGrant("u1", "g1", 300)?.remainingUses).toBe(1)
+    expect(db.claimThreadRelayGrant("u1", "g1", 400)?.remainingUses).toBe(0)
+    expect(db.claimThreadRelayGrant("u1", "g1", 500)).toBeNull()
+    expect(db.revokeThreadRelayGrant("u1", "g1", 600)).toBe(true)
+    expect(db.revokeThreadRelayGrant("u1", "g1", 700)).toBe(false)
+
+    db.createThreadRelayGrant({
+      ...row,
+      id: "g2",
+      tokenHash: "x".repeat(64),
+      remainingUses: 1,
+    })
+    db.deleteThreadRelayGrantsForTarget("u1", "s1")
+    expect(db.threadRelayGrants("u1")).toEqual([])
+  })
+})
+
 describe("project rename", () => {
   test("rename keeps the id, path, and owner scoping (#95)", () => {
     const path = join(mkdtempSync(join(tmpdir(), "ob-")), "bot.sqlite")

@@ -95,7 +95,96 @@ export function uploadPathsError(paths: string[]): string | null {
 }
 
 const USAGE =
-  "usage: page.ts PORT SESSION read | scroll down|up [pages] | click ID | type ID TEXT | upload ID PATH [PATH...]"
+  "usage: page.ts PORT SESSION read | scroll down|up [pages] | click ID | type ID TEXT | type-secret ID --origin ORIGIN (secret on stdin) | upload ID PATH [PATH...]"
+
+const SECRET_INPUT_MAX_BYTES = 1024
+
+export function parseTypeSecretArgs(tail: string[]): {
+  id: string
+  origin: string
+} {
+  const [id, flag, origin, extra] = tail
+  if (!id || flag !== "--origin" || !origin || extra !== undefined)
+    throw new Error(USAGE)
+  return { id, origin }
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  return host === "localhost" || host === "::1" || host.startsWith("127.")
+}
+
+function parseOrigin(raw: string, defaultHttps = false): URL | null {
+  try {
+    return new URL(
+      defaultHttps && !/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+        ? `https://${raw}`
+        : raw,
+    )
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The exact-origin gate for secret input. The expected value comes from the
+ * operator/agent before any secret is read; the actual value is the current
+ * page URL. No secret belongs in either string, so naming both origins in
+ * an error is safe and makes a wrong-tab refusal diagnosable.
+ */
+export function secretOriginError(
+  expectedRaw: string,
+  currentUrl: string,
+): string | null {
+  const expected = parseOrigin(expectedRaw, true)
+  const actual = parseOrigin(currentUrl)
+  if (!expected || !actual)
+    return "secret input needs a valid expected and current origin"
+  const secure = (url: URL) =>
+    url.protocol === "https:" ||
+    (url.protocol === "http:" && isLoopbackHost(url.hostname))
+  if (!secure(expected) || !secure(actual))
+    return "secret input requires https (http is allowed only on loopback)"
+  if (expected.origin !== actual.origin)
+    return `origin mismatch: expected ${expected.origin}, current page is ${actual.origin}`
+  return null
+}
+
+/**
+ * Reads exactly one secret from stdin. Only the one terminating newline a
+ * producer command normally emits is removed; all other whitespace belongs
+ * to the secret. Errors are deliberately content-free.
+ */
+export async function readSecretInput(
+  chunks: AsyncIterable<Uint8Array | string>,
+): Promise<string> {
+  const parts: Uint8Array[] = []
+  let total = 0
+  const encoder = new TextEncoder()
+  for await (const chunk of chunks) {
+    const bytes = typeof chunk === "string" ? encoder.encode(chunk) : chunk
+    total += bytes.byteLength
+    if (total > SECRET_INPUT_MAX_BYTES)
+      throw new Error("secret input is too long")
+    parts.push(bytes)
+  }
+  let value: string
+  try {
+    value = new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.concat(parts),
+    )
+  } catch {
+    throw new Error("secret input is not valid UTF-8")
+  }
+  value = value.replace(/\r?\n$/, "")
+  if (!value) throw new Error("no secret received on stdin")
+  if (value.length > SECRET_INPUT_MAX_BYTES)
+    throw new Error("secret input is too long")
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value))
+    throw new Error("secret input contains control characters")
+  return value
+}
 
 // `upload ID PATH...` — set files on an <input type=file> through CDP
 // (DOM.setFileInputFiles) instead of driving the native GTK chooser with
@@ -209,6 +298,96 @@ async function run(session: string | undefined) {
               canScrollUp: viewAfter.canScrollUp,
             }),
           )
+          return
+        }
+        if (verb === "type-secret") {
+          const { id, origin } = parseTypeSecretArgs(process.argv.slice(5))
+          let secret = ""
+          try {
+            if (process.stdin.isTTY)
+              throw new Error(
+                "pipe the secret on stdin; interactive input is refused",
+              )
+            secret = await readSecretInput(Bun.stdin.stream())
+            const current = await view(socket)
+            const originError = secretOriginError(origin, current.url)
+            if (originError) throw new Error(originError)
+            const element = current.elements.find((item) => item.id === id)
+            if (!element)
+              throw new Error(
+                `no element ${id} on this page — run ob-page read for fresh ids (the page reloaded or the active tab changed)`,
+              )
+            const secretField =
+              element.sensitive ||
+              /password|mot de passe|one[- ]time|verification|authenticator|security code|login code|\bOTP\b|\b2FA\b|\bMFA\b/i.test(
+                `${element.role} ${element.label}`,
+              )
+            if (!element.editable || !secretField)
+              throw new Error(
+                `element ${id} is not a credential field — type-secret only fills password or one-time-code fields; use type for ordinary text`,
+              )
+            const find = obnavFindExpr(JSON.stringify(id))
+            const focusedUrl = await evaluate(
+              socket,
+              `(() => {
+                const el = ${find}
+                if (!el) return "missing"
+                if (!('value' in el)) return "unsupported"
+                el.focus()
+                try {
+                  if (typeof el.select === "function") el.select()
+                  else if (typeof el.setSelectionRange === "function")
+                    el.setSelectionRange(0, String(el.value ?? "").length)
+                } catch {}
+                return location.href
+              })()`,
+            )
+            if (focusedUrl === "missing")
+              throw new Error(
+                `no element ${id} on this page — run ob-page read for fresh ids (the page reloaded or the active tab changed)`,
+              )
+            if (focusedUrl === "unsupported")
+              throw new Error(
+                `element ${id} has no value-bearing input — type-secret does not support this custom control`,
+              )
+            const focusedOriginError = secretOriginError(
+              origin,
+              String(focusedUrl),
+            )
+            if (focusedOriginError) throw new Error(focusedOriginError)
+            await socket.call("Input.insertText", { text: secret })
+            const filled = await evaluate(
+              socket,
+              `(() => {
+                const el = ${find}
+                return el && 'value' in el ? String(el.value ?? "").length > 0 : null
+              })()`,
+            ).catch(() => null)
+            if (filled === false)
+              throw new Error("secret input did not land in the field")
+            const verifiedOrigin = parseOrigin(origin, true)?.origin
+            console.log(
+              JSON.stringify({
+                typedSecret: true,
+                id,
+                sensitive: true,
+                origin: verifiedOrigin,
+                verified: filled === true,
+              }),
+            )
+          } catch (error) {
+            const raw =
+              error instanceof Error ? error.message : "type-secret failed"
+            // Fail closed on diagnostics: a lower layer must never turn
+            // the piped value into an error string that reaches a transcript.
+            throw new Error(
+              secret && raw.includes(secret)
+                ? "type-secret failed (details redacted)"
+                : raw,
+            )
+          } finally {
+            secret = ""
+          }
           return
         }
         if (verb === "upload") {

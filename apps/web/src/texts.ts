@@ -140,6 +140,36 @@ export const THREADS_UI = {
   renameTitle: "Renommer la conversation",
   titleLabel: "Titre",
   moveToFolder: "Déplacer vers un dossier",
+  voiceRelay: "Relais vocal…",
+  voiceRelayTitle: (name: string) => `Relais vocal vers « ${name} »`,
+  voiceRelayBody:
+    "Créez un code temporaire à remettre au travailleur vocal. Il permet de livrer un message seulement dans cette conversation : aucune lecture et aucun accès aux autres conversations.",
+  voiceRelayTtl: "Expire après",
+  voiceRelayUses: "Livraisons permises",
+  voiceRelayCreate: "Créer un code",
+  voiceRelayCreating: "Création…",
+  voiceRelayHandle: "Code de relais (affiché une seule fois)",
+  voiceRelayOnce:
+    "Copiez ce code maintenant : il ne sera plus affiché après la fermeture.",
+  voiceRelayCopy: "Copier",
+  voiceRelayCopied: "Copié",
+  voiceRelayActive: "Codes actifs et récents",
+  voiceRelayNone: "Aucun code pour cette conversation.",
+  voiceRelayRevoke: "Révoquer",
+  voiceRelayRevoked: "Révoqué",
+  voiceRelayExpired: "Expiré",
+  voiceRelayUsed: "Épuisé",
+  voiceRelayReady: "Actif",
+  voiceRelayRemaining: (count: number) =>
+    `${count} livraison${count > 1 ? "s" : ""} restante${count > 1 ? "s" : ""}`,
+  voiceRelayExpires: (when: string) => `Expire le ${when}`,
+  voiceRelayLoadFailed: "Impossible de charger les codes de relais.",
+  voiceRelayCreateFailed: "Impossible de créer le code de relais.",
+  voiceRelayRevokeFailed: "Impossible de révoquer le code de relais.",
+  voiceRelayMinutes: (count: number) =>
+    count >= 60
+      ? `${count / 60} heure${count > 60 ? "s" : ""}`
+      : `${count} minutes`,
   abort: "Interrompre",
   delete: "Supprimer",
   deleteTitle: "Supprimer la conversation ?",

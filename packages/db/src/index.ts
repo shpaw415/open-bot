@@ -50,6 +50,7 @@ import {
   threadModels,
   threadPersonas,
   threadQueue,
+  threadRelayGrants,
   threadScreens,
   threadTitles,
   usageEvents,
@@ -706,6 +707,18 @@ export type DelegationWatch = {
   createdAt: number
   wokenAt: number | null
   pending: boolean
+}
+
+export type ThreadRelayGrant = {
+  id: string
+  userId: string
+  targetSessionId: string
+  tokenHash: string
+  remainingUses: number
+  createdAt: number
+  expiresAt: number
+  revokedAt: number | null
+  lastUsedAt: number | null
 }
 
 export type CronScheduleKind = "cron" | "every" | "at"
@@ -2896,6 +2909,154 @@ export function openDatabase(path: string) {
         )
         .run()
     },
+    createThreadRelayGrant(row: ThreadRelayGrant) {
+      orm.insert(threadRelayGrants).values(row).run()
+    },
+    threadRelayGrants(
+      userId: string,
+      targetSessionId?: string,
+    ): ThreadRelayGrant[] {
+      return orm
+        .select()
+        .from(threadRelayGrants)
+        .where(
+          targetSessionId
+            ? and(
+                eq(threadRelayGrants.userId, userId),
+                eq(threadRelayGrants.targetSessionId, targetSessionId),
+              )
+            : eq(threadRelayGrants.userId, userId),
+        )
+        .orderBy(desc(threadRelayGrants.createdAt), desc(threadRelayGrants.id))
+        .all() as ThreadRelayGrant[]
+    },
+    threadRelayGrantById(userId: string, id: string): ThreadRelayGrant | null {
+      return (orm
+        .select()
+        .from(threadRelayGrants)
+        .where(
+          and(
+            eq(threadRelayGrants.userId, userId),
+            eq(threadRelayGrants.id, id),
+          ),
+        )
+        .get() ?? null) as ThreadRelayGrant | null
+    },
+    threadRelayGrantByHash(
+      userId: string,
+      tokenHash: string,
+    ): ThreadRelayGrant | null {
+      return (orm
+        .select()
+        .from(threadRelayGrants)
+        .where(
+          and(
+            eq(threadRelayGrants.userId, userId),
+            eq(threadRelayGrants.tokenHash, tokenHash),
+          ),
+        )
+        .get() ?? null) as ThreadRelayGrant | null
+    },
+    claimThreadRelayGrant(
+      userId: string,
+      id: string,
+      now: number,
+    ): ThreadRelayGrant | null {
+      return orm.transaction((tx) => {
+        const row = tx
+          .select()
+          .from(threadRelayGrants)
+          .where(
+            and(
+              eq(threadRelayGrants.userId, userId),
+              eq(threadRelayGrants.id, id),
+            ),
+          )
+          .get() as ThreadRelayGrant | undefined
+        if (
+          !row ||
+          row.revokedAt !== null ||
+          row.expiresAt <= now ||
+          row.remainingUses <= 0
+        )
+          return null
+        const next = {
+          ...row,
+          remainingUses: row.remainingUses - 1,
+          lastUsedAt: now,
+        }
+        tx.update(threadRelayGrants)
+          .set({ remainingUses: next.remainingUses, lastUsedAt: now })
+          .where(
+            and(
+              eq(threadRelayGrants.userId, userId),
+              eq(threadRelayGrants.id, id),
+            ),
+          )
+          .run()
+        return next
+      })
+    },
+    releaseThreadRelayGrant(userId: string, id: string) {
+      orm.transaction((tx) => {
+        const row = tx
+          .select()
+          .from(threadRelayGrants)
+          .where(
+            and(
+              eq(threadRelayGrants.userId, userId),
+              eq(threadRelayGrants.id, id),
+            ),
+          )
+          .get() as ThreadRelayGrant | undefined
+        if (!row) return
+        tx.update(threadRelayGrants)
+          .set({ remainingUses: row.remainingUses + 1 })
+          .where(
+            and(
+              eq(threadRelayGrants.userId, userId),
+              eq(threadRelayGrants.id, id),
+            ),
+          )
+          .run()
+      })
+    },
+    revokeThreadRelayGrant(userId: string, id: string, now: number) {
+      return orm.transaction((tx) => {
+        const row = tx
+          .select()
+          .from(threadRelayGrants)
+          .where(
+            and(
+              eq(threadRelayGrants.userId, userId),
+              eq(threadRelayGrants.id, id),
+            ),
+          )
+          .get() as ThreadRelayGrant | undefined
+        if (!row || row.revokedAt !== null) return false
+        tx.update(threadRelayGrants)
+          .set({ revokedAt: now })
+          .where(
+            and(
+              eq(threadRelayGrants.userId, userId),
+              eq(threadRelayGrants.id, id),
+            ),
+          )
+          .run()
+        return true
+      })
+    },
+    deleteThreadRelayGrantsForTarget(userId: string, targetSessionId: string) {
+      orm
+        .delete(threadRelayGrants)
+        .where(
+          and(
+            eq(threadRelayGrants.userId, userId),
+            eq(threadRelayGrants.targetSessionId, targetSessionId),
+          ),
+        )
+        .run()
+    },
     createCronJob(job: CronJob) {
       orm.insert(cronJobs).values(job).run()
     },
@@ -3753,6 +3914,9 @@ export function openDatabase(path: string) {
         tx.delete(threadModels).where(eq(threadModels.userId, userId)).run()
         tx.delete(sandboxThreads).where(eq(sandboxThreads.userId, userId)).run()
         tx.delete(pendingSkills).where(eq(pendingSkills.userId, userId)).run()
+        tx.delete(threadRelayGrants)
+          .where(eq(threadRelayGrants.userId, userId))
+          .run()
         tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadTitles).where(eq(threadTitles.userId, userId)).run()
@@ -3784,6 +3948,9 @@ export function openDatabase(path: string) {
           .where(eq(sandboxProfiles.userId, userId))
           .run()
         tx.delete(pendingSkills).where(eq(pendingSkills.userId, userId)).run()
+        tx.delete(threadRelayGrants)
+          .where(eq(threadRelayGrants.userId, userId))
+          .run()
         tx.delete(threadQueue).where(eq(threadQueue.userId, userId)).run()
         tx.delete(threadScreens).where(eq(threadScreens.userId, userId)).run()
         tx.delete(threadDirAssignments)

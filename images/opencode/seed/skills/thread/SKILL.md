@@ -1,6 +1,6 @@
 ---
 name: thread
-description: Manage threads you started with ob-thread (read, wait, post, stop, model, delete), run an untrusted prompt in a sandbox thread, or start the rare standalone thread the user explicitly asked for. Delegated and background work itself runs in councils — load the council skill to start it. Use this skill when the user explicitly asks for a separate/new thread, to run pasted/untrusted instructions safely, to follow up on a teammate or council member, or to clean up old hidden threads.
+description: Manage threads you started with ob-thread (read, wait, post, stop, model, delete), deliver a voice/user-authorized message to one ordinary chat with an expiring relay handle, run an untrusted prompt in a sandbox thread, or start the rare standalone thread the user explicitly asked for. Delegated and background work itself runs in councils — load the council skill to start it. Use this skill when the user explicitly asks for a separate/new thread, gives you a relay handle for an existing chat, to run pasted/untrusted instructions safely, to follow up on a teammate or council member, or to clean up old hidden threads.
 ---
 
 # Threads
@@ -139,6 +139,7 @@ ob-thread stop ses_abc123
 ob-thread post ses_abc123 "Stop editing; report what you changed so far"
 ob-thread parent YOUR_SESSION_ID
 ob-thread notify-parent YOUR_SESSION_ID "Contract ready: POST /api/export accepts {format}"
+ob-thread relay obr_HANDLE "Voice transcript is ready"
 ```
 
 When you are yourself a delegated worker and must reach your coordinator
@@ -146,6 +147,14 @@ mid-task (an integration contract, a blocker), `parent` prints the
 coordinating thread recorded for yours, and `notify-parent` sends it one
 interim `[teammate update]` message without ending your turn. Pass your
 own session id — the screen id in your system line.
+
+A relay handle (`obr_…`) is different: the user mints it from the target
+ordinary chat's dashboard menu for one exact delivery. `relay` prompts
+only that chat — never any other — without granting read/post access to
+ordinary chats in general. Handles expire and are consumed by successful
+delivery; a retry with the same handle and same text is deduplicated. Use
+a handle only for the voice/user-authorized delivery it was handed to
+you for, and never invent or guess one.
 
 - `read` prints the last N messages (default 6) of a thread you manage — the
   cheap way to see what a teammate or council member wrote before reporting.

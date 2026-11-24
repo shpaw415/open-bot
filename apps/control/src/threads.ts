@@ -11,6 +11,7 @@ import {
   lastTurnEnd,
   recordDelegation,
   resolveDelegationCreator,
+  wakeableSessionRow,
 } from "./delegations"
 import { desktopDeathInfo, desktopPhase, endpoint } from "./docker"
 import {
@@ -25,6 +26,7 @@ import type { EventHub } from "./events"
 import { HttpError } from "./http-error"
 import { pageMessages, parseMessagePageQuery } from "./messages-page"
 import { trimDashboardMessages } from "./messages-trim"
+import { randomToken, sha256 } from "./passwords"
 import {
   ASSISTANT_ID,
   builtinLoadsAllSkills,
@@ -117,6 +119,29 @@ export function isThreadRequest(pathname: string, method: string): boolean {
     method === "POST" &&
     /^\/api\/threads\/[^/]+\/(?:stop|post|notify-parent)$/.test(pathname)
   )
+}
+
+/** Cookie-only relay-handle management for one ordinary chat (#134). */
+export function isThreadRelayGrantRequest(
+  pathname: string,
+  method: string,
+): boolean {
+  if (
+    (method === "GET" || method === "POST") &&
+    /^\/api\/threads\/[^/]+\/relay-grants$/.test(pathname)
+  )
+    return true
+  return (
+    method === "DELETE" && /^\/api\/thread-relay-grants\/[^/]+$/.test(pathname)
+  )
+}
+
+/** Agent-token relay delivery. The handle, not the caller, scopes target. */
+export function isThreadRelayRequest(
+  pathname: string,
+  method: string,
+): boolean {
+  return method === "POST" && pathname === "/api/thread-relay"
 }
 
 /** Shape of GET /api/threads/recent rows — the passive home/search summary. */
@@ -463,6 +488,207 @@ export async function handleThreads(
   return json({ error: "not found" }, 404)
 }
 
+const RELAY_TOKEN_PREFIX = "obr_"
+const RELAY_DEFAULT_TTL_MINUTES = 60
+const RELAY_MAX_TTL_MINUTES = 1440
+const RELAY_MAX_USES = 20
+
+type RelayGrantRow = ReturnType<Db["threadRelayGrantById"]>
+
+function relayGrantView(row: NonNullable<RelayGrantRow>) {
+  return {
+    id: row.id,
+    targetSessionId: row.targetSessionId,
+    remainingUses: row.remainingUses,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    revokedAt: row.revokedAt,
+    lastUsedAt: row.lastUsedAt,
+  }
+}
+
+function boundedRelayInt(
+  body: Record<string, unknown>,
+  key: string,
+  fallback: number,
+  max: number,
+): number | null {
+  const raw = body[key]
+  if (raw === undefined) return fallback
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return null
+  return raw >= 1 && raw <= max ? raw : null
+}
+
+// A relay target is deliberately narrower than a manageable thread: one
+// existing top-level ordinary desktop chat. Worker/cron/sandbox/subagent
+// sessions already have their own delivery paths and never become targets.
+async function relayTargetError(
+  db: Db,
+  user: User,
+  targetSessionId: string,
+): Promise<Response | { base: string; headers: Record<string, string> }> {
+  if (db.sandboxBySession?.(targetSessionId))
+    return json({ error: "relay target must be an ordinary desktop chat" }, 400)
+  const resolved = await opencodeBase(db, user)
+  if ("error" in resolved) return resolved.error
+  const res = await fetch(
+    `${resolved.base}/session/${encodeURIComponent(targetSessionId)}`,
+    { headers: resolved.headers, signal: AbortSignal.timeout(10_000) },
+  ).catch(() => null)
+  if (!res || !res.ok) return json({ error: "session not found" }, 404)
+  const row = (await res.json().catch(() => null)) as {
+    id?: unknown
+    title?: unknown
+    parentID?: unknown
+  } | null
+  if (!row || row.id !== targetSessionId || !wakeableSessionRow(row))
+    return json({ error: "relay target must be an ordinary desktop chat" }, 400)
+  return { base: resolved.base, headers: resolved.headers }
+}
+
+export async function handleThreadRelayGrants(
+  req: Request,
+  url: URL,
+  db: Db,
+  user: User,
+): Promise<Response> {
+  const revoke = url.pathname.match(/^\/api\/thread-relay-grants\/([^/]+)$/)
+  if (revoke && req.method === "DELETE") {
+    const id = decodeURIComponent(revoke[1] ?? "")
+    const row = db.threadRelayGrantById(user.id, id)
+    if (!row) return json({ error: "relay grant not found" }, 404)
+    if (row.revokedAt === null)
+      db.revokeThreadRelayGrant(user.id, id, Date.now())
+    const revoked = db.threadRelayGrantById(user.id, id) ?? row
+    return json(relayGrantView(revoked))
+  }
+  const target = url.pathname.match(/^\/api\/threads\/([^/]+)\/relay-grants$/)
+  if (!target) return json({ error: "not found" }, 404)
+  const targetSessionId = decodeURIComponent(target[1] ?? "")
+  if (!targetSessionId) return json({ error: "not found" }, 404)
+  if (req.method === "GET") {
+    return json({
+      grants: db
+        .threadRelayGrants(user.id, targetSessionId)
+        .map(relayGrantView),
+    })
+  }
+  if (req.method !== "POST") return json({ error: "not found" }, 404)
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+  const ttlMinutes = boundedRelayInt(
+    body,
+    "ttlMinutes",
+    RELAY_DEFAULT_TTL_MINUTES,
+    RELAY_MAX_TTL_MINUTES,
+  )
+  const maxUses = boundedRelayInt(body, "maxUses", 1, RELAY_MAX_USES)
+  if (ttlMinutes === null || maxUses === null)
+    return json(
+      {
+        error: `ttlMinutes must be an integer from 1 to ${RELAY_MAX_TTL_MINUTES}, and maxUses an integer from 1 to ${RELAY_MAX_USES}`,
+      },
+      400,
+    )
+  const checked = await relayTargetError(db, user, targetSessionId)
+  if (checked instanceof Response) return checked
+  const now = Date.now()
+  const token = `${RELAY_TOKEN_PREFIX}${randomToken()}`
+  const row = {
+    id: crypto.randomUUID(),
+    userId: user.id,
+    targetSessionId,
+    tokenHash: sha256(token),
+    remainingUses: maxUses,
+    createdAt: now,
+    expiresAt: now + ttlMinutes * 60_000,
+    revokedAt: null,
+    lastUsedAt: null,
+  }
+  db.createThreadRelayGrant(row)
+  // The plaintext handle exists only in this response; list/get surfaces
+  // expose metadata and never the token or its hash.
+  return json({ ...relayGrantView(row), token }, 201)
+}
+
+export async function handleThreadRelay(
+  req: Request,
+  _url: URL,
+  db: Db,
+  agent: User,
+): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+  const token = typeof body.token === "string" ? body.token.trim() : ""
+  const message = typeof body.message === "string" ? body.message : ""
+  if (!message.trim()) return json({ error: "message is required" }, 400)
+  if (message.length > MESSAGE_LIMIT)
+    return json(
+      { error: `message is limited to ${MESSAGE_LIMIT} characters` },
+      400,
+    )
+  const invalid = () => json({ error: "invalid or expired relay handle" }, 403)
+  if (!token.startsWith(RELAY_TOKEN_PREFIX) || token.length > 200)
+    return invalid()
+  const grant = db.threadRelayGrantByHash(agent.id, sha256(token))
+  if (!grant) return invalid()
+  const dedupeId = parseDedupeId(body)
+  const dedupeKey = dedupeId
+    ? `${agent.id}:relay:${grant.id}:${dedupeId}`
+    : null
+  if (dedupeKey && deliverySeen(dedupeKey)) {
+    const current = db.threadRelayGrantById(agent.id, grant.id) ?? grant
+    return json({
+      targetSessionId: grant.targetSessionId,
+      delivered: true,
+      deduplicated: true,
+      remainingUses: current.remainingUses,
+    })
+  }
+  const checked = await relayTargetError(db, agent, grant.targetSessionId)
+  if (checked instanceof Response) return checked
+  const claimed = db.claimThreadRelayGrant(agent.id, grant.id, Date.now())
+  if (!claimed) return invalid()
+  const target = grant.targetSessionId
+  const promptBody: Record<string, unknown> = {
+    parts: [{ type: "text", text: `[voice relay] ${message}` }],
+  }
+  const binding = db.threadPersona(agent.id, target)
+  let targetPersona: PersonaView | null = null
+  try {
+    targetPersona = binding
+      ? resolvePersona(db, agent.id, binding.personaId)
+      : null
+  } catch {
+    targetPersona = null
+  }
+  const line = await threadPromptSystem(db, agent.id, target, targetPersona)
+  if (line) promptBody.system = line
+  await applyModelChoice(
+    db,
+    agent.id,
+    promptBody,
+    threadModelChoice(db.threadModel(agent.id, target)),
+  )
+  const posted = await fetch(
+    `${checked.base}/session/${encodeURIComponent(target)}/prompt_async`,
+    {
+      method: "POST",
+      headers: checked.headers,
+      body: JSON.stringify(promptBody),
+      signal: AbortSignal.timeout(PROMPT_TIMEOUT_MS),
+    },
+  ).catch(() => null)
+  if (!posted || !posted.ok) {
+    db.releaseThreadRelayGrant(agent.id, grant.id)
+    return json({ error: "relay delivery failed" }, 502)
+  }
+  if (dedupeKey) deliveryMark(dedupeKey)
+  return json({
+    targetSessionId: target,
+    delivered: true,
+    remainingUses: claimed.remainingUses,
+  })
+}
+
 /** The one opencode passthrough the agent's LLM token may use: reading a
  * managed thread's messages for `ob-thread read`. */
 export function isOpencodeReadRequest(
@@ -533,6 +759,7 @@ export async function cleanupDeletedThread(
   db.clearCouncilMember(userId, sessionId)
   db.deleteDelegationWatches(userId, sessionId)
   db.deleteDelegationWatchesByCreator(userId, sessionId)
+  db.deleteThreadRelayGrantsForTarget?.(userId, sessionId)
   deleteSessionMedia(db, userId, sessionId)
   await stopThreadScreen(db, userId, sessionId)
 }
