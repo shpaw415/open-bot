@@ -10,6 +10,7 @@ let death: {
 } | null = null
 
 mock.module("./docker", () => ({
+  containerIp: async () => null,
   desktopDeathInfo: async () => death,
   desktopExec: () => {
     throw new Error("not mocked")
@@ -672,6 +673,7 @@ describe("GET /api/councils/:name/status", () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       name: "auth-review",
+      statusVerified: true,
       members: [
         {
           sessionId: "s1",
@@ -777,6 +779,7 @@ describe("GET /api/councils/:name/status", () => {
     const res = await statusRequest("auth-review", store.db)
     expect(await res.json()).toEqual({
       name: "auth-review",
+      statusVerified: false,
       members: [
         {
           sessionId: "s1",
@@ -811,6 +814,7 @@ describe("GET /api/councils/:name/status", () => {
     const res = await statusRequest("auth-review", store.db)
     expect(await res.json()).toEqual({
       name: "auth-review",
+      statusVerified: true,
       desktop: { running: false, oomKilled: true, exitCode: 137 },
       members: [
         {
@@ -827,6 +831,81 @@ describe("GET /api/councils/:name/status", () => {
           effort: "",
         },
       ],
+    })
+  })
+
+  test("a flaky session/status fetch is retried once (#139)", async () => {
+    let statusCalls = 0
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/session/status")) {
+        statusCalls++
+        if (statusCalls === 1) throw new Error("transient")
+        return Response.json({ s1: { type: "idle" } })
+      }
+      if (url.endsWith("/session")) return Response.json(sessionList)
+      if (url.includes("/message"))
+        return Response.json([
+          {
+            info: { role: "assistant", finish: "stop" },
+            parts: [{ type: "text", text: "done" }],
+          },
+        ])
+      return Response.json({})
+    }) as unknown as typeof fetch
+    const store = makeDb()
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push({
+      councilId: council.id,
+      userId: "user-1",
+      sessionId: "s1",
+      role: "",
+      createdAt: 1,
+    })
+    const res = await statusRequest("auth-review", store.db)
+    const body = (await res.json()) as {
+      statusVerified: boolean
+      members: { status: string; lastReply: string }[]
+    }
+    expect(statusCalls).toBe(2)
+    expect(body.statusVerified).toBe(true)
+    expect(body.members[0]).toMatchObject({ status: "idle", lastReply: "done" })
+  })
+
+  test("a failing session/status is unverified, never idle or busy (#139)", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/session/status"))
+        return new Response("boom", { status: 500 })
+      if (url.endsWith("/session")) return Response.json(sessionList)
+      if (url.includes("/message"))
+        return Response.json([
+          {
+            info: { role: "assistant", finish: "stop" },
+            parts: [{ type: "text", text: "done" }],
+          },
+        ])
+      return Response.json({})
+    }) as unknown as typeof fetch
+    const store = makeDb()
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push({
+      councilId: council.id,
+      userId: "user-1",
+      sessionId: "s1",
+      role: "",
+      createdAt: 1,
+    })
+    const res = await statusRequest("auth-review", store.db)
+    const body = (await res.json()) as {
+      statusVerified: boolean
+      members: { status: string; lastReply: string; endState: string }[]
+    }
+    expect(body.statusVerified).toBe(false)
+    expect(body.members[0]).toMatchObject({
+      status: "unknown",
+      lastReply: "done",
+      endState: "done",
     })
   })
 })

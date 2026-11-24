@@ -115,6 +115,35 @@ describe("cron publish", () => {
       }),
     ).toBe("settle")
   })
+
+  test("no-summary settle needs sustained idle, not run age (#129)", () => {
+    // A momentary idle gap minutes into a multi-step run must not settle:
+    // the old age-based rule published "no result was published" here.
+    expect(
+      publishDecision({
+        now: started + 180_000,
+        startedAt: started,
+        desktopUp: true,
+        sessionMissing: false,
+        busy: false,
+        seenBusy: true,
+        idleSince: started + 179_000,
+        summary: null,
+      }),
+    ).toBe("wait")
+    expect(
+      publishDecision({
+        now: started + 180_000,
+        startedAt: started,
+        desktopUp: true,
+        sessionMissing: false,
+        busy: false,
+        seenBusy: true,
+        idleSince: started + 150_000,
+        summary: null,
+      }),
+    ).toBe("settle")
+  })
 })
 
 describe("cron expression parsing", () => {

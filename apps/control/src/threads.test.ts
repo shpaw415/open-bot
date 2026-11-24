@@ -548,7 +548,8 @@ describe("POST /api/threads", () => {
     const patch = calls.find(
       (call) =>
         call.url.endsWith("/session/ses_9") &&
-        (call.init as RequestInit | undefined)?.method === "PATCH",
+        (call.init as RequestInit | undefined)?.method === "PATCH" &&
+        Array.isArray(JSON.parse(String(call.init?.body)).permission),
     )
     expect(patch).toBeDefined()
     expect(JSON.parse(String(patch?.init?.body))).toEqual({
@@ -604,6 +605,60 @@ describe("POST /api/threads", () => {
     expect(JSON.parse(String(clear?.init?.body))).toEqual({
       permission: null,
     })
+  })
+
+  test("applyPersonaScope clears before setting when the current ruleset is unreadable (#122)", async () => {
+    // GET /session/:id fails: the persisted set is unknown, and opencode
+    // APPENDS a PATCHed array — setting without clearing would stack one
+    // more copy of the ruleset on every prompt.
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      options?: RequestInit,
+    ) => {
+      const url = String(input)
+      calls.push({ url, init: options })
+      if (url.endsWith("/session/ses_9") && options?.method !== "PATCH")
+        return new Response("boom", { status: 500 })
+      return Response.json({ id: "ses_9" })
+    }) as unknown as typeof fetch
+    const { applyPersonaScope } = await import("./personas")
+    await applyPersonaScope(
+      db,
+      "user-1",
+      "http://opencode:4096",
+      { authorization: "Basic dGVzdA==" },
+      "ses_9",
+      {
+        id: "p1",
+        name: "Scoped",
+        instruction: "x",
+        builtin: false,
+        skills: ["research"],
+        skillsExtra: null,
+        skillsNone: false,
+        skillsEffective: ["research"],
+        mcp: null,
+        mcpExtra: null,
+        mcpNone: false,
+        mcpEffective: null,
+      },
+    )
+    const patches = calls
+      .filter(
+        (call) =>
+          call.url.endsWith("/session/ses_9") &&
+          (call.init as RequestInit | undefined)?.method === "PATCH",
+      )
+      .map((call) => JSON.parse(String(call.init?.body)))
+    expect(patches).toEqual([
+      { permission: null },
+      {
+        permission: [
+          { permission: "skill", pattern: "*", action: "deny" },
+          { permission: "skill", pattern: "research", action: "allow" },
+        ],
+      },
+    ])
   })
 
   test("an explicitly bound assistant persona loads all skills, seed-scoped MCP", async () => {
@@ -2117,6 +2172,38 @@ describe("POST /api/threads/:id/stop|post + GET status", () => {
     expect(prompt).toBeDefined()
     expect(String(prompt?.init?.body)).toContain("[teammate update")
     expect(String(prompt?.init?.body)).toContain("POST /api/export")
+  })
+
+  test("post/notify-parent dedupeId makes a retry a no-op receipt (#141)", async () => {
+    installManageFetch()
+    const first = await manage("/api/threads/p1/post", {
+      message: "Status: half done",
+      dedupeId: "dedupe-hash-141",
+    })
+    expect(first.status).toBe(200)
+    expect(await first.json()).toEqual({ id: "p1", posted: true })
+    const retry = await manage("/api/threads/p1/post", {
+      message: "Status: half done",
+      dedupeId: "dedupe-hash-141",
+    })
+    expect(retry.status).toBe(200)
+    expect(await retry.json()).toEqual({
+      id: "p1",
+      posted: true,
+      deduplicated: true,
+    })
+    expect(
+      calls.filter((call) => call.url.endsWith("/session/p1/prompt_async")),
+    ).toHaveLength(1)
+    // A different dedupeId is a real second delivery.
+    const other = await manage("/api/threads/p1/post", {
+      message: "Status: half done",
+      dedupeId: "dedupe-hash-other",
+    })
+    expect(other.status).toBe(200)
+    expect(
+      calls.filter((call) => call.url.endsWith("/session/p1/prompt_async")),
+    ).toHaveLength(2)
   })
 
   test("stop aborts a worker thread", async () => {

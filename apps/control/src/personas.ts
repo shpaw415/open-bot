@@ -587,7 +587,36 @@ export function rulesetAlreadyApplied(
   return desired.every((rule) => seen.has(ruleKey(rule)))
 }
 
+// Per-session apply chains: prompt-send fires applyPersonaScope without
+// awaiting it, so two prompts in flight could both read-then-clear-then-set
+// interleaved (null, null, rules, rules = one appended copy). Serializing
+// per session closes that half of #122.
+const scopeApplyChains = new Map<string, Promise<unknown>>()
+
 export async function applyPersonaScope(
+  db: Db,
+  userId: string,
+  base: string,
+  headers: Record<string, string>,
+  sessionId: string,
+  persona: PersonaView | null,
+): Promise<void> {
+  const previous = scopeApplyChains.get(sessionId) ?? Promise.resolve()
+  const run = previous
+    .catch(() => {})
+    .then(() =>
+      applyPersonaScopeNow(db, userId, base, headers, sessionId, persona),
+    )
+  scopeApplyChains.set(sessionId, run)
+  try {
+    await run
+  } finally {
+    if (scopeApplyChains.get(sessionId) === run)
+      scopeApplyChains.delete(sessionId)
+  }
+}
+
+async function applyPersonaScopeNow(
   db: Db,
   userId: string,
   base: string,
@@ -639,8 +668,14 @@ export async function applyPersonaScope(
       return
     }
     if (rulesetAlreadyApplied(currentPermission, permission)) return
-    if (Array.isArray(currentPermission) && currentPermission.length > 0)
-      await patch(null)
+    // Unreadable current set (GET failed or no permission key) must still
+    // clear before setting: opencode appends arrays, so a set on an unknown
+    // base stacked another copy per prompt long after the #8 fix (#122).
+    // A failed clear aborts the set for the same reason.
+    const knownEmpty =
+      currentPermission === null ||
+      (Array.isArray(currentPermission) && currentPermission.length === 0)
+    if (!knownEmpty && !(await patch(null))) return
     await patch(permission)
   } catch (error) {
     console.error(`persona scope failed for session ${sessionId}:`, error)

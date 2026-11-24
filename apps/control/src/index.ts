@@ -40,6 +40,7 @@ import { dispatchPluginHooks } from "./plugin-hooks"
 import { convertGuardCrons } from "./plugins"
 import {
   flushPendingPluginConfigs,
+  flushPendingVikingSkills,
   reapplyPluginSetup,
   resyncVikingSkillFiles,
 } from "./plugins-apply"
@@ -128,6 +129,15 @@ onDesktopUp(async (userId) => {
     )
   })
   await flushPendingPluginConfigs(db, userId)
+  // Skill saves parked pending while OpenViking was quota-blocked sync
+  // upstream first (#135), then the mirror resync sees the full set.
+  await flushPendingVikingSkills(db, userId).catch((error: unknown) => {
+    console.error(
+      `pending skill sync failed for ${userId}: ${
+        error instanceof Error ? error.message : error
+      }`,
+    )
+  })
   // Skill-loader mirrors: skills saved while the mirror write failed (or
   // before it existed) become discoverable again on wake (#15/#19).
   await resyncVikingSkillFiles(db, userId).catch((error: unknown) => {

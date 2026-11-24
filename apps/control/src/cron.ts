@@ -440,6 +440,13 @@ type PublishInput = {
   sessionMissing: boolean
   busy: boolean
   seenBusy: boolean
+  // When the watcher first observed the run not-busy after having seen it
+  // busy. A no-summary settle needs the idle to be *sustained* for
+  // PUBLISH_IDLE: the old rule keyed on total run age, so a momentary idle
+  // gap minutes into a multi-step run published "no result was published"
+  // and discarded the real result (#129). Absent (single-shot settle), the
+  // age rule stands — such callers never saw the run busy over time.
+  idleSince?: number | null
   summary: string | null
 }
 
@@ -450,7 +457,18 @@ export function publishDecision(input: PublishInput): "wait" | "settle" {
   if (!input.desktopUp) return age >= PUBLISH_TIMEOUT_MS ? "settle" : "wait"
   if (input.busy) return age >= PUBLISH_TIMEOUT_MS ? "settle" : "wait"
   if (input.sessionMissing && age >= PUBLISH_GRACE_MS) return "settle"
-  if (input.seenBusy && age >= PUBLISH_IDLE_MS) return "settle"
+  if (input.seenBusy) {
+    // undefined = no watcher tracking idle (single-shot settle): age rule.
+    // null = watcher has not observed an idle stretch yet: never settle.
+    if (input.idleSince === undefined) {
+      if (age >= PUBLISH_IDLE_MS) return "settle"
+    } else if (
+      input.idleSince != null &&
+      input.now - input.idleSince >= PUBLISH_IDLE_MS
+    )
+      return "settle"
+    else if (age < PUBLISH_TIMEOUT_MS) return "wait"
+  }
   if (age >= PUBLISH_TIMEOUT_MS) return "settle"
   return "wait"
 }
@@ -777,7 +795,7 @@ async function deleteRunSession(
 async function settleCronNotice(
   db: Db,
   notice: CronNotice,
-  opts: { force?: boolean; seenBusy?: boolean } = {},
+  opts: { force?: boolean; seenBusy?: boolean; idleSince?: number | null } = {},
   hub?: EventHub,
 ): Promise<{ done: boolean; busy: boolean }> {
   if (notice.summary) return { done: true, busy: false }
@@ -825,6 +843,7 @@ async function settleCronNotice(
           sessionMissing: missing,
           busy,
           seenBusy: Boolean(opts.seenBusy || busy),
+          idleSince: opts.idleSince,
           summary,
         })
     if (decision === "wait") return { done: false, busy }
@@ -844,6 +863,14 @@ async function settleCronNotice(
       )
       desktopUp = true
       await readRun()
+    }
+    // Last-chance re-read before publishing the no-result fallback (#129):
+    // a just-finished reply can lag its `completed` stamp by a beat, and a
+    // run that went busy again must go back to waiting, not settle empty.
+    if (!summary && !missing && current.runSessionId) {
+      await Bun.sleep(2_000)
+      await readRun()
+      if (busy) return { done: false, busy }
     }
     const text = noticeText({ summary, sessionMissing: missing })
     const base = await endpoint(current.userId, "opencode", 4096)
@@ -866,7 +893,9 @@ async function settleCronNotice(
       if (job && delivery !== job.sessionId) db.setCronSession(job.id, delivery)
     }
     await postCronResult(base, headers, delivery, current.jobName, text)
-    if (current.runSessionId) {
+    // Keep a no-summary run session (#129): deleting it destroys the only
+    // evidence of the finished work and any chance to recover the result.
+    if (current.runSessionId && summary) {
       await deleteRunSession(
         db,
         current.userId,
@@ -887,12 +916,21 @@ async function watchCronPublish(db: Db, noticeId: string, hub?: EventHub) {
   try {
     const deadline = Date.now() + PUBLISH_TIMEOUT_MS
     let seenBusy = false
+    let idleSince: number | null = null
     while (Date.now() < deadline) {
       const notice = db.cronNoticeById(noticeId)
       if (!notice || notice.summary) return
       try {
-        const settled = await settleCronNotice(db, notice, { seenBusy }, hub)
-        if (settled.busy) seenBusy = true
+        const settled = await settleCronNotice(
+          db,
+          notice,
+          { seenBusy, idleSince },
+          hub,
+        )
+        if (settled.busy) {
+          seenBusy = true
+          idleSince = null
+        } else if (seenBusy && idleSince == null) idleSince = Date.now()
         if (settled.done) return
       } catch {
         await Bun.sleep(2_000)

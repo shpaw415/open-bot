@@ -33,7 +33,9 @@ describe("ob-vnc key normalization (#124)", () => {
   })
 
   test("every token the normalization case can emit resolves in vncdotool", () => {
-    const block = script.slice(script.indexOf('case "$lowered" in'))
+    // The last such case is the key-token normalization (an earlier one
+    // only rewrites '+' chords to '-' chords, #130).
+    const block = script.slice(script.lastIndexOf('case "$lowered" in'))
     const arms = block.slice(0, block.indexOf("esac"))
     const emitted = [
       ...arms.matchAll(/arg="?([^";]+?)"? ;;|arg=([^\s;]+) ;;|arg=\$lowered/g),
@@ -55,8 +57,36 @@ describe("ob-vnc key normalization (#124)", () => {
     expect(validVncToken("ctrl-plus")).toBe(false)
   })
 
+  test("xkey translates whole chords to xdotool keysyms (#130)", () => {
+    const fn = script.slice(script.indexOf("xkey()"))
+    const body = fn.slice(0, fn.indexOf("\n}\n") + 2)
+    // Include any xkey_* helpers defined right before xkey.
+    const helpers = script.slice(0, script.indexOf("xkey()"))
+    const helperStart = helpers.lastIndexOf("xkey_one()")
+    const prelude = helperStart >= 0 ? helpers.slice(helperStart) : ""
+    const run = (token: string) => {
+      const proc = Bun.spawnSync([
+        "sh",
+        "-c",
+        `${prelude}${body}\nxkey "$1"`,
+        "sh",
+        token,
+      ])
+      expect(proc.exitCode).toBe(0)
+      return new TextDecoder().decode(proc.stdout)
+    }
+    expect(run("ctrl-plus")).toBe("ctrl+equal")
+    expect(run("ctrl-=")).toBe("ctrl+equal")
+    expect(run("ctrl-0")).toBe("ctrl+0")
+    expect(run("shift-tab")).toBe("shift+Tab")
+    expect(run("shift+tab")).toBe("shift+Tab")
+    expect(run("tab")).toBe("Tab")
+    expect(run("enter")).toBe("Return")
+    expect(run("ctrl-a")).toBe("ctrl+a")
+  })
+
   test("xdotool fallback translates the equal chord to its keysym name", () => {
-    const xkey = script.slice(script.indexOf("xkey()"))
+    const xkey = script.slice(script.indexOf("xkey_one()"))
     const body = xkey.slice(0, xkey.indexOf("\n}\n"))
     expect(body).toContain("equal")
     expect(body).toContain("plus")

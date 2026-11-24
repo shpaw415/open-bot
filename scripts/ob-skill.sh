@@ -192,8 +192,14 @@ case "$cmd" in
     out=$(request PUT /api/skills "$body")
     fail_on_error "$out"
     confirmed=$(printf '%s' "$out" | jq -r 'if .confirmed == false then "false" else "true" end' 2>/dev/null) || confirmed="true"
+    pending=$(printf '%s' "$out" | jq -r 'if .pending == true then "true" else "false" end' 2>/dev/null) || pending="false"
     index_note=""
-    if [ "$confirmed" = "false" ]; then
+    if [ "$pending" = "true" ]; then
+      # OpenViking could not take the write (e.g. model quota): the skill
+      # is parked in the control-plane pending store, reads back now, and
+      # syncs on read/wake. It is saved — a retry would just re-park it.
+      index_note=" (pending sync — OpenViking could not take the write yet; the skill is stored durably, ob-skill get already returns it, and it syncs automatically; do not retry)"
+    elif [ "$confirmed" = "false" ]; then
       index_note=" (OpenViking is still indexing — ob-skill get may 404 for a few seconds; the write is durable, do not retry)"
     fi
     if [ -n "$group_label" ]; then

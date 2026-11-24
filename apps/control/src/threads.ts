@@ -64,6 +64,40 @@ export const CRON_TITLE_PREFIX = "cron-run:"
 const TITLE_LIMIT = 80
 const MESSAGE_LIMIT = 8000
 const PROMPT_TIMEOUT_MS = 30_000
+
+// Idempotent thread delivery (#141/#142): a post/notify-parent caller killed
+// by its own tool timeout cannot tell whether the prompt landed, and a blind
+// retry duplicated work. Callers send a deterministic dedupeId (the CLI
+// hashes target+text); a delivery seen within the TTL answers the same
+// receipt with `deduplicated: true` and prompts nothing again. In-memory is
+// enough — the ambiguity window is minutes, and a control restart clears it.
+const DELIVERY_DEDUPE_TTL_MS = 10 * 60_000
+const recentDeliveries = new Map<string, number>()
+
+function parseDedupeId(body: Record<string, unknown>): string | null {
+  const raw = body.dedupeId
+  if (typeof raw !== "string") return null
+  const trimmed = raw.trim()
+  return trimmed.length >= 8 && trimmed.length <= 128 ? trimmed : null
+}
+
+function deliverySeen(key: string): boolean {
+  const now = Date.now()
+  for (const [k, at] of recentDeliveries) {
+    if (now - at > DELIVERY_DEDUPE_TTL_MS) recentDeliveries.delete(k)
+  }
+  return recentDeliveries.has(key)
+}
+
+function deliveryMark(key: string) {
+  recentDeliveries.set(key, Date.now())
+  if (recentDeliveries.size > 1000) {
+    const oldest = [...recentDeliveries.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, recentDeliveries.size - 1000)
+    for (const [k] of oldest) recentDeliveries.delete(k)
+  }
+}
 const DELETE_LIMIT = 100
 
 export function isThreadRequest(pathname: string, method: string): boolean {
@@ -1509,6 +1543,10 @@ async function postThread(req: Request, id: string, db: Db, agent: User) {
       )
     const allowed = await manageableThread(id, base, headers, db, agent)
     if (!("session" in allowed)) return allowed
+    const dedupeId = parseDedupeId(body)
+    const dedupeKey = dedupeId ? `${agent.id}:${id}:${dedupeId}` : null
+    if (dedupeKey && deliverySeen(dedupeKey))
+      return json({ id, posted: true, deduplicated: true })
     const stored = db.threadModel(agent.id, id)
     const promptBody: Record<string, unknown> = {
       parts: [{ type: "text", text: body.message }],
@@ -1528,11 +1566,16 @@ async function postThread(req: Request, id: string, db: Db, agent: User) {
       },
     ).catch(() => null)
     if (!posted || !posted.ok) return json({ error: "post failed" }, 502)
+    if (dedupeKey) deliveryMark(dedupeKey)
     touchSandbox(db, resolved.sandboxId)
     return json({ id, posted: true })
   }
   const allowed = await manageableThread(id, base, headers, db, agent)
   if (!("session" in allowed)) return allowed
+  const dedupeId = parseDedupeId(body)
+  const dedupeKey = dedupeId ? `${agent.id}:${id}:${dedupeId}` : null
+  if (dedupeKey && deliverySeen(dedupeKey))
+    return json({ id, posted: true, deduplicated: true })
   // A provably wrong switch refuses the whole post before anything is sent,
   // like start refuses before creating — the caller fixes the flag and
   // retries instead of the message landing on an unintended model.
@@ -1577,6 +1620,7 @@ async function postThread(req: Request, id: string, db: Db, agent: User) {
     },
   ).catch(() => null)
   if (!posted || !posted.ok) return json({ error: "post failed" }, 502)
+  if (dedupeKey) deliveryMark(dedupeKey)
   const result: Record<string, unknown> = { id, posted: true }
   if (hasUpdate && choice) {
     // Persist only once the turn carrying the switch actually landed, so a
@@ -1611,6 +1655,11 @@ async function notifyParent(req: Request, id: string, db: Db, agent: User) {
   const allowed = await manageableThread(id, base, headers, db, agent)
   if (!("session" in allowed)) return allowed
   const creator = delegationCreatorOf(db, agent.id, id)
+  const dedupeId = parseDedupeId(body)
+  const dedupeKey =
+    dedupeId && creator ? `${agent.id}:${creator}:${dedupeId}` : null
+  if (dedupeKey && deliverySeen(dedupeKey))
+    return json({ id, parent: creator, notified: true, deduplicated: true })
   if (!creator)
     return json(
       {
@@ -1654,6 +1703,7 @@ async function notifyParent(req: Request, id: string, db: Db, agent: User) {
     },
   ).catch(() => null)
   if (!posted || !posted.ok) return json({ error: "notify failed" }, 502)
+  if (dedupeKey) deliveryMark(dedupeKey)
   return json({ id, parent: creator, notified: true })
 }
 

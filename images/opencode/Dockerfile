@@ -3,7 +3,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl gh git jq libatomic1 procps ripgrep rsync sudo unzip \
     gcc libc6-dev make \
-    xvfb openbox chromium wmctrl xdotool sqlite3 ffmpeg \
+    xvfb openbox chromium wmctrl xdotool xclip sqlite3 ffmpeg \
     python3 python3-pip python3-venv python3-pil \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \

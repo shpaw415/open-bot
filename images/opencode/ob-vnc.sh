@@ -49,15 +49,19 @@ state=/home/agent/.open-bot/capture-$cdp.json
 # the local X display — and capture, which prefers X11/CDP — stays up. Refused
 # input falls back to xdotool on the local display so the ladder keeps a
 # working input channel; xdotool speaks the same screen coordinate space.
-xkey() {
-  case "$1" in
-    enter) printf 'Return' ;;
-    esc) printf 'Escape' ;;
-    bsp) printf 'BackSpace' ;;
-    pgup) printf 'Page_Up' ;;
-    pgdn) printf 'Page_Down' ;;
-    ins) printf 'Insert' ;;
-    del) printf 'Delete' ;;
+# One chord segment -> its X keysym name. Named keys are case-sensitive in
+# xdotool ("Tab" works, "tab" is "No such key name"), so lookup is by the
+# lowercased segment while single characters keep their case.
+xkey_one() {
+  lower=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+  case "$lower" in
+    enter | return) printf 'Return' ;;
+    esc | escape) printf 'Escape' ;;
+    bsp | backspace) printf 'BackSpace' ;;
+    pgup | pageup) printf 'Page_Up' ;;
+    pgdn | pagedown) printf 'Page_Down' ;;
+    ins | insert) printf 'Insert' ;;
+    del | delete) printf 'Delete' ;;
     tab) printf 'Tab' ;;
     home) printf 'Home' ;;
     end) printf 'End' ;;
@@ -65,15 +69,44 @@ xkey() {
     down) printf 'Down' ;;
     left) printf 'Left' ;;
     right) printf 'Right' ;;
-    # xdotool speaks X keysym names and '+' chords, where vncdo takes
-    # '-' chords and single chars: translate the zoom chord both ways
-    # the fallback can receive it (#124).
+    space | spacebar) printf 'space' ;;
+    # xdotool speaks X keysym names, where vncdo takes single chars:
+    # translate the zoom chord both ways the fallback can receive it (#124).
     = | plus) printf 'equal' ;;
-    *-plus) printf '%s+equal' "${1%-plus}" ;;
-    *-=) printf '%s+equal' "${1%-=}" ;;
-    *-*) printf '%s' "$1" | tr '-' '+' ;;
-    *) printf '%s' "$1" ;;
+    minus) printf 'minus' ;;
+    control) printf 'ctrl' ;;
+    meta) printf 'super' ;;
+    ctrl | shift | alt | super) printf '%s' "$lower" ;;
+    *)
+      if [ "${#1}" -eq 1 ]; then printf '%s' "$1"; else printf '%s' "$lower"; fi
+      ;;
   esac
+}
+
+# A whole chord ("ctrl-plus", "ctrl-=", "shift+Tab") -> xdotool form
+# ("ctrl+equal", "shift+Tab"). The old translation only mapped bare tokens
+# and blindly swapped '-' for '+', so chord segments kept vncdo's lowercase
+# aliases and xdotool rejected them (#130).
+xkey() {
+  if [ "$1" = "-" ]; then
+    printf 'minus'
+    return
+  fi
+  chord=$(printf '%s' "$1" | tr '+' '-')
+  oldifs=$IFS
+  IFS='-'
+  set -f
+  # shellcheck disable=SC2086 # word splitting on '-' is the chord split
+  set -- $chord
+  set +f
+  IFS=$oldifs
+  out=""
+  for part in "$@"; do
+    [ -n "$part" ] || continue
+    mapped=$(xkey_one "$part")
+    if [ -n "$out" ]; then out="$out+$mapped"; else out="$mapped"; fi
+  done
+  printf '%s' "$out"
 }
 
 xdotool_input() {
@@ -192,12 +225,26 @@ if [ "${1:-}" = "paste" ]; then
   text="$*"
   if command -v xclip >/dev/null 2>&1; then
     pkill -x xclip >/dev/null 2>&1 || true
-    printf '%s' "$text" | DISPLAY=:$display xclip -selection clipboard >/dev/null 2>&1 &
+    # Serve UTF8_STRING explicitly: xclip's default STRING target cannot
+    # carry code points outside latin-1 (U+2019 was silently dropped, #132).
+    printf '%s' "$text" | DISPLAY=:$display xclip -selection clipboard -t UTF8_STRING >/dev/null 2>&1 &
     sleep 0.2
     vnc_input key ctrl-v
     sleep 0.15
     pkill -x xclip >/dev/null 2>&1 || true
     exit 0
+  fi
+  # No clipboard tool on this image: type on the local display. xdotool
+  # type remaps unused keycodes, so it carries full Unicode; vncdo type
+  # silently drops code points outside its keymap (#132), so it stays the
+  # last resort for plain ASCII only — never a silent lossy paste.
+  if command -v xdotool >/dev/null 2>&1; then
+    DISPLAY=:$display xdotool type --clearmodifiers --delay 8 -- "$text"
+    exit 0
+  fi
+  if printf '%s' "$text" | LC_ALL=C grep -q '[^[:print:][:space:]]'; then
+    echo "ob-vnc: paste text contains non-ASCII characters and no unicode-capable input path (xclip/xdotool) exists on this desktop — refusing a lossy type; update the desktop image (bun run images && bun run update)" >&2
+    exit 1
   fi
   vnc_input type "$text"
   exit 0
@@ -298,6 +345,11 @@ if printf '%s\n' "$@" | grep -qx -e key -e keyup; then
     if [ "$pending" = "1" ]; then
       pending=0
       lowered=$(printf '%s' "$arg" | tr 'A-Z' 'a-z')
+      # xdotool-style '+' chords ("Shift+Tab") reach vncdo as '-' chords
+      # (#130); a bare "+" key token stays a single char.
+      case "$lowered" in
+        ?*'+'?*) lowered=$(printf '%s' "$lowered" | tr '+' '-') ;;
+      esac
       case "$lowered" in
         return) arg=enter ;;
         escape) arg=esc ;;

@@ -207,11 +207,44 @@ request() {
   method="$1"
   path="$2"
   body="${3:-}"
-  if [ -n "$body" ]; then
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" \
-      -H "content-type: application/json" -d "$body" "$BASE$path"
+  # REQ_MAX_TIME bounds the call (#141): delivery verbs set it past the
+  # control plane's own 30s prompt timeout, so the caller always gets a
+  # receipt — its 502, or the explicit unconfirmed error below — instead of
+  # hanging until the outer tool timeout kills it with no output at all.
+  req_rc=0
+  if [ -n "${REQ_MAX_TIME:-}" ]; then
+    set -- --connect-timeout 5 --max-time "$REQ_MAX_TIME"
   else
-    curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path"
+    set --
+  fi
+  if [ -n "$body" ]; then
+    req_out=$(curl -sS "$@" -X "$method" -H "Authorization: Bearer $TOKEN" \
+      -H "content-type: application/json" -d "$body" "$BASE$path") || req_rc=$?
+  else
+    req_out=$(curl -sS "$@" -X "$method" -H "Authorization: Bearer $TOKEN" "$BASE$path") || req_rc=$?
+  fi
+  if [ "$req_rc" -ne 0 ]; then
+    printf '{"error":"request to control plane failed or timed out (curl %s) — result NOT confirmed; verify with ob-thread read/status before retrying (a retry of post/notify-parent with the same text is deduplicated)"}' "$req_rc"
+    return 0
+  fi
+  printf '%s' "$req_out"
+}
+
+# Deterministic per-delivery id (#141): the same target+text hashes to the
+# same id, so a retry after an unconfirmed timeout is a no-op receipt on the
+# control plane instead of a duplicated prompt. Empty when sha256sum is
+# unavailable — dedupe is best effort, delivery itself never depends on it.
+dedupe_id() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n%s' "$1" "$2" | sha256sum | cut -d' ' -f1
+  fi
+}
+
+jq_dedupe() {
+  if [ -n "$1" ]; then
+    jq --arg dedupeId "$1" '. + {dedupeId: $dedupeId}'
+  else
+    cat
   fi
 }
 
@@ -547,8 +580,9 @@ case "$cmd" in
             "\n" + "revive the desktop, then rerun the council"
           elif (.members | length) == 0 then "(no members)"
           else
+            (.statusVerified != false) as $verified |
             .members[] |
-            "- [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(.status)\(if .title != "" then " — " + .title else "" end))" +
+            "- [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(if .status == "unknown" and $verified == false then "unknown — could not verify" else .status end)\(if .title != "" then " — " + .title else "" end))" +
             (if ([(.persona // ""), (.model // ""), (.effort // "")] | map(select(. != "")) | length) > 0 then " [" + ([(.persona // ""), (.model // ""), (.effort // "")] | map(select(. != "")) | join(" · ")) + "]" else "" end) +
             (if .stalled then "\n    STALLED: last turn did not end cleanly (\(.endDetail // .endState)) — verify deliverables, relaunch with ob-thread post" else "" end) +
             (if .lastReply != "" then "\n    " + (.lastReply | gsub("\n"; "\n    ") | .[0:280]) else "" end)
@@ -567,10 +601,17 @@ case "$cmd" in
         # Closing deletes every member thread — refuse while one is still
         # working so unfinished work is not silently lost.
         status_out=$(request GET "/api/councils/$(urlencode "$name")/status" 2>/dev/null) || status_out=""
-        busy=$(printf '%s' "$status_out" | jq -r '[.members[]? | select(.status != "idle")] | length' 2>/dev/null) || busy=""
+        # `unknown` is "could not verify" (#139), never confirmed running
+        # work. Only a verified non-idle, non-unknown state is busy.
+        busy=$(printf '%s' "$status_out" | jq -r '[.members[]? | select(.status != "idle" and .status != "unknown")] | length' 2>/dev/null) || busy=""
+        unverified=$(printf '%s' "$status_out" | jq -r 'if .statusVerified == false then ([.members[]? | select(.status == "unknown")] | length) else 0 end' 2>/dev/null) || unverified=""
         if [ -z "$force" ] && [ -n "$busy" ] && [ "$busy" -gt 0 ]; then
           echo "ob-thread: $busy member(s) of $name are still running — check \`ob-thread council status $name\`, wait for them to finish, or pass --force to close anyway" >&2
-          printf '%s' "$status_out" | jq -r '.members[]? | select(.status != "idle") | "  - [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(.status))"' >&2
+          printf '%s' "$status_out" | jq -r '.members[]? | select(.status != "idle" and .status != "unknown") | "  - [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(.status))"' >&2
+          exit 1
+        fi
+        if [ -z "$force" ] && [ -n "$unverified" ] && [ "$unverified" -gt 0 ]; then
+          echo "ob-thread: could not verify $unverified member(s) of $name (status unknown) — that is not confirmed running work; retry \`ob-thread council status $name\` in a moment, or pass --force to close anyway" >&2
           exit 1
         fi
         out=$(request DELETE "/api/councils/$(urlencode "$name")")
@@ -734,10 +775,10 @@ $1"; fi
     id="$1"
     shift
     text="$*"
-    body=$(jq -n --arg message "$text" '{message: $message}')
-    out=$(request POST "/api/threads/$(urlencode "$id")/notify-parent" "$body")
+    body=$(jq -n --arg message "$text" '{message: $message}' | jq_dedupe "$(dedupe_id "$id" "$text")")
+    out=$(REQ_MAX_TIME=45 request_retry_transient POST "/api/threads/$(urlencode "$id")/notify-parent" "$body")
     fail_on_error "$out"
-    printf '%s' "$out" | jq '{id, parent, notified}'
+    printf '%s' "$out" | jq '{id, parent, notified} + (if .deduplicated then {deduplicated: .deduplicated} else {} end)'
     ;;
   post)
     [ $# -ge 2 ] || { usage; exit 2; }
@@ -768,11 +809,11 @@ $1"; fi
       check_model_flag "$model"
     fi
     text="$*"
-    body=$(jq -n --arg message "$text" '{message: $message}' | jq_model_half model "$model" | jq_model_half effort "$effort")
-    out=$(request_retry_transient POST "/api/threads/$(urlencode "$id")/post" "$body")
+    body=$(jq -n --arg message "$text" '{message: $message}' | jq_model_half model "$model" | jq_model_half effort "$effort" | jq_dedupe "$(dedupe_id "$id" "$text")")
+    out=$(REQ_MAX_TIME=45 request_retry_transient POST "/api/threads/$(urlencode "$id")/post" "$body")
     fail_on_error "$out"
     warn_effort_dropped "$out"
-    printf '%s' "$out" | jq '{id, posted} + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .effortDropped then {effortDropped: .effortDropped} else {} end)'
+    printf '%s' "$out" | jq '{id, posted} + (if .deduplicated then {deduplicated: .deduplicated} else {} end) + (if .model then {model: .model} else {} end) + (if .effort then {effort: .effort} else {} end) + (if .effortDropped then {effortDropped: .effortDropped} else {} end)'
     ;;
   model)
     [ $# -ge 1 ] || { usage; exit 2; }

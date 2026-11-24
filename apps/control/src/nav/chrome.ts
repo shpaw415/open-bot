@@ -73,9 +73,12 @@ export function schemeError(raw: string): string | null {
 }
 
 // url, title, heading and the page body text ride back together so "navigate
-// then read" is one call instead of two.
-const STATE_SCRIPT =
-  '({url:location.href,title:document.title,heading:(document.querySelector("h1")?document.querySelector("h1").textContent:"").replace(/\\s+/g," ").trim().slice(0,200),text:(document.body?document.body.innerText:"").replace(/\\s+/g," ").trim().slice(0,2500)})'
+// then read" is one call instead of two. The heading is the first *rendered*
+// h1: hash-routed pages keep inactive routes in the DOM under `hidden`, and
+// the first h1 in document order used to report a route the user is not on
+// (#136). No rendered h1 -> empty heading, never a hidden one.
+export const STATE_SCRIPT =
+  '({url:location.href,title:document.title,heading:(()=>{const vis=(e)=>{try{return e.checkVisibility?e.checkVisibility({checkVisibilityCSS:true}):e.getClientRects().length>0}catch{return e.getClientRects().length>0}};const h=[...document.querySelectorAll("h1")].find(vis);return (h?h.textContent:"").replace(/\\s+/g," ").trim().slice(0,200)})(),text:(document.body?document.body.innerText:"").replace(/\\s+/g," ").trim().slice(0,2500)})'
 
 export function shapeState(raw: unknown): PageState {
   const row = (raw ?? {}) as Record<string, unknown>
