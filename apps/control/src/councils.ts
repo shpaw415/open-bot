@@ -3,7 +3,7 @@ import { lastAssistantText, lastTurnEnd, turnEndStalled } from "./delegations"
 import { desktopDeathInfo, desktopPhase, endpoint } from "./docker"
 import type { EventHub } from "./events"
 import { builtins } from "./personas"
-import { cleanupDeletedThread } from "./threads"
+import { cleanupDeletedThread, turnStateFromMessages } from "./threads"
 
 export const COUNCIL_NAME_MAX = 48
 export const ROLE_MAX = 80
@@ -211,6 +211,9 @@ async function councilStatus(
     role: string
     title: string
     status: string
+    // Where the status verdict came from: the live status endpoint, a
+    // finished turn proven by the message list, or nowhere (#153).
+    statusSource: "live" | "messages" | "none"
     lastReply: string
     // How the newest turn ended (done|error|cut|empty|unknown) and whether
     // an idle member looks stalled mid-work rather than finished — the
@@ -232,6 +235,7 @@ async function councilStatus(
     role: row.role,
     title: "",
     status: "unknown",
+    statusSource: "none",
     lastReply: "",
     endState: "unknown",
     endDetail: "",
@@ -248,6 +252,9 @@ async function councilStatus(
   // status endpoint failed). `unknown` then means "unverified" — callers must
   // never present it as running work (#139).
   let statusVerified = false
+  // Why live verification failed, when it did (#153: an intermittent
+  // `unknown` with no cause named reads as a flap, not a diagnosis).
+  let statusError = ""
   try {
     const phase = await desktopPhase(user.id)
     if (phase !== "running") {
@@ -258,9 +265,12 @@ async function councilStatus(
           oomKilled: death.oomKilled,
           exitCode: death.exitCode,
         }
-        for (const member of members) member.status = "desktop_down"
+        for (const member of members) {
+          member.status = "desktop_down"
+          member.statusSource = "live"
+        }
         statusVerified = true
-      }
+      } else if (rows.length > 0) statusError = `desktop is ${phase}`
     }
     if (!desktop && phase === "running" && rows.length > 0) {
       const base = await endpoint(user.id, "opencode", 4096)
@@ -278,6 +288,9 @@ async function councilStatus(
         }).catch(() => null),
       ])
       statusVerified = statusMap !== null
+      if (!statusVerified && !statusError)
+        statusError =
+          "session/status fetch failed — statuses fall back to message-list proof where available"
       const sessions = (await sessionsRes?.json().catch(() => null)) as
         | { id?: unknown; title?: unknown }[]
         | null
@@ -288,35 +301,56 @@ async function councilStatus(
             titles.set(item.id, item.title.replace(/^worker:/, ""))
         }
       }
-      for (const member of members) {
-        member.title = titles.get(member.sessionId) ?? ""
-        const type = statusMap?.[member.sessionId]?.type
-        member.status =
-          typeof type === "string" && type
-            ? type
-            : statusMap
-              ? "idle"
-              : "unknown"
-        const res = await fetch(
-          `${base}/session/${encodeURIComponent(member.sessionId)}/message`,
-          { headers, signal: AbortSignal.timeout(10_000) },
-        ).catch(() => null)
-        if (res?.ok) {
+      // Message tails fetch in parallel: a sequential 10 s-per-member
+      // walk made this call itself the intermittent timeout (#153).
+      await Promise.all(
+        members.map(async (member) => {
+          member.title = titles.get(member.sessionId) ?? ""
+          const type = statusMap?.[member.sessionId]?.type
+          member.status =
+            typeof type === "string" && type
+              ? type
+              : statusMap
+                ? "idle"
+                : "unknown"
+          if (statusMap) member.statusSource = "live"
+          const res = await fetch(
+            `${base}/session/${encodeURIComponent(member.sessionId)}/message`,
+            { headers, signal: AbortSignal.timeout(10_000) },
+          ).catch(() => null)
+          if (!res?.ok) return
           const messages = await res.json().catch(() => null)
           member.lastReply = lastAssistantText(messages)
           const end = lastTurnEnd(messages)
           member.endState = end.state
           member.endDetail = end.detail
+          // A finished newest turn is stable terminal proof the member is
+          // idle, even when /session/status is down — message evidence
+          // never un-finishes, so the verdict stops flapping (#153). No
+          // proof stays `unknown`; nothing here ever derives "busy".
+          if (
+            member.status === "unknown" &&
+            turnStateFromMessages(messages) === "idle"
+          ) {
+            member.status = "idle"
+            member.statusSource = "messages"
+          }
           member.stalled = member.status === "idle" && turnEndStalled(end)
-        }
-      }
+        }),
+      )
     }
-  } catch {
-    // keep the degraded rows; status is a convenience view
+  } catch (error) {
+    // keep the degraded rows; status is a convenience view — but name
+    // the failure so an intermittent unknown carries its diagnosis.
+    if (!statusError)
+      statusError = (
+        error instanceof Error ? error.message : "status check failed"
+      ).slice(0, 200)
   }
   return json({
     name: council.name,
     statusVerified,
+    ...(statusError ? { statusError } : {}),
     members,
     ...(desktop ? { desktop } : {}),
   })

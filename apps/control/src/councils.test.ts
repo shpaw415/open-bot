@@ -680,6 +680,7 @@ describe("GET /api/councils/:name/status", () => {
           role: "Researcher",
           title: "Research",
           status: "busy",
+          statusSource: "live",
           lastReply: "half done",
           endState: "unknown",
           endDetail: "",
@@ -693,6 +694,7 @@ describe("GET /api/councils/:name/status", () => {
           role: "Reviewer",
           title: "Reviewer",
           status: "idle",
+          statusSource: "live",
           lastReply: "finished the review",
           endState: "unknown",
           endDetail: "",
@@ -780,12 +782,14 @@ describe("GET /api/councils/:name/status", () => {
     expect(await res.json()).toEqual({
       name: "auth-review",
       statusVerified: false,
+      statusError: "desktop is sleeping",
       members: [
         {
           sessionId: "s1",
           role: "",
           title: "",
           status: "unknown",
+          statusSource: "none",
           lastReply: "",
           endState: "unknown",
           endDetail: "",
@@ -822,6 +826,7 @@ describe("GET /api/councils/:name/status", () => {
           role: "",
           title: "",
           status: "desktop_down",
+          statusSource: "live",
           lastReply: "",
           endState: "unknown",
           endDetail: "",
@@ -879,10 +884,12 @@ describe("GET /api/councils/:name/status", () => {
         return new Response("boom", { status: 500 })
       if (url.endsWith("/session")) return Response.json(sessionList)
       if (url.includes("/message"))
+        // A prompt with no finished reply: nothing proves the turn ended
+        // or that it is still running — the verdict stays unknown.
         return Response.json([
           {
-            info: { role: "assistant", finish: "stop" },
-            parts: [{ type: "text", text: "done" }],
+            info: { role: "user", time: { created: Date.now() } },
+            parts: [{ type: "text", text: "go" }],
           },
         ])
       return Response.json({})
@@ -899,13 +906,89 @@ describe("GET /api/councils/:name/status", () => {
     const res = await statusRequest("auth-review", store.db)
     const body = (await res.json()) as {
       statusVerified: boolean
-      members: { status: string; lastReply: string; endState: string }[]
+      statusError?: string
+      members: {
+        status: string
+        statusSource: string
+        lastReply: string
+        endState: string
+      }[]
     }
     expect(body.statusVerified).toBe(false)
+    expect(body.statusError).toContain("session/status")
     expect(body.members[0]).toMatchObject({
       status: "unknown",
+      statusSource: "none",
+    })
+  })
+
+  test("a failing session/status still proves finished members idle from messages (#153)", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/session/status"))
+        return new Response("boom", { status: 500 })
+      if (url.endsWith("/session")) return Response.json(sessionList)
+      if (url.includes("/s1/message"))
+        return Response.json([
+          {
+            info: { role: "assistant", finish: "stop" },
+            parts: [{ type: "text", text: "done" }],
+          },
+        ])
+      if (url.includes("/s2/message"))
+        return Response.json([
+          {
+            info: { role: "user", time: { created: Date.now() } },
+            parts: [{ type: "text", text: "go" }],
+          },
+        ])
+      return Response.json({})
+    }) as unknown as typeof fetch
+    const store = makeDb()
+    const council = findOrCreateCouncil(store.db, "user-1", "auth-review")
+    store.members.push(
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s1",
+        role: "",
+        createdAt: 1,
+      },
+      {
+        councilId: council.id,
+        userId: "user-1",
+        sessionId: "s2",
+        role: "",
+        createdAt: 2,
+      },
+    )
+    const res = await statusRequest("auth-review", store.db)
+    const body = (await res.json()) as {
+      statusVerified: boolean
+      statusError?: string
+      members: {
+        sessionId: string
+        status: string
+        statusSource: string
+        lastReply: string
+        endState: string
+      }[]
+    }
+    // The endpoint failure is named, never hidden behind the derivation.
+    expect(body.statusVerified).toBe(false)
+    expect(body.statusError).toContain("session/status")
+    const byId = new Map(body.members.map((m) => [m.sessionId, m]))
+    // Finished turn in the message list is stable terminal proof (#153):
+    // no flap back to unknown, and council close is not blocked by it.
+    expect(byId.get("s1")).toMatchObject({
+      status: "idle",
+      statusSource: "messages",
       lastReply: "done",
       endState: "done",
+    })
+    expect(byId.get("s2")).toMatchObject({
+      status: "unknown",
+      statusSource: "none",
     })
   })
 })
