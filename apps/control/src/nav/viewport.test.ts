@@ -184,6 +184,30 @@ test("viewportMatches keeps preset behavior at the emulated dpr (#125)", () => {
   expect(viewportMatches({ width: 375, height: 844, dpr: 3 }, spec)).toBe(false)
 })
 
+test("viewportMatches accepts a visual-viewport match on no-meta-viewport pages (#154)", () => {
+  const spec = setOf(["390x844", "--dpr", "2"])
+  // Field case: without <meta viewport>, Chromium gives mobile emulation
+  // a 980px virtual layout viewport (innerWidth 980, visual scale ~0.398);
+  // the device-visible size (visual × scale) is the spec size.
+  expect(
+    viewportMatches(
+      { width: 980, height: 2121, dpr: 2, visualWidth: 390, visualHeight: 844 },
+      spec,
+    ),
+  ).toBe(true)
+  // Neither layout nor visual at the spec size still fails.
+  expect(
+    viewportMatches(
+      { width: 980, height: 2121, dpr: 2, visualWidth: 500, visualHeight: 844 },
+      spec,
+    ),
+  ).toBe(false)
+  // Callers without visual fields keep the layout-only comparison.
+  expect(viewportMatches({ width: 980, height: 2121, dpr: 2 }, spec)).toBe(
+    false,
+  )
+})
+
 test("CDP params carry orientation and a plain UA override", () => {
   const portrait = setOf(["iphone-14"])
   expect(metricsOverride(portrait)).toMatchObject({

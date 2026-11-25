@@ -83,6 +83,26 @@ describe("ob-vnc key normalization (#124)", () => {
     expect(run("tab")).toBe("Tab")
     expect(run("enter")).toBe("Return")
     expect(run("ctrl-a")).toBe("ctrl+a")
+    // Tokens in the vnc-normalized form the routing hands xkey (#152):
+    // normalization rewrites escape->esc, backspace->bsp, etc. first.
+    expect(run("esc")).toBe("Escape")
+    expect(run("bsp")).toBe("BackSpace")
+    expect(run("pgup")).toBe("Page_Up")
+    expect(run("pgdn")).toBe("Page_Down")
+    expect(run("ins")).toBe("Insert")
+  })
+
+  test("pure key sequences route to xdotool before VNC (#152)", () => {
+    // vncdotool -> x11vnc releases Shift around Tab (its keysym injection
+    // tweaks conflicting modifiers), so shift-Tab arrived as plain Tab in
+    // the field and walked focus out of the page. xdotool on the local
+    // display preserves the chord; VNC stays the fallback.
+    const tail = script.slice(script.lastIndexOf("# vncdotool only knows"))
+    expect(tail).toContain("only_keys")
+    expect(tail.indexOf("xdotool_input")).toBeGreaterThan(-1)
+    expect(tail.indexOf("xdotool_input")).toBeLessThan(
+      tail.lastIndexOf("vnc_input"),
+    )
   })
 
   test("xdotool fallback translates the equal chord to its keysym name", () => {
