@@ -38,7 +38,7 @@ import {
 } from "./viewport"
 
 const USAGE =
-  "usage: chrome.ts PORT SESSION navigate URL | tab [list|new [URL]|close [N]|switch N] | newtab URL | tabs | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] [--timeout SECONDS] JS | storage idb ORIGIN [DB [STORE]] [--limit N] | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]"
+  "usage: chrome.ts PORT SESSION navigate URL | tab [list [--full]|new [URL]|close [N]|switch N] | newtab URL | tabs [--full] | switch N | closetab N | url | back | forward | reload [--fresh] | cache clear [--origin URL] [--cookies] [--reload] | console | network [N] | metrics | dom | eval [--raw] [--timeout SECONDS] JS | storage idb ORIGIN [DB [STORE]] [--limit N] | viewport [list | mobile [PRESET] | PRESET | WxH [--dpr N] [--landscape] [--desktop] | rotate | off]"
 
 export type PageState = {
   url: string
@@ -246,7 +246,26 @@ export type TabLine = {
   }[]
 }
 
-export async function tabsLine(port: number, session: string | undefined) {
+// Tab listings default to origin + path only (#155): query and fragment
+// values on unrelated tabs (sign-in state tokens, redirect targets) are
+// not needed to manage tabs and must not ride into the model context.
+// `--full` is the explicit opt-in when the complete URL is the point.
+export function redactTabUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    parsed.search = ""
+    parsed.hash = ""
+    return parsed.toString()
+  } catch {
+    return url.split(/[?#]/)[0] ?? url
+  }
+}
+
+export async function tabsLine(
+  port: number,
+  session: string | undefined,
+  options: { full?: boolean } = {},
+) {
   const targets = await listPageTargets(port)
   const active = pickPageTarget(targets, readActiveTabId(session))
   return {
@@ -256,7 +275,7 @@ export async function tabsLine(port: number, session: string | undefined) {
       // close, so the id — not the number — is the handle that keeps
       // listing and acting on the same tab.
       id: target.id,
-      url: target.url,
+      url: options.full ? target.url : redactTabUrl(target.url),
       title: target.title,
       active: target.id === active?.id,
     })),
@@ -1348,7 +1367,9 @@ async function main() {
   else if (verb === "newtab")
     state = await withHeal(session, () => newTab(port, session, url ?? ""))
   else if (verb === "tabs")
-    state = await withHeal(session, () => tabsLine(port, session))
+    state = await withHeal(session, () =>
+      tabsLine(port, session, { full: flags.full === true }),
+    )
   else if (verb === "switch") {
     if (!arg) throw new Error(USAGE)
     state = await withHeal(session, () => switchTab(port, session, arg))

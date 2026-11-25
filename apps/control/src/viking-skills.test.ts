@@ -751,6 +751,40 @@ describe("viking skills", () => {
       }),
     ).not.toThrow()
   })
+
+  test("rejects bare references/ companion mentions links miss (#131)", async () => {
+    const { danglingSkillRefs } = await import("./viking-skills")
+    // The reported github skill sent readers to a bundle file in prose /
+    // a code span, never as a markdown link — the #127 guard saw nothing.
+    expect(
+      danglingSkillRefs(
+        "Before creating a repo, read `references/repo-management.md`.",
+      ),
+    ).toEqual(["references/repo-management.md"])
+    expect(
+      danglingSkillRefs("Lire references/repo-management.md avant tout."),
+    ).toEqual(["references/repo-management.md"])
+    expect(
+      danglingSkillRefs("See ./references/api.md for the shapes."),
+    ).toEqual(["./references/api.md"])
+    // Not companion files: absolute paths, URLs, and project-tree paths
+    // that merely contain a references/ segment mid-path.
+    expect(
+      danglingSkillRefs(
+        "Edit `/home/agent/references/x.md`, see https://example.test/references/x.md and `src/references.ts`.",
+      ),
+    ).toEqual([])
+    // Fenced examples stay discussion, like the link rule.
+    expect(
+      danglingSkillRefs("```md\nread `references/example.md`\n```"),
+    ).toEqual([])
+    expect(() =>
+      assertSkillInput({
+        ...skill,
+        body: "Read `references/repo-management.md` before creating a repo.",
+      }),
+    ).toThrow("references/repo-management.md")
+  })
 })
 
 test("skillFileContent renders a loader-discoverable SKILL.md (#15/#19)", () => {

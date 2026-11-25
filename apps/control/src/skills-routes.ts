@@ -7,6 +7,7 @@ import { pluginOwnership, pluginSkillGroups } from "./plugin-ownership"
 import {
   assertSkillInput,
   type createVikingSkills,
+  danglingSkillRefs,
   type SkillDetail,
   skillFileContent,
   skillNameError,
@@ -34,6 +35,20 @@ export function retryableSkillError(error: unknown): boolean {
 
 function pendingDetail(row: PendingSkillRow): SkillDetail {
   return { name: row.name, description: row.description, body: row.body }
+}
+
+// Skills installed before the single-file guard (or written straight
+// into OpenViking) can still send readers to companion files that do
+// not exist on disk (#131). Reads name them instead of letting the
+// agent discover the dead end mid-task; saves reject them (#127).
+export function withDanglingWarning<T extends SkillDetail>(detail: T) {
+  const danglingRefs = danglingSkillRefs(detail.body)
+  if (danglingRefs.length === 0) return detail
+  return {
+    ...detail,
+    danglingRefs,
+    warning: `${detail.name} references files that do not ship with this single-file skill (${danglingRefs.join(", ")}); those files are not on disk — inline their content into the skill body (re-save with ob-skill) or treat those steps as unavailable.`,
+  }
 }
 
 // One upstream retry for a pending row. Success clears the row and mirrors
@@ -129,10 +144,17 @@ async function skillsRoutes(
       const pending = db.pendingSkill(user.id, name)
       if (pending) {
         const flushed = await flushPendingSkill(db, user, skills, pending)
-        if (!flushed) return json({ ...pendingDetail(pending), pending: true })
-        return json(await skills.get(name).catch(() => pendingDetail(pending)))
+        if (!flushed)
+          return json(
+            withDanglingWarning({ ...pendingDetail(pending), pending: true }),
+          )
+        return json(
+          withDanglingWarning(
+            await skills.get(name).catch(() => pendingDetail(pending)),
+          ),
+        )
       }
-      return json(await skills.get(name))
+      return json(withDanglingWarning(await skills.get(name)))
     }
     const ownership = pluginOwnership(db, user.id)
     const groups = pluginSkillGroups(db, user.id)
