@@ -43,7 +43,14 @@ import {
   waitForDesktop,
 } from "./api"
 import { type AppEntry, filterApps } from "./app-launcher"
-import { patchSearch, searchParam, useBackLayer, usePaneNav } from "./back-nav"
+import {
+  paneSyncAction,
+  patchSearch,
+  searchParam,
+  useBackLayer,
+  useClosingPane,
+  usePaneNav,
+} from "./back-nav"
 import {
   type CouncilData,
   CouncilGroupSwitcher,
@@ -3116,6 +3123,10 @@ export function Workspace({
   const previewPaneRef = useRef<HTMLDivElement>(null)
   /** Which side pane opened last — Escape dismisses in Back's order. */
   const lastPaneRef = useRef<"preview" | "council" | "file" | "screen" | "">("")
+  // The pane whose UI close is still travelling through history: the URL
+  // keeps naming it until the traversal lands, and the URL-sync effects
+  // must follow the user, not re-open what was just dismissed.
+  const closingPaneRef = useClosingPane()
   const widthRef = useRef(previewWidth)
   const [councilMode, setCouncilMode] = useState<"closed" | "pane" | "overlay">(
     () =>
@@ -3196,39 +3207,56 @@ export function Workspace({
   const councilParam = searchParam(locationSearch, PARAM_COUNCIL)
   const memberParam = searchParam(locationSearch, PARAM_MEMBER)
   const fileParam = searchParam(locationSearch, PARAM_FILEVIEW)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: closingPaneRef is a ref, read live on purpose — a close never re-triggers the URL sync
   useEffect(() => {
-    if (previewParam && previewMode === "closed") {
+    const action = paneSyncAction(
+      previewParam,
+      previewMode,
+      closingPaneRef.current === "preview",
+    )
+    if (action === "open") {
       lastPaneRef.current = "preview"
       setPreviewMode(mobile ? "overlay" : "pane")
-    }
-    if (!previewParam && previewMode !== "closed") {
+    } else if (action === "close") {
       if (document.fullscreenElement) void document.exitFullscreen()
       setPreviewMode("closed")
     }
   }, [previewParam, previewMode, mobile])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: closingPaneRef is a ref, read live on purpose — a close never re-triggers the URL sync
   useEffect(() => {
-    if (screenParam && screenMode === "closed") {
+    const action = paneSyncAction(
+      screenParam,
+      screenMode,
+      closingPaneRef.current === "screen",
+    )
+    if (action === "open") {
       lastPaneRef.current = "screen"
       setScreenMode(mobile ? "overlay" : "pane")
-    }
-    if (!screenParam && screenMode !== "closed") {
+    } else if (action === "close") {
       if (document.fullscreenElement) void document.exitFullscreen()
       setScreenMode("closed")
     }
   }, [screenParam, screenMode, mobile])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: closingPaneRef is a ref, read live on purpose — a close never re-triggers the URL sync
   useEffect(() => {
-    if (councilParam) {
-      if (councilParam.toLowerCase() !== councilName.toLowerCase()) {
-        councilLoadGuard.current.begin()
-        setCouncilData(null)
-        setCouncilError("")
-        setCouncilName(councilParam)
-      }
-      if (councilMode === "closed") {
-        lastPaneRef.current = "council"
-        setCouncilMode(mobile ? "overlay" : "pane")
-      }
-    } else if (councilMode !== "closed") {
+    if (
+      councilParam &&
+      councilParam.toLowerCase() !== councilName.toLowerCase()
+    ) {
+      councilLoadGuard.current.begin()
+      setCouncilData(null)
+      setCouncilError("")
+      setCouncilName(councilParam)
+    }
+    const action = paneSyncAction(
+      Boolean(councilParam),
+      councilMode,
+      closingPaneRef.current === "council",
+    )
+    if (action === "open") {
+      lastPaneRef.current = "council"
+      setCouncilMode(mobile ? "overlay" : "pane")
+    } else if (action === "close") {
       if (document.fullscreenElement) void document.exitFullscreen()
       setCouncilMode("closed")
     }
@@ -3236,14 +3264,19 @@ export function Workspace({
   useEffect(() => {
     if (memberParam !== councilMemberId) setCouncilMemberId(memberParam)
   }, [memberParam, councilMemberId])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: closingPaneRef is a ref, read live on purpose — a close never re-triggers the URL sync
   useEffect(() => {
-    if (fileParam && chatLinkUrl(fileParam)) {
-      if (fileParam !== filePath) setFilePath(fileParam)
-      if (fileMode === "closed") {
-        lastPaneRef.current = "file"
-        setFileMode(mobile ? "overlay" : "pane")
-      }
-    } else if (fileMode !== "closed") {
+    const shown = Boolean(fileParam && chatLinkUrl(fileParam))
+    if (shown && fileParam !== filePath) setFilePath(fileParam)
+    const action = paneSyncAction(
+      shown,
+      fileMode,
+      closingPaneRef.current === "file",
+    )
+    if (action === "open") {
+      lastPaneRef.current = "file"
+      setFileMode(mobile ? "overlay" : "pane")
+    } else if (action === "close") {
       if (document.fullscreenElement) void document.exitFullscreen()
       setFileMode("closed")
     }
@@ -6033,6 +6066,7 @@ export function Workspace({
 
   function closePreview() {
     if (document.fullscreenElement) void document.exitFullscreen()
+    closingPaneRef.current = "preview"
     setPreviewMode("closed")
     // Topmost pane closes by traversing Back; with the council also open
     // this pane may not be the top entry, so strip its param in place.
@@ -6080,6 +6114,7 @@ export function Workspace({
 
   function closeCouncilPane() {
     if (document.fullscreenElement) void document.exitFullscreen()
+    closingPaneRef.current = "council"
     setCouncilMode("closed")
     if (previewParam || fileParam || screenParam)
       pushSearch(
@@ -6146,6 +6181,7 @@ export function Workspace({
 
   function closeFilePane() {
     if (document.fullscreenElement) void document.exitFullscreen()
+    closingPaneRef.current = "file"
     setFileMode("closed")
     if (previewParam || councilParam || screenParam)
       pushSearch({ [PARAM_FILEVIEW]: null }, { replace: true })
@@ -6190,6 +6226,7 @@ export function Workspace({
 
   function closeScreenStage() {
     if (document.fullscreenElement) void document.exitFullscreen()
+    closingPaneRef.current = "screen"
     setScreenMode("closed")
     if (previewParam || councilParam || fileParam)
       pushSearch({ [PARAM_SCREEN]: null }, { replace: true })

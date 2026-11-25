@@ -20,6 +20,7 @@ import {
   pushSearch as primaryPushSearch,
   searchParam,
   splitUrl,
+  stepBack,
   useLocationSearch,
 } from "./back-nav"
 import { Config } from "./Config"
@@ -494,7 +495,7 @@ export function App() {
         )
         urlRef.current = url
       },
-      back: () => history.back(),
+      back: stepBack,
       go: (url) => goExactRef.current(url),
       replaceUrl: (url) => replaceRef.current(url),
       canGoBackInApp: () => posRef.current > 0,
@@ -1111,7 +1112,7 @@ function Shell({
               <Button variant="outlined" onClick={() => paneGo("/apps")}>
                 {NAV.apps}
               </Button>
-              <Button variant="text" onClick={() => history.back()}>
+              <Button variant="text" onClick={stepBack}>
                 Retour
               </Button>
             </Stack>
