@@ -590,11 +590,12 @@ case "$cmd" in
           elif (.members | length) == 0 then "(no members)"
           else
             (.statusVerified != false) as $verified |
-            .members[] |
+            (if .statusError then "note: \(.statusError)" else empty end),
+            (.members[] |
             "- [\(.sessionId)] \(if .role != "" then .role + " " else "" end)(\(if .status == "unknown" and $verified == false then "unknown — could not verify" else .status end)\(if .title != "" then " — " + .title else "" end))" +
             (if ([(.persona // ""), (.model // ""), (.effort // "")] | map(select(. != "")) | length) > 0 then " [" + ([(.persona // ""), (.model // ""), (.effort // "")] | map(select(. != "")) | join(" · ")) + "]" else "" end) +
             (if .stalled then "\n    STALLED: last turn did not end cleanly (\(.endDetail // .endState)) — verify deliverables, relaunch with ob-thread post" else "" end) +
-            (if .lastReply != "" then "\n    " + (.lastReply | gsub("\n"; "\n    ") | .[0:280]) else "" end)
+            (if .lastReply != "" then "\n    " + (.lastReply | gsub("\n"; "\n    ") | .[0:280]) else "" end))
           end'
         ;;
       close)
