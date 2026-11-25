@@ -1129,13 +1129,18 @@ type LiveViewport = {
   url: string
   width: number
   height: number
+  // Device-visible CSS size (visualViewport × scale); equals the layout
+  // size except on no-<meta viewport> pages under mobile emulation,
+  // where layout is a 980px virtual viewport (#154).
+  visualWidth: number
+  visualHeight: number
   dpr: number
   touchPoints: number
   userAgent: string
 }
 
-const LIVE_VIEWPORT_SCRIPT =
-  "({url:location.href,width:window.innerWidth,height:window.innerHeight,dpr:window.devicePixelRatio||1,touchPoints:navigator.maxTouchPoints||0,userAgent:navigator.userAgent||''})"
+export const LIVE_VIEWPORT_SCRIPT =
+  "(()=>{const vv=window.visualViewport;const scale=vv&&vv.scale>0?vv.scale:1;return {url:location.href,width:window.innerWidth,height:window.innerHeight,visualWidth:vv?Math.round(vv.width*scale):window.innerWidth,visualHeight:vv?Math.round(vv.height*scale):window.innerHeight,dpr:window.devicePixelRatio||1,touchPoints:navigator.maxTouchPoints||0,userAgent:navigator.userAgent||''}})()"
 
 async function liveViewport(port: number, session: string | undefined) {
   const { socket } = await resolvePage(port, session)
@@ -1143,10 +1148,14 @@ async function liveViewport(port: number, session: string | undefined) {
     const raw = (await evaluate(socket, LIVE_VIEWPORT_SCRIPT)) as
       | Partial<LiveViewport>
       | undefined
+    const width = Number(raw?.width ?? 0)
+    const height = Number(raw?.height ?? 0)
     return {
       url: String(raw?.url ?? ""),
-      width: Number(raw?.width ?? 0),
-      height: Number(raw?.height ?? 0),
+      width,
+      height,
+      visualWidth: Number(raw?.visualWidth ?? width),
+      visualHeight: Number(raw?.visualHeight ?? height),
       dpr: Number(raw?.dpr ?? 1),
       touchPoints: Number(raw?.touchPoints ?? 0),
       userAgent: String(raw?.userAgent ?? ""),
@@ -1157,13 +1166,22 @@ async function liveViewport(port: number, session: string | undefined) {
 }
 
 function viewportLine(live: LiveViewport, desired: ViewportSpec | null) {
+  // Under an emulated spec, the size the caller means is the visible
+  // one; a no-meta page's 980px virtual layout rides beside it (#154).
+  const visualDiffers =
+    desired !== null &&
+    (Math.abs(live.visualWidth - live.width) > 2 ||
+      Math.abs(live.visualHeight - live.height) > 2)
   return {
     url: live.url,
     viewport: {
       mode: !desired ? "desktop" : desired.mobile ? "mobile" : "custom",
       preset: desired?.preset ? desired.preset : null,
-      width: live.width,
-      height: live.height,
+      width: visualDiffers ? live.visualWidth : live.width,
+      height: visualDiffers ? live.visualHeight : live.height,
+      ...(visualDiffers
+        ? { layoutWidth: live.width, layoutHeight: live.height }
+        : {}),
       dpr: live.dpr,
       // The physical spec behind the live CSS size: under browser zoom
       // the two differ (#125), and the caller asked in spec terms.
@@ -1173,6 +1191,13 @@ function viewportLine(live: LiveViewport, desired: ViewportSpec | null) {
       orientation: orientationOf(live),
       touch: live.touchPoints > 0,
       userAgent: live.userAgent,
+      // A relaunched browser opens about:blank: name it instead of
+      // measuring a stranger page as if it were the caller's (#154).
+      ...(live.url === "" || live.url === "about:blank"
+        ? {
+            note: "browser is on about:blank (relaunched — the previous page is gone); the spec stays in effect from the next navigation",
+          }
+        : {}),
     },
   }
 }
@@ -1211,11 +1236,15 @@ async function waitViewportApplied(
         return live
     }
     if (Date.now() > deadline) {
+      const blank =
+        lastLive && (lastLive.url === "" || lastLive.url === "about:blank")
+          ? " — the browser is on about:blank (relaunched, previous page gone); navigate first, then retry"
+          : ""
       const want = desired
         ? lastLive
           ? (() => {
               const css = expectedCssSize(lastLive.dpr, desired)
-              return `expected ${css.width}x${css.height} CSS at live dpr ${lastLive.dpr} (spec ${desired.width}x${desired.height} dpr ${desired.dpr}), got ${lastLive.width}x${lastLive.height}`
+              return `expected ${css.width}x${css.height} CSS at live dpr ${lastLive.dpr} (spec ${desired.width}x${desired.height} dpr ${desired.dpr}), got layout ${lastLive.width}x${lastLive.height} / visual ${lastLive.visualWidth}x${lastLive.visualHeight}${blank}`
             })()
           : `expected ${desired.width}x${desired.height}, page unreachable`
         : "expected the cleared size to change"

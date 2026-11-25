@@ -190,13 +190,30 @@ export function expectedCssSize(
 }
 
 export function viewportMatches(
-  live: { width: number; height: number; dpr: number },
+  live: {
+    width: number
+    height: number
+    dpr: number
+    // Device-visible CSS size (visualViewport size × scale). A page
+    // without <meta viewport> gets a 980px virtual layout viewport
+    // under mobile emulation: innerWidth reads 980 while the visible
+    // size is the spec's (#154, verified live: 980×2121 at scale 0.398
+    // for a 390×844 spec). Layout alone false-fails those pages —
+    // about:blank after a browser relaunch is one of them.
+    visualWidth?: number
+    visualHeight?: number
+  },
   spec: ViewportSpec,
 ): boolean {
   const expected = expectedCssSize(live.dpr, spec)
+  const near = (width: number, height: number) =>
+    Math.abs(width - expected.width) <= 2 &&
+    Math.abs(height - expected.height) <= 2
+  if (near(live.width, live.height)) return true
   return (
-    Math.abs(live.width - expected.width) <= 2 &&
-    Math.abs(live.height - expected.height) <= 2
+    typeof live.visualWidth === "number" &&
+    typeof live.visualHeight === "number" &&
+    near(live.visualWidth, live.visualHeight)
   )
 }
 

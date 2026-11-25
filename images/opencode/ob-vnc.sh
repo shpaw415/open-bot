@@ -378,4 +378,42 @@ if printf '%s\n' "$@" | grep -qx -e key -e keyup; then
   rm -f "$args"
 fi
 
+# Pure key/keyup sequences go through xdotool on the local display, not
+# vncdotool (#152, verified live): vncdo splits a chord ("shift-tab")
+# into separate keysym events, and x11vnc's keysym injection releases
+# the conflicting modifier around Tab — the page saw Shift, then plain
+# Tab, then Shift again, so Shift+Tab walked focus *forward* out of the
+# page into the browser chrome and every later key landed nowhere.
+# xdotool sends the chord as one key event and the modifier survives.
+# Mixed sequences (keys between pointer verbs) keep the VNC path, and
+# an unreachable local display falls back to it too.
+only_keys=0
+pending=0
+seen_key=0
+keys_ok=1
+for arg in "$@"; do
+  if [ "$pending" = "1" ]; then
+    pending=0
+    continue
+  fi
+  case "$arg" in
+    key | keyup)
+      pending=1
+      seen_key=1
+      ;;
+    *)
+      keys_ok=0
+      break
+      ;;
+  esac
+done
+if [ "$seen_key" = "1" ] && [ "$keys_ok" = "1" ] && [ "$pending" = "0" ]; then
+  only_keys=1
+fi
+if [ "$only_keys" = "1" ] && command -v xdotool >/dev/null 2>&1 &&
+  DISPLAY=:$display xdotool getdisplaygeometry >/dev/null 2>&1; then
+  xdotool_input "$@"
+  exit 0
+fi
+
 vnc_input "$@"
