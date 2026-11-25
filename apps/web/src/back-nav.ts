@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { dirtyForms } from "./dirty-form"
 
 /**
  * App-like Back behavior: every user-opened layer (dialog, drawer, sheet,
@@ -32,6 +33,13 @@ import {
  *    all restore the same screen. Layer entries sit on top of these, so
  *    Back first closes a dialog, then leaves the viewer, then the album.
  *
+ * **Back steps the page's own history** wherever the engine allows it
+ * (`documentBack`/`stepBack`): `history.back()` walks the joint session
+ * history, where a navigated child frame (the preview iframe) filed its own
+ * entries above the page's, so a one-step Back landed on those instead. A
+ * pane whose UI close is still travelling through history
+ * (`useClosingPane`) is likewise not re-opened by the URL it is leaving.
+ *
  * The shell (App.tsx) owns history tagging (`ob`/`obPos` for nav-guard)
  * and installs its host here at mount; without a shell (unit tests,
  * standalone renders) the default host drives `window.history` directly
@@ -47,6 +55,7 @@ export type BackNavHost = {
   /** Push an entry carrying `state` (already shell-tagged by the host). */
   push: (patch: { obLayers: string[] }, url: string) => void
   replace: (patch: { obLayers: string[] }, url: string) => void
+  /** One step back in the page's history (the shell mounts stepBack). */
   back: () => void
   /** Shell page navigation (tagged push/replace + route state sync). */
   go?: (url: string) => void
@@ -396,6 +405,66 @@ function safeGetState(host: BackNavHost): unknown {
   }
 }
 
+type NavigationApi = {
+  readonly canGoBack: boolean
+  /**
+   * Engines disagree on what a traversal hands back: a promise (the spec's
+   * first shape, still what MDN documents) or `{ committed, finished }`
+   * promises (Chrome 154).
+   */
+  back: () => unknown
+}
+
+/** The Navigation API where the engine ships it; null on older engines. */
+function navigationApi(): NavigationApi | null {
+  const nav = (globalThis as { navigation?: Partial<NavigationApi> }).navigation
+  if (typeof nav?.back !== "function") return null
+  return nav as NavigationApi
+}
+
+/** Swallow a traversal's rejections: nobody is waiting on the result. */
+function quietTraversal(result: unknown) {
+  const ignore = (promise: unknown) => {
+    if (typeof (promise as Promise<void> | null)?.catch === "function")
+      (promise as Promise<void>).catch(() => {})
+  }
+  ignore(result)
+  ignore((result as { committed?: unknown } | null)?.committed)
+  ignore((result as { finished?: unknown } | null)?.finished)
+}
+
+/**
+ * Back one entry of the PAGE's history. `history.back()` walks the joint
+ * session history: a child frame that navigated (the preview iframe) filed
+ * its own entries above the page's, and the step lands on one of those
+ * instead — with no popstate once the frame is gone, so the page never
+ * learns that its Back went elsewhere. The Navigation API never sees a
+ * child frame's entries, so its back() is the exact one-step Back. False
+ * only when nothing was issued (no API, nothing behind, engine refused):
+ * plain `history.back()` is then the best there is.
+ */
+export function documentBack(): boolean {
+  const nav = navigationApi()
+  if (!nav?.canGoBack) return false
+  let result: unknown
+  try {
+    result = nav.back()
+  } catch {
+    return false
+  }
+  // The traversal is committed to from here on. Its promises reject when
+  // it is cancelled or interrupted by another navigation, which then owns
+  // where the page goes.
+  quietTraversal(result)
+  return true
+}
+
+/** History Back that steps to the page's previous entry where possible. */
+export function stepBack(): void {
+  if (documentBack()) return
+  if (typeof history !== "undefined") history.back()
+}
+
 /** Default host: plain window.history (tests, shell-less renders). The
  * window lookup stays lazy: test DOMs register globals after module
  * evaluation, and a captured boolean would stay false forever. */
@@ -417,6 +486,7 @@ function browserHost(): BackNavHost {
       w?.history.replaceState({ ...(w.history.state ?? {}), ...patch }, "", url)
     },
     back: () => {
+      if (documentBack()) return
       win()?.history.back()
     },
     go: (url) => {
@@ -552,15 +622,55 @@ export function currentUrl(): string {
   return backNav.host().getUrl()
 }
 
+/** How long a plain history Back gets to reach this document. */
+export const BACK_SETTLE_MS = 500
+
+/**
+ * A plain history Back does not always reach this document (child-frame
+ * entries above it, see documentBack), and the screen being left would
+ * stay in the URL. So watch the step `back` takes: when no popstate lands
+ * in time, rewrite the current entry to `fallbackUrl` instead, so leaving
+ * is never a silent no-op. An entry that moved some other way in the
+ * meantime is left alone, and so is a form with unsaved changes: that
+ * leave needs the pop guard's prompt, which only a real traversal gives.
+ */
+export function settleBack(back: () => void, fallbackUrl: string): void {
+  if (typeof window === "undefined") {
+    back()
+    return
+  }
+  const host = backNav.host()
+  const startUrl = host.getUrl()
+  let landed = false
+  const onPop = () => {
+    landed = true
+    window.removeEventListener("popstate", onPop)
+  }
+  window.addEventListener("popstate", onPop)
+  back()
+  window.setTimeout(() => {
+    window.removeEventListener("popstate", onPop)
+    if (landed || host.getUrl() !== startUrl || dirtyForms.hasDirty()) return
+    if (host.replaceUrl) host.replaceUrl(fallbackUrl)
+    else host.replace({ obLayers: backNav.entryTokens() }, fallbackUrl)
+  }, BACK_SETTLE_MS)
+}
+
 /**
  * In-app "Back/Close" for URL-backed screens: traverse to the entry the
  * user actually came from when one exists in this tab's app stack, else
  * navigate to the parent URL (fresh deep link — Forward then returns).
+ * The traversal goes to this document's previous entry (documentBack), so
+ * a navigated child frame cannot absorb it; without the Navigation API the
+ * plain history step is settled by `settleBack`.
  */
 export function backOr(fallbackUrl: string) {
   const host = backNav.host()
-  if (host.canGoBackInApp?.()) host.back()
-  else if (host.go) host.go(fallbackUrl)
+  if (host.canGoBackInApp?.()) {
+    if (!documentBack()) settleBack(() => host.back(), fallbackUrl)
+    return
+  }
+  if (host.go) host.go(fallbackUrl)
   else host.push({ obLayers: [] }, fallbackUrl)
 }
 
@@ -645,4 +755,48 @@ export function usePaneNav(): PaneNav {
     backOr: stableBackOr,
     active: current.active,
   }
+}
+
+export type PaneMode = "closed" | "pane" | "overlay"
+
+/** The URL-backed side panes a UI close can leave. */
+export type ClosingPane = "preview" | "council" | "file" | "screen"
+
+/**
+ * What a URL-backed pane (`?preview=1`, `?council=`…) does about the URL.
+ * A pane closed from its own UI is closed by traversing history, and until
+ * that traversal lands the URL still names it: following the URL again
+ * would re-open what the user just dismissed (the preview iframe remounted
+ * and reloaded on every Close). So while its close is in flight the pane
+ * stays closed; `closing` says this pane is the one being left.
+ */
+export function paneSyncAction(
+  param: boolean,
+  mode: PaneMode,
+  closing: boolean,
+): "open" | "close" | "none" {
+  if (param) return mode === "closed" && !closing ? "open" : "none"
+  return mode === "closed" ? "none" : "close"
+}
+
+/**
+ * The pane whose UI close is travelling through history (see
+ * paneSyncAction). Set it right before the traversal: it clears itself on
+ * the next popstate or in-app navigation — history moved, the close
+ * settled or was superseded.
+ */
+export function useClosingPane() {
+  const closing = useRef<ClosingPane | "">("")
+  useEffect(() => {
+    const settle = () => {
+      closing.current = ""
+    }
+    window.addEventListener("popstate", settle)
+    window.addEventListener("ob-navigate", settle)
+    return () => {
+      window.removeEventListener("popstate", settle)
+      window.removeEventListener("ob-navigate", settle)
+    }
+  }, [])
+  return closing
 }
