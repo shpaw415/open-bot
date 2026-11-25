@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import {
   playNotifySound,
   readNotifySound,
@@ -25,8 +25,25 @@ function memoryStorage(): Storage {
   }
 }
 
-globalThis.localStorage = memoryStorage()
-;(globalThis as Record<string, unknown>).window = globalThis
+const globals = globalThis as Record<string, unknown>
+// This file owns its globals: a `window` stubbed before another file
+// registers a DOM stays a plain property there, and code that attached to
+// it at import (back-nav's popstate listener) never hears that DOM.
+const replaced = Object.fromEntries(
+  ["window", "localStorage"].map((key) => [
+    key,
+    Object.getOwnPropertyDescriptor(globalThis, key),
+  ]),
+)
+globals.localStorage = memoryStorage()
+globals.window = globalThis
+
+afterAll(() => {
+  for (const [key, descriptor] of Object.entries(replaced)) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+    else delete globals[key]
+  }
+})
 
 afterEach(() => {
   localStorage.removeItem(KEY)
