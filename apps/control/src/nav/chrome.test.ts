@@ -12,6 +12,7 @@ import {
   nextActiveAfterClose,
   normalizeTarget,
   recoveryAdvice,
+  redactTabUrl,
   STATE_SCRIPT,
   schemeError,
   shapeIdbEntry,
@@ -403,6 +404,49 @@ test("tab list rows carry the stable id beside the 1-based index", async () => {
   } finally {
     globalThis.fetch = real
   }
+})
+
+test("tab list redacts query and fragment by default, --full opts in (#155)", async () => {
+  const real = globalThis.fetch
+  globalThis.fetch = (async () =>
+    Response.json([
+      {
+        type: "page",
+        id: "t1",
+        url: "https://fixture.test/work",
+        title: "Fixture",
+        webSocketDebuggerUrl: "ws://a",
+      },
+      {
+        type: "page",
+        id: "t2",
+        url: "https://accounts.test/signin?state=opaque-token&next=%2Fhome#frag",
+        title: "Sign in",
+        webSocketDebuggerUrl: "ws://b",
+      },
+    ])) as unknown as typeof fetch
+  try {
+    const line = await tabsLine(9222, undefined)
+    expect(line.tabs[1]).toMatchObject({
+      index: 2,
+      id: "t2",
+      url: "https://accounts.test/signin",
+      active: false,
+    })
+    expect(JSON.stringify(line)).not.toContain("opaque-token")
+    const full = await tabsLine(9222, undefined, { full: true })
+    expect(full.tabs[1]?.url).toContain("state=opaque-token")
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test("redactTabUrl keeps origin and path, drops query and fragment (#155)", () => {
+  expect(redactTabUrl("https://a.test/p?q=1#h")).toBe("https://a.test/p")
+  expect(redactTabUrl("https://a.test/")).toBe("https://a.test/")
+  expect(redactTabUrl("about:blank")).toBe("about:blank")
+  expect(redactTabUrl("chrome://extensions/?id=x")).toBe("chrome://extensions/")
+  expect(redactTabUrl("not a url?x=1")).toBe("not a url")
 })
 
 test("a numeric tab miss names the recovery instead of a bare no-match", () => {

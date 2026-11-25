@@ -121,6 +121,37 @@ describe("handleSkills", () => {
     expect(hit?.group).toBeNull()
   })
 
+  test("get warns when an installed skill references missing companion files (#131)", async () => {
+    const db = open()
+    seedUser(db)
+    const user = userOf(db)
+    const fake = fakeClient()
+    // Written straight into OpenViking before the guard: reads must name
+    // the dead end instead of letting the agent hit it mid-task.
+    fake.store.set("github", {
+      name: "github",
+      description: "GitHub work",
+      body: "Read `references/repo-management.md` before creating a repo.",
+    })
+    const call = (url: string, method: string, body?: unknown) =>
+      handleSkills(
+        req(url, method, body),
+        new URL(`http://control${url}`),
+        db,
+        user,
+        hub,
+        async () => fake.client,
+      )
+    const detail = await call("/api/skills?name=github", "GET")
+    const json = (await detail.json()) as {
+      danglingRefs?: string[]
+      warning?: string
+    }
+    expect(json.danglingRefs).toEqual(["references/repo-management.md"])
+    expect(json.warning).toContain("references/repo-management.md")
+    expect(json.warning).toContain("inline")
+  })
+
   test("rename carries directory membership; delete drops it", async () => {
     const db = open()
     seedUser(db)

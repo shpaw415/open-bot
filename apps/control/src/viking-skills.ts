@@ -107,10 +107,15 @@ export function skillNameError(name: string) {
 // it on a missing file. Web/scheme links, anchors, absolute desktop
 // paths, and SKILL.md itself are fine; code spans and fences discuss
 // link syntax without being links to load.
+// Bare bundle mentions are the same trap in prose form (#131/#159): a
+// guide that says "read `references/repo-management.md`" never writes a
+// markdown link, so the link scan saw nothing. `references/` (or
+// `reference/`) at a path start is the skill-bundle convention — flag
+// it in prose and code spans alike; mid-path segments (a project tree's
+// own docs/references/…) and fenced examples stay untouched.
 export function danglingSkillRefs(body: string): string[] {
-  const prose = body
-    .replace(/```[\s\S]*?(?:```|$)/g, "")
-    .replace(/`[^`\n]*`/g, "")
+  const unfenced = body.replace(/```[\s\S]*?(?:```|$)/g, "")
+  const prose = unfenced.replace(/`[^`\n]*`/g, "")
   const refs: string[] = []
   for (const match of prose.matchAll(
     /!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
@@ -122,6 +127,12 @@ export function danglingSkillRefs(body: string): string[] {
     if (target.startsWith("//") || target.startsWith("/")) continue
     if (target === "SKILL.md" || target === "./SKILL.md") continue
     if (!refs.includes(raw)) refs.push(raw)
+  }
+  for (const match of unfenced.matchAll(
+    /(?<![\w./:-])(\.\/)?(references?\/[^\s`'"()[\],;:]+)/g,
+  )) {
+    const raw = `${match[1] ?? ""}${match[2] ?? ""}`.replace(/\.+$/, "")
+    if (raw && !refs.includes(raw)) refs.push(raw)
   }
   return refs
 }
@@ -154,7 +165,7 @@ export function assertSkillInput(input: SkillDetail) {
     const extra = dangling.length > 5 ? ` (+${dangling.length - 5} more)` : ""
     throw new HttpError(
       400,
-      `skill body links files that cannot ship with a single-file skill: ${named}${extra} — inline their content into the skill body`,
+      `skill body references files that cannot ship with a single-file skill: ${named}${extra} — inline their content into the skill body`,
       "skill_body",
     )
   }
